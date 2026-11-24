@@ -1,7 +1,7 @@
 {
   "requirement": "For a definition-name mapping, `habeas refactor` MUST rewrite each `{impl}`,\n`{test}`, `{cite}`, `{fixme}`, and `{term}` reference that names an old name,\nin the book and in the sources reference discovery considers. For a path or\nnode mapping, it MUST rewrite each `:impl:` or `:test:` anchor that names an\nold file or node. It MUST change nothing else in those files.",
   "determination": true,
-  "rationale": "I found no gap against `requirements.refactor.reference_rewrite`.\n\n**Implementation**\n- `src/refactor.rs#fn[rewrite_source]` carries the `{impl}` reference. `src/refactor.rs#impl[States]/fn[compute]` calls it on every file reference discovery considers. That is `evidence::discovered_files`, plus the files of all loaded definitions, which covers the book. It collects the edits in memory, and `fn[refactor]` writes them out.\n- Obligation: rewrite `{impl}`, `{test}`, `{cite}`, `{term}` and inline `{fixme}` references that name an old name.\n  - `rewrite_source` walks `crate::reference_roles`. It skips roles that are not in a reference context, such as a string literal, and Markdown code blocks are already excluded by `reference_roles`. It keeps only the kinds Impl, Test, Cite, Term and Fixme. It then replaces the name span with `Mappings::name`.\n  - `Mappings::name` uses `beneath(.., '.')`, so `rules.checker` is not touched by a `rules.check` mapping.\n- Obligation: rewrite fenced `:::{fixme}`, `:::{impl}`, `:::{test}` and `:::{cite}` names. `rewrite_source` loops over `crate::fenced::source_fences` and edits the name on the opening line.\n- Obligation: for path and node mappings, rewrite `:impl:` and `:test:` anchors. In Markdown, `rewrite_source` iterates `definition_blocks(...).options`. It keeps only options named `impl` or `test`. It maps each value with `Mappings::address`, which applies a node mapping first and then a path mapping. Option-like lines in body text or code blocks are not directive options, so they are not touched.\n- Obligation: change nothing else. The code applies only the targeted span edits. It skips overlapping edits and rewrites no other text.\n\n**Tests**\n- `src/refactor/tests.rs#fn[sources_rewrite_references_to_names_and_anchors_to_paths]` checks the following:\n  - `{impl}` and a fenced `{fixme}` are rewritten, `rules.checker` is left alone, and the edit count is 2.\n  - `{term}`, `:impl:` and `:test: file#node` anchors are rewritten in Markdown.\n  - A `{cite}` inside a code block is left literal.\n  - Option-like lines outside a directive's options, and inside a code-block directive, are left literal.\n  - A role in a string literal is left literal, and `:impl:` in plain text is left literal.\n- `src/refactor/tests.rs#fn[anchors_follow_a_node_mapping_and_leave_other_nodes_alone]` checks that a node mapping rewrites only the matching anchor and leaves a sibling node anchor alone.\n- `tests/refactor.rs#fn[a_moved_requirement_renames_its_references_and_evidence]` is an end-to-end name rewrite. It checks `{impl}`, `{test}` and `{cite}` in the sources and book, and that only the expected files change.\n- `tests/refactor.rs#fn[a_moved_file_rewrites_anchors_and_paths]` is an end-to-end path anchor rewrite.\n- `tests/refactor.rs#fn[a_moved_term_rewrites_definition_inputs_and_the_texts_using_it]` is an end-to-end `{term}` rewrite.\n- `tests/refactor.rs#fn[a_rename_rewrites_the_hash_of_a_node_whose_doc_comment_names_it]` is an end-to-end rewrite in a doc comment.\n\nAll obligations have reachable implementation code and tests. All five reference kinds, anchors for path and node mappings, and the \"nothing else\" boundary cases are covered.",
+  "rationale": "The tests cover each obligation in `requirements.refactor.reference_rewrite`. I read the implementation, `src/refactor.rs#fn[rewrite_source]`, only to see which roles and anchors it handles. I derived the expected behavior from the requirement text.\n\n**Obligations and the tests that cover them**\n\n- **Name mapping rewrites `{impl}`, `{test}`, `{cite}`, `{fixme}` and `{term}` references.**\n  - `src/refactor/tests.rs#fn[sources_rewrite_references_to_names_and_anchors_to_paths]` asserts that a Rust `{impl}` reference and a `:::{fixme}` fence are rewritten.\n  - The same test asserts that `{cite}` of `rules.checker`, whose name only shares a prefix with the old name, is left alone.\n  - The same test asserts that `{term}` in Markdown is rewritten.\n  - `tests/refactor.rs#fn[a_moved_requirement_renames_its_references_and_evidence]` runs the real command. It asserts that `{cite}` in `md/notes.md` is rewritten, and that `{impl}` and `{test}` in `src/config.rs` are rewritten. It reports the rewrites as `- src/config.rs (2)` and `- md/notes.md (1)`.\n  - `tests/refactor.rs#fn[a_moved_term_rewrites_definition_inputs_and_the_texts_using_it]` covers `{term}` end to end in the book.\n  - `tests/refactor.rs#fn[a_rename_rewrites_the_hash_of_a_node_whose_doc_comment_names_it]` covers a `///` doc-comment `{impl}` reference.\n- **Both the book and sources are rewritten.** The tests above include `md/*.md` files and `src/*.rs` files.\n- **Path mapping rewrites `:impl:` and `:test:` anchors.**\n  - The unit test maps `data.txt` to `info.txt`. It asserts that `:impl: data.txt` and `:test: data.txt#line@abc` become `info.txt` and `info.txt#line@abc`.\n  - `tests/refactor.rs#fn[a_moved_file_rewrites_anchors_and_paths]` asserts that `:impl: info.txt` appears in `md/rules.md` after the real command runs.\n- **Node mapping rewrites anchors.** `src/refactor/tests.rs#fn[anchors_follow_a_node_mapping_and_leave_other_nodes_alone]` maps `src/a.rs#fn[f]` to `src/b.rs#fn[g]`. It asserts that the matching `:impl:` anchor is rewritten, that `:test: src/a.rs#fn[other]` is untouched, and that the edit count is 1.\n- **It changes nothing else.**\n  - The unit test asserts that a Markdown code-block `{cite}` stays literal, and that `:impl:` lines in a directive body or inside a fenced example stay literal.\n  - It asserts that a role inside a Rust string literal is untouched, that `:impl:` in a `.txt` file is not an anchor, and that the declaration's own name is not rewritten.\n  - The integration test snapshots the whole project before and after the command. It asserts that exactly the expected files differ: `evidence/core.load.json`, `evidence/rules.load.json`, `md/notes.md` and `src/config.rs`.\n\n**Residual points, not treated as gaps**\n\n- No test places a reference in a file that discovery does not consider and checks that it stays untouched. The requirement's phrase \"the sources reference discovery considers\" only scopes the files to rewrite. The tests show that considered files are rewritten and that unrelated content is preserved.\n- The fence-form variants for `{impl}`, `{test}` and `{cite}` share the code path that the `{fixme}` fence test exercises.",
   "references": "02e875a38d6c5cb18e02355efcf2990ef1cf6f0530091824a8910fd7396c0ee6",
   "inputs": [
     {
@@ -30,11 +30,6 @@
       "hash": "4fb38e8ed42821dff5c3c39f5ef96959eaa1ec96b425eada1473d14deee11c97"
     },
     {
-      "file": "src/refactor.rs",
-      "item": "fn[rewrite_source]",
-      "hash": "98063ccd6e7e96eccfb97ae0b699950fd38cbccb8a4ee6ab52401a100c7985e8"
-    },
-    {
       "file": "tests/refactor.rs",
       "item": "fn[a_moved_requirement_renames_its_references_and_evidence]",
       "hash": "06883c08a1a2bc095f37b837bab742b82eb0fc95ad6889d88f3569b32ded6b75"
@@ -56,34 +51,165 @@
     },
     {
       "file": "src/refactor.rs",
-      "item": "impl[States]/fn[compute]",
-      "hash": "1ae409cd4ce7da9badaa5374cde3de8a2d97fb19dad4fcf021fbe51f1cf2b5a6"
-    },
+      "item": "fn[rewrite_source]",
+      "hash": "98063ccd6e7e96eccfb97ae0b699950fd38cbccb8a4ee6ab52401a100c7985e8"
+    }
+  ],
+  "format_version": 1,
+  "review_version": "habeas-review-v1",
+  "dependencies": [
     {
-      "file": "src/refactor.rs",
-      "item": "impl[Mappings]",
-      "hash": "3520d5332eb4d386aa535ce1d3f23a40aaadfd63616dac9ddde56bfcde872d7f"
-    },
-    {
-      "definition": "requirements.refactor.mapped_back",
-      "text": [
-        ":::{definition} mapped_back",
-        ":phrase: mapped-back",
-        "",
-        "The *mapped-back* form of current text or a current address is the text or",
-        "address with each new side of the mappings replaced by its old side.",
-        ":::"
+      "Node": [
+        {
+          "ReferenceSet": "requirements.refactor.reference_rewrite"
+        },
+        {
+          "scheme": "habeas-reference-set-v1",
+          "value": "02e875a38d6c5cb18e02355efcf2990ef1cf6f0530091824a8910fd7396c0ee6"
+        }
       ]
     },
     {
-      "file": "src/lib.rs",
-      "item": "fn[reference_roles]",
-      "hash": "0ffd95afc0dafb5baa517e7a646d406aef2e7f55553ce0f4407c0f9fcfd1b8b6"
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.refactor.reference_rewrite"
+        },
+        "Mandatory",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "80aef65062999a65ed7ed1f6c1c12fb709a69f102eb0440b9bbada4fd78d7c7b"
+        }
+      ]
     },
     {
-      "file": "src/fenced.rs",
-      "item": "fn[source_fences]",
-      "hash": "1186144bd1200de2e8b0665a8af6e252fb87847a435f110e00f4f44518133f7a"
+      "Node": [
+        {
+          "Requirement": "requirements.refactor.reference_rewrite"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "4e49d276d7f817fac3630e226cb0015702511975b15c6f002ba2fbac0e462485"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/refactor/tests.rs"
+            },
+            "selector": "fn[sources_rewrite_references_to_names_and_anchors_to_paths]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "d9e5526f8cc3f98cfc1b103ccb8175a3922cabf601b07a9ed2c003db30102a8f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/refactor/tests.rs"
+            },
+            "selector": "fn[anchors_follow_a_node_mapping_and_leave_other_nodes_alone]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "93892ba9b690a15395fc5b3c1349a4601a8ae019e6db31ad4972146f37f6c602"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/refactor.rs"
+            },
+            "selector": "fn[a_moved_requirement_renames_its_references_and_evidence]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "51b2c4d059308c386dab548702e3469047752e22c48a963e28930fec3709eecd"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/refactor.rs"
+            },
+            "selector": "fn[a_moved_file_rewrites_anchors_and_paths]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "e028fa81a1a9fb8c0c5b8dea6a7106eec6b8f2941335dd9e63ff7464b2a814a7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/refactor.rs"
+            },
+            "selector": "fn[a_rename_rewrites_the_hash_of_a_node_whose_doc_comment_names_it]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "a7b7d1fa1fd688edff1e95729d9604bfcef9319ce99f7caeaa617ad7c5e2766f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/refactor.rs"
+            },
+            "selector": "fn[a_moved_term_rewrites_definition_inputs_and_the_texts_using_it]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "49bd8fd1f971ad743972460c363b5516f5a700c8bf417623f72fad338bd0ecef"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/refactor.rs"
+            },
+            "selector": "fn[rewrite_source]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "addab9b178b1d5c63e975eb287f3858cc064300936d137749abb68641c15c5cb"
+        }
+      ]
     }
   ]
 }

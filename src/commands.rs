@@ -43,20 +43,6 @@ pub fn status_markdown_with_github(
     verbose: bool,
     github: &GithubIssues,
 ) -> io::Result<String> {
-    status_markdown_with_coverage(root, all, glob, verbose, false, github)
-}
-
-/// Renders status with coverage-warning details when `coverage` is enabled.
-// {impl}`requirements.cli.status`
-// {impl}`requirements.references.coverage.report`
-pub fn status_markdown_with_coverage(
-    root: &Path,
-    all: bool,
-    glob: Option<&str>,
-    verbose: bool,
-    coverage: bool,
-    github: &GithubIssues,
-) -> io::Result<String> {
     let mut inspection = inspect_repository(root)?;
     crate::github::add_issue_findings(&mut inspection, github);
     if let Some(glob) = glob {
@@ -200,103 +186,7 @@ pub fn status_markdown_with_coverage(
         ));
         output.push_str("</code></pre>\n");
     }
-    // An invalid workspace file, including an invalid `[coverage]` table, is
-    // already a validation finding; status still reports everything else and
-    // says why the warnings could not be computed.
-    match inspected_coverage_warnings(&inspection) {
-        Ok(warnings) => output.push_str(&coverage_section(&warnings, coverage)),
-        Err(error) => output.push_str(&format!(
-            "\n## Coverage warnings\n\nCoverage warnings could not be computed: {}\n",
-            escape_html(&error.to_string())
-        )),
-    }
     Ok(output)
-}
-
-/// The items without recent coverage, outside modules named `tests`, and
-/// whether coverage history was incomplete. These do not fail validation.
-// {impl}`requirements.references.coverage.report`
-// {impl}`requirements.references.coverage.history`
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct CoverageWarnings {
-    /// One warning per item, naming its file, line, kind, and name.
-    pub items: Vec<String>,
-    /// Whether some file's coverage window may be missing commits.
-    pub incomplete: bool,
-}
-
-impl CoverageWarnings {
-    // {impl}`requirements.references.coverage.report`
-    pub fn summary(&self) -> String {
-        format!(
-            "{} nodes have coverage warnings. Use `status --coverage` to see them.",
-            self.items.len()
-        )
-    }
-}
-
-/// The coverage warnings of the project at `root`, as `habeas status` shows
-/// them and `habeas author` prints them after it finishes.
-// {impl}`requirements.references.coverage.report`
-// {impl}`requirements.references.coverage.history`
-pub fn coverage_warnings(root: &Path) -> io::Result<CoverageWarnings> {
-    inspected_coverage_warnings(&crate::evidence::inspect_repository(root)?)
-}
-
-/// The coverage warnings of an inspected repository.
-// {impl}`requirements.references.coverage.report`
-fn inspected_coverage_warnings(
-    inspection: &crate::evidence::RepositoryInspection,
-) -> io::Result<CoverageWarnings> {
-    let (warned, incomplete) = crate::coverage_history::warnings(
-        &inspection.root,
-        &inspection.uncovered,
-        &inspection.evidence_files,
-        inspection.evidence_listed,
-    )?;
-    Ok(CoverageWarnings {
-        items: warned.into_iter().map(|item| item.error).collect(),
-        incomplete,
-    })
-}
-
-/// The summary in `habeas status`, or detailed warnings with `--coverage`.
-/// These do not fail validation.
-// {impl}`requirements.references.coverage.report`
-// {impl}`requirements.references.coverage.history`
-// {impl}`requirements.cli.status`
-fn coverage_section(warnings: &CoverageWarnings, details: bool) -> String {
-    if !details {
-        return format!("\n{}\n", warnings.summary());
-    }
-    let CoverageWarnings {
-        items: warned,
-        incomplete,
-    } = warnings;
-    let mut output = String::new();
-    if warned.is_empty() && !incomplete {
-        return output;
-    }
-    output.push_str(
-        "\n## Coverage warnings\n\nThese items have no reference, and no recent version of an evidence record or review read them. They do not fail validation.\n",
-    );
-    if *incomplete {
-        output.push_str(
-            "\nCoverage history is incomplete, so only the available history was used.\n",
-        );
-    }
-    if !warned.is_empty() {
-        output.push_str("\n<pre><code>");
-        output.push_str(&escape_html(
-            &warned
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>()
-                .join("\n\n"),
-        ));
-        output.push_str("</code></pre>\n");
-    }
-    output
 }
 
 /// The "Disagreements" section of `habeas status`: each selected definition,
@@ -380,7 +270,6 @@ pub fn info_markdown(root: &Path, selector: &str) -> io::Result<String> {
     let inspection = inspect_repository(root)?;
     definition_glob::validate(selector)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-    let outlines = crate::inputs::OutlineCache::default();
     let mut pages = Vec::new();
     for (name, definition) in &inspection.definitions {
         if definition.kind == crate::DefinitionKind::Term {
@@ -397,11 +286,12 @@ pub fn info_markdown(root: &Path, selector: &str) -> io::Result<String> {
             definition.kind,
             &evidence,
             &RenderSources {
+                check_hashes: true,
                 root,
                 definitions: &inspection.definitions,
                 references: &inspection.references,
                 source_links: None,
-                outlines: &outlines,
+                outlines: &inspection.outlines,
             },
         );
         if let Some(sites) = inspection.sites.get(name) {

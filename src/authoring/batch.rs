@@ -112,6 +112,19 @@ async fn run_batch(
         select_subjects(&root, &inspection, sites_of, options.force, &mut |update| {
             progress.inspect(update)
         });
+    if !options.force {
+        let (all, _) = select_subjects(&root, &inspection, sites_of, true, &mut |_| {});
+        for subject in all.into_iter().filter(|candidate| {
+            !subjects
+                .iter()
+                .any(|selected| selected.label() == candidate.label())
+        }) {
+            crate::evidence_format::convert_file(
+                &subject.evidence_path(&root),
+                &crate::sdk::HabeasNode::review_subject(&subject),
+            )?;
+        }
+    }
     let mut outcome = BatchOutcome {
         completed: Vec::new(),
         failures: Vec::new(),
@@ -263,15 +276,34 @@ async fn run_batch(
 }
 
 /// The kind of a subject's assessment, whose system prompt every
-/// assessment of that kind shares: requirement, example, citation review, or
-/// site review.
+/// assessment of that kind shares. Structural and test-adequacy requirements
+/// have different system prompts, while both retain the "requirement" usage label.
 // {impl}`requirements.authoring.prompt_parts`
 fn assessment_kind(inspection: &RepositoryInspection, subject: &AuthoringSubject) -> &'static str {
     match subject {
-        AuthoringSubject::Definition(name) => inspection
-            .definitions
-            .get(name)
-            .map_or("requirement", |definition| definition.kind.noun()),
+        AuthoringSubject::Definition(name) => {
+            let Some(definition) = inspection.definitions.get(name) else {
+                return "requirement";
+            };
+            let entries = crate::evidence::reference_set_entries(
+                &inspection.root,
+                &inspection.outlines,
+                name,
+                definition,
+                &inspection.references,
+                &inspection.sites,
+            );
+            if crate::evidence::structural_assessment(
+                &inspection.root,
+                &inspection.outlines,
+                definition,
+                &entries,
+            ) {
+                "structural requirement"
+            } else {
+                definition.kind.noun()
+            }
+        }
         AuthoringSubject::Citation { .. } => "citation review",
         AuthoringSubject::Site { .. } => "site review",
     }
@@ -462,7 +494,7 @@ fn select_subjects(
         completed: 0,
         total: None,
     });
-    // Every source item outside the book with citations needs a review.
+    // Source items and opted-in book passages share the citation-review lifecycle.
     let outlines = crate::inputs::OutlineCache::default();
     let (definitions, items) = if sites_of.is_some() {
         (Default::default(), Default::default())
@@ -691,6 +723,49 @@ mod tests {
         assert!(queue.is_empty());
     }
 
+    // {test}`requirements.authoring.cache_warmup`
+    // {test}`requirements.authoring.prompt_parts`
+    // {test}`requirements.authoring.structural_review`
+    #[test]
+    fn structural_and_test_reviews_warm_separately_without_changing_usage_labels() {
+        let project = super::super::inputs::tests::project();
+        let root = project.path();
+        fs::write(
+            root.join("md/requirements.md"),
+            ":::{req} structure\nStructure.\n:::\n:::{req} behavior\nBehavior.\n:::\n:::{req} more_structure\nStructure.\n:::\n:::{req} more_behavior\nBehavior.\n:::\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/lib.rs"),
+            "// {impl}`requirements.structure`\n// {impl}`requirements.more_structure`\nfn api() {}\n// {test}`requirements.behavior`\n// {test}`requirements.more_behavior`\nfn test_api() {}\n",
+        )
+        .unwrap();
+        let inspection = crate::evidence::inspect_repository(root).unwrap();
+        let mut queue = ["structure", "behavior", "more_structure", "more_behavior"]
+            .map(|name| {
+                let subject = AuthoringSubject::Definition(format!("requirements.{name}"));
+                assert_eq!(subject.kind_noun(root), Some("requirement"));
+                (assessment_kind(&inspection, &subject), subject)
+            })
+            .to_vec();
+        let mut warmup = CacheWarmup::default();
+        assert_eq!(warmup.next(&mut queue).unwrap().0, "structural requirement");
+        assert_eq!(warmup.next(&mut queue).unwrap().0, "requirement");
+        assert!(warmup.next(&mut queue).is_none());
+        warmup.warmed("structural requirement");
+        let (kind, subject, warms) = warmup.next(&mut queue).unwrap();
+        assert_eq!(kind, "structural requirement");
+        assert_eq!(subject.label(), "requirements.more_structure");
+        assert!(!warms);
+        assert!(warmup.next(&mut queue).is_none());
+        warmup.warmed("requirement");
+        assert_eq!(
+            warmup.next(&mut queue).unwrap().1.label(),
+            "requirements.more_behavior"
+        );
+        assert!(queue.is_empty());
+    }
+
     // {test}`requirements.authoring.progress`
     // {test}`requirements.authoring.batch`
     #[test]
@@ -747,6 +822,66 @@ mod tests {
                 (3, Some(3))
             ]
         );
+    }
+
+    // {test}`requirements.references.citation_review.book_commentary`
+    // {test}`requirements.authoring.batch`
+    #[test]
+    fn book_passages_are_selected_refreshed_skipped_and_removed_with_citation_reviews() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("md")).unwrap();
+        fs::write(root.join("book.toml"), "[book]\nsrc='md'\n").unwrap();
+        fs::write(
+            root.join("md/requirements.md"),
+            ":::{req} ready\nReady.\n:::\n",
+        )
+        .unwrap();
+        let text = ":::{cite} requirements.ready\nThe project is ready.\n:::\n";
+        fs::write(root.join("md/notes.md"), text).unwrap();
+        let inspect = || crate::evidence::inspect_repository(root).unwrap();
+        let inspection = inspect();
+        let (subjects, unchanged) = select_subjects(root, &inspection, None, false, &mut |_| {});
+        assert_eq!(unchanged, 0);
+        let subject = subjects
+            .into_iter()
+            .find(|s| matches!(s, AuthoringSubject::Citation { .. }))
+            .unwrap();
+        let sources = subject.sources(root).unwrap();
+        let super::super::inputs::AssessmentKind::Citation(item) = &sources.subject_kind else {
+            panic!("expected citation");
+        };
+        let path = subject.evidence_path(root);
+        let fixture = serde_json::json!({
+            "file": item.file, "item": item.item, "citations": item.citations_value(),
+            "determination": true, "rationale": "The passage agrees with its requirement.",
+            "inputs": sources.mandatory_inputs().iter().map(crate::inputs::recorded_input).collect::<Vec<_>>()
+        });
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, serde_json::to_vec(&fixture).unwrap()).unwrap();
+        let inspection = inspect();
+        assert!(subject_is_current(root, &subject).unwrap());
+        let (subjects, unchanged) = select_subjects(root, &inspection, None, false, &mut |_| {});
+        assert_eq!(unchanged, 1);
+        assert!(!subjects.iter().any(|s| s.label() == subject.label()));
+        let (forced, _) = select_subjects(root, &inspection, None, true, &mut |_| {});
+        assert!(forced.iter().any(|s| s.label() == subject.label()));
+        fs::write(
+            root.join("md/notes.md"),
+            text.replace("is ready", "is unready"),
+        )
+        .unwrap();
+        let (subjects, unchanged) = select_subjects(root, &inspect(), None, false, &mut |_| {});
+        assert_eq!(unchanged, 0);
+        assert!(subjects.iter().any(|s| s.label() == subject.label()));
+        fs::write(root.join("md/notes.md"), "Ordinary prose.\n").unwrap();
+        let inspection = inspect();
+        assert!(!subject_is_current(root, &subject).unwrap());
+        assert_eq!(
+            delete_orphaned_reviews(root, &inspection).unwrap(),
+            [crate::evidence::display_path(root, &path)]
+        );
+        assert!(!path.exists());
     }
 
     // {test}`requirements.authoring.batch`

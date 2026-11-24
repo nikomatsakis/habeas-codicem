@@ -381,6 +381,7 @@ fn implementation_discovery_has_no_text_or_evidence_until_the_model_requests_a_r
 // {test}`requirements.authoring.invocation`
 // {test}`requirements.configuration.serialization`
 // {test}`requirements.ci.fixme_implementation_gap`
+// {test}`requirements.sdk.habeas.assessment_policy`
 // {test}`requirements.authoring.finish_search.empty`
 // {test}`requirements.authoring.finish_search.completion`
 #[test]
@@ -922,6 +923,7 @@ fn explicit_untracked_reads_return_an_untracked_error_and_the_assessment_continu
 }
 
 // {test}`requirements.authoring.negative_assessment`
+// {test}`requirements.sdk.habeas.assessment_policy`
 // {test}`requirements.authoring.usage_storage`
 // {test}`requirements.authoring.persistence`
 // {test}`requirements.ci.fixme_with_unacknowledged_gap`
@@ -995,6 +997,7 @@ fn false_is_a_completed_assessment() {
 }
 
 // {test}`requirements.authoring.negative_assessment`
+// {test}`requirements.sdk.habeas.assessment_policy`
 #[test]
 fn negative_assessment_records_additional_reads_and_fails_validation() {
     let rationale =
@@ -1052,6 +1055,66 @@ fn negative_assessment_records_additional_reads_and_fails_validation() {
     );
 }
 
+// {test}`requirements.authoring.negative_assessment`
+// {test}`requirements.sdk.habeas.assessment_policy`
+// {test}`requirements.sdk.graph.criteria.result_interpretation`
+// {test}`requirements.cli.status`
+#[test]
+fn completed_inadequate_expiration_review_is_current_and_reported_by_status() {
+    let rationale = "No test covers expired tokens.";
+    let server = Server::start(vec![reply(vec![call(
+        "submit",
+        "submit_judgment",
+        json!({"determination":false,"rationale":rationale}),
+    )])]);
+    let fixture = Fixture::new(&server.endpoint);
+    common::coverage_setup(&fixture.project);
+    fs::write(
+        fixture.project.join("md/requirements.md"),
+        ":::{req} ready\nExpired tokens MUST be rejected.\n:::\n",
+    )
+    .unwrap();
+    fs::write(
+        fixture.project.join("src/lib.rs"),
+        "// {impl}`requirements.ready`\n\
+         pub fn valid_token(now: u64, expiration: u64) -> bool { now < expiration }\n\
+         // {test}`requirements.ready`\n\
+         #[test]\n\
+         fn unexpired_token() { assert!(valid_token(10, 20)); }\n",
+    )
+    .unwrap();
+    let authored = fixture.run(&["author", SUBJECT]);
+    assert!(authored.status.success(), "{authored:?}");
+    assert_eq!(server.finish().len(), 1);
+    assert_eq!(fixture.usage()["outcome"], "completed");
+    let saved = fs::read(&fixture.evidence).unwrap();
+    let value: Value = serde_json::from_slice(&saved).unwrap();
+    assert_eq!(value["determination"], false);
+    assert_eq!(value["rationale"], rationale);
+    assert_eq!(value["review_version"], "habeas-review-v1");
+
+    let report = habeas::validate_repository(&fixture.project).unwrap();
+    assert_eq!(
+        report.errors,
+        [format!(
+            "evidence/{SUBJECT}.json: determination is false: {rationale}"
+        )],
+        "the completed review is rejected solely by HC's assessment policy"
+    );
+    let status = fixture.run(&["status", SUBJECT, "--all"]);
+    assert!(status.status.success(), "{status:?}");
+    let text = String::from_utf8(status.stdout).unwrap();
+    assert!(text.contains("Determination false"), "{text}");
+    assert!(text.contains(rationale), "{text}");
+    assert!(!text.contains("Invalid"), "{text}");
+    assert!(!text.contains("changed"), "{text}");
+    assert_eq!(
+        fs::read(&fixture.evidence).unwrap(),
+        saved,
+        "status must preserve the saved completed answer"
+    );
+}
+
 /// The `index`th text block of requirement `name` in the authoring chapter.
 // {test}`requirements.authoring.initial_prompt`
 fn approved_text(name: &str, index: usize) -> &'static str {
@@ -1066,6 +1129,7 @@ fn approved_text(name: &str, index: usize) -> &'static str {
 
 // {test}`requirements.authoring.initial_prompt`
 // {test}`requirements.authoring.prompt_parts`
+// {test}`requirements.authoring.habeas_background`
 // {test}`requirements.authoring.fixme_inputs`
 // {test}`requirements.authoring.invocation`
 #[test]
@@ -1449,6 +1513,8 @@ fn verbose_single_author_reports_only_false_rationale_without_source_inputs() {
 // {test}`requirements.authoring.delivered_inputs`
 // {test}`requirements.authoring.usage_storage`
 // {test}`requirements.authoring.reporting`
+// {test}`requirements.sdk.habeas.evidence_format`
+// {test}`requirements.sdk.habeas.evidence_conversion.writes`
 // {test}`requirements.ci.schema`
 #[test]
 fn stdout_emits_only_evidence_json_without_changing_project_files() {
@@ -1508,13 +1574,20 @@ fn stdout_emits_only_evidence_json_without_changing_project_files() {
         assert_eq!(
             keys(&evidence),
             [
+                "dependencies",
                 "determination",
+                "format_version",
                 "inputs",
                 "rationale",
                 "references",
-                "requirement"
+                "requirement",
+                "review_version"
             ]
         );
+        assert_eq!(evidence["format_version"], 1);
+        assert_ne!(evidence["review_version"], "*");
+        assert!(!evidence["review_version"].as_str().unwrap().is_empty());
+        assert!(evidence["dependencies"].as_array().unwrap().len() >= inputs.len());
         for input in inputs.iter().filter(|input| input.get("item").is_some()) {
             assert_eq!(keys(input), ["file", "hash", "item"], "{input}");
         }
@@ -1621,6 +1694,7 @@ fn missing_duplicate_and_invalid_submissions_preserve_existing_evidence() {
 
 // {test}`requirements.authoring.deterministic_validation`
 // {test}`requirements.configuration.loading`
+// {test}`requirements.sdk.habeas.evidence_conversion.writes`
 #[test]
 fn ordinary_status_ignores_invalid_user_authoring_configuration() {
     let fixture = Fixture::new("http://127.0.0.1:1");
@@ -1645,6 +1719,8 @@ fn ordinary_status_ignores_invalid_user_authoring_configuration() {
 
 // {test}`requirements.authoring.deterministic_validation`
 // {test}`requirements.authoring.configuration`
+// {test}`requirements.sdk.habeas.evidence_conversion.writes`
+// {test}`requirements.sdk.habeas.assessment_policy`
 #[test]
 fn missing_or_stale_evidence_fails_validation_without_contacting_the_provider() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -3067,7 +3143,7 @@ fn home_markers(home: &str) -> &'static [&'static str] {
             "A judgment is one of three outcomes",
             "`habeas author --all` assesses every definition whose evidence is missing, stale, or invalid",
             "## Fixing findings",
-            "An item has recent coverage when it has its own reference, or when a recent version of an existing evidence record or review read it",
+            "Recorded reads track evidence freshness, without Git-history grace periods or unreferenced-item warnings",
             "A FIXME judgment, such as",
             "gets a citation review. For project requirements and examples it checks that",
             "For built-ins it checks their permitted forms and stated criteria",
@@ -3159,6 +3235,7 @@ fn bundled_skills_are_five_skill_directories_each_home_to_its_topics() {
 // {test}`requirements.test-coverage.guidance`
 // {test}`requirements.test-coverage.guidance.doctests`
 // {test}`requirements.test-coverage.guidance.artifacts`
+// {test}`requirements.test-coverage.check.guidance`
 #[test]
 fn bundled_skills_default_to_process_coverage_and_keep_artifacts_disposable() {
     for name in ["habeas", "habeas-evidence", "habeas-bootstrap-requirements"] {
@@ -3209,6 +3286,26 @@ fn bundled_skills_default_to_process_coverage_and_keep_artifacts_disposable() {
         );
     }
     assert_text(
+        "evidence check guidance",
+        &collapse(&bundled_skill("habeas-evidence")),
+        &[
+            "Use `habeas test` for full verification after the changes.",
+            "recommend the separate collection and check steps",
+            "[CI example](../habeas/references/ci.md)",
+            "collection alone does not enforce the policy",
+        ],
+    );
+    assert_text(
+        "bootstrap check guidance",
+        &collapse(&bundled_skill("habeas-bootstrap-requirements")),
+        &[
+            "Run `habeas test` for full-workspace collection and post-suite coverage checking",
+            "Recommend separate successful collection and `habeas coverage-check` steps in project CI",
+            "[CI example](../habeas/references/ci.md)",
+            "Collection alone does not enforce the coverage policy",
+        ],
+    );
+    assert_text(
         "approved implementation SOP",
         &collapse(include_str!("../agent-sops/approved-implementation.sop.md")),
         &[
@@ -3216,6 +3313,10 @@ fn bundled_skills_default_to_process_coverage_and_keep_artifacts_disposable() {
             "It executes parallel processes through `cargo nextest` and retains coverage for each process",
             "Run doctests separately with `cargo test --doc --workspace`",
             "profiles, reports, and source snapshots under the Cargo target directory are disposable build output: never stage or commit them to Git",
+            "`cargo habeas test` collects workspace coverage and then enforces the coverage policy",
+            "Recommend separate collection and `habeas coverage-check` steps in project CI",
+            "[CI example](../assets/skills/habeas/references/ci.md)",
+            "Collection alone does not enforce the coverage policy",
         ],
     );
     for required in [
@@ -3262,7 +3363,6 @@ fn bundled_skills_refer_to_a_topic_home_instead_of_restating_it() {
                 "use `{fixme}` as the habeas-evidence skill's `references/fixme.md` describes",
                 "follow the habeas-evidence skill to author evidence",
                 "follow its \"Disagreeing assessments\"",
-                "\"Uncovered Rust items\" in the habeas-evidence skill",
                 "is a habeas-refactor task",
             ][..],
         ),
@@ -3408,7 +3508,10 @@ fn the_evidence_skill_is_home_of_authoring_findings_and_assessment_outcomes() {
     assert_text(
         "fixing findings",
         &section(raw, "## Fixing findings"),
-        &["| Finding | Action |", "### Uncovered Rust items"],
+        &[
+            "| Finding | Action |",
+            "### Missing test and example references",
+        ],
     );
     assert_text(
         "disagreeing assessments",
@@ -3676,9 +3779,113 @@ fn bundled_skills_say_when_to_read_each_reference_file() {
             "references/reviews.md",
             "| false citation or site review | read [references/reviews.md](references/reviews.md) |",
         ),
+        (
+            "habeas-evidence",
+            "../habeas/references/ci.md",
+            "For CI integration, recommend the separate collection and check steps in the Habeas [CI example](../habeas/references/ci.md); collection alone does not enforce the policy.",
+        ),
+        (
+            "habeas-bootstrap-requirements",
+            "../habeas/references/ci.md",
+            "Recommend separate successful collection and `habeas coverage-check` steps in project CI, using the Habeas [CI example](../habeas/references/ci.md). Collection alone does not enforce the coverage policy.",
+        ),
+        (
+            "habeas",
+            "references/fixme.md",
+            "`{fixme}` acknowledges a deferred gap (the habeas-evidence skill's `references/fixme.md`).",
+        ),
+        (
+            "habeas-requirements",
+            "references/fixme.md",
+            "To defer a requirement gap the user agrees to, use `{fixme}` as the habeas-evidence skill's `references/fixme.md` describes.",
+        ),
+        (
+            "habeas-bootstrap-requirements",
+            "references/authoring-failures.md",
+            "If it fails, read the habeas-evidence skill's `references/authoring-failures.md`.",
+        ),
+        (
+            "habeas-bootstrap-requirements",
+            "references/fixme.md",
+            "the resulting false judgment stays on the gap list, or gets a `{fixme}` reference if the user defers it (the habeas-evidence skill's `references/fixme.md`).",
+        ),
+        (
+            "habeas-bootstrap-requirements",
+            "references/distributed-requirements.md",
+            "When a convention applies on its own at many sites, such as how every validation function continues after a failed check, propose a distributed requirement instead of marking each site `{impl}`; read the habeas skill's `references/distributed-requirements.md`.",
+        ),
+        (
+            "habeas-evidence",
+            "references/authoring-failures.md",
+            "If authoring fails on configuration, credentials, throttling, or a denied mandatory input, read [references/authoring-failures.md](references/authoring-failures.md).",
+        ),
     ];
+    for (name, _, link) in &links {
+        assert!(
+            collapse(skill_md(name)).contains(link),
+            "{name} lacks {link:?}"
+        );
+    }
+    let reference_guidance = [
+        (
+            "habeas-requirements",
+            "references/review-prompt.md",
+            "**Distributed:** for a requirement with `{sites}` or `{violations}` queries, apply the Do and Don't lists in the habeas skill's `references/distributed-requirements.md`.",
+        ),
+        (
+            "habeas-evidence",
+            "references/reviews.md",
+            "A distributed requirement (the habeas skill's `references/distributed-requirements.md`) gets a site review for each site, authored by `habeas author --all` or, for one requirement, `habeas author sites:<full-name>`.",
+        ),
+        (
+            "habeas",
+            "references/distributed-requirements.md",
+            "Don't re-run a false site review for a different result; fix the site, or tighten the queries or the text, as the habeas-evidence skill's `references/reviews.md` describes.",
+        ),
+    ];
+    for (name, file, guidance) in &reference_guidance {
+        let (_, text) = skill_files(name)
+            .iter()
+            .find(|(path, _)| path == file)
+            .unwrap();
+        assert!(
+            collapse(text).contains(guidance),
+            "{name}/{file} lacks {guidance:?}"
+        );
+    }
+    let pointers = regex::Regex::new(
+        r"\]\((?:[^)]*/)?references/[^)]*\.md(?:#[^)]*)?\)|`[^`\n]*references/[^`\n]*\.md`",
+    )
+    .unwrap();
     for name in SKILLS {
         let text = collapse(skill_md(name));
+        for (file, source) in skill_files(name) {
+            let source = collapse(source);
+            for pointer in pointers.find_iter(&source) {
+                let guidance = if *file == "SKILL.md" {
+                    links
+                        .iter()
+                        .filter(|(skill, _, _)| *skill == name)
+                        .map(|(_, _, sentence)| *sentence)
+                        .collect::<Vec<_>>()
+                } else {
+                    reference_guidance
+                        .iter()
+                        .filter(|(skill, path, _)| *skill == name && path == file)
+                        .map(|(_, _, sentence)| *sentence)
+                        .collect::<Vec<_>>()
+                };
+                assert!(
+                    guidance.iter().any(|sentence| {
+                        source.match_indices(sentence).any(|(start, sentence)| {
+                            start <= pointer.start() && pointer.end() <= start + sentence.len()
+                        })
+                    }),
+                    "{name}/{file}: reference without checked reading guidance: {}",
+                    pointer.as_str()
+                );
+            }
+        }
         for (path, _) in &skill_files(name)[1..] {
             let found = links
                 .iter()
@@ -4235,7 +4442,8 @@ fn the_review_prompt_lists_the_mechanical_changes() {
         &review_prompt_between("**Mechanical changes:**", "**Design questions:**"),
         &[
             "Split a compound requirement",
-            "Choose MUST, SHOULD, or MAY when the draft's intent is clear. Default to MUST; keep a SHOULD or MAY the draft already chose",
+            "Clarify an obligation whose intent is clear while preserving whether behavior is required, recommended, or permitted",
+            "Do not automatically convert ordinary prose or commented API declarations to RFC keywords, or strengthen or weaken what the draft promises",
             "Fix wording whose resolution is obvious: vague terms, inconsistent terms, an ambiguity with one sensible reading",
             "Add an `{example}` where a concrete case pins an obligation down",
             "Update other requirements a change makes stale",
@@ -4271,7 +4479,7 @@ fn the_review_prompt_lists_the_design_questions_with_options_and_recommendation(
         &[
             "A gap: a case the text says nothing about, where either answer is plausible",
             "A conflict with another requirement; cite it by full name",
-            "MUST or SHOULD when the choice depends on the user's intent",
+            "Whether behavior is required, recommended, or permitted, when the choice depends on the user's intent",
             "An obligation nothing could check, where any fix changes what is promised",
             "For each question give why it matters, the options, and your recommendation",
         ],
@@ -4286,7 +4494,7 @@ fn the_review_prompt_splits_compound_requirements() {
         &section(review_prompt(), "## Criteria"),
         &[
             "**Compound:** a requirement that lists several independent forms, checks, or outputs",
-            "A sentence beginning \"It MUST also\" is a strong hint",
+            "An additional promise introduced with \"also\" is a hint, regardless of whether the text uses RFC keywords",
             "could one part be implemented, change, or fail while another holds? Then split it",
             "Move shared detail, such as a template or a format, into its own requirement that the others cite",
         ],
@@ -4302,7 +4510,10 @@ fn the_review_prompt_criteria_find_ambiguous_uncheckable_and_prescriptive_text()
         &[
             "**Checkable:** a reviewer can judge the obligation from the requirement text, the code, and the tests, and something would fail if it were broken",
             "**One reading:** text a careful reviewer could read two ways is a finding",
-            "**Outcome, not implementation:** the text says what must hold, not how",
+            "**Outcome, not implementation:** the text says what holds",
+            "Public API declarations specify an observable interface",
+            "their accompanying comments can specify semantic guarantees",
+            "Distinguish these from prescribing internal implementation details that the contract does not need",
         ],
     );
 }
@@ -4341,7 +4552,7 @@ fn the_review_prompt_works_a_mechanical_example_and_a_design_question() {
         &section(review_prompt(), "## Examples"),
         &[
             "Compound, with a mechanical fix:",
-            "> The `refactor` command MUST",
+            "> The `refactor` command accepts",
             "Split into",
             "Not a question",
             "A design question:",
@@ -4401,7 +4612,7 @@ fn bootstrap_skill_is_bundled_and_directs_complete_inventories() {
             "Record the behavior each test checks; fill in requirement names once they are installed",
             "Every test must end up with a `{test}` reference to a requirement or example",
             // Map every end-user-visible source unit.
-            "every function, method, struct, enum, and union, listed from the source rather than from the coverage warnings",
+            "every function, method, struct, enum, and union, listed from the source to discover behavior no requirement states",
             "public APIs, commands, handlers, UI actions, configuration, outputs, errors, and distinct observable branches",
             "A tagged entry point doesn't mean every observable branch beneath it has a requirement",
             "Give every inventoried test and each requirement's roots their references",
@@ -4556,8 +4767,9 @@ fn bundled_skills_limit_anchors_to_files_whose_items_cannot_carry_references() {
 
 // {test}`requirements.cli.internal_detail_guidance`
 // {test}`requirements.cli.behavior_review_guidance`
+// {test}`requirements.references.procedure`
 #[test]
-fn bundled_skills_direct_the_reference_procedure_and_report_items_without_one() {
+fn bundled_skills_direct_the_reference_procedure_and_allow_unmarked_helpers() {
     // habeas-requirements is the home of the reference procedure; its steps
     // come in order.
     assert_text_in_order(
@@ -4569,8 +4781,8 @@ fn bundled_skills_direct_the_reference_procedure_and_report_items_without_one() 
             "1. A test designed to verify it gets `{test}`",
             "2. Otherwise a root gets `{impl}`",
             "3. Otherwise, code that should be re-checked when the requirement changes gets `{cite}`",
-            "and it serves other code and carries out no requirement itself, it gets `` // {cite}`habeas:util` ``",
-            "That includes code a library calls, such as a trait implementation it requires",
+            "4. Otherwise, leave it unmarked",
+            "An optional `` // {cite}`habeas:util` `` can explain that an item serves other code; it is not required bookkeeping",
             "propose a requirement stating the invariant and `{impl}` it",
             "Don't propose grouping requirements that state no checkable obligation",
             "An item that neither carries out a requirement nor serves other code needs a requirement or is not needed: report it to the user with a proposed requirement, or as dead code if nothing reaches it. Don't delete it unasked",
@@ -4580,8 +4792,8 @@ fn bundled_skills_direct_the_reference_procedure_and_report_items_without_one() 
     assert_phrases(
         "habeas-evidence",
         &[
-            "choose references by \"Choosing references\" in the habeas-requirements skill",
-            "| the item only serves other code | add `` // {cite}`habeas:util` `` |",
+            "Ordinary functions, types, trait methods, and test helpers need no individual book connection",
+            "Keep meaningful `{impl}` roots and optional explanatory citations",
         ],
     );
     assert_phrases(
@@ -4621,6 +4833,7 @@ fn bundled_skills_direct_the_reference_procedure_and_report_items_without_one() 
 }
 
 // {test}`requirements.cli.behavior_review_guidance`
+// {test}`requirements.references.procedure`
 #[test]
 fn bundled_skills_direct_behavior_review_against_requirements() {
     // The three outcomes.
@@ -4628,7 +4841,7 @@ fn bundled_skills_direct_behavior_review_against_requirements() {
         "habeas-evidence",
         &[
             "A judgment is one of three outcomes",
-            "`true`: the reviewed tests adequately check the definition, with no gap under",
+            "`true`: the reviewed tests adequately check the definition, or its implementations support its structural obligations, with no gap under",
             "`false`: there is a gap that no `{fixme}` reference acknowledges",
             "FIXME: `{fixme}` references acknowledge every remaining gap",
         ],
@@ -4657,7 +4870,23 @@ fn bundled_skills_direct_behavior_review_against_requirements() {
         "what the review checks",
         &section(skill_md("habeas-requirements"), "## What the review checks"),
         &[
+            "The intended review checks stated structure and behavior independently",
+            "implementation roots support signatures, relationships, ownership, and required",
+            "delegation; tests support behavioral obligations",
+            "Missing implementation or",
+            "test edges must not hide an obligation needing that evidence",
+            "Examples and distributed requirements retain",
+            "their existing review tasks",
+            "Issue #51",
+            "remaining independent-check and regression-test gaps",
             "assertions whose expected results contradict the requirement",
+            "too weak to rule out plausible requirement-violating behavior",
+            "an applicable recommendation with inadequate tests",
+            "text with two equally supported readings that lead to different testing judgments",
+            "adequacy gap, explain what requirement-violating behavior those tests would accept",
+            "check whether another reviewed test rules it out",
+            "map each obligation assessed here to concrete test inputs and assertions",
+            "Identify delegated obligations and established testing exemptions separately",
             "a standalone test designed to verify the subject without `{test}`",
             "The supervising agent must still check that the code fulfills each applicable requirement",
             "obligations, boundaries, and failure cases no test runs and asserts",
@@ -4696,7 +4925,10 @@ fn bundled_skills_direct_behavior_review_against_requirements() {
         &[
             "1. A test designed to verify it gets `{test}`",
             "2. Otherwise a root gets `{impl}`. Leave what it reaches unmarked",
-            "`{cite}` implements nothing; a citation review checks project citations' roles and built-ins' stated criteria",
+            "`{cite}` implements nothing. For source items outside the book, citation reviews check project citations' roles and built-ins' stated criteria",
+            "fence outside a requirement or example opts a book passage into concordance review",
+            "its claims must be supported by the cited declarations",
+            "The outermost eligible fence groups nested commentary citations into one review",
         ],
     );
     assert_phrases(
@@ -4721,8 +4953,9 @@ fn bundled_skills_direct_behavior_review_against_requirements() {
 
 // {test}`requirements.cli.behavior_review_guidance`
 // {test}`requirements.cli.internal_detail_guidance`
+// {test}`requirements.references.procedure`
 #[test]
-fn bundled_skills_mark_roots_and_handle_uncovered_items() {
+fn bundled_skills_mark_roots_without_requiring_helper_bookkeeping() {
     const ROOT: &str = "A *root* is an item that carries out part of a requirement and that no other `{impl}` item for it reaches";
     // habeas-requirements is the home of roots: reach goes downward only.
     assert_text_in_order(
@@ -4738,42 +4971,41 @@ fn bundled_skills_mark_roots_and_handle_uncovered_items() {
             "Don't remove an existing `{impl}` from code a root reaches unless the user asks",
         ],
     );
-    // Coverage comes from a reference or a current read, never a search, and
-    // reads exist only after authoring.
     assert_text(
         "requirements gotchas",
         &section(skill_md("habeas-requirements"), "## Gotchas"),
         &[
-            "by its own reference, or by a current assessment that read it or an enclosing item",
-            "Search results only locate code; they cover nothing",
-            "Reads exist only after `habeas author`, so author before treating an item as uncovered",
+            "every runnable test needs a `{test}` reference",
+            "Ordinary functions, types, trait methods, and test helpers need no individual book connection",
+            "Recorded reads track evidence freshness",
         ],
     );
-    // habeas-evidence handles items still warned about after authoring by the
-    // reference procedure.
-    assert_text_in_order(
-        "uncovered Rust items",
-        &section(skill_md("habeas-evidence"), "### Uncovered Rust items"),
+    assert_text(
+        "test and example references",
+        &section(
+            skill_md("habeas-evidence"),
+            "### Missing test and example references",
+        ),
         &[
-            "For each item still warned about after `habeas author --all`, choose references by \"Choosing references\" in the habeas-requirements skill",
-            "Before changing an uncovered item, determine whether it is a requirement root, an entry point, an item that serves other code, or dead code",
-            "Report dead code to the user without editing it",
-            "| the item is a root of a requirement's implementation | add `{impl}` of that requirement to the item |",
-            "| the item only serves other code | add `` // {cite}`habeas:util` `` |",
-            "| nothing reaches the item | report it to the user as dead code; don't delete it unasked |",
+            "needs a `{test}` reference",
+            "A Cargo example needs to `{cite}` a named example in the book",
+            "without Git-history grace periods or unreferenced-item warnings",
         ],
     );
     assert_phrases(
         "habeas-evidence",
         &[
-            "except uncovered Rust items: leave those until after step 3, because an assessment that reads an item covers it",
             "| rationale identifies an unmarked standalone test | add `{test}` for the requirement or example it verifies",
         ],
     );
-    assert_phrases(
+    for name in [
+        "habeas",
+        "habeas-evidence",
+        "habeas-requirements",
         "habeas-bootstrap-requirements",
-        &["Leave uncovered items for now"],
-    );
+    ] {
+        assert!(!bundled_skill(name).contains("status --coverage"), "{name}");
+    }
     // The other skills refer to the definition of a root rather than restate it.
     for name in SKILLS
         .into_iter()
@@ -4863,6 +5095,7 @@ fn distributed_reference() -> &'static str {
 }
 
 // {test}`requirements.cli.distributed_guidance`
+// {test}`requirements.cli.behavior_review_guidance`
 #[test]
 fn bundled_skills_explain_distributed_requirements() {
     assert_phrases(
@@ -4969,6 +5202,7 @@ fn bundled_skills_describe_sites_as_queries_select_them_with_checkable_obligatio
 }
 
 // {test}`requirements.cli.distributed_guidance.reviews`
+// {test}`requirements.references.procedure`
 #[test]
 fn bundled_skills_explain_site_references_and_site_reviews() {
     assert_text(
@@ -5108,66 +5342,6 @@ fn the_refactor_skill_never_hand_edits_evidence_and_a_rename_is_not_a_move() {
             "Editing moved code or text in the same step leaves every record that read it stale",
         ],
     );
-}
-
-// {test}`requirements.references.rust_item_coverage`
-#[test]
-fn replacing_a_record_that_stops_reading_an_item_warns_until_it_is_covered() {
-    let server = Server::start(vec![reply(vec![call(
-        "submit",
-        "submit_judgment",
-        json!({"determination": true, "rationale": "Ready is implemented."}),
-    )])]);
-    let fixture = Fixture::new(&server.endpoint);
-    fs::write(
-        fixture.project.join("src/helper.rs"),
-        "fn helper() {}\n\nfn other() {}\n",
-    )
-    .unwrap();
-    // The record being replaced read `helper`, so it was covered.
-    let read = habeas::outline_input(&fixture.project, "src/helper.rs", "fn[helper]").unwrap();
-    fs::write(
-        &fixture.evidence,
-        json!({"requirement": REQUIREMENT, "determination": false,
-            "rationale": "PREVIOUS_RATIONALE relied on helper.", "inputs": [read]})
-        .to_string(),
-    )
-    .unwrap();
-    let uncovered = "src/helper.rs:1: function helper has no recent coverage";
-    let status = fixture.run(&["status", "--coverage"]);
-    let text = String::from_utf8_lossy(&status.stdout).into_owned();
-    assert!(!text.contains(uncovered), "{text}");
-
-    let output = fixture.run(&["author", SUBJECT]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    // Authoring runs one conversation, for the subject alone.
-    assert_eq!(server.finish().len(), 1);
-    // The new record does not read the item...
-    let evidence = fs::read_to_string(&fixture.evidence).unwrap();
-    assert!(!evidence.contains("helper"), "{evidence}");
-
-    // ...so status warns about it...
-    let status = fixture.run(&["status", "--coverage"]);
-    let text = String::from_utf8_lossy(&status.stdout).into_owned();
-    assert!(
-        text.contains(&format!(
-            "{uncovered}: it has no requirement or example reference, and no recent evidence record or review read it"
-        )),
-        "{text}"
-    );
-    // ...until the item is covered again.
-    fs::write(
-        fixture.project.join("src/helper.rs"),
-        "// {impl}`requirements.ready`\nfn helper() {}\n\nfn other() {}\n",
-    )
-    .unwrap();
-    let status = fixture.run(&["status", "--coverage"]);
-    let text = String::from_utf8_lossy(&status.stdout).into_owned();
-    assert!(!text.contains(uncovered), "{text}");
 }
 
 // {test}`requirements.authoring.provider`

@@ -1,8 +1,8 @@
 {
   "requirement": "When a Bedrock configuration sets no `maxTokens` option, each provider request\nMUST ask for at most 16,384 output tokens. A configured `maxTokens` MUST be used\nas given.\n\nWhen a response stops because it reached a known output limit, the harness MUST\ncontinue the same conversation once, adding a user message with an error result\nfor each tool call in the cut-off response, followed by this text with `<limit>`\nreplaced by the limit:\n\n```text\nYour previous response reached the <limit>-token output limit and was cut off,\nso its tool call was incomplete. Keep within the limit: make your rationale\nshorter, then call the tool again.\n```\n\nA second response that reaches the limit, or a response that stops at an\noutput limit that is not known, MUST fail the assessment as an incomplete\nresponse. Where the provider reports whether a response stopped at the output\nlimit or because the conversation exceeded the model's context window, the\nharness SHOULD continue only the former and fail the assessment on the latter;\nwhere it does not, the stop MUST be treated as reaching the output limit.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation in `requirements.authoring.output_limit`, and their assertions enforce the expected outcomes.\n\n**Default and configured `maxTokens`**\n- A Bedrock configuration with no `maxTokens` must ask for at most 16,384 output tokens.\n  - `tests/authoring_cli.rs#fn[bedrock_requests_without_max_tokens_ask_for_at_most_16k_output_tokens]` runs two models. It asserts `inferenceConfig == {\"maxTokens\":16384}` on every request body.\n  - The unit test `src/authoring/providers.rs#mod[tests]/fn[bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted]` asserts `request.max_tokens == Some(16_384)` when the option is absent.\n- A configured `maxTokens` must be used as given.\n  - `tests/authoring_cli.rs#fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]` configures 321 and asserts it on both requests.\n  - `tests/authoring_cli.rs#fn[a_configured_bedrock_limit_controls_requests_and_the_continuation_note]` also uses 321. It asserts it on both requests and in the note text.\n  - The unit test also rejects invalid values such as -1 and 2147483648.\n\n**Continuation after a known-limit cut-off**\n- `tests/authoring_cli.rs#fn[a_response_cut_off_at_the_output_limit_is_continued_once]` checks the following.\n  - The same conversation continues. The second request's messages equal the first request's messages, then the cut-off assistant turn, then one new user message.\n  - The user message carries an error `toolResult` for each of the two tool calls in the cut-off response (`cut` and `read-cut`).\n  - The message ends with text equal to `LIMIT_NOTE`. That constant matches the requirement's wording with `<limit>` replaced by 16384.\n  - The cut-off calls never ran, and there were exactly two requests.\n- The configured-limit test asserts that `<limit>` is replaced by the configured value 321.\n- The Ollama test `a_configured_ollama_num_predict_is_the_known_output_limit` asserts that the note contains \"reached the 512-token output limit\".\n\n**Failure cases**\n- A second response that reaches the limit: `tests/authoring_cli.rs#fn[a_second_response_at_the_output_limit_fails_the_assessment]` asserts a non-zero exit, \"incomplete\" in stderr, exactly two requests and outcome `failed`.\n- A stop at an output limit that is not known:\n  - `tests/authoring_cli.rs#fn[a_stop_at_an_output_limit_that_is_not_known_fails_the_assessment]` uses Ollama with no `num_predict`. It asserts failure with \"incomplete\" and \"does not set\", only one request, and that the evidence file is unchanged.\n  - `src/authoring/mod.rs#mod[tests]/fn[a_cut_off_response_without_a_known_output_limit_fails_without_continuing]` asserts the same message, exactly one provider call, and that no determination was accepted.\n\n**Context window versus output limit**\n- Where the provider distinguishes them (Bedrock `model_context_window_exceeded`), `tests/authoring_cli.rs#fn[a_context_window_overflow_fails_without_a_continuation]` asserts failure mentioning \"context window\" and one request, with no continuation. The `max_tokens` stop is continued in the other tests.\n- Where the provider does not distinguish them, the stop must be treated as the output limit. The Ollama `num_predict` test covers this: the stop is continued with the known limit.\n\nI found no unacknowledged gaps. All tests carry `{test}` references to the requirement.",
-  "references": "e2c246a91c85458693551a67fe249e32cbaeadd4be34b91b019d4e9625642bb2",
+  "rationale": "The reviewed tests cover every obligation in `requirements.authoring.output_limit`.\n\n**Default and configured `maxTokens`**\n- The unit test `bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted` in `providers.rs` checks that an unset `maxTokens` becomes `Some(16_384)`. It also checks that invalid `maxTokens` values are rejected.\n- `bedrock_requests_without_max_tokens_ask_for_at_most_16k_output_tokens` runs two models end to end. It asserts `inferenceConfig == {\"maxTokens\":16384}` on every request, including the continuation.\n- `bedrock_cli_uses_selected_profile_region_and_converse_tools` and `a_configured_bedrock_limit_controls_requests_and_the_continuation_note` configure `maxTokens = 321`. They assert that value is sent as given on every request (the second request too).\n\n**Continuing once, with error results and the note**\n- `a_response_cut_off_at_the_output_limit_is_continued_once` checks that the same conversation continues, and that the earlier messages are an unchanged prefix of the new request.\n  - One user message follows the cut-off assistant turn.\n  - That message has an error `toolResult` for each of the two cut-off tool calls (`cut` and `read-cut`).\n  - Its final content item is exactly `LIMIT_NOTE`, which matches the required text with the limit replaced by `16384`.\n  - The test also checks that the cut-off calls were skipped and that there were exactly two requests.\n- `a_configured_bedrock_limit_controls_requests_and_the_continuation_note` checks that `<limit>` is replaced by the configured value (`321`).\n- `a_configured_ollama_num_predict_is_the_known_output_limit` checks the same replacement for Ollama (`512-token output limit`).\n- The agent unit tests `retries_and_cut_off_tools_preserve_inputs_and_submission_skips_other_reads` and `generic_conversations_can_use_default_telemetry_through_retry_and_continuation` cover generic continuation. They check that the cut-off calls are marked not run, that the limit appears in the note, that the original request is preserved, and that the continuation is added to the same history.\n\n**Failure cases**\n- `a_second_response_at_the_output_limit_fails_the_assessment` checks a nonzero exit, an \"incomplete\" error, exactly two requests, and outcome `failed`.\n- `a_stop_at_an_output_limit_that_is_not_known_fails_the_assessment` (Ollama with no `num_predict`) and the unit test `a_cut_off_response_without_a_known_output_limit_fails_without_continuing` both check the following.\n  - The error says \"incomplete\" and \"does not set\".\n  - Only one request is made.\n  - No determination is accepted.\n\n**Context window versus output limit**\n- `a_context_window_overflow_fails_without_a_continuation` sends Bedrock's `model_context_window_exceeded` stop reason. It asserts failure, a \"context window\" error, and no continuation request.\n- The \"provider does not report\" branch is covered by the Ollama tests. Ollama's `done_reason: \"length\"` does not distinguish the two causes. It is treated as reaching the output limit and continued when `num_predict` is configured.\n\nI found no obligation without a test that exercises it and asserts the outcome. I found no marking gap, and there are no acknowledgments to consider.",
+  "references": "34311a5dd927c647e3c53c34ccec3913d705385c72e477980232366438dea47a",
   "inputs": [
     {
       "requirements": "requirements.authoring.output_limit",
@@ -36,14 +36,24 @@
       ]
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[a_cut_off_response_without_a_known_output_limit_fails_without_continuing]",
-      "hash": "f74ea94c2a61b6d142482d24cc4142b9f0f92a6e489bfcd53f5eed9ef6352fd5"
-    },
-    {
-      "file": "src/authoring/providers.rs",
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
       "item": "mod[tests]/fn[bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted]",
       "hash": "21ed7d2e0bae0f433277592a822919ef35507c8d6cba25226e95fdfc3245727f"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "fn[retries_and_cut_off_tools_preserve_inputs_and_submission_skips_other_reads]",
+      "hash": "4de7439aacb627f5578916eb59bc668c9386a154207c1254b172db31de4efca0"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "fn[generic_conversations_can_use_default_telemetry_through_retry_and_continuation]",
+      "hash": "ab4bf35d290902df50652e3dfc850baf437f549235d834c7b4c843e233509692"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[a_cut_off_response_without_a_known_output_limit_fails_without_continuing]",
+      "hash": "7baf534552bdfe92fd74777fbb22b16761b0febfb70c64f78a5f79f38fb7ccd3"
     },
     {
       "file": "tests/authoring_cli.rs",
@@ -86,9 +96,9 @@
       "hash": "ba5dc0e41cdf60e8699c85eb79b7082d70e1fb50642ac368848cc55939bec94e"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[converse]",
-      "hash": "5cc17c2f2fd94b74b97a6b4e220de132b9caca17a8764c67b0f1e07f44c0ecb1"
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[cut_off_submission]",
+      "hash": "1c69b964305ba86d3699467494a859fd728925dab5ee1fb009f8a08fd5b3ba6a"
     },
     {
       "file": "tests/authoring_cli.rs",
@@ -96,9 +106,302 @@
       "hash": "d191df3ae77e2211d3d6fbd88218cb521453ffaa5263b66a7c932e3ab093d699"
     },
     {
-      "file": "vendor/habeas-rig/src/streaming.rs",
-      "item": "fn[finish_reason]",
-      "hash": "b922bc703c2792dec7eac665378c1ba5e95c7105d5265bcf28d8a8b1dd0df428"
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[ollama_cut_off_reply]",
+      "hash": "c9552a0b6f1880df2c71bff4763dfb8547def590c39a0a17dd42fa6e4a7c93da"
+    }
+  ],
+  "format_version": 1,
+  "review_version": "habeas-review-v1",
+  "dependencies": [
+    {
+      "Node": [
+        {
+          "ReferenceSet": "requirements.authoring.output_limit"
+        },
+        {
+          "scheme": "habeas-reference-set-v1",
+          "value": "34311a5dd927c647e3c53c34ccec3913d705385c72e477980232366438dea47a"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.authoring.output_limit"
+        },
+        "Mandatory",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "95ae262d01d63eeb91e16f610a5b66c3c94c5bfdce8a64929ee5e29c04096080"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.authoring.output_limit"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "dbae8014fe3b98557d081ce66e988020feb90075451616f15e6f5bd212a542d7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/providers.rs"
+            },
+            "selector": "mod[tests]/fn[bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "36642e95f59b2eef186f4314c1d521b9d9f7d6553fbce39cb8f8aa66638e5936"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
+            },
+            "selector": "fn[retries_and_cut_off_tools_preserve_inputs_and_submission_skips_other_reads]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "e99561b3355c259d6b9162797302786c5abec9df57728ee505e18c398cabcc67"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
+            },
+            "selector": "fn[generic_conversations_can_use_default_telemetry_through_retry_and_continuation]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "e038164f3fa552bee12e748672c01a96401d1256c1233654d55f9c445e44cd1b"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/mod.rs"
+            },
+            "selector": "mod[tests]/fn[a_cut_off_response_without_a_known_output_limit_fails_without_continuing]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "300efa77f03f4a73be502da07e75d1aaa3ba0dfba81512ab1cf355a0c862b731"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/authoring_cli.rs"
+            },
+            "selector": "fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "2820318d5efef52b310da05a9786ac2cfe5fe8e36b1abbefd2dce4923c5d31db"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/authoring_cli.rs"
+            },
+            "selector": "fn[bedrock_requests_without_max_tokens_ask_for_at_most_16k_output_tokens]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "4cc74b9fe83f80c563d95cc2b6aa843e47e831c57b688527ba84582a5aad2ca6"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/authoring_cli.rs"
+            },
+            "selector": "fn[a_configured_bedrock_limit_controls_requests_and_the_continuation_note]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "09d09fff03c8fa89eaa38782914e921748e7358945f5703abe99f064fb6142ee"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/authoring_cli.rs"
+            },
+            "selector": "fn[a_response_cut_off_at_the_output_limit_is_continued_once]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "79f7af3e8fa566621df5c782920b26f7075c15aafa606f5d2ebfe532ce61a376"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/authoring_cli.rs"
+            },
+            "selector": "fn[a_second_response_at_the_output_limit_fails_the_assessment]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "fa26979e69a7ef8dc1f3b516a86af4d10842f753293e9f1bee40304214147e59"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/authoring_cli.rs"
+            },
+            "selector": "fn[a_context_window_overflow_fails_without_a_continuation]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "72a2bef8aaa9d70d70e93d873ef1b109568f3bffc8de07cc3aafdc8c6717249b"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/authoring_cli.rs"
+            },
+            "selector": "fn[a_stop_at_an_output_limit_that_is_not_known_fails_the_assessment]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "b7a693b691473485f47974c6aa16a289f05da11c1b00fe7c6a21c902655cc710"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/authoring_cli.rs"
+            },
+            "selector": "fn[a_configured_ollama_num_predict_is_the_known_output_limit]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "c3601dce0dd49f7ffd933689fd3c4eebaaa235531ac08db579403fd2ab6099de"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/authoring_cli.rs"
+            },
+            "selector": "fn[cut_off_submission]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "f48ba6629f7a9047db58e2893347fda3c4f4c45cb7237528f8ae4c90a39c7e08"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/authoring_cli.rs"
+            },
+            "selector": "const[LIMIT_NOTE]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "69718dd6bb88a212f9b729a8461cbc853b4114a82e8c6ac219df27e361d1f886"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/authoring_cli.rs"
+            },
+            "selector": "fn[ollama_cut_off_reply]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "10b0b720df66a1583c141a84f659b5985830b7b296cf55f37dc1e76bac00f5c5"
+        }
+      ]
     }
   ]
 }

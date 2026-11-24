@@ -24,7 +24,7 @@ struct SearchResult {
 }
 
 impl Searches {
-    // {impl}`requirements.authoring.search_accounting.instructions`
+    // {impl}`requirements.authoring.search_accounting.first_result`
     pub(super) fn needs_instructions(&self) -> bool {
         !self.delivered_any
     }
@@ -178,6 +178,7 @@ mod tests {
     // {test}`requirements.authoring.search_accounting.result_ids`
     // {test}`requirements.authoring.search_accounting.entry_tags`
     // {test}`requirements.authoring.search_accounting.outstanding`
+    // {test}`requirements.authoring.search_accounting.first_result`
     // {test}`requirements.authoring.search_accounting.instructions`
     // {test}`requirements.authoring.finish_search.empty`
     // {test}`requirements.authoring.finish_search.invalid`

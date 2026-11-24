@@ -5,11 +5,8 @@
 
 # Reference
 
-- [How it works](./reference.md)
-
-# Appendix
-
-- [Requirements](./requirements.md)
+- [The `habeas` system](./requirements.md)
+  - [How it works](./reference.md)
   - [CI and evidence validation](./requirements/ci.md)
   - [Configuration](./requirements/configuration.md)
   - [Authoring evidence](./requirements/authoring.md)
@@ -23,4 +20,32 @@
   - [Project layout](./requirements/layout.md)
   - [Refactoring](./requirements/refactor.md)
   - [Test execution coverage](./requirements/test-coverage.md)
+- [The trust-but-verify SDK](./requirements/sdk.md)
+  - [Graph nodes](./requirements/sdk/graph.md)
+  - [Graph edges](./requirements/sdk/graph-edges.md)
+  - [Criteria](./requirements/sdk/graph/criteria.md)
+  - [Validators](./requirements/sdk/graph/validators.md)
+  - [Validation context](./requirements/sdk/graph/validation-context.md)
+    - [Agent calls](./requirements/sdk/graph/agent-calls.md)
+    - [Searching project sources](./requirements/sdk/graph/search.md)
+  - [Agent harness](./requirements/sdk/graph/agent-harness.md)
+  - [Storage](./requirements/sdk/graph/evidence.md)
+  - [Filesystem evidence storage](./requirements/sdk/filesystem-storage.md)
+  - [Sources and inspection](./requirements/sdk/sources.md)
+  - [Source outlines](./requirements/sdk/outlines.md)
+    - [Rust](./requirements/sdk/sources/rust.md)
+    - [Python](./requirements/sdk/sources/python.md)
+    - [TypeScript and TSX](./requirements/sdk/sources/typescript.md)
+    - [Markdown](./requirements/sdk/sources/markdown.md)
+    - [CSS](./requirements/sdk/sources/css.md)
+    - [TOML](./requirements/sdk/sources/toml.md)
+    - [YAML](./requirements/sdk/sources/yaml.md)
+    - [Plain-text fallback](./requirements/sdk/sources/plain-text.md)
+  - [Putting it together in Habeas Codicem](./requirements/sdk/habeas.md)
+  - [Requirements allocation](./requirements/sdk/requirements-map.md)
+  - [Public API inventory](./requirements/sdk/public-api.md)
+
+# Appendix
+
 - [Requirements index](./requirements-index.md)
+- [Rustdocs](./rustdocs.md)

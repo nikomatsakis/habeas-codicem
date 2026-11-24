@@ -10,7 +10,6 @@ pub mod authoring;
 mod builtins;
 mod citations;
 pub mod config;
-mod coverage_history;
 mod definition_glob;
 mod evidence;
 pub mod execution_coverage;
@@ -20,10 +19,23 @@ mod github;
 mod index;
 mod inputs;
 pub mod judgment;
-mod outline;
+mod outline {
+    pub(crate) use trust_but_verify::outline::languages::rust::PROFILE as RUST_PROFILE;
+    pub(crate) use trust_but_verify::outline_engine::LegacyOutline as Outline;
+    pub(crate) use trust_but_verify::outline_engine::ResolveError;
+    pub(crate) use trust_but_verify::outline_engine::comment_ranges;
+    pub(crate) use trust_but_verify::outline_engine::parse;
+    pub(crate) use trust_but_verify::outline_engine::parse_redacted;
+    pub(crate) use trust_but_verify::outline_engine::parse_with;
+    pub(crate) use trust_but_verify::outline_engine::profile::is_markdown_path;
+    pub(crate) use trust_but_verify::outline_engine::profile::profile_for_path;
+}
+mod evidence_format;
 mod redaction;
 mod refactor;
 mod rust_coverage;
+pub mod rustdocs;
+mod sdk;
 mod sites;
 mod structural;
 mod terms;
@@ -138,6 +150,7 @@ pub(crate) enum ReferenceKind {
 
 // {impl}`requirements.references.book_badges`
 impl ReferenceKind {
+    // {cite}`habeas:util`
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Impl => "impl",
@@ -148,6 +161,7 @@ impl ReferenceKind {
         }
     }
 
+    // {cite}`habeas:util`
     fn color(self) -> &'static str {
         match self {
             Self::Impl => "237346",
@@ -175,6 +189,7 @@ pub(crate) struct ReferenceMatch<'a> {
 // {impl}`requirements.references.anchors`
 // {impl}`requirements.ci.identifiers`
 // {impl}`requirements.references.builtin_definitions`
+// {impl}`requirements.index.render_only`
 pub fn preprocess_book(book: &mut Book, root: &Path) -> io::Result<()> {
     let mut definitions = BTreeMap::new();
     let mut order = Vec::new();
@@ -253,17 +268,284 @@ pub fn preprocess_book(book: &mut Book, root: &Path) -> io::Result<()> {
             .or(chapter.path.as_deref())
             .map(chapter_namespace)
             .unwrap_or_default();
-        chapter.content = replace_definitions(
-            &chapter.content,
-            &namespace,
-            chapter.path.as_deref(),
-            Some(&plan),
+        let content = chapter.path.as_deref().map_or_else(
+            || chapter.content.clone(),
+            |path| {
+                replace_reviewed_citation_passages(&chapter.content, &namespace, path, &definitions)
+            },
         );
+        let content = omit_fenced_citation_paragraphs(&content, &namespace, &definitions);
+        chapter.content =
+            replace_definitions(&content, &namespace, chapter.path.as_deref(), Some(&plan));
         if let Some(path) = chapter.path.as_deref() {
             chapter.content = replace_references(&chapter.content, path, &definitions);
         }
     });
     Ok(())
+}
+
+/// Render review annotations separately from their prose. Collect from the
+/// original source, including metadata later omitted from chapter presentation.
+// {impl}`requirements.references.citation_review.book_commentary.display`
+fn replace_reviewed_citation_passages(
+    content: &str,
+    namespace: &str,
+    current_path: &Path,
+    definitions: &BTreeMap<String, Definition>,
+) -> String {
+    let declarations = definition_blocks(content);
+    let in_declaration = |offset| {
+        declarations.iter().any(|block| {
+            block.kind != DefinitionKind::Term && block.start < offset && offset < block.body_end
+        })
+    };
+    let fences = fenced::markdown_fences(content, true);
+    let mut citations = reference_roles(content, true)
+        .into_iter()
+        .filter(|reference| reference.kind == ReferenceKind::Cite)
+        .map(|reference| (reference.start, reference.name.to_owned()))
+        .collect::<Vec<_>>();
+    citations.extend(
+        fences
+            .iter()
+            .filter(|fence| fence.closed && fence.kind == ReferenceKind::Cite)
+            .map(|fence| (fence.start, fence.name.clone())),
+    );
+    citations.sort_by_key(|(offset, _)| *offset);
+
+    let mut result = String::with_capacity(content.len());
+    let mut cursor = 0;
+    for fence in &fences {
+        if !fence.closed
+            || fence.kind != ReferenceKind::Cite
+            || fence.start < cursor
+            || in_declaration(fence.start)
+        {
+            continue;
+        }
+        let mut names = Vec::new();
+        let mut badges = Vec::new();
+        for (offset, name) in &citations {
+            if *offset < fence.start || *offset >= fence.end || in_declaration(*offset) {
+                continue;
+            }
+            if !names.contains(name)
+                && let Some(badge) =
+                    reference_badge(ReferenceKind::Cite, name, current_path, definitions)
+            {
+                names.push(name.clone());
+                badges.push(badge);
+            }
+        }
+        if !names.iter().any(|name| name != "habeas:util") {
+            continue;
+        }
+
+        // Keep the original annotation list, but omit citation-only metadata
+        // from the visible prose using the same rules as other fenced sections.
+        let fragment = omit_fenced_citation_paragraphs(
+            &content[fence.start..fence.end],
+            namespace,
+            definitions,
+        );
+        let fragment_declarations = definition_blocks(&fragment);
+        let fragment_fences = fenced::markdown_fences(&fragment, true);
+        let mut removed = Vec::new();
+        for nested in &fragment_fences {
+            if !nested.closed
+                || nested.kind != ReferenceKind::Cite
+                || fragment_declarations.iter().any(|block| {
+                    block.kind != DefinitionKind::Term
+                        && block.start < nested.start
+                        && nested.start < block.body_end
+                })
+                || (nested.start != 0
+                    && reference_badge(
+                        ReferenceKind::Cite,
+                        &nested.name,
+                        current_path,
+                        definitions,
+                    )
+                    .is_none())
+            {
+                continue;
+            }
+            removed.push(nested.start..nested.body.start);
+            removed.push(nested.body.end..nested.end);
+        }
+        removed.sort_by_key(|range| range.start);
+        let mut body = String::new();
+        let mut position = 0;
+        for range in removed {
+            if position < range.start {
+                body.push_str(&fragment[position..range.start]);
+            }
+            position = position.max(range.end);
+        }
+        body.push_str(&fragment[position..]);
+
+        result.push_str(&content[cursor..fence.start]);
+        result.push_str(
+            "<div class=\"habeas-citation-passage\">\n<details class=\"habeas-citation-list\">\n<summary aria-label=\"Show citations for this passage\" title=\"Show citations\"><span aria-hidden=\"true\">※</span></summary>\n<ul>\n",
+        );
+        for badge in badges {
+            result.push_str(&format!("<li>{badge}</li>\n"));
+        }
+        result.push_str("</ul>\n</details>\n\n");
+        result.push_str(&body);
+        result.push_str("\n\n</div>\n\n");
+        cursor = fence.end;
+    }
+    result.push_str(&content[cursor..]);
+    result
+}
+
+/// Hide citation metadata only in authored chapter presentation. Definitions,
+/// detail pages, discovery, and authoring keep the original source.
+// {impl}`requirements.references.book_badges`
+fn omit_fenced_citation_paragraphs(
+    content: &str,
+    namespace: &str,
+    definitions: &BTreeMap<String, Definition>,
+) -> String {
+    if !content.contains("{cite}`") || !content.contains(":::") {
+        return content.to_owned();
+    }
+    // Reuse the SDK's Markdown grammar for nesting, literal contexts, and
+    // unclosed containers instead of recognizing another set of fence rules.
+    let Ok(outline) = outline::parse(Path::new("chapter.md"), content) else {
+        return content.to_owned();
+    };
+    let blocks = definition_blocks(content);
+    let mut literal_definitions = blocks
+        .iter()
+        .filter(|block| {
+            !block.closed || !valid_name(&full_requirement_name(namespace, &block.name))
+        })
+        .map(|block| block.start..block.end)
+        .collect::<Vec<_>>();
+    let mut masked = content.as_bytes().to_vec();
+    let mut bodies = Vec::new();
+    for block in &blocks {
+        for option in &block.options {
+            for byte in &mut masked[option.start..option.end] {
+                if !matches!(*byte, b'\r' | b'\n') {
+                    *byte = b' ';
+                }
+            }
+        }
+        if block.kind == DefinitionKind::Term {
+            let body = &content[block.body_start..block.body_end];
+            if terms::declaration(body).is_ok() {
+                let start = block.body_start + body.len() - body.trim_start().len();
+                let end = content[start..block.body_end]
+                    .find('\n')
+                    .map_or(block.body_end, |offset| start + offset);
+                masked[start..end].fill(b' ');
+            }
+        }
+    }
+    for node in &outline.nodes {
+        if node.kind != "block" {
+            continue;
+        }
+        let source = &content[node.byte_start..node.byte_end];
+        let opening = source.lines().next().unwrap_or_default();
+        let Some((suffix, length)) = colon_fence(opening) else {
+            continue;
+        };
+        if suffix.trim().is_empty() {
+            continue;
+        }
+        if let Some(name) = ["{req}", "{example}", "{definition}"]
+            .iter()
+            .find_map(|kind| suffix.strip_prefix(kind))
+            && (!name.starts_with(char::is_whitespace)
+                || !valid_name(&full_requirement_name(namespace, name.trim())))
+        {
+            literal_definitions.push(node.byte_start..node.byte_end);
+            continue;
+        }
+        let body_start =
+            node.byte_start + source.find('\n').map_or(source.len(), |offset| offset + 1);
+        let end = node.byte_start + source.trim_end_matches(['\r', '\n']).len();
+        let last_line = content[..end].rfind('\n').map_or(0, |offset| offset + 1);
+        let closing = &content[last_line..end];
+        let prefix = closing.len() - closing.trim_start_matches([' ', '\t', '>']).len();
+        let body_end = if last_line >= body_start
+            && colon_fence(&closing[prefix..])
+                .is_some_and(|(suffix, count)| suffix.trim().is_empty() && count >= length)
+        {
+            // Preserve any Markdown list/quote prefix; mask only the fence.
+            masked[last_line + prefix..end].fill(b' ');
+            last_line
+        } else {
+            node.byte_end
+        };
+        if body_start <= body_end {
+            bodies.push(body_start..body_end);
+        }
+        // Blank delimiters let CommonMark identify top-level paragraphs while
+        // retaining the original byte offsets and list/blockquote structure.
+        for byte in &mut masked[node.byte_start..body_start] {
+            if !matches!(*byte, b'\r' | b'\n') {
+                *byte = b' ';
+            }
+        }
+    }
+    let masked = String::from_utf8(masked).expect("only complete fence lines are blanked");
+    let references = reference_roles(content, true);
+    let mut omitted = Vec::new();
+    let mut depth = 0;
+    for (event, range) in Parser::new(&masked).into_offset_iter() {
+        match event {
+            Event::Start(tag) => {
+                if tag == Tag::Paragraph
+                    && depth == 0
+                    && bodies
+                        .iter()
+                        .any(|body| body.start <= range.start && range.end <= body.end)
+                    && !overlaps_protected(range.start, range.end, &literal_definitions)
+                {
+                    let mut cursor = range.start;
+                    let mut count = 0;
+                    for reference in references.iter().filter(|reference| {
+                        range.start <= reference.start && reference.end <= range.end
+                    }) {
+                        if reference.kind != ReferenceKind::Cite
+                            || !content[cursor..reference.start].trim().is_empty()
+                            || reference_badge(
+                                reference.kind,
+                                reference.name,
+                                Path::new("chapter.md"),
+                                definitions,
+                            )
+                            .is_none()
+                        {
+                            count = 0;
+                            break;
+                        }
+                        count += 1;
+                        cursor = reference.end;
+                    }
+                    if count > 0 && content[cursor..range.end].trim().is_empty() {
+                        omitted.push(range);
+                    }
+                }
+                depth += 1;
+            }
+            Event::End(_) => depth -= 1,
+            _ => {}
+        }
+    }
+    let mut result = String::with_capacity(content.len());
+    let mut cursor = 0;
+    for range in omitted {
+        result.push_str(&content[cursor..range.start]);
+        cursor = range.end;
+    }
+    result.push_str(&content[cursor..]);
+    result
 }
 
 fn chapter_namespace(path: &Path) -> String {
@@ -288,6 +570,7 @@ fn chapter_namespace(path: &Path) -> String {
 }
 
 // {impl}`requirements.index.navigation`
+// {impl}`requirements.index.declaration_sections`
 // {impl}`requirements.references.book_badges`
 // {impl}`requirements.examples.definition`
 // {impl}`requirements.examples.index`
@@ -318,13 +601,14 @@ fn replace_definitions(
             if let Ok((phrase, body)) =
                 terms::declaration(&content[block.body_start..block.body_end])
             {
+                let anchor = escape_html(&block.kind.anchor(&full_name));
+                let permalink = format!("#{anchor}").replace(".md", "%2Emd");
                 result.push_str(&format!(
-                    "<strong id=\"{}\">{}</strong>\n\n",
-                    escape_html(&block.kind.anchor(&full_name)),
+                    "<details class=\"habeas-declaration\" style=\"--habeas-declaration-color: #2e8555\" open>\n<summary><span class=\"habeas-definition-badge\"><a class=\"habeas-req-badge habeas-badge-kind\" href=\"{permalink}\" title=\"Link to {escaped_name} in this chapter\">definition</a><a class=\"habeas-req-badge habeas-badge-name\" id=\"{anchor}\" href=\"{permalink}\" title=\"Link to {escaped_name} in this chapter\">{}</a></span></summary>\n<div class=\"habeas-declaration-body\">\n\n",
                     terms::escaped_phrase(phrase)
                 ));
-                result.push_str(body);
-                result.push('\n');
+                result.push_str(&replace_definitions(body, namespace, current_path, plan));
+                result.push_str("\n</div>\n</details>\n\n");
             } else {
                 result.push_str(&content[block.start..block.end]);
             }
@@ -332,26 +616,26 @@ fn replace_definitions(
             continue;
         }
         let color = if block.kind == DefinitionKind::Example {
-            "5b62a8"
+            "7151a1"
         } else {
             "006ba8"
         };
-        let badge = shield_badge(block.kind.badge(), &full_name, color);
         let detail_href = current_path
             .zip(plan)
             .and_then(|(current, plan)| plan.detail_path(&full_name).map(|path| (current, path)))
             .map(|(current, path)| escape_html(&chapter_href(current, path, None)));
         let anchor = format!("habeas-{}-{escaped_name}", block.kind.badge());
         let permalink = format!("#{anchor}").replace(".md", "%2Emd");
+        let name_href = detail_href.as_deref().unwrap_or(&permalink);
+        let name_title = if detail_href.is_some() {
+            format!("View evidence for {escaped_name}")
+        } else {
+            format!("Link to {escaped_name} in this chapter")
+        };
+        let kind = block.kind.badge();
         result.push_str(&format!(
-            "<span class=\"habeas-definition-badge\"><a class=\"habeas-req-badge\" id=\"{anchor}\" href=\"{permalink}\" title=\"Link to this definition\">{badge}</a>"
+            "<details class=\"habeas-declaration\" style=\"--habeas-declaration-color: #{color}\" open>\n<summary><span class=\"habeas-definition-badge\"><a class=\"habeas-req-badge habeas-badge-kind\" id=\"{anchor}\" href=\"{permalink}\" title=\"Link to {escaped_name} in this chapter\" aria-label=\"{kind} {escaped_name}\">{kind}</a><a class=\"habeas-req-badge habeas-badge-name\" href=\"{name_href}\" title=\"{name_title}\">{escaped_name}</a></span></summary>\n<div class=\"habeas-declaration-body\">\n\n"
         ));
-        if let Some(href) = &detail_href {
-            result.push_str(&format!(
-                "<a class=\"habeas-detail-icon\" href=\"{href}\" style=\"background-color: #{color}\" title=\"View evidence\" aria-label=\"View evidence for {escaped_name}\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" aria-hidden=\"true\" focusable=\"false\"><path d=\"M3 8h10M8 3l5 5-5 5\"/></svg></a>"
-            ));
-        }
-        result.push_str("</span>\n\n");
         // Option lines such as anchors are metadata, not body text.
         let body = &content[block.text_start..block.body_end];
         let body = if block.kind == DefinitionKind::Requirement {
@@ -360,7 +644,7 @@ fn replace_definitions(
             body.to_owned()
         };
         result.push_str(&replace_definitions(&body, namespace, current_path, plan));
-        result.push('\n');
+        result.push_str("\n</div>\n</details>\n\n");
         cursor = block.end;
     }
 
@@ -544,6 +828,7 @@ pub(crate) fn shield_badge(label: &str, message: &str, color: &str) -> String {
     )
 }
 
+// {cite}`habeas:util`
 fn shield_path_component(value: &str) -> String {
     let mut encoded = String::with_capacity(value.len());
     for byte in value.bytes() {
@@ -570,8 +855,12 @@ pub(crate) fn chapter_href(current: &Path, target: &Path, anchor: Option<&str>) 
             _ => None,
         })
         .collect::<Vec<_>>();
-    let target_html = target
-        .with_extension("html")
+    let target_output = if target.file_name() == Some(std::ffi::OsStr::new("README.md")) {
+        target.with_file_name("index.html")
+    } else {
+        target.with_extension("html")
+    };
+    let target_html = target_output
         .components()
         .filter_map(|component| match component {
             Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
@@ -761,6 +1050,12 @@ fn overlaps_protected(start: usize, end: usize, ranges: &[Range<usize>]) -> bool
 }
 
 pub(crate) fn reference_roles(content: &str, markdown: bool) -> Vec<ReferenceMatch<'_>> {
+    if !["{impl}`", "{cite}`", "{test}`", "{term}`", "{fixme}`"]
+        .iter()
+        .any(|prefix| content.contains(prefix))
+    {
+        return Vec::new();
+    }
     let protected = if markdown {
         let mut ranges = protected_ranges(content);
         for block in definition_blocks(content)
@@ -913,13 +1208,353 @@ mod tests {
     }
 
     // {test}`requirements.references.book_badges`
+    // {test}`requirements.references.citation_review.book_commentary.display`
+    // {test}`requirements.references.builtin_definitions`
+    // {test}`requirements.index.navigation`
+    // {test}`requirements.examples.authoring_inputs`
+    #[test]
+    fn citation_metadata_is_hidden_in_fenced_sections_and_preserved_in_details() {
+        let citations = "{cite}`rules.ready` \t {cite}`rules.other`\n{cite}`habeas:util`";
+        for (opening, options, definition) in [
+            (":::{req} case", "", Some("guide.case")),
+            (":::{req} case", ":test: md/rules.md\n", Some("guide.case")),
+            (":::{example} case", "", Some("guide.case")),
+            (":::{definition} case", ":phrase: case\n", None),
+            (":::{note} Any prose container", "", None),
+            (":::{cite} rules.ready", "", None),
+            (":::{impl} rules.ready", "", None),
+            (":::{test} rules.ready", "", None),
+        ] {
+            let root = book_root();
+            let rules = ":::{req} ready\nReady.\n:::\n\n:::{req} other\nOther.\n:::\n";
+            let original = format!("{opening}\n{options}{citations}\n\nA concrete case.\n:::\n");
+            std::fs::write(root.path().join("md/rules.md"), rules).unwrap();
+            std::fs::write(root.path().join("md/guide.md"), &original).unwrap();
+            let mut book = Book::new();
+            book.push_item(Chapter::new("Rules", rules.into(), "rules.md", Vec::new()));
+            book.push_item(Chapter::new(
+                "Guide",
+                original.clone(),
+                "guide.md",
+                Vec::new(),
+            ));
+            let declarations = crate::evidence::load_definitions(root.path()).unwrap();
+            if let Some(name) = definition {
+                assert!(declarations[name].text.contains(citations), "{opening}");
+                let sources =
+                    crate::authoring::inputs::AssessmentSources::prepare(root.path(), name)
+                        .unwrap();
+                assert!(sources.subject_text.contains(citations), "{opening}");
+                assert!(
+                    sources.mandatory_inputs().iter().any(|input| {
+                        input["text"].as_array().is_some_and(|lines| {
+                            lines
+                                .iter()
+                                .filter_map(|line| line.as_str())
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                                .contains(citations)
+                        })
+                    }),
+                    "{opening}"
+                );
+            }
+            let references = super::text_references(&original, true);
+            preprocess_book(&mut book, root.path()).unwrap();
+            let guide = book
+                .chapters()
+                .find(|chapter| chapter.name == "Guide")
+                .unwrap();
+            assert!(guide.content.contains("A concrete case."), "{opening}");
+            let visible_prose = if opening.starts_with(":::{cite}") {
+                let (annotations, prose) = guide.content.split_once("</details>\n\n").unwrap();
+                for name in ["rules.ready", "rules.other", "habeas:util"] {
+                    assert!(
+                        annotations.contains(&format!("alt=\"cite {name}\"")),
+                        "{opening}: {annotations}"
+                    );
+                }
+                prose
+            } else {
+                &guide.content
+            };
+            assert!(
+                !visible_prose.contains("alt=\"cite rules.other\""),
+                "{opening}"
+            );
+            assert!(
+                !visible_prose.contains("alt=\"cite habeas:util\""),
+                "{opening}"
+            );
+            assert_eq!(
+                guide.content.matches("alt=\"cite rules.ready\"").count(),
+                usize::from(opening.starts_with(":::{cite}")),
+                "{opening}: {}",
+                guide.content
+            );
+            if let Some(name) = definition {
+                let detail = book
+                    .chapters()
+                    .find(|chapter| chapter.name == name)
+                    .unwrap();
+                assert!(
+                    detail.content.contains("alt=\"cite rules.ready\""),
+                    "{opening}"
+                );
+                assert!(
+                    detail.content.contains("alt=\"cite rules.other\""),
+                    "{opening}"
+                );
+                assert!(
+                    detail.content.contains("alt=\"cite habeas:util\""),
+                    "{opening}"
+                );
+                assert!(guide.content.contains("habeas-badge-name"), "{opening}");
+                assert!(
+                    guide
+                        .content
+                        .contains(&format!("href=\"requirements-index/{name}.html\"")),
+                    "{opening}: {}",
+                    guide.content
+                );
+            }
+            assert_eq!(
+                std::fs::read_to_string(root.path().join("md/guide.md")).unwrap(),
+                original
+            );
+            assert_eq!(super::text_references(&original, true), references);
+            for (name, declaration) in declarations {
+                assert_eq!(
+                    crate::evidence::load_definitions(root.path()).unwrap()[&name].text,
+                    declaration.text
+                );
+            }
+        }
+    }
+
+    // {test}`requirements.references.citation_review.book_commentary.display`
+    #[test]
+    fn reviewed_passages_show_one_gutter_list_and_preserve_prose_and_literal_contexts() {
+        let rules = ":::{req} ready\nReady.\n:::\n\n:::{req} other\nOther.\n:::\n\n:::{req} inside\nInside.\n:::\n\n:::{req} term_rule\nTerminology.\n:::\n";
+        let source = concat!(
+            "Outside paragraph. {cite}`rules.inside`.\n\n",
+            ":::::{cite} habeas:util\n",
+            "{cite}`rules.other`\n\n",
+            "The *ordinary* paragraph cites {cite}`rules.ready`.\n\n",
+            "::::{cite} rules.ready\nNested prose.\n::::\n\n",
+            "::::{req} nested\n{cite}`rules.inside`\nNested requirement.\n::::\n\n",
+            "::::{example} sample\n{cite}`rules.inside`\nNested example.\n::::\n\n",
+            "::::{definition} term\n:phrase: nested term\nDefinition prose. {cite}`rules.term_rule`\n::::\n\n",
+            "```text\n:::{cite} rules.inside\nLiteral code.\n:::\n```\n\n",
+            "Inline code ``{cite}`rules.inside` ``.\n",
+            "\\{cite}`rules.inside`\n",
+            ":::::\n\n",
+            ":::{cite} habeas:util\nUtility-only.\n:::\n\n",
+            ":::{cite} rules.missing\nUnresolved.\n:::\n\n",
+            "<div>\n:::{cite} rules.ready\nHTML literal.\n:::\n</div>\n\n",
+            ":::{cite} rules.ready\nUnclosed.\n",
+        );
+        let root = book_root();
+        std::fs::write(root.path().join("md/guide.md"), source).unwrap();
+        let original_references = super::text_references(source, true);
+        let mut book = Book::new();
+        book.push_item(Chapter::new("Rules", rules.into(), "rules.md", vec![]));
+        book.push_item(Chapter::new("Guide", source.into(), "guide.md", vec![]));
+        preprocess_book(&mut book, root.path()).unwrap();
+        let guide = &book
+            .chapters()
+            .find(|chapter| chapter.name == "Guide")
+            .unwrap()
+            .content;
+        assert_eq!(
+            guide.matches("class=\"habeas-citation-passage\"").count(),
+            1
+        );
+        assert_eq!(guide.matches("class=\"habeas-citation-list\"").count(), 1);
+        let (before_prose, prose) = guide.split_once("</details>\n\n").unwrap();
+        let (outside, list) = before_prose
+            .split_once("<div class=\"habeas-citation-passage\">")
+            .unwrap();
+        assert!(outside.starts_with("Outside paragraph."));
+        assert!(outside.contains("href=\"rules.html#habeas-req-rules.inside\""));
+        assert!(outside.contains("alt=\"cite rules.inside\""));
+        assert!(!outside.contains("habeas-citation-list"));
+        assert!(list.contains("<summary aria-label=\"Show citations for this passage\""));
+        assert!(
+            list.contains("title=\"Show citations\"><span aria-hidden=\"true\">※</span></summary>")
+        );
+        assert_eq!(list.matches("<li>").count(), 4);
+        for name in [
+            "habeas:util",
+            "rules.other",
+            "rules.ready",
+            "rules.term_rule",
+        ] {
+            assert_eq!(list.matches(&format!("alt=\"cite {name}\"")).count(), 1);
+        }
+        assert!(!list.contains("rules.inside"));
+        assert!(list.contains("href=\"rules.html#habeas-req-rules.other\""));
+        assert!(list.contains("habeas-builtin\" title="));
+        assert!(!prose.contains("alt=\"cite rules.other\""));
+        // Only the explicit inline citation remains, not a nested opening badge.
+        assert_eq!(prose.matches("alt=\"cite rules.ready\"").count(), 1);
+        let utility = prose
+            .split("<div class=\"habeas-fenced-ref\">")
+            .find(|part| part.contains("Utility-only."))
+            .unwrap();
+        assert!(utility.contains("habeas-req-ref-cite habeas-builtin\" title="));
+        assert!(utility.contains("alt=\"cite habeas:util\""));
+        for (name, kind) in [("guide.nested", "req"), ("guide.sample", "example")] {
+            assert!(prose.contains(&format!("aria-label=\"{kind} {name}\"")));
+            assert!(prose.contains(&format!("href=\"requirements-index/{name}.html\"")));
+            let detail = book
+                .chapters()
+                .find(|chapter| chapter.name == name)
+                .unwrap();
+            assert!(detail.content.contains("alt=\"cite rules.inside\""));
+        }
+        assert!(!prose.contains("::::{cite} rules.ready\nNested"));
+        for text in [
+            "Nested prose.",
+            "Nested requirement.",
+            "Nested example.",
+            "```text\n:::{cite} rules.inside\nLiteral code.\n:::\n```",
+            ":::{cite} rules.missing\nUnresolved.\n:::",
+            "<div>\n:::{cite} rules.ready\nHTML literal.\n:::\n</div>",
+            ":::{cite} rules.ready\nUnclosed.",
+        ] {
+            assert!(prose.contains(text), "{text}: {prose}");
+        }
+        let mut html = String::new();
+        pulldown_cmark::html::push_html(&mut html, pulldown_cmark::Parser::new(guide));
+        assert!(html.contains("<p>The <em>ordinary</em> paragraph cites"));
+        assert!(html.contains("<p>Nested prose.</p>"), "{html}");
+        assert!(html.contains("<p>Utility-only.</p>"), "{html}");
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("md/guide.md")).unwrap(),
+            source
+        );
+        assert_eq!(super::text_references(source, true), original_references);
+
+        let css = include_str!("../md/habeas.css");
+        let rules = |selector: &str| {
+            css.rsplit_once(&format!("{selector} {{"))
+                .unwrap()
+                .1
+                .split('}')
+                .next()
+                .unwrap()
+        };
+        let passage = rules(".habeas-citation-passage");
+        assert!(passage.contains("padding: 0;") && passage.contains("border: 0;"));
+        let margin = passage
+            .split(';')
+            .find_map(|declaration| declaration.trim().strip_prefix("margin:"))
+            .unwrap();
+        let margins = margin.split_whitespace().collect::<Vec<_>>();
+        let left = match margins.as_slice() {
+            [all] => *all,
+            [_, horizontal] | [_, horizontal, _] => *horizontal,
+            [_, _, _, left] => *left,
+            _ => panic!("invalid margin shorthand"),
+        };
+        assert_eq!(left, "0");
+        assert!(passage.contains("position: relative;"));
+        let marker = rules(".habeas-citation-list");
+        assert!(marker.contains("position: absolute;"));
+        assert!(marker.contains("right:") && !marker.contains("left:"));
+        let panel = rules(".habeas-citation-list > ul");
+        assert!(panel.contains("max-width:") && panel.contains("position: absolute;"));
+        // The native disclosure contains annotations only; prose follows it
+        // as a sibling, so opening or closing it leaves prose displayed.
+        assert!(html.contains("</details>\n<p>The <em>ordinary</em> paragraph"));
+        assert!(
+            rules(".habeas-citation-list > summary:focus-visible")
+                .contains("outline: 2px solid var(--links);")
+        );
+    }
+
+    // {test}`requirements.references.book_badges`
+    // {test}`requirements.references.markdown_literals`
+    // {test}`requirements.ci.identifiers`
+    #[test]
+    fn citation_metadata_preserves_prose_other_roles_and_literal_contexts() {
+        let definitions = std::collections::BTreeMap::from([(
+            "rules.ready".into(),
+            super::Definition {
+                path: "rules.md".into(),
+                text: "Ready.".into(),
+                kind: DefinitionKind::Requirement,
+            },
+        )]);
+        let cite = "{cite}`rules.ready`";
+        for body in [
+            format!("See {cite}."),
+            format!("{cite} {{test}}`rules.ready`"),
+            format!("{cite} {{impl}}`rules.ready`"),
+            format!("{cite} {{term}}`terms.ready`"),
+            format!("{cite} {{cite}}`rules.unknown`"),
+            format!("{cite} {{cite}}`habeas:unknown`"),
+            format!("{cite} {{cite}}`habeas:invalid name`"),
+            format!("{cite} punctuation"),
+            format!("\\{cite}"),
+            format!("`{cite}`"),
+            format!("    {cite}"),
+            format!("```text\n{cite}\n```"),
+            format!("~~~text\n{cite}\n~~~"),
+            format!("> {cite}"),
+            format!("- {cite}"),
+            format!("- First.\n\n  {cite}"),
+            format!("<div>\n{cite}\n</div>"),
+            format!("<!-- {cite} -->"),
+            format!("<span>{cite}</span>"),
+        ] {
+            let source = format!(":::{{note}} A section\n{body}\n:::\n");
+            assert_eq!(
+                super::omit_fenced_citation_paragraphs(&source, "guide", &definitions),
+                source,
+                "{body}"
+            );
+        }
+        for source in [
+            cite.into(),
+            format!("Outside.\n\n{cite}\n\n:::{{note}} Empty.\n:::\n"),
+            format!("::{{note}} Not a fence\n{cite}\n::\n"),
+            format!(":::{{req}} invalid name\n{cite}\n:::\n"),
+            format!(":::{{example}} invalid name\n{cite}\n:::\n"),
+            format!(":::{{req}} unclosed\n{cite}\n"),
+            format!("```text\n:::{{note}} Literal\n{cite}\n:::\n```"),
+            format!("<div>\n:::{{note}} Literal\n{cite}\n:::\n</div>"),
+            format!("> :::{{note}} Quoted\n> {cite}\n> :::\n"),
+        ] {
+            assert_eq!(
+                super::omit_fenced_citation_paragraphs(&source, "guide", &definitions),
+                source
+            );
+        }
+        let source = format!(
+            "{cite}\r\n\r\n::::{{req}} outer\r\n{cite}\r\n\r\n:::{{note}} Nésted\r\n{cite}\r\n\r\nNested.\r\n:::\r\n\r\nOuter.\r\n::::\r\n\r\n{cite}\r\n"
+        );
+        let rendered = super::omit_fenced_citation_paragraphs(&source, "guide", &definitions);
+        assert_eq!(rendered.matches(cite).count(), 2, "{rendered}");
+        assert!(rendered.contains("Nésted\r\n"), "{rendered}");
+        assert!(rendered.contains("Nested.\r\n"), "{rendered}");
+        assert!(rendered.contains("Outer.\r\n"), "{rendered}");
+        let unclosed = format!(":::{{note}} Retained through EOF\n{cite}\n\nBody.\n");
+        assert_eq!(
+            super::omit_fenced_citation_paragraphs(&unclosed, "guide", &definitions),
+            ":::{note} Retained through EOF\n\nBody.\n"
+        );
+    }
+
+    // {test}`requirements.references.book_badges`
     // {test}`requirements.references.builtin_definitions`
     // {test}`requirements.test-coverage.check.exceptions.anchor`
     #[test]
     fn fenced_references_render_their_badge_and_body_and_built_ins_are_unlinked() {
         let mut book = Book::new();
         let content = [
-            "::::{req} ready\nReady MUST hold.\n\n:::{cite} rules.other\nThe *other* rule.\n:::\n::::\n\n",
+            "::::{req} ready\nReady MUST hold.\n\n:::{cite} rules.other\nThe *other* rule.\n:::\n\n:::{impl} rules.other\nThe *implementation* rule.\n:::\n\n:::{test} rules.other\nThe *tested* rule.\n:::\n::::\n\n",
             ":::{req} other\nOther.\n:::\n\n",
             ":::{cite} habeas:util\nServes its caller.\n:::\n\n",
             ":::{cite} habeas:coverage\nA substantive coverage explanation.\n:::\n\n",
@@ -938,20 +1573,37 @@ mod tests {
         // The project reference links to its definition, then its body.
         let mut html = String::new();
         pulldown_cmark::html::push_html(&mut html, pulldown_cmark::Parser::new(&rendered));
-        assert!(html.contains("<p>The <em>other</em> rule.</p>"), "{html}");
-        assert!(html.contains("alt=\"req rules.ready\""), "{html}");
-        let linked = "<div class=\"habeas-fenced-ref\">\n\n<p><a class=\"habeas-req-badge habeas-req-ref-cite\" href=\"rules.html#habeas-req-rules.other\">";
-        let start = rendered.find(linked).expect(&rendered);
-        let after = &rendered[start..];
-        assert!(
-            after.find("alt=\"cite rules.other\"").unwrap()
-                < after.find("The *other* rule.").unwrap(),
-            "{rendered}"
-        );
-        assert!(
-            !rendered.contains(":::{cite} rules.other\nThe"),
-            "{rendered}"
-        );
+        assert!(html.contains("aria-label=\"req rules.ready\""), "{html}");
+        for (kind, color, word) in [
+            ("cite", "7151a1", "other"),
+            ("impl", "237346", "implementation"),
+            ("test", "ae5d14", "tested"),
+        ] {
+            assert!(
+                html.contains(&format!("<p>The <em>{word}</em> rule.</p>")),
+                "{html}"
+            );
+            let linked = format!(
+                "<div class=\"habeas-fenced-ref\">\n\n<p><a class=\"habeas-req-badge habeas-req-ref-{kind}\" href=\"rules.html#habeas-req-rules.other\">"
+            );
+            let start = rendered.find(&linked).expect(&rendered);
+            let after = &rendered[start..];
+            let badge_end = after.find("</a>").unwrap();
+            assert!(
+                after[..badge_end].contains(&format!("alt=\"{kind} rules.other\""))
+                    && after[..badge_end]
+                        .contains(&format!("img.shields.io/badge/{kind}-rules.other-{color}")),
+                "{rendered}"
+            );
+            assert!(
+                badge_end < after.find(&format!("The *{word}* rule.")).unwrap(),
+                "{rendered}"
+            );
+            assert!(
+                !rendered.contains(&format!(":::{kind} rules.other\nThe")),
+                "{rendered}"
+            );
+        }
         // The outer requirement still contains it and closes at its own fence.
         assert!(!rendered.contains("See evidence"), "{rendered}");
 
@@ -1004,6 +1656,7 @@ mod tests {
     }
 
     // {test}`requirements.references.anchors`
+    // {test}`requirements.ci.requirement_text`
     #[test]
     // {test}`requirements.ci.span`
     // {test}`requirements.examples.definition`
@@ -1047,6 +1700,7 @@ mod tests {
         assert!(rendered.contains(":test: later.md"), "{rendered}");
     }
 
+    // {test}`requirements.test-coverage.index.navigation`
     // {test}`requirements.index.detail_pages`
     // {test}`requirements.index.chapter`
     // {test}`requirements.index.chapter.default`
@@ -1087,7 +1741,7 @@ mod tests {
         assert_eq!(pages[0].name, "Child");
         assert_eq!(book.items.len(), 2);
         assert_eq!(book.chapters().count(), 8);
-        assert!(rules.content.contains("habeas-detail-icon"));
+        assert!(rules.content.contains("habeas-badge-name"));
         assert!(!rules.content.contains("See evidence"));
         assert!(!rules.content.contains("notes.txt"));
         for (kind, name) in [("req", "zeta"), ("example", "alpha"), ("req", "cli.mdbook")] {
@@ -1125,7 +1779,9 @@ mod tests {
             .sub_items
             .iter()
             .filter_map(|item| match item {
-                BookItem::Chapter(chapter) if chapter.name == "Coverage gaps" => Some(chapter),
+                BookItem::Chapter(chapter) if chapter.name == "Documented coverage gaps" => {
+                    Some(chapter)
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -1138,13 +1794,15 @@ mod tests {
         assert!(
             index
                 .content
-                .contains("[Coverage gaps](requirements-index/coverage.html)")
+                .contains("[Documented coverage gaps](requirements-index/coverage.html)")
         );
         let details = index
             .sub_items
             .iter()
             .filter_map(|item| match item {
-                BookItem::Chapter(chapter) if chapter.name != "Coverage gaps" => Some(chapter),
+                BookItem::Chapter(chapter) if chapter.name != "Documented coverage gaps" => {
+                    Some(chapter)
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -1224,7 +1882,7 @@ mod tests {
             let BookItem::Chapter(coverage) = &index.sub_items[0] else {
                 unreachable!()
             };
-            assert_eq!(coverage.name, "Coverage gaps");
+            assert_eq!(coverage.name, "Documented coverage gaps");
             assert!(coverage.source_path.is_none());
             assert!(index.parent_names.is_empty());
             assert!(index.content.starts_with("# Requirements index\n\n"));
@@ -1239,12 +1897,18 @@ mod tests {
     fn default_index_number_follows_top_level_chapters_across_parts_and_unnumbered_chapters() {
         let mut book = Book::new();
         book.push_item(BookItem::PartTitle("Part".into()));
+        let mut first = Chapter::new("First", "First.".into(), "first.md", vec![]);
+        first.number = Some(mdbook_preprocessor::book::SectionNumber::new(vec![2]));
+        book.push_item(first);
         let mut chapter = Chapter::new("Chapter", "Text.".into(), "chapter.md", vec![]);
         chapter.number = Some(mdbook_preprocessor::book::SectionNumber::new(vec![4]));
         let mut child = Chapter::new("Child", "Child.".into(), "child.md", vec!["Chapter".into()]);
         child.number = Some(mdbook_preprocessor::book::SectionNumber::new(vec![4, 10]));
         chapter.sub_items.push(BookItem::Chapter(child));
         book.push_item(chapter);
+        let mut last = Chapter::new("Last", "Last.".into(), "last.md", vec![]);
+        last.number = Some(mdbook_preprocessor::book::SectionNumber::new(vec![3]));
+        book.push_item(last);
         book.push_item(BookItem::Separator);
         book.push_item(Chapter::new(
             "Appendix",
@@ -1254,14 +1918,14 @@ mod tests {
         ));
         let root = book_root();
         preprocess_book(&mut book, root.path()).unwrap();
-        assert_eq!(book.items.len(), 5);
+        assert_eq!(book.items.len(), 7);
         let BookItem::Chapter(index) = book.items.last().unwrap() else {
             panic!("the default index must follow the appendix");
         };
         assert_eq!(index.number.as_deref().map(Vec::as_slice), Some(&[5][..]));
         assert_eq!(index.sub_items.len(), 1);
         assert!(
-            matches!(&index.sub_items[0], BookItem::Chapter(chapter) if chapter.name == "Coverage gaps")
+            matches!(&index.sub_items[0], BookItem::Chapter(chapter) if chapter.name == "Documented coverage gaps")
         );
     }
 
@@ -1309,12 +1973,9 @@ mod tests {
         let chapters = book.chapters().collect::<Vec<_>>();
         for chapter in &chapters[..2] {
             assert!(chapter.sub_items.is_empty());
-            assert!(
-                chapter
-                    .content
-                    .contains("title=\"View evidence\" aria-label=\"View evidence for ")
-            );
-            assert!(chapter.content.contains("stroke=\"#fff\""));
+            assert!(chapter.content.contains("title=\"View evidence for "));
+            assert!(chapter.content.contains("habeas-badge-name"));
+            assert!(!chapter.content.contains("<svg"), "{}", chapter.content);
             assert!(!chapter.content.contains("See evidence"));
         }
         assert!(
@@ -1335,7 +1996,12 @@ mod tests {
                 .iter()
                 .map(|page| page.name.as_str())
                 .collect::<Vec<_>>(),
-            ["Coverage gaps", "Existing", "rules.zeta", "more.cli.mdbook"]
+            [
+                "Documented coverage gaps",
+                "Existing",
+                "rules.zeta",
+                "more.cli.mdbook"
+            ]
         );
         assert_eq!(pages[3].parent_names, ["Index"]);
         assert_eq!(
@@ -1350,12 +2016,13 @@ mod tests {
     }
 
     // {test}`requirements.index.navigation`
+    // {test}`requirements.index.declaration_sections`
     #[test]
-    fn definition_badge_and_evidence_icon_share_colors() {
+    fn declaration_badges_and_margin_controls_share_kind_colors() {
         let mut book = Book::new();
         book.push_item(Chapter::new(
             "Rules",
-            ":::{req} ready\nReady.\n:::\n\n:::{example} case\nA case. {cite}`rules.ready`\n:::\n"
+            ":::{req} ready\nReady.\n:::\n\n:::{example} case\nA case. {cite}`rules.ready`\n:::\n\n:::{definition} word\n:phrase: a word\n\nA definition.\n:::\n"
                 .into(),
             "rules.md",
             vec![],
@@ -1363,30 +2030,125 @@ mod tests {
         let root = book_root();
         preprocess_book(&mut book, root.path()).unwrap();
         let content = &book.chapters().next().unwrap().content;
-        for (kind, name) in [("req", "ready"), ("example", "case")] {
+        for (kind, name, color) in [
+            ("req", "ready", "006ba8"),
+            ("example", "case", "7151a1"),
+            ("definition", "word", "2e8555"),
+        ] {
             let segment = content
+                .split("<details class=\"habeas-declaration\"")
+                .find(|part| part.contains(&format!("id=\"habeas-{kind}-rules.{name}\"")))
+                .unwrap()
+                .split("</summary>")
+                .next()
+                .unwrap();
+            assert!(
+                segment.contains(&format!("style=\"--habeas-declaration-color: #{color}\"")),
+                "{segment}"
+            );
+            assert!(segment.contains("habeas-badge-name"), "{segment}");
+            assert!(!segment.contains("<svg"), "{segment}");
+        }
+    }
+
+    // {test}`requirements.index.declaration_sections`
+    // {test}`requirements.index.navigation`
+    #[test]
+    fn declaration_sections_contain_their_headers_and_markdown_bodies() {
+        let mut book = Book::new();
+        book.push_item(Chapter::new(
+            "Rules",
+            "Before.\n\n::::{req} ready\n:impl: notes.md\nA **requirement**.\n\n:::{example} case\nA *nested example*. {cite}`rules.ready`\n\n```rust\nlet answer = true;\n```\n:::\n\nThe requirement ends here.\n::::\n\n:::{definition} word\n:phrase: alpha & beta\n\nA named **definition**.\n:::\n\nAfter.\n"
+                .into(),
+            "rules.md",
+            vec![],
+        ));
+        let root = book_root();
+        preprocess_book(&mut book, root.path()).unwrap();
+        let markdown = &book.chapters().next().unwrap().content;
+        let mut html = String::new();
+        pulldown_cmark::html::push_html(&mut html, pulldown_cmark::Parser::new(markdown));
+        assert_eq!(
+            html.matches("<details class=\"habeas-declaration\"")
+                .count(),
+            3,
+            "{html}"
+        );
+        for declaration in html.split("<details class=\"habeas-declaration\"").skip(1) {
+            let attributes = declaration.split('>').next().unwrap();
+            assert!(
+                attributes
+                    .split_ascii_whitespace()
+                    .any(|attribute| attribute == "open"),
+                "Declaration should start expanded: {attributes}"
+            );
+        }
+        assert_eq!(html.matches("</details>").count(), 3, "{html}");
+        assert_eq!(html.matches("<summary>").count(), 3, "{html}");
+        assert_eq!(html.matches("</summary>").count(), 3, "{html}");
+        assert!(
+            html.contains("<p>Before.</p>\n<details")
+                && html.ends_with("</details>\n<p>After.</p>\n"),
+            "{html}"
+        );
+        // Both navigational links belong to the header, not the hidden body.
+        for (kind, name) in [("req", "ready"), ("example", "case")] {
+            let header = html
                 .split(&format!("id=\"habeas-{kind}-rules.{name}\""))
                 .nth(1)
                 .unwrap()
-                .split("</span>")
+                .split("</summary>")
                 .next()
                 .unwrap();
-            let badge_color = segment
-                .split(&format!("/badge/{kind}-rules.{name}-"))
-                .nth(1)
-                .unwrap()
-                .split('?')
-                .next()
-                .unwrap();
-            let icon_color = segment
-                .split("style=\"background-color: #")
-                .nth(1)
-                .unwrap()
-                .split('"')
-                .next()
-                .unwrap();
-            assert_eq!(icon_color, badge_color, "{segment}");
+            assert!(
+                header.contains(&format!("aria-label=\"{kind} rules.{name}\"")),
+                "{header}"
+            );
+            assert!(
+                header.contains(&format!(
+                    "href=\"#habeas-{kind}-rules.{name}\" title=\"Link to rules.{name} in this chapter\" aria-label=\"{kind} rules.{name}\">{kind}</a>"
+                )),
+                "{header}"
+            );
+            assert!(
+                header.contains(&format!(
+                    "class=\"habeas-req-badge habeas-badge-name\" href=\"requirements-index/rules.{name}.html\" title=\"View evidence for rules.{name}\">rules.{name}</a>"
+                )),
+                "{header}"
+            );
+            assert!(!header.contains("habeas-detail-icon"), "{header}");
+            assert!(!header.contains("habeas-declaration-body"), "{header}");
         }
+        let body = "<div class=\"habeas-declaration-body\">\n";
+        assert!(
+            html.contains(&format!(
+                "{body}<p>A <strong>requirement</strong>.</p>\n<details"
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!("{body}<p>A <em>nested example</em>.")),
+            "{html}"
+        );
+        assert!(
+            html.contains("<pre><code class=\"language-rust\">let answer = true;"),
+            "{html}"
+        );
+        assert!(
+            html.contains("</details>\n<p>The requirement ends here.</p>\n</div>\n</details>"),
+            "{html}"
+        );
+        assert!(
+            html.contains(">definition</a><a class=\"habeas-req-badge habeas-badge-name\" id=\"habeas-definition-rules.word\" href=\"#habeas-definition-rules.word\" title=\"Link to rules.word in this chapter\">alpha &amp; beta</a></span></summary>"),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                "{body}<p>A named <strong>definition</strong>.</p>"
+            )),
+            "{html}"
+        );
+        assert!(!html.contains(":impl: notes.md"), "{html}");
     }
 
     // {test}`requirements.references.safe_badges`
@@ -1409,21 +2171,21 @@ mod tests {
         let root = book_root();
         preprocess_book(&mut book, root.path()).unwrap();
         let content = &book.chapters().next().unwrap().content;
-        let icon = content
-            .split("<a class=\"habeas-detail-icon\"")
+        let name_link = content
+            .split("<a class=\"habeas-req-badge habeas-badge-name\"")
             .nth(1)
             .unwrap()
             .split("</a>")
             .next()
             .unwrap();
         assert!(
-            icon.contains("href=\"a&amp;b &quot;q&quot; &lt;x&gt;/rules.ready.html\""),
-            "{icon}"
+            name_link.contains("href=\"a&amp;b &quot;q&quot; &lt;x&gt;/rules.ready.html\""),
+            "{name_link}"
         );
-        assert!(icon.contains("aria-label=\"View evidence for rules.ready\""));
-        assert!(!icon.contains("a&b"));
-        assert!(!icon.contains("\"q\""));
-        assert!(!icon.contains("<x>"));
+        assert!(name_link.contains("title=\"View evidence for rules.ready\""));
+        assert!(!name_link.contains("a&b"));
+        assert!(!name_link.contains("\"q\""));
+        assert!(!name_link.contains("<x>"));
     }
 
     // {test}`requirements.ci.identifiers`
@@ -1454,7 +2216,7 @@ mod tests {
             None,
         );
         assert!(rendered.contains("habeas-req-badge"));
-        assert!(rendered.contains("alt=\"req requirements.tui.table\""));
+        assert!(rendered.contains("aria-label=\"req requirements.tui.table\""));
         assert!(!rendered.contains("{req}"));
     }
 
@@ -1479,6 +2241,27 @@ mod tests {
         );
     }
 
+    // {test}`requirements.index.navigation`
+    #[test]
+    fn links_to_readme_chapters_use_the_index_output() {
+        assert_eq!(
+            chapter_href(
+                Path::new("requirements-index/rules.book.md"),
+                Path::new("requirements/index/README.md"),
+                Some("habeas-req-rules.book"),
+            ),
+            "../requirements/index/index.html#habeas-req-rules.book"
+        );
+        assert_eq!(
+            chapter_href(
+                Path::new("requirements/index/README.md"),
+                Path::new("requirements/index/README.md"),
+                None,
+            ),
+            "index.html"
+        );
+    }
+
     // {test}`requirements.references.markdown_literals`
     #[test]
     fn code_examples_and_legacy_roles_remain_literal() {
@@ -1487,7 +2270,7 @@ mod tests {
         assert!(rendered.contains("{req}`inline`"));
         assert!(rendered.contains(":::{req} block"));
         assert!(rendered.contains("{req}`legacy`"));
-        assert!(rendered.contains("alt=\"req requirements.visible\""));
+        assert!(rendered.contains("aria-label=\"req requirements.visible\""));
     }
 
     // {test}`requirements.ci.identifiers`
@@ -1496,7 +2279,7 @@ mod tests {
         let source = ":::{req} bad name\nInvalid.\n:::\n\n:::{req} good\nGood.\n:::";
         let rendered = replace_definitions(source, "rules", None, None);
         assert!(rendered.contains(":::{req} bad name"));
-        assert!(rendered.contains("alt=\"req rules.good\""));
+        assert!(rendered.contains("aria-label=\"req rules.good\""));
         // A valid local name in a chapter whose namespace is invalid gives an
         // invalid full name, so the directive stays literal too.
         let rendered = replace_definitions(source, "a&b", None, None);
@@ -1642,8 +2425,9 @@ mod tests {
     }
 
     // {test}`requirements.index.navigation`
+    // {test}`requirements.index.declaration_sections`
     #[test]
-    fn definition_badge_stylesheet_keeps_the_arrow_in_one_row() {
+    fn declaration_badge_stylesheet_keeps_split_links_in_one_row() {
         let rules = stylesheet_rules();
         let declarations = |selector: &str| {
             rules
@@ -1661,17 +2445,128 @@ mod tests {
         ] {
             assert!(wrapper.contains(&declaration), "{wrapper:?}");
         }
-        let links = declarations(".habeas-definition-badge > a");
+        let links = declarations(".habeas-definition-badge > a.habeas-req-badge");
         assert!(links.contains(&"flex-shrink: 0"), "{links:?}");
-        let icon = declarations("a.habeas-detail-icon");
+        assert!(
+            declarations(".habeas-declaration > summary").contains(&"justify-content: flex-end")
+        );
+        assert!(
+            declarations(".habeas-badge-name")
+                .contains(&"background: var(--habeas-declaration-color)")
+        );
+    }
+
+    // {test}`requirements.index.declaration_sections`
+    #[test]
+    fn declaration_styles_distinguish_disclosure_state_and_keyboard_focus() {
+        let rules = stylesheet_rules();
+        let declarations = |selector: &str| {
+            rules
+                .iter()
+                .filter(|(selectors, _)| selectors.iter().any(|candidate| candidate == selector))
+                .flat_map(|(_, declarations)| declarations.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+        };
+        let section = declarations(".habeas-declaration");
+        assert!(
+            section.contains(&"border-right: 3px solid transparent"),
+            "{section:?}"
+        );
+        let bar = declarations(".habeas-declaration::before");
         for declaration in [
-            "display: inline-flex",
-            "align-items: center",
-            "justify-content: center",
-            "height: 20px",
+            "content: \"\"",
+            "position: absolute",
+            "top: 0",
+            "bottom: 0",
+            "right: -3px",
+            "width: 3px",
+            "border-radius: 2px",
+            "background: var(--habeas-declaration-color)",
+            "pointer-events: none",
         ] {
-            assert!(icon.contains(&declaration), "{icon:?}");
+            assert!(bar.contains(&declaration), "{bar:?}");
         }
+        assert!(
+            section.contains(&"margin: 1.25em 0.75em 1.25em 0")
+                && section.contains(&"padding-right: 1.25em")
+                && declarations(".habeas-declaration-body").contains(&"padding: 0"),
+            "{section:?}"
+        );
+        let control = declarations(".habeas-declaration > summary::after");
+        for declaration in [
+            "content: \"+\"",
+            "flex-shrink: 0",
+            "border-radius: 0 3px 3px 0",
+            "background: var(--habeas-declaration-color)",
+            "border: 1px solid var(--habeas-declaration-color)",
+            "border-left-color: var(--bg)",
+        ] {
+            assert!(control.contains(&declaration), "{control:?}");
+        }
+        let width = control
+            .iter()
+            .find_map(|value| value.strip_prefix("width: "));
+        let height = control
+            .iter()
+            .find_map(|value| value.strip_prefix("height: "));
+        assert!(
+            width.is_some(),
+            "Disclosure needs a defined size: {control:?}"
+        );
+        assert_eq!(width, height, "Disclosure should be square: {control:?}");
+        assert_eq!(height, Some("var(--habeas-badge-height)"), "{control:?}");
+        let summary = declarations(".habeas-declaration > summary");
+        assert!(summary.contains(&"gap: 0"), "{summary:?}");
+        assert!(
+            summary.contains(&"position: relative") && summary.contains(&"z-index: 1"),
+            "The disclosure should remain above the vertical bar: {summary:?}"
+        );
+        assert!(
+            summary
+                .contains(&"margin-right: calc(-1.25em - var(--habeas-badge-height) / 2 - 1.5px)"),
+            "The disclosure should sit over the top of the right-margin bar: {summary:?}"
+        );
+        // Links use 0.8em text, so 1.6em equals the control's 1.28em height.
+        assert!(
+            section.contains(&"--habeas-badge-height: 1.28em"),
+            "{section:?}"
+        );
+        let badge = declarations(".habeas-definition-badge > a.habeas-req-badge");
+        assert!(
+            badge.contains(&"font-size: 0.8em")
+                && badge.contains(&"height: 1.6em")
+                && badge.contains(&"box-sizing: border-box")
+                && badge.contains(&"padding: 0 0.5em"),
+            "{badge:?}"
+        );
+        assert!(
+            declarations(".habeas-badge-kind").contains(&"border-radius: 3px 0 0 3px"),
+            "The kind segment should round only the badge's outer left corners"
+        );
+        assert!(
+            declarations(".habeas-badge-name").contains(&"border-left: 1px solid var(--bg)")
+                && declarations(".habeas-badge-name").contains(&"border-radius: 0"),
+            "The middle segment should have straight joins and a matching thin divider"
+        );
+        assert!(
+            declarations(".habeas-declaration[open] > summary::after").contains(&"content: \"−\"")
+        );
+        let focus = declarations(".habeas-declaration > summary:focus-visible::after");
+        assert!(
+            focus
+                .iter()
+                .any(|declaration| declaration.starts_with("outline: 2px")),
+            "{focus:?}"
+        );
+        assert!(
+            declarations(".habeas-declaration > summary > .habeas-definition-badge")
+                .contains(&"overflow-x: auto")
+        );
+        assert!(
+            declarations(".habeas-declaration > summary > .habeas-definition-badge")
+                .contains(&"scrollbar-width: none"),
+            "A horizontal scrollbar must not push the badge above its disclosure"
+        );
     }
 
     // {test}`requirements.references.book_badges`
@@ -1692,12 +2587,19 @@ mod tests {
         );
         assert!(declarations("a.habeas-req-badge").contains(&"color: inherit"));
         assert_eq!(
-            declarations("a.habeas-detail-icon:link"),
-            declarations("a.habeas-detail-icon:visited")
+            declarations(".habeas-definition-badge > a.habeas-req-badge"),
+            declarations(".habeas-definition-badge > a.habeas-req-badge:visited")
         );
-        assert!(declarations("a.habeas-detail-icon:link").contains(&"color: white"));
+        assert!(
+            declarations(".habeas-definition-badge > a.habeas-req-badge:visited")
+                .contains(&"color: white")
+        );
         // Keyboard focus shows an outline.
         let focus = declarations("a.habeas-req-badge:focus-visible");
+        assert!(
+            focus.contains(&"outline: 2px solid var(--links)"),
+            "{focus:?}"
+        );
         assert!(
             focus
                 .iter()
@@ -1711,18 +2613,16 @@ mod tests {
             declarations("a.habeas-req-badge:hover"),
             ["filter: brightness(1.08)"]
         );
-        // Every rule styles a Habeas badge or fenced reference; nothing else in
-        // the book is restyled.
+        // Every rule styles a Habeas declaration, badge, fenced reference, or citation
+        // passage; nothing else in the book is restyled.
         let specified = [
             ".habeas-req-badge",
             ".habeas-shield",
             ".habeas-definition-badge",
-            ".habeas-definition-badge > a",
-            "a.habeas-detail-icon",
-            "a.habeas-detail-icon:link",
-            "a.habeas-detail-icon:visited",
-            "a.habeas-detail-icon:hover",
-            "a.habeas-detail-icon:focus-visible",
+            ".habeas-definition-badge > a.habeas-req-badge",
+            ".habeas-definition-badge > a.habeas-req-badge:visited",
+            ".habeas-badge-kind",
+            ".habeas-badge-name",
             ".habeas-req-badge img.habeas-shield",
             "a.habeas-req-badge",
             "a.habeas-req-badge:visited",
@@ -1730,6 +2630,24 @@ mod tests {
             "a.habeas-req-badge:focus-visible",
             ".habeas-builtin",
             ".habeas-fenced-ref",
+            ".habeas-declaration",
+            ".habeas-declaration::before",
+            ".habeas-declaration > summary",
+            ".habeas-declaration > summary::-webkit-details-marker",
+            ".habeas-declaration > summary::after",
+            ".habeas-declaration[open] > summary::after",
+            ".habeas-declaration > summary > .habeas-definition-badge",
+            ".habeas-declaration > summary:focus-visible::after",
+            ".habeas-declaration-body",
+            ".habeas-citation-passage",
+            ".habeas-citation-list",
+            ".habeas-citation-list > summary",
+            ".habeas-citation-list > summary::-webkit-details-marker",
+            ".habeas-citation-list > summary:hover",
+            ".habeas-citation-list[open] > summary",
+            ".habeas-citation-list > summary:focus-visible",
+            ".habeas-citation-list > ul",
+            ".habeas-citation-list > ul > li",
         ];
         for (selectors, _) in &rules {
             for selector in selectors {
@@ -1799,6 +2717,7 @@ mod tests {
 
     // {test}`requirements.references.markdown_literals`
     // {test}`requirements.references.discovery`
+    // {test}`requirements.references.book_badges`
     #[test]
     fn markdown_examples_and_escaped_references_stay_literal() {
         let marker = "{impl}`requirements.ready`".to_owned();
@@ -1828,6 +2747,7 @@ mod tests {
     }
 
     // {test}`requirements.references.markdown_literals`
+    // {test}`requirements.references.book_badges`
     #[test]
     fn roles_in_raw_html_stay_literal() {
         let marker = "{impl}`requirements.ready`".to_owned();
@@ -1840,10 +2760,33 @@ mod tests {
         assert!(content[references[0].start..].starts_with(&format!("{marker}</em>")));
         // Outside Markdown, HTML-looking text does not protect roles.
         assert_eq!(reference_roles(&content, false).len(), 5);
+
+        let mut book = Book::new();
+        book.push_item(Chapter::new(
+            "Requirements",
+            ":::{req} ready\nReady.\n:::".into(),
+            "requirements.md",
+            Vec::new(),
+        ));
+        book.push_item(Chapter::new("Guide", content, "guide.md", Vec::new()));
+        let root = book_root();
+        preprocess_book(&mut book, root.path()).unwrap();
+        let rendered = &book
+            .chapters()
+            .find(|chapter| chapter.name == "Guide")
+            .unwrap()
+            .content;
+        assert!(rendered.contains(&format!("<div>\n{marker}\n</div>")));
+        assert_eq!(rendered.matches(&format!("<!-- {marker} -->")).count(), 2);
+        assert!(rendered.contains(&format!("<span title=\"{marker}\">tag</span>")));
+        assert_eq!(rendered.matches(&marker).count(), 4);
+        assert_eq!(rendered.matches("habeas-req-ref-impl").count(), 1);
+        assert!(rendered.contains("Between <em><a class=\"habeas-req-badge"));
     }
 
     // {test}`requirements.references.book_badges`
     // {test}`requirements.references.markdown_literals`
+    // {test}`requirements.index.declaration_sections`
     #[test]
     fn colon_directives_render_markdown_bodies_and_legacy_roles_stay_literal() {
         let source = "An inline {req}`inline` role.\n\n:::{req} defined\nDefinition.\n\n## Details\n\n```text\nexample\n```\n:::\n\nAfter.";
@@ -1983,7 +2926,7 @@ mod tests {
         assert!(
             chapters[0]
                 .content
-                .contains("alt=\"example requirements.something.foo\"")
+                .contains("aria-label=\"example requirements.something.foo\"")
         );
         assert!(chapters[0].content.contains(":::{example} bad name"));
         assert!(chapters[0].content.contains(":::{example} hidden"));
@@ -1998,6 +2941,6 @@ mod tests {
 mod commands;
 mod markdown;
 pub use commands::{
-    CoverageWarnings, coverage_warnings, info_markdown, status_markdown, status_markdown_filtered,
-    status_markdown_with_coverage, status_markdown_with_github, status_markdown_with_options,
+    info_markdown, status_markdown, status_markdown_filtered, status_markdown_with_github,
+    status_markdown_with_options,
 };

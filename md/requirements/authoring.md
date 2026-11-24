@@ -298,9 +298,9 @@ assessments judge by the same rules:
   one it fails to exclude, and they lead to different conclusions, such as
   whether code conforms or which role a citation calls for, that ambiguity is a
   gap. Name the readings in your rationale.
-- These are not gaps: style, performance, logging, how helpers are factored,
-  robustness the text does not require, and silently ignoring input the text
-  does not mention.
+- Unless the subject explicitly requires them, these are not gaps: style,
+  performance, logging, how helpers are factored, robustness, and handling input
+  the text does not mention.
 - A gap is acknowledged only by a {fixme} reference, in the supplied
   acknowledgments, in the inputs, or in a source you read, to the requirement
   or example your task judges against, or,
@@ -331,8 +331,9 @@ assessments judge by the same rules:
 A citation review under {cite}`requirements.references.citation_review` MUST use
 the same tools and exactly-once submission rule as other assessments and this
 prompt, replacing `{{item_file}}`, `{{item_selector}}` (with `<root>` for the
-root node), `{{citations}}` (the item's `{cite}` references as JSON with role,
-name, and commentary), `{{habeas_background}}` and `{{reference_roles}}` under
+root node), `{{review_kind}}` (`source_item` for ordinary source citations or
+`book_commentary` for a reviewed book passage), `{{citations}}` (the item's
+`{cite}` references as JSON with role, name, and commentary), `{{habeas_background}}` and `{{reference_roles}}` under
 {cite}`requirements.authoring.habeas_background`, `{{judgment_rules}}` under
 {cite}`requirements.authoring.judgment_rules`, and `{{mandatory_inputs}}`, the
 first block as its system prompt and the second as its subject message under
@@ -356,13 +357,17 @@ The mandatory inputs at the end contain the source item and the declarations
 or fixed built-in text of its citations.
 
 Assess each listed citation using the rules below. For citations of project
-requirements and examples, decide whether the item implements part of a cited
-requirement, not whether it does so correctly. Do not look for requirements or
-examples the item does not cite, except as needed to assess a built-in's stated
-citation criteria.
+requirements and examples outside book commentary, decide whether the item
+implements part of a cited requirement, not whether it does so correctly. Do not
+look for requirements or examples the item does not cite, except as needed to
+assess a built-in's stated citation criteria.
 
-1. For citations of project requirements and examples, apply the reference
-   procedure in order: if the item is a
+1. For `book_commentary` citing project requirements or examples, check whether
+   the passage's claims agree with and are supported by the cited declarations.
+   Contradicting or unsupported claims are gaps. Explanatory prose
+   uses {cite}; it does not need {impl} or {test} merely because it describes
+   behavior. For other citations of project requirements and examples, apply
+   the reference procedure in order: if the item is a
    test designed to verify the cited requirement or example, it calls for
    {test}; otherwise, if it is a root of the cited definition's
    implementation as the reference roles describe, it calls for {impl};
@@ -396,6 +401,7 @@ reply text is not accepted.
 # Subject
 
 Item under review: {{item_file}} {{item_selector}}
+Review kind: {{review_kind}}
 Citations to check: {{citations}}
 Judge against: the declarations or fixed built-in text it cites.
 
@@ -947,9 +953,15 @@ Repeated retrieval of the same search page MUST preserve its UUID and tags
 and MUST NOT reopen it if it has already been finished.
 :::
 
+:::{req} search_accounting.first_result
+Each assessment MUST include `instructions` on its first delivered search
+result, even when the result has no matches. `ripgrep` and `ast_grep` share
+this rule. A failed search leaves the instructions for the first delivered
+result. Subsequent searches and continuation pages MUST omit the field.
+:::
+
 :::{req} search_accounting.instructions
-The first delivered search result in each assessment MUST include an
-`instructions` field containing this text:
+The `instructions` field supplied under {cite}`requirements.authoring.search_accounting.first_result` MUST contain the following text.
 
 ```text
 Before submitting your assessment, close every delivered search with finish_search({search_id, used:[tags]}). Submission fails while any search remains open. Include a tag only when you used information in its snippet to justify your conclusion without an additional source read. Entries whose source you subsequently read with habeas may be omitted; including them is harmless. Use used:[] when no entries qualify, including for an empty search. finish_search records dependencies and does not request more source.
@@ -1344,10 +1356,154 @@ dependencies; its containing implementation source MUST NOT be supplied merely
 to discover them.
 :::
 
+### Structural assessment
+
+Some requirements describe the program's structure: a public signature, a
+borrowed context, or delegation through a particular interface. These can be
+checked by reading the implementations. Behavioral properties are checked by
+tests. A requirement can have both kinds of property; each check applies
+independently.
+
+:::{req} structural_review
+For every non-distributed requirement, the assessment MUST identify its stated
+structural properties, including signatures, type and field relationships,
+ownership, and required delegation through interfaces. With incoming `{impl}`
+references or `:impl:` anchors, it MUST check that the supplied implementation
+roots support every such property under
+{cite}`requirements.authoring.structural_prompt`. Without those edges, it MUST
+establish that the requirement has no structural properties needing
+implementation evidence; an unmet structural obligation MUST be a gap.
+Incoming `{test}` references or `:test:` anchors MUST NOT skip this check.
+References and anchors are those considered under
+{cite}`requirements.references.discovery` and the existing source-access
+policy; omitted generated evidence MUST NOT count as an edge. Obligations
+delegated to refining declarations follow
+{cite}`requirements.ci.review_criteria`. Examples, distributed requirements,
+citation reviews, and site reviews retain their own assessment tasks.
+:::
+
+:::{req} behavioral_review
+For every non-distributed requirement, the assessment MUST identify its stated
+behavioral properties and check their test adequacy under
+{cite}`requirements.ci.review_criteria`. With incoming `{test}` references or
+`:test:` anchors, it MUST check that the supplied tests cover every behavioral
+property assessed here. Without those edges, it MUST establish that there are
+no behavioral properties needing test evidence, explaining any established
+testing exemption or obligation delegated to a refining declaration under
+{cite}`requirements.authoring.testing_bar` and
+{cite}`requirements.ci.review_criteria`; otherwise the missing test evidence
+MUST be a gap. Incoming `{impl}` references or `:impl:` anchors MUST NOT skip
+this check. Considered references and anchors follow
+{cite}`requirements.references.discovery` and the existing source-access
+policy; omitted generated evidence MUST NOT count as an edge.
+:::
+
+The current harness selects structural assessment only for requirements with
+supported non-Markdown implementation roots and no test edges. Requirements with test edges receive
+test-adequacy assessment, including mixed requirements. Issue #51 tracks the
+independent checks specified above, including explicit checks when either kind
+of edge is absent. The implementation carries issue-linked `{fixme}`
+acknowledgments of this temporary gap.
+
+:::{req} structural_inputs
+For every non-distributed requirement's structural check under
+{cite}`requirements.authoring.structural_review`, every direct implementation
+reference or `:impl:` anchor outside a declaration MUST contribute its source
+selection to the initial mandatory inputs under
+{cite}`requirements.authoring.mandatory_inputs`, including when the requirement
+also has incoming `{test}` references or `:test:` anchors. An in-source reference selects
+its enclosing outline node, or the whole file when it has no language outline;
+an anchor selects its named file or node. Source access, exclusions, errors,
+and deduplication follow the existing mandatory-input rules. Refining
+declarations continue to contribute their complete text. Implementation
+helpers are requested when needed, rather than supplied recursively.
+:::
+
+:::{req} structural_prompt
+A structural assessment MUST use the same tools, acknowledgments, judgment
+rules, confirmation policy, and submission contract as a test-adequacy
+assessment, with these system and subject blocks under
+{cite}`requirements.authoring.prompt_parts`. Placeholders MUST be filled as in
+{cite}`requirements.authoring.initial_prompt`. The confirmation verifier MUST
+receive these structural instructions under
+{cite}`requirements.authoring.verifier_prompt`.
+
+```text
+# Task
+
+Assess whether a requirement's stated structural obligations are fulfilled by
+its implementations. Your determination should be the one any careful reviewer
+would reach from the same text and sources.
+
+# Background: Habeas terms
+
+{{habeas_background}}
+
+{{reference_roles}}
+
+# Your task
+
+The mandatory inputs contain the requirement, its cited declarations and
+terminology, its direct implementation sources, and declarations that refine
+it. Each {fixme} acknowledgment includes the state of the issues it names.
+
+1. Derive the stated structural obligations, including signatures, type and
+   field relationships, ownership, and required delegation through interfaces.
+   Do not substitute inferred runtime behavior for a structural obligation.
+2. Inspect the supplied implementation roots. Follow relevant calls, types,
+   trait implementations, and callbacks; request the helper source needed to
+   establish each obligation. Comments or reference edges alone are not proof.
+3. Map each obligation to the concrete source that fulfills it. Identify
+   obligations delegated to a refining declaration separately: assess that
+   declaration's text, not its implementation or tests. Cited declarations
+   supply context and do not become additional subjects to assess in full.
+4. A missing or conflicting structural element is a gap. Observable runtime
+   outcomes, boundaries, and failure cases require the independent behavioral
+   assessment; do not certify them from implementation alone. Missing or
+   inadequate test evidence is a testing gap. Discover relevant tests before
+   reporting missing evidence; a test designed to check the subject without
+   a {test} reference is a marking gap.
+5. Report ambiguities and unavailable information separately. A successful
+   structural check means every structural obligation assessed here is
+   supported. The requirement's judgment must also account for its independent
+   behavioral check. Do not assess unspecified behavior or general
+   implementation correctness.
+
+# How to judge
+
+{{judgment_rules}}
+
+# Submitting
+
+Choose true when your task finds no gap, {"FIXME": ["..."]} when every gap is
+acknowledged, and false otherwise. You MUST end by calling submit_judgment
+with determination and rationale until one submission is accepted.
+A rejected submission does not complete the assessment. A judgment written in your
+reply text is not accepted.
+```
+
+```text
+# Subject
+
+Subject: requirement {{subject_name}}
+Judge against: the subject's text, using structural assessment.
+
+# Acknowledgments
+
+{{acknowledgments}}
+
+# Mandatory inputs
+
+{{mandatory_inputs}}
+```
+:::
+
 ### Prompt template
 
 :::{req} initial_prompt
-The initial request MUST provide the ten tool definitions above and the
+Except for structural assessments under
+{cite}`requirements.authoring.structural_prompt`, the initial request MUST provide
+the ten tool definitions above and the
 following prompt, the first block as its system prompt and the second as its
 subject message under {cite}`requirements.authoring.prompt_parts`. The harness MUST replace `{{subject_kind}}` with `requirement`
 or `example`, `{{subject_name}}` with the full subject name,
@@ -1627,48 +1783,16 @@ AuthoringConfig {
 
 AssessmentPolicy = Confirm | Once             // TOML: "confirm" or "once"
 
-BackendConfig = Bedrock(BedrockConfig) | Ollama(OllamaConfig) | Openai(OpenAiConfig)
-
-BedrockConfig {
-    model: ModelId,                           // model ID or inference-profile ID/ARN
-    aws_profile: Optional<String>,
-    region: Optional<String>,
-    credentials: Optional<BedrockCredentials>,
-    options: Map<String, OptionValue>,
-}
-
-BedrockCredentials {
-    access_key_id: SecretString,
-    secret_access_key: SecretString,
-    session_token: Optional<SecretString>,
-}
-
-OllamaConfig {
-    model: ModelId,                           // exact identifier, including tag
-    endpoint: Optional<String>,               // default: http://localhost:11434
-    api_key_env: Optional<EnvironmentVariableName>,
-    api_key: Optional<SecretString>,
-    options: Map<String, OptionValue>,
-}
-
-OpenAiConfig {
-    model: Optional<ModelId>,                 // default: gpt-6.1-sol
-    endpoint: Optional<String>,               // default: https://api.openai.com/v1
-    api_key_env: Optional<EnvironmentVariableName>, // default: OPENAI_API_KEY
-    api_key: Optional<SecretString>,
-    options: Map<String, OptionValue>,
-}
-
-OptionValue = String | Boolean | Integer | FiniteFloat
-            | Array<OptionValue> | Map<String, OptionValue>
-
-SecretString = String                         // serialized normally; redacted in Debug
-
 ModelRef {
     backend: BackendKind,                     // Bedrock, Ollama, or Openai
     model: ModelId,
 }
 ```
+
+`BackendConfig` uses the backend tags and fields in the TBV
+[backend settings and credentials](sdk/graph/agent-harness.md#backend-settings-and-credentials)
+under {cite}`requirements.sdk.graph.agent-harness.agent_config.settings`.
+Habeas flattens those fields into each named authoring configuration.
 
 `ModelRef` MUST be derived from the selected backend configuration and MUST
 preserve the exact model identifier. It MUST identify the model without replacing
@@ -1869,10 +1993,10 @@ where it does not, the stop MUST be treated as reaching the output limit.
 Each assessment conversation MUST send its prompt as a system prompt followed by
 one user message, the subject message, filled from the first and second text
 blocks of the prompt requirement for the assessment's kind. The kinds are
-requirement, example, citation review, site review, and a verifier of each of
-those. A system prompt MUST be the same for every assessment of its kind, so
-every placeholder whose value depends on the subject MUST be in the subject
-message.
+test-adequacy requirement, structural requirement, example, citation review, site
+review, and a verifier of each of those. A system prompt MUST be the same for
+every assessment of its kind, so every placeholder whose value depends on the
+subject MUST be in the subject message.
 :::
 
 :::{req} cache_checkpoints
@@ -2103,8 +2227,10 @@ usage records. Start with one concurrent assessment and a small subject set
 before increasing the experiment size. Specify each comparison model explicitly.
 
 Literal credentials are supported but not recommended, especially in a
-workspace file that might be committed. Prefer the profile and environment
-references above. If needed, this complete `habeas.toml` illustrates the fields;
+workspace file that might be committed. Prefer AWS profiles (`aws_profile`) or
+environment-variable references (`api_key_env`).
+Workspace files may be committed or read as source when explicitly allowed.
+If needed, this complete `habeas.toml` illustrates the fields;
 replace every uppercase placeholder with your own value and keep the resulting
 file out of version control. Omit `session_token` for credentials without one.
 

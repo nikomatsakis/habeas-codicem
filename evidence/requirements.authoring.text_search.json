@@ -1,8 +1,8 @@
 {
   "requirement": "The harness MUST expose a `ripgrep` tool with this interface:\n\n```text\nripgrep({ pattern: String, path: String = \".\", context: Integer = 2,\n          referencing: Optional<ReferenceScope> }) -> SearchResult\n\nReferenceScope {\n    selection: String,                     // full name or definition glob\n    roles: Array<Role> = [\"impl\", \"test\", \"cite\"],\n    scope: \"node\" | \"file\" = \"file\",\n}\n\nSearchResult {\n    search_id: UUID,\n    instructions: Optional<String>,\n    matches: Array<SearchMatch>,\n}\n\nSearchMatch {\n    tag: String,         // short tag for finish_search\n    file: String,\n    item: String,        // selector of the innermost outline node\n    kind: String,\n    lines: Array<{ text: String, matched: Boolean }>,\n}\n```\n\nThe tool MUST search the requested permitted file or directory using\nripgrep's regular-expression syntax and default case-sensitive search and ignore\nrules. It MUST search in process using ripgrep's library crates, without\nrequiring an external `rg` executable, and MUST apply source-access policy while\nwalking files rather than filtering results afterwards. It MAY search files in\nparallel; results MUST be ordered by path and then line regardless of\nparallelism, so the same sources always produce the same inputs. Explicitly allowed paths and discovered generated-output directories MUST\nbe searched even when ignored or hidden; workspace disallow rules still apply.\n`context`\nMUST be nonnegative and specify how many lines before and after each matching\nline to include, defaulting to two on each side. Windows MUST stop at item\nboundaries under {cite}`requirements.authoring.search_accounting.excerpts`,\nand overlapping windows within the same item MUST be merged. The result\nMUST give one entry for each innermost outline node containing a match, where a\nmatch in a comment belongs to the node the comment belongs to under\n{cite}`requirements.references.outline_comments`: the node's file, selector\nunder {cite}`requirements.references.outline_selectors`, kind, and its matching\nand context lines in source order, each marked as matching or not and redacted\nunder {cite}`requirements.authoring.redaction`. Results MUST NOT give line\nnumbers; the model locates and cites code by selector. Separate windows within\none node MUST be distinguishable, such as by an elision line that is not\nmarked as matching. Search results MUST NOT include definitions. Selected snippets MUST contribute\nevidence inputs through {cite}`requirements.authoring.finish_search.inputs`;\nunselected snippets MUST NOT contribute inputs merely through discovery.\nResults and descriptions MUST follow\n{cite}`requirements.authoring.search_accounting.instructions` and\n{cite}`requirements.authoring.finish_search.description`. Setting `context` to zero MUST return only matching lines.\nWith `referencing`, the tool MUST search only sources, within `path`, that carry\na reference in one of `roles` to a requirement or example the `selection`\nmatches under {cite}`requirements.references.definition_globs`, including\nanchors under {cite}`requirements.references.anchors`: with `scope` `node`, only\nthe outline nodes that contain or are named by those references, and with\n`file`, their whole files. A selection matching no requirement or example, or an\nunknown role or scope, MUST return an explanatory tool error. Its model-facing\ndescription MUST explain `referencing`.\nSearch results MUST exclude files disallowed by\n{cite}`requirements.authoring.source_tools`; explicitly requesting an excluded\npath MUST be handled as a denial under {cite}`requirements.authoring.read_denial`.\nNo matches MUST return an empty array; invalid arguments or a failed search MUST\nreturn an explanatory tool error.",
   "determination": true,
-  "rationale": "I found no adequacy gap in the tests for `requirements.authoring.text_search`. Each obligation below maps to a test with assertions that enforce it. All the tests are in `src/authoring/tools.rs` under `mod[tests]`, except where noted.\n\n**Interface and description**\n- `fn[ripgrep_tool_is_advertised_with_its_interface_and_conventions]` asserts the full parameter schema. That covers `pattern`, `path`, `context` (minimum 0, default 2) and `referencing` with its `roles` and `scope` enums and defaults.\n- The same test asserts the model-facing description. It must explain `referencing` and the context, window, no-line-number and no-definitions conventions. It must also carry the `finish_search` guidance.\n\n**Regex, case sensitivity and ignore rules**\n- `fn[search_merges_context_windows_and_respects_ignore_rules]` shows that `NEEDLE` does not match `needle`. It also shows that gitignored and hidden files, even when force-added, are not searched.\n- `fn[exact_match_ranges_preserve_regex_anchors_and_skip_unmatched_or_binary_sources]` exercises regex anchors and `(?i)`. It also shows a binary file is skipped.\n\n**Allowed paths and ordering**\n- `fn[search_records_nothing_clamps_at_eof_and_reports_failures]`, `fn[allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not]` and `fn[cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files]` cover explicitly allowed and generated-output paths. They show an allowed hidden or ignored directory is searched, while a disallowed descendant and an unallowed hidden directory are not.\n- `fn[parallel_search_orders_results_by_path_and_line]` covers deterministic path ordering across 40 files and repeated runs.\n- `fn[search_returns_innermost_nodes_and_comment_owners]` and `fn[search_excerpts_stop_at_byte_boundaries_including_attached_comments_and_attributes]` cover ordering within a file.\n\n**Context, windows and entries**\n- `fn[context_windows_include_exactly_the_requested_lines_on_each_side]` tests context None, 0, 1, 2 and 3.\n- `fn[separate_windows_in_one_node_are_divided_by_an_elision_line]` tests the unmarked elision line and merging of overlapping windows. It also checks that the default context equals 2.\n- `fn[search_excerpts_stop_at_byte_boundaries_including_attached_comments_and_attributes]` tests clipping at item boundaries, including attached comments and attributes. It also tests clipping within a line shared by two items.\n- `fn[search_returns_innermost_nodes_and_comment_owners]` tests that each entry is the innermost node and that a comment match belongs to its owner.\n- A negative `context` is rejected in `fn[search_merges_context_windows_and_respects_ignore_rules]`, and a fractional `context` in `fn[search_records_nothing_clamps_at_eof_and_reports_failures]`.\n\n**Result shape and redaction**\n- The shape tests assert that entries have no line numbers and no hash. `search_records_nothing_clamps_at_eof_and_reports_failures` asserts that no `definitions` field is returned and that searching records no inputs. `search_merges_context_windows_and_respects_ignore_rules` asserts `inputs` is empty, so unselected snippets contribute nothing.\n- `fn[model_inputs_reads_searches_and_citation_prompts_are_redacted]` shows search results do not leak credentials, even when the pattern matches the credential itself.\n- `fn[search_excerpts_stop_at_byte_boundaries_including_attached_comments_and_attributes]` also asserts `[REDACTED:` and the absence of the token.\n\n**`referencing`**\n- `fn[ripgrep_referencing_searches_only_referencing_files_or_nodes]` covers default roles, the `fixme` role, and glob selection. It covers file scope against node scope, including windows clipped at node boundaries. It covers the interaction with `path`, and a definition with no references returning an empty result.\n- The same test checks the explanatory errors for a selection matching nothing, an unknown role, an unknown scope, a non-array `roles`, an extra key, a missing `selection`, and a non-object `referencing`.\n- `fn[text_search_selects_example_test_references_and_test_anchors]` covers named examples, `:test:` anchors and role filtering.\n- `fn[ripgrep_node_scope_searches_only_the_node_a_selector_anchor_names]` covers `:impl:` selector anchors under node and file scope. It also shows an unresolvable selector selects nothing.\n\n**Denial, errors and empty results**\n- `fn[generated_evidence_is_excluded_from_reads_search_and_discovery]`, `fn[outside_symlinks_are_excluded_from_reads_search_and_discovery]`, `fn[git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files]`, `fn[git_symlink_reads_require_both_the_alias_and_target_to_be_tracked]` and `fn[unpermitted_requests_outside_the_project_are_recoverable_tool_errors]` cover the exclusion and denial cases. They show excluded files are left out of walks and explicit requests for excluded paths return errors naming the path and reason.\n- `tests/authoring_cli.rs#fn[explicit_untracked_reads_return_an_untracked_error_and_the_assessment_continues]` covers the untracked-path denial end to end for `ripgrep`.\n- `fn[search_uses_the_validated_target_when_symlinks_precede_parent_components]` checks that the validated path target is the one searched.\n- An empty match returns `[]` (`NEEDLE` absent). Invalid patterns, bad argument types, unknown arguments and an unparseable matched file all return explanatory errors in `search_records_nothing_clamps_at_eof_and_reports_failures`.\n\n**Delegated obligations**\n- The `instructions` field on the first delivered search is governed by the cited `requirements.authoring.search_accounting.instructions`. It is tested against that requirement in `src/authoring/pages.rs` and `src/authoring/searches.rs`. It is covered in context and not reassessed here.\n- Recording evidence inputs for selected tags is governed by `finish_search.inputs`. The subject's tests assert only that discovery alone records nothing.\n\n**Not covered by a dedicated test**\n- \"In process, without an external `rg`\" and \"policy applied while walking\" are implementation-structure properties. The reviewed tests exercise the policy outcomes, and none depends on an `rg` binary.",
-  "references": "432e7d37dad09fe4cf8a126796d18a84d9f3a5edf6e88f2b1407db226b885203",
+  "rationale": "The reviewed tests cover each testable obligation of `requirements.authoring.text_search`. I did not request implementation source.\n\n- **Interface and description**: `ripgrep_tool_is_advertised_with_its_interface_and_conventions` asserts the parameter schema, including `context` minimum 0 and default 2, and the `referencing` roles and scope defaults. It also asserts the description phrases for the result shape, the `referencing` behavior, and the `finish_search` guidance.\n- **Regex, case sensitivity and ignore rules**: `search_merges_context_windows_and_respects_ignore_rules` shows that `NEEDLE` does not match `needle`. It shows that a gitignored file and a hidden file are skipped, and that `[` fails with an error. `exact_match_ranges_preserve_regex_anchors_and_skip_unmatched_or_binary_sources` covers anchors, the `(?i)` flag and binary files.\n- **Explicit allows and generated output**: `search_records_nothing_clamps_at_eof_and_reports_failures` searches an allowed hidden directory and skips an unallowed one. `allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not` covers a gitignored allowed directory and an external allowed path. In that test a disallowed descendant returns `PermissionDenied`. `cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files` covers discovered Cargo output directories and a disallow that still applies to them.\n- **Source-access policy applied during the walk, and denials**:\n  - `generated_evidence_is_excluded_from_reads_search_and_discovery` covers the `evidence/` directory and its symlink aliases.\n  - `outside_symlinks_are_excluded_from_reads_search_and_discovery` and `unpermitted_requests_outside_the_project_are_recoverable_tool_errors` cover symlinks and paths outside the project.\n  - `git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files` and `git_symlink_reads_require_both_the_alias_and_target_to_be_tracked` cover untracked files, and the CLI test `explicit_untracked_reads_return_an_untracked_error_and_the_assessment_continues` covers an untracked path requested explicitly.\n  - Denied candidates are left out of search results and explicit requests for them return errors.\n- **Ordering**: `parallel_search_orders_results_by_path_and_line` writes 40 files in reverse order. It asserts the results are sorted and identical across repeated runs, and that `search_id` differs between runs.\n- **Context windows**: `context_windows_include_exactly_the_requested_lines_on_each_side` checks the default and the values 0, 1, 2 and 3 against the exact lines and matched flags. `separate_windows_in_one_node_are_divided_by_an_elision_line` checks that separate windows get an unmarked elision line and that adjacent windows merge. `search_records_nothing_clamps_at_eof_and_reports_failures` and `search_excerpts_stop_at_byte_boundaries_including_attached_comments_and_attributes` check that windows stop at item boundaries, including attached comments and attributes and lines shared between items.\n- **Entry shape**: `search_returns_innermost_nodes_and_comment_owners` checks that nested matches report the innermost node and that a comment match belongs to its owner node. Several tests assert that entries carry no line-number fields, and `search_records_nothing_clamps_at_eof_and_reports_failures` checks that results contain no `definitions`.\n- **Redaction**: `model_inputs_reads_searches_and_citation_prompts_are_redacted` asserts that search results do not leak the token or credential values. `search_excerpts_stop_at_byte_boundaries_including_attached_comments_and_attributes` also checks for `[REDACTED:` markers.\n- **Evidence inputs**: search tests assert that `search.inputs` and `recorded_inputs()` are empty, so unselected snippets contribute nothing. `requirements.authoring.finish_search.inputs` is cited, so I did not reassess it.\n- **`referencing`**:\n  - `ripgrep_referencing_searches_only_referencing_files_or_nodes` covers default roles, role narrowing, the `fixme` role, globs and anchors, `file` and `node` scope, and a `path` that still limits the search. It also covers a definition with no references, which returns an empty array.\n  - The same test checks explanatory errors for a selection matching nothing, an unknown role, an unknown scope, and malformed arguments.\n  - `ripgrep_node_scope_searches_only_the_node_a_selector_anchor_names` covers a selector anchor under node and file scope, and an unresolved selector.\n  - `text_search_selects_example_test_references_and_test_anchors` covers examples and `:test:` anchors.\n- **Errors and empty results**: `search_records_nothing_clamps_at_eof_and_reports_failures` checks explanatory errors for missing or mistyped `pattern` and `path`, a non-integer `context`, an unexpected argument, an invalid pattern, and a matched file that fails to parse. A negative `context` is rejected in `search_merges_context_windows_and_respects_ignore_rules`. A pattern with no matches returns an empty array in the same test.\n- **Not directly tested**: the \"no external `rg` executable\" clause. It concerns the process environment, and I count it under the testing exemption: no test in the project sets up an environment without `rg`.\n\nI found no unresolved gaps, and there are no acknowledgments to consider.",
+  "references": "493927ba3241b8fe7462b48471c01bca411754e5a86b798df04edce223006155",
   "inputs": [
     {
       "requirements": "requirements.authoring.text_search",
@@ -106,7 +106,7 @@
         ":::{req} outline_comments",
         "Each documented profile defines which grammar nodes are comments; the Markdown",
         "profile's comments are HTML comment blocks, so an inline HTML comment within a",
-        "paragraph is text of its section. In every supported language, comments on consecutive lines with no other source",
+        "paragraph remains ordinary paragraph text. In every supported language, comments on consecutive lines with no other source",
         "between them MUST form one comment run. A comment that follows other source on",
         "the same line, including another comment, MUST form a run by itself and MUST belong to the innermost outline node",
         "containing that line. Any other run MUST belong to the next outline node that",
@@ -116,7 +116,7 @@
         "instead: such a run MUST belong to the smallest node containing it. The Rust",
         "profile MUST bind inner doc comments (`//!`, `/*!`) to their container, so a",
         "file-level inner doc comment belongs to the root node. A reference in a comment MUST count for the node its run belongs to under",
-        "{cite}`requirements.references.rust_item_coverage` and",
+        "{cite}`requirements.references.coverage.tests` and",
         "{cite}`requirements.references.authoring_inputs`.",
         ":::"
       ]
@@ -128,17 +128,8 @@
       ],
       "text": [
         ":::{req} outline_selectors",
-        "An outline selector MUST be a `/`-separated path of segments from the file's",
-        "root node to an outline node; the empty selector MUST select the root node. A",
-        "named node's segment MUST be `kind[name]`. An anonymous node's segment MUST be",
-        "`kind@hash`, where `hash` is the first twelve hexadecimal digits of its identity",
-        "hash under {cite}`requirements.references.structural_hash`. Siblings whose",
-        "segments would otherwise be identical MUST be disambiguated by `#N`, their",
-        "one-based position among those siblings in source order, except `line` nodes:",
-        "identical lines are interchangeable, so a `line` selector MUST resolve when any",
-        "line with that content exists in the file. In names, `%`, `[`, `]`, `/`, `#`,",
-        "`@`, and whitespace MUST be percent-encoded as UTF-8 bytes, so selectors are",
-        "reversible. Line numbers MUST NOT form part of a selector.",
+        "Habeas uses the TBV [outline selector grammar](sdk/outlines.md#parse-an-outline-selector)",
+        "under {cite}`requirements.sdk.outlines.selector_syntax` for source addresses.",
         ":::"
       ]
     },
@@ -193,8 +184,7 @@
       ],
       "text": [
         ":::{req} search_accounting.instructions",
-        "The first delivered search result in each assessment MUST include an",
-        "`instructions` field containing this text:",
+        "The `instructions` field supplied under {cite}`requirements.authoring.search_accounting.first_result` MUST contain the following text.",
         "",
         "```text",
         "Before submitting your assessment, close every delivered search with finish_search({search_id, used:[tags]}). Submission fails while any search remains open. Include a tag only when you used information in its snippet to justify your conclusion without an additional source read. Entries whose source you subsequently read with habeas may be omitted; including them is harmless. Use used:[] when no entries qualify, including for an empty search. finish_search records dependencies and does not request more source.",
@@ -457,16 +447,556 @@
       "file": "tests/authoring_cli.rs",
       "item": "fn[explicit_untracked_reads_return_an_untracked_error_and_the_assessment_continues]",
       "hash": "76f117cf290b86ac5cc1ee499e79aecb88448198f81e1645da804cf164a94229"
+    }
+  ],
+  "format_version": 1,
+  "review_version": "habeas-review-v1",
+  "dependencies": [
+    {
+      "Node": [
+        {
+          "ReferenceSet": "requirements.authoring.text_search"
+        },
+        {
+          "scheme": "habeas-reference-set-v1",
+          "value": "493927ba3241b8fe7462b48471c01bca411754e5a86b798df04edce223006155"
+        }
+      ]
     },
     {
-      "file": "src/authoring/pages.rs",
-      "item": "mod[tests]/fn[search_pages_are_accounted_only_when_delivered_and_replay_stays_closed]",
-      "hash": "fced27a0d0336097ee5f91dd80435b4ae4358a5128dda301ed3cc72ee8923c77"
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.authoring.text_search"
+        },
+        "Mandatory",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "b87347ad23be6df2c8863bc228cf4c2d41e74434ef1daef883b2c77fd8c0715e"
+        }
+      ]
     },
     {
-      "file": "src/authoring/searches.rs",
-      "item": "mod[tests]/fn[delivered_searches_including_empty_results_need_explicit_completion]",
-      "hash": "ef8818cf96c3d012e634ba0ad4fc4b272b76f4392e90a2288630f39e822a1325"
+      "Node": [
+        {
+          "Requirement": "requirements.authoring.text_search"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "7b995cbecddc6a81f4c80a05129356d2246e07619d09b00a53834a41cd5aa6a7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.authoring.search_accounting.excerpts"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "a1c6bfc504e796b6fc696c4394bb5d01f781b417fa6701d4258452244911f1a4"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.references.outline_comments"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "1a88f9c0074509f126a794568ad4695769738fbdb5bd62fb00ede350fe0fc25a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.references.outline_selectors"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "a0b3c77523296ee564e8b4d1f3c6d4cfb313a769f21493a5794668ce3d23cb71"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.authoring.redaction"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "6f2583a526816b76df804ce4d2369215ef26c0223340df1031fa7f571d1b7615"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.authoring.finish_search.inputs"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "5e1f5a6aa85e50b97f1c013d98eb57ffbc00c9b1b2538b79c6bce54740fd6e89"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.authoring.search_accounting.instructions"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "45b3ea683fa01828294205ec98332e689f3c53242df6fa6847d7315c453b892d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.authoring.finish_search.description"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "069eb75174e2d439bdb6363999b2fbf2372a9a5dd9383e5e9e2845811378dab3"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.references.definition_globs"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "fb9c96289ee7b4d61819e473ecefb0e8849242704c3336d0edce58705763e001"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.references.anchors"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "0487290179ac502440d97b0002835af73dd3fd0583a08755cdf0cfe787615942"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.authoring.source_tools"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "7ab2074676bf693efc32f8b7adf7092fb062b613c4adb7be195227e91312718a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.authoring.read_denial"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "38592039712d1a50167415f4c711e29c8a1eba134fcf619932cac9378a3518ce"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/tools.rs"
+            },
+            "selector": "mod[tests]/fn[model_inputs_reads_searches_and_citation_prompts_are_redacted]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "f4736787b1df74126f3f422347c17f224ed805702cc742e410b5cf8931b55d02"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/tools.rs"
+            },
+            "selector": "mod[tests]/fn[search_merges_context_windows_and_respects_ignore_rules]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "e4031aa898b7bd99d931094412371fb4ac3cec3bb0910187301790c6b35b718b"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/tools.rs"
+            },
+            "selector": "mod[tests]/fn[generated_evidence_is_excluded_from_reads_search_and_discovery]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "7b34441e761f45e2cdcbb235e328fc8b95a2e1fd2daaf81b02dafd5fd21805c7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/tools.rs"
+            },
+            "selector": "mod[tests]/fn[outside_symlinks_are_excluded_from_reads_search_and_discovery]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "ba669b389796f05e479b9da9057bfac9cfd1899b8013c5aa869518f05283a308"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/tools.rs"
+            },
+            "selector": "mod[tests]/fn[operating_system_permission_failures_are_ordinary_read_failures]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "765ea72ff36e3edb0d5c14d688880702246c8589290cd11c83318aacdac6ddad"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/tools.rs"
+            },
+            "selector": "mod[tests]/fn[git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "03fb924ff6657696c674dd8d38f4c9517d02b0f980d309c21135d63fc8f7a9ae"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/tools.rs"
+            },
+            "selector": "mod[tests]/fn[git_symlink_reads_require_both_the_alias_and_target_to_be_tracked]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "e04373c158f12dbf18be387fea016c5d8e64c47d5d587205f0f2af4423814379"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/tools.rs"
+            },
+            "selector": "mod[tests]/fn[allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "42ab649387529399a26bfec5464bb2fa91d8e1bd74be8a9d552fd0d94423ba0b"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/tools.rs"
+            },
+            "selector": "mod[tests]/fn[cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "846fa385546db8a96db1783bdba6f2203a2022e1c03736cf904b2d211557346c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/tools.rs"
+            },
+            "selector": "mod[tests]/fn[search_uses_the_validated_target_when_symlinks_precede_parent_components]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "2d8135e62338081919457af8103d3d0c8b5dd521ac483adf4da7ccc74ecfd7d7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/tools.rs"
+            },
+            "selector": "mod[tests]/fn[parallel_search_orders_results_by_path_and_line]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "70efb7e6cbe68a14d7245ce81b8e6dae0679bbd34a086a96d1f05b02c96f6706"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/tools.rs"
+            },
+            "selector": "mod[tests]/fn[unpermitted_requests_outside_the_project_are_recoverable_tool_errors]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "4fcaee6929026096f60af6cfaa9f2c9247873bf6c08680ab203c50cd35ecc9ac"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/tools.rs"
+            },
+            "selector": "mod[tests]/fn[context_windows_include_exactly_the_requested_lines_on_each_side]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "864923672fb9e1c2471f799b8cdc2fde4248405038afc2d6e1223bbb10108fbd"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/tools.rs"
+            },
+            "selector": "mod[tests]/fn[separate_windows_in_one_node_are_divided_by_an_elision_line]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "32a61bac19b1a31621499a223b281f1d6b28ab9b1ce0fd34c25b3b5629f30090"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/tools.rs"
+            },
+            "selector": "mod[tests]/fn[search_excerpts_stop_at_byte_boundaries_including_attached_comments_and_attributes]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "52beb50be973580f59aee6ec5d5acdceaa1d113ff88dc7cc0b82047e09135859"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/tools.rs"
+            },
+            "selector": "mod[tests]/fn[exact_match_ranges_preserve_regex_anchors_and_skip_unmatched_or_binary_sources]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "374c1176ef3f13d7e4eae8e3a3bfcb3091f24c66923f8e43af0cc71132ed6670"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/tools.rs"
+            },
+            "selector": "mod[tests]/fn[search_returns_innermost_nodes_and_comment_owners]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "a518dc8804434008440796595efbb3a95596a317a5bc439892dc77be4a1a8dec"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/tools.rs"
+            },
+            "selector": "mod[tests]/fn[ripgrep_tool_is_advertised_with_its_interface_and_conventions]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "0987c2d2aa49f4cf602bfc486ba36c2204d135dd4b548ec3a5284e4ecf7e2237"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/tools.rs"
+            },
+            "selector": "mod[tests]/fn[search_records_nothing_clamps_at_eof_and_reports_failures]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "982bd4893ec0e7440e272c67178897ba99f9b275920aa1c254ddc4d01df706d2"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/tools.rs"
+            },
+            "selector": "mod[tests]/fn[text_search_selects_example_test_references_and_test_anchors]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "b8df3059108d055c35135fb061063c152ad9f61ccd52a85aea7785ec8a4e566b"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/tools.rs"
+            },
+            "selector": "mod[tests]/fn[ripgrep_referencing_searches_only_referencing_files_or_nodes]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "030053dc152054ef0f7c8a23e7d7f0e5e767d3ccd3efa56f14b295bfb5938ebc"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/tools.rs"
+            },
+            "selector": "mod[tests]/fn[ripgrep_node_scope_searches_only_the_node_a_selector_anchor_names]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "0f34b5c88b472c8b2d3cb12c03b55562a0adb45ccc8884ba1288f733114917c3"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/authoring_cli.rs"
+            },
+            "selector": "fn[explicit_untracked_reads_return_an_untracked_error_and_the_assessment_continues]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "9440f56134869dd482e28ff0d6a2e5155024f6db2d33f128e1fa0de1cc8c08e6"
+        }
+      ]
     }
   ]
 }

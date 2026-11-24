@@ -1,7 +1,7 @@
 {
   "requirement": "A record's `references` digest MUST be rewritten only if the\n{term}`requirements.refactor.mapped_back` current reference set of its subject,\nunder {cite}`requirements.ci.reference_set`, has the recorded digest.",
   "determination": true,
-  "rationale": "I found no gaps. The one obligation is that a record's `references` digest is rewritten only if the mapped-back current reference set of its subject, under `requirements.ci.reference_set`, has the recorded digest.\n\n**Implementation**\n- `src/refactor.rs#fn[rewrite_record]` (marked `{impl}`) makes the decision for definition records.\n  - It reads the recorded `references` string and calls `states.digests(&new, name)`, which returns the current digest and the mapped-back digest.\n  - It rewrites `value[\"references\"]` to the current digest only when `back == recorded`.\n  - When `back != recorded`, it pushes the failure \"the reference set of {new} changed\", which yields `Outcome::Unchanged` and leaves the record untouched.\n  - If the name is unchanged and `current == back`, nothing was mapped, so it neither rewrites nor fails. That is consistent with \"only if\".\n  - If `digests` returns `None` (no definition), it makes no rewrite.\n- `src/refactor.rs#impl[States]/fn[digests]` (marked `{impl}`) computes the mapped-back reference set.\n  - It takes `reference_set_entries` over `references_back` and `outlines_back` for the old name, and `node_back` maps each non-anchor entry's file and item back to the old address.\n  - Anchors are already mapped back in `definitions_back`, which `States::compute` builds via `address_back`. It also reverts reference names and commentary through `name_back` and `text_back`.\n  - `digest_entries` then encodes and hashes the entries; the encoding and the entry rules belong to `requirements.ci.reference_set` (not reassessed here).\n  - The same entry rules apply to the current-state digest.\n\n**Reachability:** both helpers are reached from `rewrite_record`, and `digests` also carries its own `{impl}`.\n\n**Tests, all carrying `{test}` references to the subject in `tests/refactor.rs`**\n- `a_moved_function_keeps_its_evidence_current` covers the positive case. After the move, the digest is rewritten, `errors(root)` is empty, and a second run changes 0 records.\n- `a_moved_file_rewrites_anchors_and_paths` covers an anchor mapped back after a file move, with `errors(root)` empty afterwards.\n- `a_reference_set_changed_beyond_the_mapping_blocks_every_rewrite` covers the negative case for a renamed requirement. An extra `{impl}` makes the mapped-back set differ from the recorded digest, so the record is reported as \"the reference set of core.load changed\" and its bytes are unchanged.\n- `a_changed_reference_set_is_reported_on_a_record_reading_nothing_moved` covers the negative case for a record with only a reference-set change, with the digest not rewritten and the file unchanged.\n\nI found no unspecified behavior in the implementation beyond what the text covers.",
+  "rationale": "I judged this from the supplied test source only. I did not request any implementation source.\n\n**Obligation.** `requirements.refactor.reference_digest` says a record's `references` digest is rewritten only if the mapped-back current reference set of its subject has the recorded digest. That gives two testable outcomes:\n- (a) When the mapped-back set matches the recorded digest, the digest is rewritten to the new set's digest. The record must then validate as current.\n- (b) When the mapped-back set does not match, nothing is rewritten and the change is reported.\n\n**(a) Match, so rewrite.**\n- `tests/refactor.rs#fn[a_moved_function_keeps_its_evidence_current]` authors a record and moves `fn[load]` to another file. The reference's file and selector change, so the digest must be recomputed from the mapped-back set to match. The test shows the record is stale before the refactor, with an error mentioning `fn[load]`. After the refactor it asserts `errors(root)` is empty, so the rewritten digest is the correct one. It also checks that an unaffected record (`rules.check`) stays byte-identical, and that a second run changes 0 records.\n- `tests/refactor.rs#fn[a_moved_file_rewrites_anchors_and_paths]` moves a file named by an `:impl:` anchor. It asserts the anchor is rewritten and that `errors(root)` is empty afterwards. This covers the anchor-based reference-set entry.\n\n**(b) Mismatch, so no rewrite.**\n- `tests/refactor.rs#fn[a_reference_set_changed_beyond_the_mapping_blocks_every_rewrite]` renames the definition `rules.load=core.load` and adds an extra `{impl}` that the mapping does not explain. It asserts the report says \"the reference set of core.load changed\". It asserts the report does not mention a text change, so the text and requirements-input rewrites are blocked too. It asserts the record file is byte-identical.\n- `tests/refactor.rs#fn[a_changed_reference_set_is_reported_on_a_record_reading_nothing_moved]` covers a record that reads no moved node, so only its reference set is involved. A node moves and an unmapped `{impl}` is added. It asserts the \"reference set of rules.check changed\" report and that the file is unchanged.\n\n**Other considerations.**\n- The different kinds of change the digest detects are all handled by the digest comparison. They are adding or removing a reference, changing its role, and editing its commentary. They do not need separate tests here. The details of the digest encoding belong to `requirements.ci.reference_set`, which is cited context and not reassessed.\n- A moved definition with an unchanged reference set is covered by the positive tests above.\n\nThe tests cover both directions of the \"only if\" condition with assertions on outputs and on file contents. I found no gap.",
   "references": "2f46e58846b8396a6a7ba0597bb59b9c68f3d34dff3cdfabeed8a919b842ba19",
   "inputs": [
     {
@@ -33,6 +33,11 @@
         "`{cite}` references MUST NOT contribute. The reference-set digest MUST be",
         "the SHA-256 digest of an unambiguous encoding of those entries in sorted order,",
         "so it does not depend on line numbers or on the order references are found.",
+        "For a structural assessment under",
+        "{cite}`requirements.authoring.structural_review`, the digest MUST additionally",
+        "include a versioned structural-assessment marker. A record predating structural",
+        "assessment MUST therefore be stale, including a legacy record with a wildcard",
+        "review version. Other assessments MUST retain their existing digest encoding.",
         "Authoring MUST record the digest of the reference set it supplied, and",
         "validation MUST recompute it and report a changed reference set as stale",
         "evidence. Adding or removing an `{impl}`, `{test}`, or `{fixme}` reference or anchor,",
@@ -41,16 +46,6 @@
         "the node it belongs to MUST NOT.",
         ":::"
       ]
-    },
-    {
-      "file": "src/refactor.rs",
-      "item": "impl[States]/fn[digests]",
-      "hash": "6d0ee78664ce8df21c398467026def8a6cc0cc6620dbc388621bd549e5e9e603"
-    },
-    {
-      "file": "src/refactor.rs",
-      "item": "fn[rewrite_record]",
-      "hash": "fbe65dfbcc20282d32d94e4bd45db002e5622ef3b61353ae23bbff2a52036257"
     },
     {
       "file": "tests/refactor.rs",
@@ -84,19 +79,154 @@
       ]
     },
     {
-      "file": "src/refactor.rs",
-      "item": "impl[States]/fn[compute]",
-      "hash": "1ae409cd4ce7da9badaa5374cde3de8a2d97fb19dad4fcf021fbe51f1cf2b5a6"
+      "file": "tests/refactor.rs",
+      "item": "fn[a_moved_requirement_renames_its_references_and_evidence]",
+      "hash": "06883c08a1a2bc095f37b837bab742b82eb0fc95ad6889d88f3569b32ded6b75"
+    }
+  ],
+  "format_version": 1,
+  "review_version": "habeas-review-v1",
+  "dependencies": [
+    {
+      "Node": [
+        {
+          "ReferenceSet": "requirements.refactor.reference_digest"
+        },
+        {
+          "scheme": "habeas-reference-set-v1",
+          "value": "2f46e58846b8396a6a7ba0597bb59b9c68f3d34dff3cdfabeed8a919b842ba19"
+        }
+      ]
     },
     {
-      "file": "src/evidence.rs",
-      "item": "fn[reference_set_entries]",
-      "hash": "0f825bbaaadfdab7fee13fd62656f6a7f8925a33eebb4897a711c573830be1b2"
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.refactor.reference_digest"
+        },
+        "Mandatory",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "2817d720f716e8ca06c5ba45db68e8d38955aff2275ca755be0fe0842eee59cb"
+        }
+      ]
     },
     {
-      "file": "src/evidence.rs",
-      "item": "fn[reference_set_digest]",
-      "hash": "829ac50cfb1837b4984c92242f4e8cd9b16e2f9ceb45f42c3dc30d6ff42b85ad"
+      "Node": [
+        {
+          "Requirement": "requirements.refactor.reference_digest"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "94952696e5b7d242dc0864ae770f355519db4782aa7b8593dddc6288f4fb2ac0"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.ci.reference_set"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "5426cc7ae42d2401a8529447473d36f637ac729eb7c1c0f574df4b5d918c750d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/refactor.rs"
+            },
+            "selector": "fn[a_moved_function_keeps_its_evidence_current]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "1e22f2563302b8a18e9ee292c146f48ba432603cd9861cfbcb0868393424263c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/refactor.rs"
+            },
+            "selector": "fn[a_moved_file_rewrites_anchors_and_paths]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "e028fa81a1a9fb8c0c5b8dea6a7106eec6b8f2941335dd9e63ff7464b2a814a7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/refactor.rs"
+            },
+            "selector": "fn[a_reference_set_changed_beyond_the_mapping_blocks_every_rewrite]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "bd8267fbec7a5e78f091367b7a039f17ab116587e213368ac5d33fb6163960c8"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/refactor.rs"
+            },
+            "selector": "fn[a_changed_reference_set_is_reported_on_a_record_reading_nothing_moved]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "ea9043aac260d0f32056183598914b78a35f1717c0069d6a83ded3caf2d913ff"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Definition": "requirements.refactor.mapped_back"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "7bbd868ecefb52e7406fda990f76b903845cb6b79d6a28c540a3010bf366875c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/refactor.rs"
+            },
+            "selector": "fn[a_moved_requirement_renames_its_references_and_evidence]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "51b2c4d059308c386dab548702e3469047752e22c48a963e28930fec3709eecd"
+        }
+      ]
     }
   ]
 }

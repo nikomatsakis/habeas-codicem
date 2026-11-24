@@ -40,9 +40,10 @@ impl AssessmentKind {
 // {impl}`requirements.authoring.delivered_inputs`
 pub(crate) struct AssessmentSources {
     pub(crate) root: PathBuf,
-    pub(crate) access: SourceAccess,
+    pub(crate) access: std::sync::Arc<SourceAccess>,
     pub(crate) subject_name: String,
     pub(crate) subject_kind: AssessmentKind,
+    pub(crate) structural: bool,
     pub(crate) subject_text: String,
     pub(crate) has_applicable_fixme: bool,
     /// Parsed outlines, cached for this assessment.
@@ -58,7 +59,7 @@ pub(crate) struct AssessmentSources {
     issue_states: Vec<Vec<(String, &'static str)>>,
     /// GitHub reads for the `github` tool and the states above.
     pub(crate) github: GithubIssues,
-    recorded: Vec<Value>,
+    recorded: trust_but_verify::graph::Trace<Value>,
 }
 
 impl AssessmentSources {
@@ -75,9 +76,34 @@ impl AssessmentSources {
     // {impl}`requirements.references.builtin_definitions`
     // {impl}`requirements.references.site_review`
     pub(crate) fn prepare(root: &Path, subject_name: &str) -> io::Result<Self> {
+        Self::prepare_with_github(root, subject_name, GithubIssues::from_env(root))
+    }
+
+    // {cite}`habeas:util`
+    pub(crate) fn prepare_with_github(
+        root: &Path,
+        subject_name: &str,
+        github: GithubIssues,
+    ) -> io::Result<Self> {
+        Self::prepare_with_context(
+            root,
+            subject_name,
+            github,
+            &load_definitions(root)?,
+            OutlineCache::default(),
+        )
+    }
+
+    // {cite}`habeas:util`
+    pub(crate) fn prepare_with_context(
+        root: &Path,
+        subject_name: &str,
+        github: GithubIssues,
+        definitions: &BTreeMap<String, Declaration>,
+        outlines: OutlineCache,
+    ) -> io::Result<Self> {
         let root = fs::canonicalize(root)?;
-        let access = SourceAccess::load(&root)?;
-        let definitions = load_definitions(&root)?;
+        let access = outlines.source_access(&root)?;
         let subject = definitions
             .get(subject_name)
             .filter(|definition| definition.kind != DefinitionKind::Term)
@@ -123,31 +149,39 @@ impl AssessmentSources {
             );
         }
 
-        let outlines = OutlineCache::default();
-        let mut errors = Vec::new();
-        let files = discovered_files(&root, &mut errors);
-        let references = crate::evidence::collect_references_with_progress(
-            &root,
-            &files,
-            &mut errors,
-            &mut |_| {},
-        );
-        if !errors.is_empty() {
-            return Err(io::Error::other(errors.join("\n")));
-        }
+        let catalog = outlines.reference_catalog(&root);
+        let catalog = catalog
+            .as_ref()
+            .as_ref()
+            .map_err(|error| io::Error::other(error.clone()))?;
+        let files = &catalog.files;
+        let references = &catalog.references;
         let sites =
             crate::evidence::definition_sites(&root, subject_name, subject, &files, &outlines)?;
         // The same edges determine the reference contributions below.
-        let reference_set = crate::evidence::reference_set_digest(
+        let domain = crate::sdk::HabeasDomain {
+            root: &root,
+            definitions,
+            outlines: &outlines,
+        };
+        let id = crate::sdk::RequirementId(subject_name.to_owned());
+        let structural = crate::evidence::structural_assessment(
             &root,
             &outlines,
-            subject_name,
             subject,
-            &references,
-            &sites,
+            &domain.reference_entries(&id)?,
         );
-        // Tests contribute source. Refining declarations contribute their text;
-        // implementation references outside declarations only locate code.
+        let reference_set = domain.reference_set(&id)?;
+        // {impl}`requirements.authoring.structural_inputs`
+        // :::{fixme} requirements.authoring.structural_inputs
+        // :github: nikomatsakis/habeas-codicem#51
+        // Implementation roots are mandatory only in the exclusive structural
+        // mode. Mixed requirements omit them from the initial bundle even though
+        // their independent structural check needs them. Input tests assert the
+        // accepted compromise and do not yet verify the full mixed-input contract.
+        // :::
+        // Structural review receives implementation roots, while test review
+        // retains on-demand implementation reads.
         for reference in references.iter().filter(|reference| {
             reference.name == subject_name
                 && matches!(reference.kind, ReferenceKind::Impl | ReferenceKind::Test)
@@ -158,7 +192,8 @@ impl AssessmentSources {
                 continue;
             }
             let selector = reference_selector(&root, &definitions, &outlines, reference)?;
-            if reference.kind == ReferenceKind::Test
+            if structural
+                || reference.kind == ReferenceKind::Test
                 || matches!(selector, InputSelector::Requirements { .. })
             {
                 access.file(&root, &reference.file)?;
@@ -189,7 +224,7 @@ impl AssessmentSources {
                         ),
                     )
                 })?;
-            if anchor.kind == ReferenceKind::Test {
+            if structural || anchor.kind == ReferenceKind::Test {
                 insert_selector(&mut selectors, selector);
             }
         }
@@ -248,9 +283,9 @@ impl AssessmentSources {
             }
         }
         mandatory.extend(builtins.into_iter().map(builtin_input));
-        let github = GithubIssues::from_env(&root);
         let issue_states = crate::github::input_issue_states(
             &root,
+            &outlines,
             &github,
             &references,
             &definitions,
@@ -277,8 +312,9 @@ impl AssessmentSources {
         }
         Ok(Self {
             root,
-            access,
+            access: access.into(),
             subject_name: subject_name.to_owned(),
+            structural,
             has_applicable_fixme: !acknowledgments.is_empty(),
             subject_kind: AssessmentKind::Definition(
                 subject.kind,
@@ -291,11 +327,11 @@ impl AssessmentSources {
             mandatory,
             issue_states,
             github,
-            recorded: Vec::new(),
+            recorded: trust_but_verify::graph::Trace::default(),
         })
     }
 
-    /// Prepares a citation review of one source item outside the book. Its
+    /// Prepares a citation review of a source item or opted-in book passage. Its
     /// mandatory inputs are the item's outline node, each cited declaration
     /// or built-in text, and the terminology they use; the citations and
     /// their commentary are supplied in the prompt.
@@ -303,7 +339,7 @@ impl AssessmentSources {
     // {impl}`requirements.authoring.mandatory_inputs`
     pub(crate) fn prepare_citation(root: &Path, file: &str, item: &str) -> io::Result<Self> {
         let root = fs::canonicalize(root)?;
-        let access = SourceAccess::load(&root)?;
+        let access = super::access::load_source_access(&root)?;
         let definitions = load_definitions(&root)?;
         let outlines = OutlineCache::default();
         let mut errors = Vec::new();
@@ -321,7 +357,7 @@ impl AssessmentSources {
         .remove(&(file.to_owned(), item.to_owned()))
         .ok_or_else(|| {
             io::Error::other(format!(
-                "{subject_name}: no source item outside the book with {{cite}} references matches"
+                "{subject_name}: no reviewed source item or book passage with {{cite}} references matches"
             ))
         })?;
         let mut mandatory = vec![source_input(
@@ -368,6 +404,7 @@ impl AssessmentSources {
         let github = GithubIssues::from_env(&root);
         let issue_states = crate::github::input_issue_states(
             &root,
+            &outlines,
             &github,
             &references,
             &definitions,
@@ -375,9 +412,10 @@ impl AssessmentSources {
         );
         Ok(Self {
             root,
-            access,
+            access: access.into(),
             subject_name,
             subject_kind: AssessmentKind::Citation(citation),
+            structural: false,
             has_applicable_fixme: false,
             subject_text: String::new(),
             outlines,
@@ -386,7 +424,7 @@ impl AssessmentSources {
             mandatory,
             issue_states,
             github,
-            recorded: Vec::new(),
+            recorded: trust_but_verify::graph::Trace::default(),
         })
     }
 
@@ -406,7 +444,7 @@ impl AssessmentSources {
         item: &str,
     ) -> io::Result<Self> {
         let root = fs::canonicalize(root)?;
-        let access = SourceAccess::load(&root)?;
+        let access = super::access::load_source_access(&root)?;
         let definitions = load_definitions(&root)?;
         let subject_name = crate::sites::subject_label(requirement, file, item);
         let declaration = definitions
@@ -484,6 +522,7 @@ impl AssessmentSources {
         let github = GithubIssues::from_env(&root);
         let issue_states = crate::github::input_issue_states(
             &root,
+            &outlines,
             &github,
             &references,
             &definitions,
@@ -492,10 +531,11 @@ impl AssessmentSources {
         let fixmes = crate::sites::site_fixmes(&root, &site, &references, &outlines);
         Ok(Self {
             root,
-            access,
+            access: access.into(),
             subject_name,
             has_applicable_fixme: !fixmes.is_empty(),
             subject_kind: AssessmentKind::Site(site, fixmes),
+            structural: false,
             subject_text: String::new(),
             outlines,
             reference_set: String::new(),
@@ -503,7 +543,7 @@ impl AssessmentSources {
             mandatory,
             issue_states,
             github,
-            recorded: Vec::new(),
+            recorded: trust_but_verify::graph::Trace::default(),
         })
     }
 
@@ -560,7 +600,7 @@ impl AssessmentSources {
     /// selector, and hash.
     // {impl}`requirements.authoring.delivered_inputs`
     pub(crate) fn recorded_inputs(&self) -> &[Value] {
-        &self.recorded
+        self.recorded.observations()
     }
 
     // {impl}`requirements.authoring.delivered_inputs`
@@ -570,9 +610,7 @@ impl AssessmentSources {
         // evidence input form.
         for input in inputs.iter().filter(|input| input.get("builtin").is_none()) {
             let input = recorded_input(input);
-            if !self.recorded.contains(&input) {
-                self.recorded.push(input);
-            }
+            self.recorded.observe(input);
         }
     }
 
@@ -667,7 +705,9 @@ impl AssessmentSources {
                     None,
                 )?
                 .into_iter()
-                .filter(|definition| definition != input && !self.recorded.contains(definition))
+                .filter(|definition| {
+                    definition != input && !self.recorded.observations().contains(definition)
+                })
                 .collect())
             })
             .collect()
@@ -684,19 +724,9 @@ impl AssessmentSources {
             None,
         )?
         .into_iter()
-        .filter(|input| !inputs.contains(input) && !self.recorded.contains(input))
+        .filter(|input| !inputs.contains(input) && !self.recorded.observations().contains(input))
         .collect())
     }
-}
-
-// {impl}`requirements.authoring.mandatory_inputs`
-// {impl}`requirements.authoring.file_discovery`
-pub(crate) fn generated_evidence_path(root: &Path, path: &Path) -> bool {
-    let path = root.join(path);
-    let evidence = root.join("evidence");
-    path.starts_with(&evidence)
-        || fs::canonicalize(&path)
-            .is_ok_and(|path| path.starts_with(fs::canonicalize(&evidence).unwrap_or(evidence)))
 }
 
 // {impl}`requirements.authoring.mandatory_inputs`
@@ -743,8 +773,7 @@ fn source_input(
             }
         }
     }
-    let resolved = selector
-        .resolve(root, definitions, outlines)
+    let resolved = crate::sdk::resolve_input(root, definitions, outlines, selector)
         .map_err(io::Error::other)?;
     for range in &resolved.ranges {
         access.file(root, Path::new(&range.file))?;
@@ -809,7 +838,7 @@ fn reference_selector(
         .as_ref()
         .map_err(|error| io::Error::other(format!("cannot outline referenced source: {error}")))?;
     let item = if parsed.outline.profile.language.is_some() {
-        let index = parsed.outline.owner_at_line(reference.line);
+        let index = parsed.reference_owner_at_line(reference.line);
         parsed.outline.nodes[index].selector.clone()
     } else {
         String::new()
@@ -1506,6 +1535,13 @@ pub(super) mod tests {
         );
         let second = acknowledgment("", "Second gap.");
         fs::write(root.path().join("a.txt"), format!("{first}\n{second}")).unwrap();
+        let invalid = [
+            acknowledgment(":unsupported: option\n", "Unsupported option gap."),
+            acknowledgment(":github: not-an-issue\n", "Malformed issue gap."),
+            acknowledgment(":github: o/r#3\n", ""),
+            ":::{fixme} requirements.ready\nUnclosed gap.\n".to_owned(),
+        ];
+        fs::write(root.path().join("invalid.txt"), invalid.join("\n")).unwrap();
         fs::write(root.path().join("z.txt"), acknowledgment("", "Last gap.")).unwrap();
         let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
         let metadata = sources.model_acknowledgments();
@@ -1750,14 +1786,14 @@ pub(super) mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        assert_eq!(
-            items,
-            [
-                ("docs/guide.md", "section[Usage]"),
-                // A plain-text file contributes the complete file.
-                ("notes.txt", ""),
-            ]
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].0, "docs/guide.md");
+        assert!(
+            items[0].1.starts_with("section[Usage]/paragraph@"),
+            "{items:#?}"
         );
+        // A plain-text file contributes the complete file.
+        assert_eq!(items[1], ("notes.txt", ""));
         let acknowledgments = sources.model_acknowledgments();
         assert_eq!(acknowledgments.len(), 1, "{acknowledgments:#?}");
         assert_eq!(acknowledgments[0]["file"], "src/lib.rs");

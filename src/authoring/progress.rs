@@ -7,6 +7,7 @@ use super::AuthoringOutcome;
 use crate::evidence::InspectionProgress;
 use crate::judgment::Judgment;
 
+// {cite}`habeas:util`
 pub(super) struct BatchProgress {
     bar: Option<ProgressBar>,
     inspection_stage: Option<(&'static str, bool)>,
@@ -47,6 +48,7 @@ impl BatchProgress {
         }
     }
 
+    // {cite}`habeas:util`
     pub(super) fn inspect(&mut self, update: InspectionProgress) {
         if let Some(bar) = &self.bar {
             let stage = (update.stage, update.total.is_some());
@@ -71,6 +73,7 @@ impl BatchProgress {
         }
     }
 
+    // {cite}`habeas:util`
     pub(super) fn start(&self, total: usize) {
         if let Some(bar) = &self.bar {
             bar.set_position(0);
@@ -87,6 +90,7 @@ impl BatchProgress {
         }
     }
 
+    // {cite}`habeas:util`
     pub(super) fn completed(&mut self, assessment: &AuthoringOutcome) {
         match &assessment.determination {
             Judgment::True => self.positive += 1,
@@ -113,11 +117,13 @@ impl BatchProgress {
         }
     }
 
+    // {cite}`habeas:util`
     pub(super) fn failed(&mut self, label: &str, error: &impl std::fmt::Display) {
         self.errors += 1;
         self.println(&format!("{label}: {error}"));
     }
 
+    // {cite}`habeas:util`
     pub(super) fn refresh(&self, active: usize, queued: usize) {
         if let Some(bar) = &self.bar {
             bar.set_message(format!(
@@ -128,6 +134,7 @@ impl BatchProgress {
         }
     }
 
+    // {cite}`habeas:util`
     pub(super) fn println(&self, message: &str) {
         if let Some(bar) = &self.bar {
             bar.println(message);
@@ -136,6 +143,7 @@ impl BatchProgress {
         }
     }
 
+    // {cite}`habeas:util`
     pub(super) fn finish(&self, interrupted: bool, queued: usize) {
         if let Some(bar) = &self.bar {
             bar.disable_steady_tick();
@@ -156,6 +164,7 @@ impl BatchProgress {
     }
 }
 
+// {cite}`habeas:util`
 fn progress_style(template: &str) -> ProgressStyle {
     let template = if std::env::var_os("NO_COLOR").is_some() {
         template.replace(":.cyan/blue", "").replace(":.cyan", "")

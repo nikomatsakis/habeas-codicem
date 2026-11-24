@@ -140,6 +140,7 @@ pub(crate) type Sites = BTreeMap<String, Vec<SiteItem>>;
 
 /// Whether a reference is a `{fixme}` naming a distributed requirement from
 /// inside one of its sites, so it belongs to that site's review alone.
+// {cite}`habeas:util`
 pub(crate) fn in_own_site(root: &Path, sites: &Sites, reference: &SourceReference) -> bool {
     reference.kind == ReferenceKind::Fixme
         && sites
@@ -265,10 +266,35 @@ pub(crate) fn discover(
         let (queries, problems) = crate::structural::parse_queries(declaration);
         errors.extend(problems);
         let runnable = validate_queries(name, declaration, &queries, errors);
+        // Evaluate dependencies first, even when a violation is declared
+        // before its site query. Report results in declaration order below.
+        let mut site_results = BTreeMap::new();
+        let mut failed_sites = BTreeSet::new();
+        for query in &runnable {
+            if query.kind == QueryKind::Sites {
+                let result =
+                    crate::structural::query_matches(root, files, outlines, &queries, &query.name);
+                if result.is_err() {
+                    failed_sites.insert(query.name.as_str());
+                }
+                site_results.insert(query.name.as_str(), result);
+            }
+        }
         let mut matches = Vec::new();
         for query in runnable {
+            if query
+                .body
+                .within
+                .as_deref()
+                .is_some_and(|within| failed_sites.contains(within))
+            {
+                continue;
+            }
             let location = format!("{}:{}", declaration.file, query.line);
-            match crate::structural::query_matches(root, files, outlines, &queries, &query.name) {
+            let result = site_results.remove(query.name.as_str()).unwrap_or_else(|| {
+                crate::structural::query_matches(root, files, outlines, &queries, &query.name)
+            });
+            match result {
                 Ok(found) => {
                     if query.kind == QueryKind::Sites && found.is_empty() {
                         errors.push(format!(
@@ -333,8 +359,12 @@ fn validate_queries<'a>(
                 "{name} has a violation query, so it must also have a site query"
             ));
         }
-        if let Err(error) = crate::structural::within_query(queries, query) {
-            problems.push(error);
+        // With no site queries, the diagnostic above already explains why
+        // a supplied target cannot resolve. Missing `within` is independent.
+        if !(query.kind == QueryKind::Violations && !has_sites && query.body.within.is_some()) {
+            if let Err(error) = crate::structural::within_query(queries, query) {
+                problems.push(error);
+            }
         }
         if let Err(error) = crate::structural::StructuralRule::compile(
             &query.body.language,
@@ -501,7 +531,7 @@ pub(crate) fn site_fixmes(
                 .ok()
                 .filter(|parsed| parsed.outline.profile.language.is_some())
                 .map(|parsed| {
-                    parsed.outline.nodes[parsed.outline.owner_at_line(reference.line)]
+                    parsed.outline.nodes[parsed.reference_owner_at_line(reference.line)]
                         .selector
                         .clone()
                 })
@@ -606,6 +636,26 @@ fn validate_review(
             return;
         }
     };
+    let subject =
+        crate::sdk::HabeasNode::review_subject(&crate::authoring::AuthoringSubject::Site {
+            requirement: site.requirement.clone(),
+            file: site.file.clone(),
+            item: site.item.clone(),
+        });
+    let domain = crate::sdk::HabeasDomain {
+        root,
+        definitions,
+        outlines,
+    };
+    let native = value.clone();
+    let value = match crate::evidence_format::view(&value) {
+        Ok(value) => value,
+        Err(error) => {
+            errors.push(format!("{label}: invalid evidence format: {error}"));
+            return;
+        }
+    };
+    crate::evidence_format::check_native(&native, &subject, &domain, &label, errors);
     let Some(object) = value.as_object() else {
         errors.push(format!("{label}: expected a JSON object"));
         return;
@@ -913,6 +963,71 @@ no_match:
 
     // {test}`requirements.references.distributed`
     #[test]
+    fn declared_queries_share_discovery_exclusions_and_filter_source_language() {
+        let chapter = r#"::::{req} rule
+Rust sentinel uses are sites.
+:::{sites} sentinels
+```yaml
+language: rust
+rule: {kind: identifier, regex: "^sentinel$"}
+match: ["fn check() { let sentinel = 1; }"]
+no_match: ["fn check() { let other = 1; }"]
+```
+:::
+::::
+"#;
+        let source = "fn check() { let sentinel = 1; }\n";
+        let temp = project(chapter, source);
+        let root = temp.path();
+        let git = |args: &[&str]| {
+            let result = std::process::Command::new("git")
+                .current_dir(root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        fs::write(root.join("src/other.py"), "sentinel = 1\n").unwrap();
+        fs::write(root.join("src/untracked.rs"), source).unwrap();
+        for folder in ["target", "book", "evidence", ".git"] {
+            fs::create_dir_all(root.join(folder)).unwrap();
+            fs::write(root.join(folder).join("excluded.rs"), source).unwrap();
+        }
+        git(&[
+            "add",
+            "--",
+            "book.toml",
+            "md/requirements.md",
+            "src/lib.rs",
+            "src/other.py",
+        ]);
+        git(&[
+            "add",
+            "-f",
+            "--",
+            "target/excluded.rs",
+            "book/excluded.rs",
+            "evidence/excluded.rs",
+        ]);
+        let (errors, sites) = inspect(root);
+        assert!(
+            !errors.iter().any(|error| error.contains("query")),
+            "{errors:?}"
+        );
+        let found = &sites["requirements.rule"];
+        assert_eq!(found.len(), 1, "{found:#?}");
+        assert_eq!(found[0].file, "src/lib.rs");
+        assert_eq!(found[0].item, "fn[check]");
+        assert_eq!(found[0].queries(), ["sentinels"]);
+    }
+
+    // {test}`requirements.references.distributed`
+    #[test]
     // {test}`requirements.authoring.no_line_numbers`
     fn sites_are_the_innermost_nodes_of_site_matches_and_violations_within_them() {
         let temp = project(RULE, SOURCE);
@@ -949,8 +1064,7 @@ no_match:
             nested.matches_value()[1],
             json!({"kind": "violations", "query": "panics", "item": "mod[inner]/fn[check_three]/fn[nested]", "text": "panic!(\"z\")"})
         );
-        // No query problems; each site lacks a review, and being a site is
-        // not a reference for Rust item coverage.
+        // No query problems; each site lacks its own review.
         assert!(
             !errors.iter().any(|error| error.contains("query")),
             "{errors:?}"
@@ -968,14 +1082,44 @@ no_match:
                 "{item}: {errors:?}"
             );
         }
-        let inspection = crate::evidence::inspect_repository(temp.path()).unwrap();
+    }
+
+    // {test}`requirements.references.distributed`
+    #[test]
+    fn violations_belong_to_the_innermost_containing_site() {
+        let source = "fn check_outer() {\n    fn check_inner() { panic!(\"inner\"); }\n}\n";
+        let temp = project(RULE, source);
+        let (errors, sites) = inspect(temp.path());
         assert!(
-            inspection.uncovered.iter().any(|item| item
-                .error
-                .contains("function check_two has no recent coverage")),
-            "{:?}",
-            inspection.uncovered
+            !errors.iter().any(|error| error.contains("query")),
+            "{errors:?}"
         );
+        let sites = &sites["requirements.rule"];
+        assert_eq!(sites.len(), 2, "{sites:?}");
+        let outer = sites
+            .iter()
+            .find(|site| site.item == "fn[check_outer]")
+            .unwrap();
+        assert!(
+            outer
+                .matches
+                .iter()
+                .all(|found| found.kind == QueryKind::Sites),
+            "{outer:?}"
+        );
+        let inner = sites
+            .iter()
+            .find(|site| site.item == "fn[check_outer]/fn[check_inner]")
+            .unwrap();
+        let violations = inner
+            .matches
+            .iter()
+            .filter(|found| found.kind == QueryKind::Violations)
+            .collect::<Vec<_>>();
+        assert_eq!(violations.len(), 1, "{inner:?}");
+        assert_eq!(violations[0].query, "panics");
+        assert_eq!(violations[0].item, "fn[check_outer]/fn[check_inner]");
+        assert_eq!(violations[0].text, "panic!(\"inner\")");
     }
 
     // {test}`requirements.references.site_review`
@@ -1231,6 +1375,7 @@ no_match: ["struct S;"]
         }
     }
 
+    // {test}`requirements.ci.errors`
     // {test}`requirements.references.distributed`
     #[test]
     fn a_violation_query_needs_a_site_query() {
@@ -1245,6 +1390,114 @@ no_match: ["struct S;"]
             )),
             "{errors:#?}"
         );
+        let query_errors: Vec<_> = errors
+            .iter()
+            .filter(|error| error.contains("query only of"))
+            .collect();
+        assert_eq!(query_errors.len(), 1, "{query_errors:#?}");
+        for within in ["within: only\n", ""] {
+            let broken = chapter
+                .replace("within: only\n", within)
+                .replace("kind: function_item", "kind: not_a_rust_kind")
+                .replace("match: [\"fn a() {}\"]", "match: []");
+            let temp = project(&broken, "fn run() {}\n");
+            let (errors, _) = inspect(temp.path());
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("invalid ast-grep rule")),
+                "{errors:#?}"
+            );
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("match must be a nonempty list")),
+                "{errors:#?}"
+            );
+            assert_eq!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("must have within")),
+                within.is_empty(),
+                "{errors:#?}"
+            );
+            assert!(
+                !errors
+                    .iter()
+                    .any(|error| error.contains("within names no site query")),
+                "{errors:#?}"
+            );
+        }
+    }
+
+    // {test}`requirements.references.distributed`
+    // {test}`requirements.ci.errors`
+    #[test]
+    fn within_cannot_name_another_violation_query() {
+        let temp = project(&RULE.replace("within: checkers", "within: panics"), SOURCE);
+        let (errors, _) = inspect(temp.path());
+        let findings: Vec<_> = errors
+            .iter()
+            .filter(|error| error.contains("within names no site query \"panics\""))
+            .collect();
+        assert_eq!(findings.len(), 1, "{errors:#?}");
+        assert!(
+            !errors
+                .iter()
+                .any(|error| error.contains("must also have a site query")),
+            "{errors:#?}"
+        );
+    }
+
+    // {test}`requirements.ci.errors`
+    // {test}`requirements.authoring.batch`
+    #[test]
+    fn failed_site_queries_do_not_repeat_errors_through_dependent_violations() {
+        let site_start = RULE.find("::::{sites}").unwrap();
+        let violation_start = RULE.find("::::{violations}").unwrap();
+        let end = RULE.rfind("\n:::::\n").unwrap();
+        let failing =
+            RULE[site_start..violation_start].replace("paths: [src]", "paths: [src/missing.rs]");
+        let violation = &RULE[violation_start..end];
+        let independent = failing
+            .replace("checkers", "independent")
+            .replace("src/missing.rs", "src/lib.rs");
+        for forward in [false, true] {
+            let queries = if forward {
+                format!("{violation}\n{failing}")
+            } else {
+                format!("{failing}\n{violation}")
+            };
+            let chapter = format!(
+                "{}{}\n{}\n:::::\n",
+                &RULE[..site_start],
+                queries,
+                independent
+            );
+            let temp = project(&chapter, SOURCE);
+            let root = temp.path();
+            let definitions = crate::evidence::load_definitions(root).unwrap();
+            let files = [root.join("src/missing.rs"), root.join("src/lib.rs")];
+            let mut errors = Vec::new();
+            let mut incomplete = Vec::new();
+            let sites = discover(
+                root,
+                &definitions,
+                &files,
+                &OutlineCache::default(),
+                &mut errors,
+                &mut incomplete,
+            );
+            assert_eq!(errors.len(), 1, "forward={forward}: {errors:#?}");
+            assert!(
+                errors[0].contains("query checkers of requirements.rule cannot run"),
+                "{errors:#?}"
+            );
+            assert_eq!(incomplete, errors);
+            let found = &sites["requirements.rule"];
+            assert_eq!(found.len(), 3, "{found:#?}");
+            assert!(found.iter().all(|site| site.queries() == ["independent"]));
+        }
     }
 
     /// The inputs a current review of a site records: the site's outline

@@ -31,6 +31,9 @@ pub(crate) fn declaration(text: &str) -> Result<(&str, &str), String> {
 }
 
 fn referenced_terms(text: &str, markdown: bool, names: &mut BTreeSet<String>) {
+    if !text.contains("{term}`") {
+        return;
+    }
     names.extend(
         reference_roles(text, markdown)
             .into_iter()
@@ -104,6 +107,12 @@ fn direct_references(
                     _ => continue,
                 },
             };
+            // Most inputs have no terminology references. Avoid parsing their
+            // Rust/comment/Markdown syntax just to establish an empty term set.
+            // A definition input itself remains a dependency without this role.
+            if !matches!(selector, InputSelector::Definition { .. }) && !text.contains("{term}`") {
+                continue;
+            }
             match selector {
                 InputSelector::Definition { definition } => {
                     pending.insert(definition);

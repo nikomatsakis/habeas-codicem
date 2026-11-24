@@ -10,6 +10,7 @@ pub enum Judgment {
 }
 
 impl Judgment {
+    // {cite}`habeas:util`
     pub fn from_value(value: &Value) -> Result<Self, String> {
         match value {
             Value::Bool(true) => Ok(Self::True),

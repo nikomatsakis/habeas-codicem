@@ -5,12 +5,20 @@ description: Use at the start of any work in a project that tracks requirements 
 
 # Habeas
 
-Habeas traces requirements, written in a project's mdBook, to the code and tests
-that implement and verify them. `habeas author` has a model assess whether tests
-adequately check each requirement and records the result as evidence under `evidence/`;
+Habeas supports literate programming: a project's mdBook explains the program,
+and references connect its stated behavior to the code and tests that implement
+and verify it. `habeas author` has a model assess whether tests adequately check
+each requirement, or, for non-distributed requirements with implementation roots
+and no test edges, whether their stated structure is supported. It records the
+result under `evidence/`;
 `habeas::validate()` validates that evidence without calling a model.
 `habeas test` runs instrumented workspace tests and checks their saved execution
 coverage.
+
+The requirements specify independent structural and behavioral checks: mixed
+requirements need both, and a missing edge kind cannot hide a corresponding
+obligation. The current choice of one assessment is an accepted temporary gap
+tracked by issue #51 and acknowledged by fenced `{fixme}` references.
 
 ## Workflow
 
@@ -18,7 +26,7 @@ coverage.
 
       | Task | Skill |
       | --- | --- |
-      | A design session, or any change to behavior, code, tests, or requirement text, including renaming code in place | habeas-requirements |
+      | A design session, or any change to behavior, code, tests, or requirement text, including renaming code in place; writing or revising reference chapters | habeas-requirements |
       | Moving code, tests, or requirements to another file, chapter, or outline node, or renaming a requirement, without changing them | habeas-refactor |
       | Creating or refreshing evidence; `habeas coverage` or `habeas status` reports Habeas findings | habeas-evidence |
       | Adopting Habeas in an existing codebase, or most of the code has no references | habeas-bootstrap-requirements |
@@ -49,9 +57,13 @@ with `cargo install cargo-nextest --locked` (>= 0.9.116) and
 
 Profiles, reports, and captured source under the Cargo target directory
 (`target/habeas/coverage/` by default) are disposable build artifacts. Never stage
-or commit them to Git. The book combines each test's latest compatible attempt;
-source changes invalidate the combined coverage, while saved reports remain
-inspectable. Building the book does not run tests.
+or commit them to Git. SQLite stores one current result per test.
+An unfiltered workspace run clears the set; a filtered run replaces every
+selected test before execution and preserves unselected results. Retries
+replace earlier attempts. `habeas coverage-check` reads this current set;
+source changes invalidate combined coverage. Profiles and captured-source
+reports remain inspectable until their result is replaced. Building the book
+does not read execution measurements or run tests.
 
 For final verification, run `habeas test` (`cargo habeas test` in this repository).
 It collects coverage for the full workspace, then checks it. In CI, recommend
@@ -79,16 +91,16 @@ across build configurations and may remain when coverage is sufficient.
 Exceptions never increase reported percentages.
 {impl}`requirements.test-coverage.check.exceptions.setup`
 
-The requirements index automatically includes a Coverage gaps subchapter.
-Do not add a coverage source chapter or coverage-index directive. Use its CI
-verdict and expandable file gaps to find missing tests or coverage explanations;
-accepted documented gaps are separate. The book shows coverage gaps without
-per-test maps or captured-source reports.
+The requirements index automatically includes a Documented coverage gaps
+subchapter. Do not add a coverage source chapter or coverage-index directive.
+It connects all `habeas:coverage` annotations to their source explanations and
+last recorded reviews, including missing or rejected reviews. Use `habeas status`
+and `habeas author` to check annotations and reviews, and `habeas coverage-check`
+to enforce measured coverage.
 
 ## Inspecting
 
-- `habeas status [<selection>]` lists definitions needing attention and a coverage-warning count.
-- `habeas status --coverage` shows individual evidence-coverage warnings and coverage-history details.
+- `habeas status [<selection>]` lists definitions needing attention and validation findings.
 - `habeas info <selection>` prints requirement and example text, evidence state,
   rationale, inputs, and validation findings.
 
@@ -105,12 +117,14 @@ the chapter path relative to that directory, without `.md`, with `/` changed to
 
 ```text
 :::{req} forwarding.quit
-Pressing q MUST stop managed forwards.
+Pressing q stops all managed forwards.
 :::
 ```
 
-defines `requirements.forwarding.quit`. State obligations with BCP 14 terms
-(MUST, SHOULD, MAY). Everything between the fences is the body.
+defines `requirements.forwarding.quit`. Everything between the fences is the
+body, including prose, code declarations, and their comments. For chapter style
+and expressing obligations, follow "Writing chapters" in the
+habeas-requirements skill.
 
 An `{example}` is a concrete case, named and fenced the same way. Its body must
 reference a requirement it illustrates: `{test}` when that requirement's review

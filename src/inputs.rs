@@ -59,13 +59,83 @@ pub(crate) struct ParsedSource {
     pub(crate) outline: Outline,
 }
 
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+
+    // {test}`requirements.references.outline_comments`
+    // {test}`requirements.references.authoring_inputs`
+    // {test}`requirements.authoring.reference_index`
+    #[test]
+    fn markdown_references_select_the_nearest_directive_or_standalone_paragraph() {
+        let source = "# H\nAn ordinary citation.\n\n::::{note}\nOuter citation.\n\n:::{tip}\nInner citation.\n:::\n::::\n";
+        let parsed = ParsedSource {
+            path: PathBuf::from("a.md"),
+            source: source.to_owned(),
+            redacted: source.to_owned(),
+            outline: outline::parse(Path::new("a.md"), source).unwrap(),
+        };
+        let ordinary = parsed.reference_owner_at_line(2);
+        assert_eq!(parsed.outline.nodes[ordinary].kind, "paragraph");
+        let outer = parsed.reference_owner_at_line(5);
+        let inner = parsed.reference_owner_at_line(8);
+        assert_eq!(parsed.outline.nodes[outer].kind, "block");
+        assert_eq!(parsed.outline.nodes[inner].kind, "block");
+        assert_eq!(parsed.outline.nodes[inner].parent, Some(outer));
+        assert_eq!(parsed.outline.nodes[inner].line_start, 7);
+        assert_eq!(
+            parsed.outline.nodes[parsed.outline.owner_at_line(8)].kind,
+            "paragraph"
+        );
+        let rust = "fn run() {}\n";
+        let parsed = ParsedSource {
+            path: PathBuf::from("a.rs"),
+            source: rust.to_owned(),
+            redacted: rust.to_owned(),
+            outline: outline::parse(Path::new("a.rs"), rust).unwrap(),
+        };
+        assert_eq!(
+            parsed.reference_owner_at_line(1),
+            parsed.outline.owner_at_line(1)
+        );
+    }
+}
+
 // {cite}`habeas:util`
 /// Parsed outlines, cached per file for one validation or authoring run.
+/// Clones share entries populated by any caller in that run.
 #[derive(Default)]
 pub(crate) struct OutlineCache {
-    files: Mutex<HashMap<PathBuf, Arc<Result<ParsedSource, String>>>>,
+    files: Arc<Mutex<HashMap<PathBuf, Arc<Result<ParsedSource, String>>>>>,
     /// Content to parse in place of a file's, by project-relative path.
-    overrides: HashMap<String, String>,
+    overrides: Arc<HashMap<String, String>>,
+    catalogs: Arc<Mutex<HashMap<PathBuf, Arc<Result<ReferenceCatalog, String>>>>>,
+    access: Arc<
+        Mutex<
+            HashMap<
+                PathBuf,
+                Result<Arc<crate::authoring::access::SourceAccess>, (std::io::ErrorKind, String)>,
+            >,
+        >,
+    >,
+}
+
+// {cite}`habeas:util`
+pub(crate) struct ReferenceCatalog {
+    pub references: Vec<crate::evidence::SourceReference>,
+    pub files: Vec<PathBuf>,
+}
+
+impl Clone for OutlineCache {
+    // {cite}`habeas:util`
+    fn clone(&self) -> Self {
+        Self {
+            files: self.files.clone(),
+            overrides: self.overrides.clone(),
+            catalogs: self.catalogs.clone(),
+            access: self.access.clone(),
+        }
+    }
 }
 
 impl OutlineCache {
@@ -73,9 +143,60 @@ impl OutlineCache {
     /// A cache that parses `overrides` in place of those files' contents.
     pub(crate) fn with_overrides(overrides: HashMap<String, String>) -> Self {
         Self {
-            files: Mutex::default(),
-            overrides,
+            overrides: Arc::new(overrides),
+            ..Self::default()
         }
+    }
+
+    /// Git discovery and access rules share the inspection's source snapshot.
+    // {cite}`habeas:util`
+    pub(crate) fn source_access(
+        &self,
+        root: &Path,
+    ) -> std::io::Result<Arc<crate::authoring::access::SourceAccess>> {
+        self.access
+            .lock()
+            .expect("source access cache lock")
+            .entry(root.to_path_buf())
+            .or_insert_with(|| {
+                crate::authoring::access::load_source_access(root)
+                    .map(Arc::new)
+                    .map_err(|error| (error.kind(), error.to_string()))
+            })
+            .clone()
+            .map_err(|(kind, message)| std::io::Error::new(kind, message))
+    }
+
+    /// Repository relationships share one discovery snapshot per inspection.
+    pub(crate) fn reference_catalog(&self, root: &Path) -> Arc<Result<ReferenceCatalog, String>> {
+        if let Some(catalog) = self
+            .catalogs
+            .lock()
+            .expect("reference catalog lock")
+            .get(root)
+        {
+            return catalog.clone();
+        }
+        // A discovery failure aborts; this is not a validation site.
+        let mut failures = Vec::new();
+        let files = crate::evidence::discovered_files(root, &mut failures);
+        let references = crate::evidence::collect_references_with_progress(
+            root,
+            &files,
+            &mut failures,
+            &mut |_| {},
+        );
+        let catalog = Arc::new(if failures.is_empty() {
+            Ok(ReferenceCatalog { references, files })
+        } else {
+            Err(failures.join("\n"))
+        });
+        self.catalogs
+            .lock()
+            .expect("reference catalog lock")
+            .entry(root.into())
+            .or_insert(catalog)
+            .clone()
     }
 
     // {impl}`requirements.authoring.outline_tool`
@@ -90,7 +211,11 @@ impl OutlineCache {
             None => read_project_file(root, file),
         };
         let parsed = Arc::new(read.and_then(|(path, source)| {
-            let redaction = Redaction::of_file(&path, &source);
+            let redaction = Redaction::of_file_with_config(
+                &path,
+                &source,
+                crate::config::user_config_path().ok().as_deref(),
+            );
             let profile = outline::profile_for_path(&path);
             let outline =
                 outline::parse_redacted(profile, &source, &redaction).map_err(|error| {
@@ -111,7 +236,93 @@ impl OutlineCache {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // {test}`requirements.authoring.outline_tool`
+    #[test]
+    fn clones_share_sources_loaded_after_cloning_but_new_runs_read_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("a.rs");
+        fs::write(&file, "fn original() {}\n").unwrap();
+        let outlines = OutlineCache::default();
+        let clone = outlines.clone();
+        let original = clone.parse(temp.path(), "a.rs");
+        assert_eq!(
+            original.as_ref().as_ref().unwrap().source,
+            "fn original() {}\n"
+        );
+
+        fs::write(&file, "fn changed() {}\n").unwrap();
+        let cached = outlines.parse(temp.path(), "a.rs");
+        assert_eq!(
+            cached.as_ref().as_ref().unwrap().source,
+            "fn original() {}\n"
+        );
+        assert!(Arc::ptr_eq(&original, &cached));
+
+        let fresh = OutlineCache::default().parse(temp.path(), "a.rs");
+        assert_eq!(fresh.as_ref().as_ref().unwrap().source, "fn changed() {}\n");
+    }
+
+    // {test}`requirements.authoring.outline_tool`
+    #[test]
+    fn clones_share_overrides_and_failed_reads() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("a.rs"), "fn disk() {}\n").unwrap();
+        let outlines = OutlineCache::with_overrides(HashMap::from([(
+            "a.rs".to_owned(),
+            "fn supplied() {}\n".to_owned(),
+        )]));
+        let clone = outlines.clone();
+        let supplied = clone.parse(temp.path(), "a.rs");
+        assert_eq!(
+            supplied.as_ref().as_ref().unwrap().source,
+            "fn supplied() {}\n"
+        );
+        assert!(Arc::ptr_eq(&supplied, &outlines.parse(temp.path(), "a.rs")));
+
+        let missing = clone.parse(temp.path(), "missing.rs");
+        assert!(missing.is_err());
+        fs::write(temp.path().join("missing.rs"), "fn created() {}\n").unwrap();
+        assert!(Arc::ptr_eq(
+            &missing,
+            &outlines.parse(temp.path(), "missing.rs")
+        ));
+        assert!(
+            OutlineCache::default()
+                .parse(temp.path(), "missing.rs")
+                .is_ok()
+        );
+    }
+}
+
 impl ParsedSource {
+    /// Habeas attaches Markdown references to the nearest directive, or to
+    /// their paragraph outside directives. SDK line selection still exposes
+    /// the innermost paragraph.
+    // {impl}`requirements.references.outline_comments`
+    pub(crate) fn reference_owner_at_line(&self, line: usize) -> usize {
+        let owner = self.outline.owner_at_line(line);
+        if self.outline.profile.name != "markdown" {
+            return owner;
+        }
+        let mut current = Some(owner);
+        while let Some(index) = current {
+            let node = &self.outline.nodes[index];
+            if node.kind == "block"
+                && self.source[node.byte_start..node.byte_end]
+                    .trim_start()
+                    .starts_with(":::")
+            {
+                return index;
+            }
+            current = node.parent;
+        }
+        owner
+    }
+
     /// Resolves a selector to exactly one node.
     // {impl}`requirements.references.outline_selectors`
     pub(crate) fn resolve(&self, file: &str, item: &str) -> Result<usize, String> {
@@ -372,8 +583,10 @@ fn check_project_file(root: &Path, file: &str) -> Result<PathBuf, String> {
 
 pub(crate) fn read_project_file(root: &Path, file: &str) -> Result<(PathBuf, String), String> {
     let path = check_project_file(root, file)?;
-    let content =
-        fs::read_to_string(&path).map_err(|error| format!("cannot read {file}: {error}"))?;
+    let bytes = fs::read(&path).map_err(|error| format!("cannot read {file}: {error}"))?;
+    let content = std::str::from_utf8(&bytes)
+        .map_err(|error| format!("cannot read {file}: {error}"))?
+        .to_owned();
     Ok((path, content))
 }
 

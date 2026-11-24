@@ -365,6 +365,188 @@ fn a_moved_requirement_renames_its_references_and_evidence() {
     );
 }
 
+// {test}`requirements.refactor.record_fields`
+// {test}`requirements.refactor.equivalence`
+// {test}`requirements.refactor.whole_record`
+// {test}`requirements.refactor.dry_run`
+#[test]
+fn versioned_records_preserve_sdk_dependencies_across_verified_moves() {
+    use sha2::{Digest, Sha256};
+
+    // Independently construct the wire dependencies from the fixture's
+    // observations. Reusing this after the move checks every updated hash.
+    let observation = |input: &Value| {
+        let node = if let Some(selection) = input.get("requirements") {
+            json!({"Requirement": selection})
+        } else {
+            json!({"Source": {
+                "resource": {"scheme": "repo", "location": input["file"]},
+                "selector": input["item"],
+            }})
+        };
+        let digest: String = Sha256::digest(serde_json::to_vec(input).unwrap())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        json!({"Node": [node, {"scheme": "habeas-input-v1", "value": digest}]})
+    };
+    let versioned = |mut record: Value, name: &str| {
+        let mut dependencies: Vec<Value> = record["inputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(&observation)
+            .collect();
+        dependencies.push(json!({"Node": [
+            {"ReferenceSet": name},
+            {"scheme": "habeas-reference-set-v1", "value": record["references"]},
+        ]}));
+        let test_file = record["inputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|input| input["item"] == "fn[verify]")
+            .unwrap()["file"]
+            .clone();
+        let target_paths = json!([["source", "repo", test_file, "fn[verify]"]]);
+        let membership: String = Sha256::digest(serde_json::to_vec(&target_paths).unwrap())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        dependencies.push(json!({"OutgoingEdges": [
+            {"Requirement": name},
+            "Mandatory",
+            {"scheme": "node-path-set-sha256-v1", "value": membership},
+        ]}));
+        record["format_version"] = json!(1);
+        record["review_version"] = json!("*");
+        record["dependencies"] = json!(dependencies);
+        record
+    };
+
+    for scenario in [
+        "rename",
+        "move",
+        "selector",
+        "file",
+        "edit",
+        "extra",
+        "bad-extra",
+    ] {
+        let temp = project();
+        let root = temp.path();
+        author(root);
+        let old_path = root.join("evidence/rules.load.json");
+        let record: Value = serde_json::from_slice(&fs::read(&old_path).unwrap()).unwrap();
+        let mut native = versioned(record, "rules.load");
+        if matches!(scenario, "extra" | "bad-extra") {
+            let mut extra = observation(&requirements_input(
+                "rules.check",
+                &["rules.check"],
+                &CHECK_TEXT,
+            ));
+            if scenario == "bad-extra" {
+                extra["Node"][1]["value"] = json!("0".repeat(64));
+            }
+            native["dependencies"].as_array_mut().unwrap().push(extra);
+        }
+        fs::write(&old_path, serde_json::to_vec_pretty(&native).unwrap()).unwrap();
+        if scenario == "bad-extra" {
+            assert!(!errors(root).is_empty());
+        } else {
+            assert_eq!(errors(root), Vec::<String>::new());
+        }
+        let (mapping, subject) = match scenario {
+            "file" => {
+                fs::rename(root.join("src/config.rs"), root.join("src/settings.rs")).unwrap();
+                ("src/config.rs=src/settings.rs", "rules.load")
+            }
+            "extra" | "bad-extra" => {
+                let chapter = fs::read_to_string(root.join("md/rules.md")).unwrap();
+                fs::write(
+                    root.join("md/rules.md"),
+                    chapter.replace(":::{req} check", ":::{req} inspect"),
+                )
+                .unwrap();
+                ("rules.check=rules.inspect", "rules.load")
+            }
+            "rename" => {
+                let chapter = fs::read_to_string(root.join("md/rules.md")).unwrap();
+                fs::write(
+                    root.join("md/rules.md"),
+                    chapter.replace(":::{req} load", ":::{req} read"),
+                )
+                .unwrap();
+                ("rules.load=rules.read", "rules.read")
+            }
+            "selector" => {
+                move_load(root, "");
+                fs::write(
+                    root.join("src/config/load.rs"),
+                    format!("mod loading {{\n{LOAD_ALONE}}}\n"),
+                )
+                .unwrap();
+                (
+                    "src/config.rs#fn[load]=src/config/load.rs#mod[loading]/fn[load]",
+                    "rules.load",
+                )
+            }
+            _ => {
+                move_load(root, if scenario == "edit" { " parse();" } else { "" });
+                (
+                    "src/config.rs#fn[load]=src/config/load.rs#fn[load]",
+                    "rules.load",
+                )
+            }
+        };
+        let before = snapshot(root);
+        let preview = refactor(root, &["--dry-run", "--map", mapping]);
+        assert!(preview.status.success(), "{preview:?}");
+        assert_eq!(snapshot(root), before);
+        let output = refactor(root, &["--map", mapping]);
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            stdout(&preview)
+                .replace("Would rewrite", "Rewrote")
+                .replace("Would change", "Changed")
+                .replace("Would leave", "Left"),
+            stdout(&output),
+            "{scenario}"
+        );
+        if matches!(scenario, "edit" | "bad-extra") {
+            assert_eq!(
+                fs::read(&old_path).unwrap(),
+                before["evidence/rules.load.json"]
+            );
+            assert!(
+                stdout(&output).contains("Left 1 records unchanged"),
+                "{output:?}"
+            );
+            assert!(!errors(root).is_empty());
+            continue;
+        }
+        let migrated: Value = serde_json::from_slice(
+            &fs::read(root.join(format!("evidence/{subject}.json"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(migrated["determination"], true);
+        assert_eq!(migrated["review_version"], "*");
+        let mut expected = versioned(migrated.clone(), subject);
+        if scenario == "extra" {
+            expected["dependencies"]
+                .as_array_mut()
+                .unwrap()
+                .push(observation(&requirements_input(
+                    "rules.inspect",
+                    &["rules.inspect"],
+                    &[":::{req} inspect", "The data MUST be checked.", ":::"],
+                )));
+        }
+        assert_eq!(migrated, expected);
+        assert_eq!(errors(root), Vec::<String>::new(), "{scenario}");
+    }
+}
+
 // {test}`requirements.refactor.reference_rewrite`
 // {test}`requirements.refactor.reference_digest`
 // {test}`requirements.refactor.rationale.paths`
@@ -569,6 +751,7 @@ fn a_rename_rewrites_the_hash_of_a_node_whose_doc_comment_names_it() {
 // {test}`requirements.refactor.record_files`
 // {test}`requirements.refactor.record_fields`
 // {test}`requirements.refactor.equivalence`
+// {test}`requirements.refactor.command`
 #[test]
 fn a_citation_review_follows_its_item_and_the_name_it_cites() {
     let temp = project();
@@ -579,15 +762,15 @@ fn a_citation_review_follows_its_item_and_the_name_it_cites() {
     );
     fs::write(root.join("src/config.rs"), &cited).unwrap();
     author(root);
-    let review = |root: &Path, file: &str, name: &str, text: &[&str]| {
+    let review = |root: &Path, file: &str, item: &str, name: &str, text: &[&str]| {
         json!({
             "file": file,
-            "item": "fn[helper]",
+            "item": item,
             "citations": [{"role": "cite", "name": name, "commentary": ""}],
             "determination": true,
-            "rationale": format!("`{file}#fn[helper]` relies on `{name}`."),
+            "rationale": format!("`{file}#{item}` relies on `{name}`."),
             "inputs": [
-                habeas::outline_input(root, file, "fn[helper]").unwrap(),
+                habeas::outline_input(root, file, item).unwrap(),
                 requirements_input(name, &[name], text),
             ],
         })
@@ -595,16 +778,22 @@ fn a_citation_review_follows_its_item_and_the_name_it_cites() {
     fs::create_dir_all(root.join("evidence/citations/src/config.rs")).unwrap();
     fs::write(
         root.join("evidence/citations/src/config.rs/fn[helper].json"),
-        serde_json::to_string_pretty(&review(root, "src/config.rs", "rules.load", &LOAD_TEXT))
-            .unwrap(),
+        serde_json::to_string_pretty(&review(
+            root,
+            "src/config.rs",
+            "fn[helper]",
+            "rules.load",
+            &LOAD_TEXT,
+        ))
+        .unwrap(),
     )
     .unwrap();
     assert_eq!(errors(root), Vec::<String>::new());
-    // The helper moves to its own file, and `load` to the `core` chapter.
+    // The helper moves into a module in its own file, and `load` to the `core` chapter.
     fs::write(root.join("src/config.rs"), config_source("")).unwrap();
     fs::write(
         root.join("src/helper.rs"),
-        "// {cite}`rules.load`\nfn helper() {}\n",
+        "mod helpers {\n// {cite}`rules.load`\nfn helper() {}\n}\n",
     )
     .unwrap();
     fs::write(
@@ -621,7 +810,7 @@ fn a_citation_review_follows_its_item_and_the_name_it_cites() {
         root,
         &[
             "--map",
-            "src/config.rs#fn[helper]=src/helper.rs#fn[helper]",
+            "src/config.rs#fn[helper]=src/helper.rs#mod[helpers]/fn[helper]",
             "--map",
             "rules.load=core.load",
         ],
@@ -629,19 +818,28 @@ fn a_citation_review_follows_its_item_and_the_name_it_cites() {
     assert!(output.status.success(), "{output:?}");
     assert!(
         stdout(&output).contains(
-            "- evidence/citations/src/config.rs/fn[helper].json -> evidence/citations/src/helper.rs/fn[helper].json"
+            "- evidence/citations/src/config.rs/fn[helper].json -> evidence/citations/src/helper.rs/mod[helpers]%2Ffn[helper].json"
         ),
         "{}",
         stdout(&output)
     );
     assert!(!root.join("evidence/citations/src/config.rs").exists());
     let moved: Value = serde_json::from_str(
-        &fs::read_to_string(root.join("evidence/citations/src/helper.rs/fn[helper].json")).unwrap(),
+        &fs::read_to_string(
+            root.join("evidence/citations/src/helper.rs/mod[helpers]%2Ffn[helper].json"),
+        )
+        .unwrap(),
     )
     .unwrap();
     assert_eq!(
         moved,
-        review(root, "src/helper.rs", "core.load", &LOAD_TEXT)
+        review(
+            root,
+            "src/helper.rs",
+            "mod[helpers]/fn[helper]",
+            "core.load",
+            &LOAD_TEXT
+        )
     );
     let remaining = errors(root);
     assert!(

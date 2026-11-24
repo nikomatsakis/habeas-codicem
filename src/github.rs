@@ -475,17 +475,20 @@ fn fixme_issues(references: &[SourceReference]) -> Vec<(&SourceReference, Vec<St
 // {impl}`requirements.authoring.github_reads`
 pub(crate) fn input_issue_states(
     root: &Path,
+    outlines: &crate::inputs::OutlineCache,
     github: &GithubIssues,
     references: &[SourceReference],
     definitions: &BTreeMap<String, crate::evidence::Declaration>,
     inputs: &[Value],
 ) -> Vec<Vec<(String, &'static str)>> {
     let fixmes = fixme_issues(references);
-    let outlines = crate::inputs::OutlineCache::default();
+    if fixmes.is_empty() {
+        return vec![Vec::new(); inputs.len()];
+    }
     let named = inputs
         .iter()
         .map(|input| {
-            let ranges = input_ranges(root, &outlines, input, definitions);
+            let ranges = input_ranges(root, outlines, input, definitions);
             let mut issues = Vec::new();
             for (reference, names) in &fixmes {
                 let file = display_path(root, &reference.file);
@@ -585,7 +588,7 @@ pub(crate) fn add_issue_findings(inspection: &mut RepositoryInspection, github: 
     }
     let reads = github.read_all(fixmes.iter().flat_map(|(_, issues)| issues.iter().cloned()));
     let not_open = |issue: &String| reads.get(issue).and_then(IssueRead::not_open);
-    let outlines = crate::inputs::OutlineCache::default();
+    let outlines = &inspection.outlines;
     let mut errors = BTreeSet::new();
     for (reference, issues) in &fixmes {
         let file = display_path(&root, &reference.file);
@@ -597,7 +600,7 @@ pub(crate) fn add_issue_findings(inspection: &mut RepositoryInspection, github: 
                 "{file}:{}: {{fixme}} names {issue}, which {reason}",
                 reference.line
             ));
-            let (line, item) = containing_item(inspection, &outlines, &file, reference);
+            let (line, item) = containing_item(inspection, outlines, &file, reference);
             errors.insert(format!(
                 "{file}:{line}: {item} fails: its {{fixme}} at line {} names {issue}, which {reason}",
                 reference.line
@@ -711,7 +714,7 @@ fn containing_item(
     if let Ok(parsed) = outlines.parse(&inspection.root, file).as_ref()
         && parsed.outline.profile.language.is_some()
     {
-        let node = &parsed.outline.nodes[parsed.outline.owner_at_line(reference.line)];
+        let node = &parsed.outline.nodes[parsed.reference_owner_at_line(reference.line)];
         if let (false, Some(name)) = (node.kind.is_empty(), node.display_name()) {
             return (node.declaration_line, format!("{} {name}", node.kind));
         }
@@ -1101,7 +1104,15 @@ mod tests {
             json!({"requirements": "rules.other", "matches": ["rules.other"]}),
         ];
         let issues = GithubIssues::with_api(github.endpoint.clone(), None, None);
-        let states = input_issue_states(&root, &issues, &references, &definitions, &inputs);
+        let outlines = crate::inputs::OutlineCache::default();
+        let states = input_issue_states(
+            &root,
+            &outlines,
+            &issues,
+            &references,
+            &definitions,
+            &inputs,
+        );
         let owned = |pairs: &[(&str, &'static str)]| {
             pairs
                 .iter()
@@ -1117,9 +1128,12 @@ mod tests {
                 Vec::new(),
             ]
         );
+        // Reuse the inspection's source snapshot even after the file disappears.
+        fs::remove_file(root.join("src/lib.rs")).unwrap();
         // Offline, every named issue is assumed open.
         let offline = input_issue_states(
             &root,
+            &outlines,
             &GithubIssues::offline(),
             &references,
             &definitions,

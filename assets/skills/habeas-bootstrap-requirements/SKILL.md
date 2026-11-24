@@ -1,6 +1,6 @@
 ---
 name: habeas-bootstrap-requirements
-description: Use when adopting Habeas in an existing codebase, when `habeas status --coverage` warns about uncovered items across most of a project's code, or when the user asks for a requirements coverage audit. Inventories tests, Rust items, and user-visible behavior; proposes an initial requirement set for the user's approval; tags every test and each requirement's root items; and drives `habeas author` and validation to full coverage. For a few uncovered items, use habeas-evidence.
+description: Use when adopting Habeas in an existing codebase, when the user asks for a requirements coverage audit. Inventories tests, Rust items, and user-visible behavior; proposes an initial requirement set for the user's approval; tags every test and each requirement's root items; and drives `habeas author` and validation to full coverage. For missing test references or stale evidence, use habeas-evidence.
 ---
 
 # Bootstrap requirements
@@ -49,10 +49,9 @@ to a subagent to keep it out of your context.
       area's requirements to confirm authoring works before going on.
 - [ ] 7. Validate and author the area:
       - [ ] a. Run `habeas coverage`, which makes no model calls, and fix
-            the reference errors in this area's files. Leave uncovered items for
-            now: assessments that read reached code cover them, and none have
-            run yet. Items in areas not yet bootstrapped wait for their own
-            pass; never give them placeholder references.
+            the reference errors in this area's files. Tests in areas not yet
+            bootstrapped wait for their own pass; never give them placeholder
+            references. Ordinary helpers need no individual annotations.
       - [ ] b. Tell the user how many definitions `habeas status` says need
             authoring.
       - [ ] c. Follow the habeas-evidence workflow for this area's definitions,
@@ -61,7 +60,7 @@ to a subagent to keep it out of your context.
             until each passes or is on the gap list with a reason. Citation
             reviews are authored only by `habeas author --all`, which also
             authors other areas' definitions: run it once the area's own
-            definitions pass, then check that this area's items are covered.
+            definitions pass, then check this area's evidence and test references.
             Full validation can pass only after the last area.
 - [ ] 8. Have a fresh subagent recount both inventories from the source and tests
       without your lists, and reconcile any differences.
@@ -84,9 +83,8 @@ references.
   tests and parameterized cases. Record the behavior each test checks; fill in
   requirement names once they are installed.
 - **Items and behavior:** in Rust projects, every function, method, struct,
-  enum, and union, listed from the source rather than from the coverage
-  warnings, since an assessment's read can cover an item whose
-  behavior no requirement states. Add by hand the observable surface: public
+  enum, and union, listed from the source to discover behavior no
+  requirement states. Add by hand the observable surface: public
   APIs, commands, handlers, UI actions, configuration, outputs, errors, and
   distinct observable branches. A tagged entry point doesn't mean every observable branch beneath
   it has a requirement.
@@ -103,7 +101,9 @@ hides it from authoring.
 Write one requirement per obligation a user could rely on; the
 habeas-requirements review (step 3) splits compound ones. For tests of internal
 invariants, write a requirement for the invariant they check rather than
-inventing a user-facing promise. Label each proposal and act on the label:
+inventing a user-facing promise. Follow "Writing chapters" in the
+habeas-requirements skill: explain the program while deriving its obligations.
+Label each proposal and act on the label:
 
 - **Intended:** state the observed behavior.
 - **Possible bug:** ask the user what behavior is intended and write the
@@ -111,8 +111,8 @@ inventing a user-facing promise. Label each proposal and act on the label:
   asks; the resulting false judgment stays on the gap list, or gets a
   `{fixme}` reference if the user defers it (the habeas-evidence skill's
   `references/fixme.md`).
-- **Incidental:** the user chooses between a requirement, often with MAY, and
-  removing the behavior. For example, a command that also accepts an
+- **Incidental:** the user chooses between explicitly permitting the behavior
+  and removing it. For example, a command that also accepts an
   undocumented alias.
 
 When a convention applies on its own at many sites, such as how every
@@ -139,7 +139,7 @@ or is not needed.
 
 ```text
 Tests mapped: <mapped>/<total>
-Items mapped: <referenced or reached from a mapped root>/<total>  (covered only by reads: <count>)
+Items mapped: <referenced or reached from a mapped root>/<total>
 Independent recount: <agrees | differences and how reconciled>
 Gaps:
 - <item or behavior> (<file>:<line>): <reason>; <open question>

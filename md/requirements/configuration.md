@@ -74,16 +74,11 @@ WorkspaceConfig {
     version: Integer,                              // exactly 1
     authoring: Optional<WorkspaceAuthoringConfig>,  // defined by evidence authoring
     evidence: Optional<EvidenceConfig>,
-    coverage: Optional<CoverageConfig>,
 }
 
 EvidenceConfig {
     allow: Array<Path>,                            // omitted means empty
     disallow: Array<Path>,                         // omitted means empty
-}
-
-CoverageConfig {
-    reauthorings: Optional<Integer>,               // positive; omitted means 3
 }
 ```
 
@@ -110,10 +105,8 @@ requirements.
 :::{req} workspace_structure
 {impl}`requirements.configuration.feature_sections`
 `habeas.toml` MUST serialize WorkspaceConfig as UTF-8 TOML with `version = 1`.
-Its supported feature tables are `[authoring]`, `[coverage]`, and
-`[evidence]`; each MAY be absent. `[coverage]` has one optional key,
-`reauthorings`, under {cite}`requirements.references.coverage.history`; it has
-no user-file counterpart or invocation option, and no operation requires it. Unknown keys, unsupported versions, and invalid field types MUST produce
+Its supported feature tables are `[authoring]` and
+`[evidence]`; each MAY be absent. Unknown keys, unsupported versions, and invalid field types MUST produce
 a diagnostic identifying the file and setting. Invalid TOML, including content
 that is not UTF-8, MUST produce a diagnostic identifying the file, with the line
 and column of a syntax error.

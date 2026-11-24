@@ -1,5 +1,83 @@
 # Book rendering
 
+The book trusts the annotations and connects them into browsable documentation.
+It presents recorded reviews alongside current source. Use `habeas status`
+and `habeas author` to check those annotations and reviews.
+
+:::{req} render_only
+`habeas mdbook` reads annotations and stored reviews to render their connections.
+It does not audit repository evidence, check review freshness or dependency
+hashes, enforce reference coverage, or assess citation and site reviews.
+It does not load saved execution measurements, run tests, collect coverage,
+or invoke an assessment model. Source-input and stored-record read or parse
+failures produce readable rendering diagnostics rather than a repository
+validation verdict.
+:::
+
+## Include Rustdoc
+
+Use the Habeas HTML renderer to publish the book and the complete Rustdoc site:
+
+```toml
+[preprocessor.habeas]
+command = "habeas mdbook"
+renderers = ["habeas"]
+
+[output.habeas]
+command = "habeas mdbook render"
+```
+
+HTML options belong under `[output.habeas.html]`.
+
+::::{req} rustdocs
+A book can import a generated Rustdoc site through its Habeas preprocessor
+configuration:
+
+```toml
+[preprocessor.habeas.rustdocs]
+path = "target/doc"
+crate = "trust_but_verify"
+```
+
+`path` identifies the generated documentation directory relative to the project
+root; `crate` selects the landing page at `<crate>/index.html`. A chapter
+consisting of one closed, standalone `{rustdocs}` directive with an empty body
+becomes a navigation entry into that crate's Rustdoc site. The directive opens
+with at least three colons and closes with at least as many:
+
+```text
+:::{rustdocs}
+:::
+```
+
+The built book includes the imported site under `rustdocs/`, preserving its
+pages, assets, search data, and links. Selecting the chapter opens the native
+Rustdoc page in the same tab, with Rustdoc's own layout and navigation. Relative
+links from book chapters to imported item pages resolve when the publication is
+hosted under a URL prefix.
+
+Set `build-workspace = true` to run `cargo doc --locked --workspace --no-deps`
+from the book root before each import. In this mode `path` ends in `doc` and
+its parent is Cargo's target directory. Cargo reuses current build artifacts.
+Omitting the option imports an already generated site.
+
+The build reports a readable error if the directive has no import configuration, the
+configured directory, crate landing page, or any imported site file cannot be
+read, the import fails, or an imported file would overwrite a book output file.
+::::
+
+:::{req} rustdocs.publication
+This project's `mdbook build` and `mdbook serve` generate workspace Rustdoc
+as part of preprocessing, including on the first build in a fresh checkout.
+The published documentation includes both the book and that generated Rustdoc
+site in the same GitHub Pages deployment under
+{cite}`requirements.integration.ci`. The appendix contains a "Rustdocs" entry
+opening the `trust_but_verify` crate's documentation under
+{cite}`requirements.index.rustdocs`.
+:::
+
+## Browse requirements and evidence
+
 :::{req} chapter
 An mdBook chapter MAY contain one standalone `{requirements-index}` directive with an empty body, opened by at least three colons and closed by at least as many. A book MUST contain no more than one such directive. `habeas mdbook` MUST render a requirements index listing all requirements defined in rendered chapters, each linking to its evidence detail page under {cite}`requirements.index.detail_pages`. When a directive is present, it MUST replace the directive with the index table; otherwise, it MUST generate the chapter specified by {cite}`requirements.index.chapter.default`.
 :::
@@ -19,16 +97,88 @@ sidebar until a reader expands the index chapter.
 :::
 
 :::{req} state
-The requirements index MUST show each requirement's evidence state as Valid, Missing, Determination false, FIXME, or Invalid. Valid MUST mean its determination is true and its record passes the same evidence and reference coverage checks as `habeas::validate()`. A false or FIXME determination MUST have its distinct state when the record passes all other checks. The FIXME state MUST pass validation while retaining its distinct label. Malformed or stale evidence MUST remain Invalid regardless of its determination. Each detail page MUST show any validation findings.
+The requirements index and its detail pages describe the last recorded
+assessment as Recorded true, Recorded false, or Recorded FIXME. A missing
+record is shown as Missing; an unreadable record or determination is shown as
+Unreadable with a readable explanation. Recorded FIXME includes its recorded
+acknowledgments.
+
+These labels describe stored results, without claiming that the record is
+current or that repository validation passes. `habeas status` and
+`habeas author` check the annotations and evidence.
 :::
 
 :::{req} detail_format
-Each evidence detail page MUST display its state as a Shields.io static badge image with meaningful alt text and the current requirement or example body as a Markdown block quote labeled by kind. It MUST render the recorded rationale as Markdown in a Rationale section and display the recorded FIXME strings when the determination is FIXME. Inputs MUST be grouped under headings in this order, each input appearing once, in the first group that applies to it: Implementation, for sources reached by an `{impl}` edge from the definition, including anchored files; Tests, for sources reached by a `{test}` edge, including tests, examples, and anchored files; Referenced definitions, for declarations the definition cites and their terminology; and Other sources, for the remaining inputs the assessment consulted. Edges MUST be determined from the current references under {cite}`requirements.references.roles` and {cite}`requirements.references.anchors`. Each group and each input MUST be a collapsible disclosure element, with groups expanded and inputs collapsed by default, so readers can move between groups and open individual sources. Each input MUST have its own subsection identifying its selector. An outline input MUST show its file, selector, kind, and current inclusive line range. A requirements input MUST show its selection and each matched definition's full name, file, and inclusive line range. Each outline input subsection MUST show the node's current source text in a fenced code block and say when its hash no longer matches; a requirements or definition input subsection MUST show its recorded text. Code fences MUST request Rust highlighting for `.rs` files and language-aware highlighting for Markdown, JSON, TOML, Java, JavaScript, TypeScript, and Python files; TOML MAY use INI highlighting when native TOML highlighting is unavailable.
+Each evidence detail page displays its recorded state as a Shields.io static
+badge with meaningful alt text and the current requirement or example body
+as a Markdown block quote labeled by kind. It renders the recorded rationale
+as Markdown in a Rationale section and the recorded acknowledgments for FIXME.
+
+Inputs appear once, in the first applicable group: Implementation, Tests,
+Referenced definitions, then Other sources. Implementation uses `{impl}`
+connections and Tests uses `{test}` connections. Referenced definitions
+contains definition inputs and requirement selections wholly covered by the
+subject's citations; remaining inputs go to Other sources. Current annotations,
+including anchored files, determine these connections
+under {cite}`requirements.references.roles` and
+{cite}`requirements.references.anchors`. Groups are expanded disclosures;
+individual inputs are collapsed disclosures identifying their selectors.
+
+An outline input shows its file, selector, kind, current inclusive line range,
+and current source text in a fenced code block. A requirements input shows
+its selection and each matched definition's full name, file, and inclusive
+line range. Requirements and definition inputs show their recorded text.
+The book presents current source alongside the recorded review without
+comparing input hashes.
+
+Code fences use Rust highlighting for `.rs` and language-aware highlighting
+for Markdown, JSON, TOML, Java, JavaScript, TypeScript, and Python; TOML may use
+INI highlighting when native TOML highlighting is unavailable.
+:::
+
+:::{req} detail_format.rationale_html
+Recorded rationales display HTML markup as literal text, including angle-bracket
+placeholders such as `<file>`, `<line>`, and `<selector>` in prose or on standalone
+lines. Their other Markdown retains its usual rendering under
+{cite}`requirements.index.detail_format`, including headings, emphasis, lists,
+links and autolinks, code spans, and fenced code blocks. Character entities
+render normally without double escaping.
+:::
+
+:::{req} declaration_sections
+:impl: md/habeas.css
+In authored chapters, requirements, examples, and named definitions render as
+collapsible sections, expanded when the chapter opens. Body prose shares the
+containing prose's left edge without added indentation. Each header's badge
+is right-aligned and identifies the declaration and its kind.
+A narrow colored bar in the right margin delineates the section and uses the
+badge's color: blue for requirements, purple for examples, and green for named
+definitions. Named definitions use the same badge styling, displaying their
+kind and phrase. A square disclosure control at the top of that bar adjoins
+the badge without a gap, matches its height, and is separated from it by a thin
+border. The same thin divider separates the badge's kind from its name or
+phrase. The badge and control form a rectangle with subtly rounded outer
+corners and straight internal joins; the vertical bar has rounded ends.
+The control shows a minus when expanded and a plus when collapsed. Collapsing
+a section hides its body while keeping the header visible. The disclosure
+works with a mouse or keyboard.
+
+The body retains its Markdown rendering, including code blocks and nested
+declarations. Requirement and example headers retain the definition and
+evidence links described by {cite}`requirements.index.navigation`; those
+links navigate independently of the disclosure.
 :::
 
 :::{req} navigation
 :impl: md/habeas.css
-Each requirement and example definition badge MUST link to its own anchored definition on the current page. The badge MUST have a separate adjacent link containing an accessible right-arrow icon in an integrated segment matching the badge color linking to its evidence detail page. The badge and arrow MUST remain aligned in one non-wrapping row. Definitions MUST NOT be followed by a separate plaintext evidence link. Each detail page MUST link back to the definition's anchored badge and to the index. Reference badges MUST continue to link to the definition. These links MUST resolve when a requirement name contains `.md`, as in `requirements.cli.mdbook`.
+Each requirement and example declaration badge has two adjacent links. Its
+kind (`req` or `example`) links to the declaration's anchor on the current
+page; its full name links to the evidence detail page. These segments stay
+together in one non-wrapping row, with no separate arrow link or plaintext evidence link.
+Each detail page links back to the declaration's anchored badge and to the
+index. Reference badges continue to link to the declaration. These links
+resolve when a requirement name contains `.md`, as in
+`requirements.cli.mdbook`.
 :::
 
 :::{req} source_links
@@ -40,5 +190,9 @@ The mdBook preprocessor MUST report an error when a generated requirements index
 :::
 
 :::{req} invalid_detail
-An evidence detail page MUST continue to show the current requirement or example and validation findings when evidence is missing or invalid. It MUST show readable placeholders for missing rationale or inputs and expose the contents of an unreadable JSON record.
+An evidence detail page continues to show the current requirement or example
+when its stored record is missing or unreadable. It shows readable placeholders
+for missing rationale or inputs and the available raw contents of malformed
+JSON. A source input that cannot be read or resolved shows a readable
+diagnostic while the rest of the page remains browsable.
 :::

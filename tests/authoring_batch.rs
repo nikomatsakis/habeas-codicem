@@ -1031,13 +1031,46 @@ fn verbose_false_rationale_is_readable_above_terminal_progress() {
 
 // {test}`requirements.authoring.progress`
 // {test}`requirements.authoring.batch`
-// {test}`requirements.references.coverage.report`
-// {test}`requirements.references.coverage.history`
+// {test}`requirements.references.rust_item_coverage`
 #[cfg(unix)]
 #[test]
 fn dumb_terminal_keeps_plain_batch_diagnostics() {
     let server = Server::start(false, None);
     let fixture = Fixture::new(&server.endpoint, Some(2));
+    let source = fixture.project.join("src/lib.rs");
+    fs::write(
+        &source,
+        format!(
+            "{}\nfn ordinary_helper() {{}}\n",
+            fs::read_to_string(&source).unwrap()
+        ),
+    )
+    .unwrap();
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .current_dir(&fixture.project)
+            .args([
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "-c",
+                "core.hooksPath=/dev/null",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    };
+    git(&["init", "--quiet"]);
+    git(&["add", "."]);
+    git(&[
+        "commit",
+        "--quiet",
+        "--no-gpg-sign",
+        "-m",
+        "Initial fixture",
+    ]);
     let output = fixture.run_in_pty(false, "dumb");
     assert!(output.status.success(), "{output:?}");
     assert_eq!(server.subjects().len(), 6);
@@ -1052,22 +1085,49 @@ fn dumb_terminal_keeps_plain_batch_diagnostics() {
         String::from_utf8_lossy(&output.stdout).trim(),
         "6 authored; 0 skipped as current; 0 failed; policy once"
     );
-    // A finished batch reports only the count; history details are opt-in.
-    assert!(
-        stderr.contains("nodes have coverage warnings. Use `status --coverage` to see them."),
-        "{stderr}"
-    );
+    // Completing authoring does not inventory ordinary Rust items.
+    assert!(!stderr.contains("coverage warnings"), "{stderr}");
     assert!(
         !stderr.contains("coverage history is incomplete"),
         "{stderr}"
     );
+    git(&["add", "evidence"]);
+    git(&[
+        "commit",
+        "--quiet",
+        "--no-gpg-sign",
+        "-m",
+        "Recorded reviews",
+    ]);
+    // Evidence history exists, but an unreferenced helper adds no command work
+    // or findings, including when every assessment is skipped as current.
+    for args in [
+        ["status", "--all"].as_slice(),
+        ["author", "--all"].as_slice(),
+    ] {
+        let output = fixture.run(args);
+        assert!(output.status.success(), "{output:?}");
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        for warning in [
+            "coverage warnings",
+            "coverage history",
+            "unreferenced",
+            "ordinary_helper",
+        ] {
+            assert!(!text.contains(warning), "{text}");
+        }
+    }
+    assert_eq!(server.subjects().len(), 6);
 }
 
 // {test}`requirements.authoring.progress`
 // {test}`requirements.authoring.usage_storage`
 // {test}`requirements.authoring.batch`
 // {test}`requirements.authoring.concurrency`
-// {test}`requirements.references.coverage.report`
 #[cfg(unix)]
 #[test]
 fn interrupted_terminal_progress_keeps_unstarted_work_incomplete() {
@@ -1095,7 +1155,7 @@ fn assert_interruption_stops_the_batch(overlap: bool, concurrency: usize) {
         plain.contains(&format!("{remaining} assessments not started")),
         "{plain}"
     );
-    // A cancelled batch does not compute coverage warnings.
+    // Cancellation does not add an ordinary-item inventory.
     assert!(!plain.contains("coverage history"), "{plain}");
     let stopped = &plain[plain.rfind("Stopped").unwrap()..];
     assert!(!stopped.contains("100%"), "{stopped}");
@@ -1419,6 +1479,16 @@ fn batch_preserves_current_false_judgments_and_reauthors_stale_ones() {
 fn batch_reauthors_a_false_judgment_when_its_reference_set_changes() {
     let server = Server::start(false, None);
     let fixture = Fixture::new(&server.endpoint, Some(2));
+    let source = fixture.project.join("src/lib.rs");
+    // Start without an implementation root, so structural review does not
+    // already supply delta's source before the new test edge is added.
+    fs::write(
+        &source,
+        fs::read_to_string(&source)
+            .unwrap()
+            .replace("// {impl}`requirements.delta`\n", ""),
+    )
+    .unwrap();
     let output = fixture.run(&["author", "--all"]);
     assert!(
         output.status.success(),
@@ -1434,11 +1504,11 @@ fn batch_reauthors_a_false_judgment_when_its_reference_set_changes() {
     }
     let path = fixture.project.join("evidence/requirements.delta.json");
     let mut record = fixture.evidence("requirements.delta");
+    assert!(!record["inputs"].to_string().contains("src/lib.rs"));
     record["determination"] = json!(false);
     record["rationale"] = json!("The behavior has no {test} reference.");
     fs::write(&path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
 
-    let source = fixture.project.join("src/lib.rs");
     fs::write(
         &source,
         fs::read_to_string(&source).unwrap().replace(
@@ -1769,7 +1839,6 @@ fn empty_batches_and_early_errors_clear_the_terminal_display() {
 // {test}`requirements.references.citation_review`
 // {test}`requirements.authoring.batch`
 // {test}`requirements.authoring.refresh`
-// {test}`requirements.references.coverage.report`
 #[test]
 fn batch_authors_citation_reviews_and_preserves_current_ones() {
     let server = Server::start(false, None);
@@ -1880,10 +1949,7 @@ fn batch_authors_citation_reviews_and_preserves_current_ones() {
     assert_eq!(printed["item"], "fn[helper]");
     // The coverage summary stays on stderr; stdout holds only the record.
     let stderr = String::from_utf8_lossy(&single.stderr);
-    assert!(
-        stderr.contains("nodes have coverage warnings. Use `status --coverage` to see them."),
-        "{stderr}"
-    );
+    assert!(!stderr.contains("coverage warnings"), "{stderr}");
     assert!(
         !stderr.contains("coverage history is incomplete"),
         "{stderr}"
@@ -2022,7 +2088,6 @@ fn a_single_missing_or_stale_subject_is_assessed_under_default_or_explicit_missi
 // {test}`requirements.authoring.refresh`
 // {test}`requirements.authoring.invocation`
 // {test}`requirements.authoring.batch`
-// {test}`requirements.references.coverage.report`
 #[test]
 fn missing_keeps_current_records_and_force_reassesses_every_selected_subject() {
     let server = Server::start(false, None);
@@ -2060,10 +2125,7 @@ fn missing_keeps_current_records_and_force_reassesses_every_selected_subject() {
             )
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains("nodes have coverage warnings. Use `status --coverage` to see them."),
-            "{args:?}: {stderr}"
-        );
+        assert!(!stderr.contains("coverage warnings"), "{args:?}: {stderr}");
         assert!(
             !stderr.contains("function orphan has no recent coverage"),
             "{stderr}"
@@ -2352,7 +2414,10 @@ fn initial_acknowledgments_supply_closed_and_missing_issue_states_without_source
     *github.state.lock().unwrap() = "closed";
     let fixture = Fixture::new(&server.endpoint, None);
     let source = fixture.project.join("src/lib.rs");
-    fs::write(&source, fs::read_to_string(&source).unwrap().replace(
+    // An acknowledgment alone supplies issue states, not implementation source.
+    fs::write(&source, fs::read_to_string(&source).unwrap()
+        .replace("// {impl}`requirements.beta`\n", "")
+        .replace(
         "pub fn beta()",
         "// :::{fixme} requirements.beta\n// :github: example/queue#125\n// :github: example/queue#404\n// Boundary cases are untested.\n// :::\npub fn beta()",
     )).unwrap();

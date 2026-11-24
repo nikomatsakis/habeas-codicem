@@ -2,6 +2,8 @@
 
 Habeas Codicem is a simple requirements and examples system for agentic development. Requirements describe general behavior; examples show how it applies to concrete cases.
 
+The [review goal](requirements.md#what-needs-human-review) is to let maintainers review changes to requirements and rely on current evidence for implementation changes within those requirements.
+
 The Habeas Codicem workflow has three parts
 
 1. You and your agent define **requirements** and **examples** in your markdown that ought to be satisfied.

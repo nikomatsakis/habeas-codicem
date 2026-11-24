@@ -433,4 +433,32 @@ mod tests {
         fs::write(excluded_path, source).unwrap();
         validate_setup(&member).unwrap();
     }
+
+    // {test}`requirements.test-coverage.setup.configuration`
+    // {test}`requirements.test-coverage.setup.validation.static`
+    #[test]
+    fn explicit_workspace_pointer_places_configuration_at_a_sibling_workspace() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        let member = temp.path().join("member");
+        fs::create_dir(&workspace).unwrap();
+        fs::create_dir(&member).unwrap();
+        fs::write(
+            workspace.join("Cargo.toml"),
+            "[workspace]\nmembers=['../member']\n",
+        )
+        .unwrap();
+        fs::write(
+            member.join("Cargo.toml"),
+            "[package]\nname='member'\nversion='0.1.0'\nworkspace='../workspace'\n",
+        )
+        .unwrap();
+        let (path, source) = configure(&member).unwrap();
+        assert_eq!(path, workspace.join(".config/nextest.toml"));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, source).unwrap();
+        validate_setup(&member).unwrap();
+        assert!(!member.join(".config").exists());
+        assert!(!workspace.join("target").exists());
+    }
 }

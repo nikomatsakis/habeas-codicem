@@ -42,6 +42,7 @@ fn book_source(book: &DocumentMut) -> Result<&str, &'static str> {
     }
 }
 
+// {cite}`habeas:util`
 pub(crate) fn project_depends_on_habeas(root: &Path) -> bool {
     fs::read_to_string(root.join("Cargo.toml"))
         .ok()

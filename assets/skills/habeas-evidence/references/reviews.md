@@ -10,6 +10,15 @@ substantive justification for incomplete execution coverage, in fenced
 commentary or a Rust doc comment; acknowledging a gap is insufficient.
 Fix a false review by changing the references, justification, or item.
 
+A closed `:::{cite} full.name` fence outside a book requirement or example also
+gets a review when it contains a resolved citation other than `habeas:util`.
+This `book_commentary` review checks that the passage's claims agree with and
+are supported by the cited declarations. The outermost eligible fence groups
+nested commentary citations into one review; nested requirements and examples
+keep their own assessment. Ordinary inline book citations do not opt in.
+These passages use the same citation evidence, freshness checks, and
+`habeas author --all` workflow as source-item reviews.
+
 ## Site reviews
 
 A distributed requirement (the habeas skill's

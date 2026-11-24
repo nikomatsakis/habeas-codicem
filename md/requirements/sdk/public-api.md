@@ -1,0 +1,280 @@
+# Public API inventory
+
+This appendix collects the items introduced throughout the SDK chapters.
+
+:::{req} exports
+With its default features, `trust-but-verify` exposes the crate and module items
+listed below under {cite}`requirements.sdk.public_api`. Each declaration link opens
+the requirement that owns the item. The index names its public fields, methods,
+and associated types. The linked requirement gives their signatures and bounds,
+enum variants, and explicit trait implementations with their associated types.
+Changes to those interfaces require a change to the owning requirement.
+
+Trait methods are listed on their trait. Signatures use Rustdoc’s short type
+names. Rustdoc’s automatic and blanket implementations are outside the inventory.
+
+The internal `habeas-integration` feature supports Habeas interoperability; its
+hidden items are outside this supported interface.
+
+- `crate trust_but_verify` — [SDK public interface](../sdk.md)
+  - `mod agent` — [Configure the validator’s agent](graph/agent-harness.md#configure-the-validators-agent)
+    - `enum AgentConfig` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.agent_config) · [Configure the validator’s agent](graph/agent-harness.md#configure-the-validators-agent)
+    - `enum OptionValue` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.OptionValue) · [Backend settings and credentials](graph/agent-harness.md#backend-settings-and-credentials)
+    - `struct BedrockConfig` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.BedrockConfig) · [Configure the validator’s agent](graph/agent-harness.md#configure-the-validators-agent) · [Backend settings and credentials](graph/agent-harness.md#backend-settings-and-credentials)
+      - `model`
+      - `aws_profile`
+      - `region`
+      - `credentials`
+      - `options`
+      - `new()`
+      - `aws_profile()`
+      - `region()`
+      - `credentials()`
+      - `option()`
+    - `struct BedrockCredentials` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.BedrockCredentials) · [Backend settings and credentials](graph/agent-harness.md#backend-settings-and-credentials)
+      - `access_key_id`
+      - `secret_access_key`
+      - `session_token`
+      - `new()`
+      - `session_token()`
+    - `struct OllamaConfig` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.OllamaConfig) · [Configure the validator’s agent](graph/agent-harness.md#configure-the-validators-agent) · [Backend settings and credentials](graph/agent-harness.md#backend-settings-and-credentials)
+      - `model`
+      - `endpoint`
+      - `api_key_env`
+      - `api_key`
+      - `options`
+      - `new()`
+      - `endpoint()`
+      - `api_key_env()`
+      - `api_key()`
+      - `option()`
+    - `struct OpenAiConfig` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.OpenAiConfig) · [Configure the validator’s agent](graph/agent-harness.md#configure-the-validators-agent) · [Backend settings and credentials](graph/agent-harness.md#backend-settings-and-credentials)
+      - `model`
+      - `endpoint`
+      - `api_key_env`
+      - `api_key`
+      - `options`
+      - `new()`
+      - `model()`
+      - `endpoint()`
+      - `api_key_env()`
+      - `api_key()`
+      - `option()`
+    - `struct SecretString` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.SecretString) · [Backend settings and credentials](graph/agent-harness.md#backend-settings-and-credentials)
+      - `expose_secret()`
+  - `mod domain` — [Define the application domain](../sdk.md#defining-the-application-domain)
+    - `trait Domain` — [Declaration](../sdk.md#habeas-req-requirements.sdk.domain) · [Define the application domain](../sdk.md#defining-the-application-domain)
+      - `Error`
+      - `NodeId`
+      - `NodeContent`
+      - `EdgeLabel`
+      - `node_path()`
+      - `node_content()`
+      - `outgoing_edges()`
+      - `load_evidence()`
+      - `store_evidence()`
+    - `trait NodeContents` — [Declaration](graph.md#habeas-req-requirements.sdk.graph.NodeContents) · [Read node contents](graph.md#read-node-contents) · [Format contents for an agent](graph.md#format-node-contents-for-an-agent)
+      - `fingerprint()`
+      - `format()`
+    - `trait SourceNodes` — [Declaration](sources.md#habeas-req-requirements.sdk.sources.source_nodes) · [Map source items to graph nodes](sources.md#connect-source-items-to-graph-nodes)
+      - `source_node()`
+  - `mod graph` — [Graph nodes](graph.md) · [Graph edges](graph-edges.md)
+    - `trait Criterion` — [Declaration](graph/criteria.md#habeas-req-requirements.sdk.graph.criteria.criterion_trait) · [Define a criterion](graph/criteria.md#define-a-criterion)
+      - `Ok`
+      - `source_node_id()`
+      - `criterion_path()`
+      - `version()`
+      - `execute()`
+    - `struct CriterionPath` — [Declaration](graph/criteria.md#habeas-req-requirements.sdk.graph.criteria.CriterionPath) · [Give the criterion a stable path](graph/criteria.md#give-the-criterion-a-stable-path)
+      - `new()`
+      - `segments()`
+    - `struct CriterionVersion` — [Declaration](graph/criteria.md#habeas-req-requirements.sdk.graph.criteria.criterion_version)
+      - `new()`
+      - `from_recorded()`
+      - `as_str()`
+      - `is_compatible_with()`
+    - `struct Fingerprint` — [Declaration](graph.md#habeas-req-requirements.sdk.graph.fingerprint) · [Read content with its fingerprint](graph.md#read-content-together-with-its-fingerprint)
+      - `scheme`
+      - `value`
+      - `new()`
+    - `struct Fingerprinted` — [Declaration](graph/evidence.md#habeas-req-requirements.sdk.graph.evidence.inputs) · [Keep the answer with its inputs](graph/evidence.md#keep-the-answer-with-its-inputs)
+      - `source_node_id()`
+      - `criterion_path()`
+      - `version()`
+      - `dependencies()`
+      - `output()`
+      - `into_output()`
+    - `struct NodePath` — [Declaration](graph.md#habeas-req-requirements.sdk.graph.node_path_struct) · [Give nodes a stable path](graph.md#give-nodes-a-stable-path)
+      - `new()`
+      - `segments()`
+    - `struct Record` — [Declaration](graph/evidence.md#habeas-req-requirements.sdk.graph.evidence.record) · [Retain the completed result and its observations](graph/evidence.md#retain-the-completed-result-and-its-observations)
+      - `version`
+      - `dependencies`
+      - `output`
+      - `new()`
+      - `is_current()` — [Declaration](graph/evidence.md#habeas-req-requirements.sdk.graph.evidence.record.is_current)
+    - `struct Snapshot` — [Declaration](graph.md#habeas-req-requirements.sdk.graph.snapshot) · [Read content with its fingerprint](graph.md#read-content-together-with-its-fingerprint)
+      - `content`
+      - `fingerprint`
+      - `new()`
+    - `enum Dependency` — [Declaration](graph/evidence.md#habeas-req-requirements.sdk.graph.evidence.dependencies) · [Record input dependencies](graph/evidence.md#remember-what-a-procedure-actually-reads)
+    - `enum ValidationError` — [Declaration](graph/validators.md#habeas-req-requirements.sdk.graph.validators.ValidationError) · [Validation failures](graph/validators.md#run-criteria-with-a-validator)
+    - `fn edge_fingerprint` — [Declaration](graph/validation-context.md#habeas-req-requirements.sdk.graph.validation-context.snapshot) · [Target-set fingerprint rules](graph/validation-context.md#selecting-a-nodes-outgoing-edges)
+    - `mod validator` — [Run criteria with a validator](graph/validators.md#run-criteria-with-a-validator)
+      - `struct Validator` — [Declaration](graph/validators.md#habeas-req-requirements.sdk.graph.validators.validator) · [Run criteria with a validator](graph/validators.md#run-criteria-with-a-validator)
+        - `new()` — [Declaration](graph/validators.md#habeas-req-requirements.sdk.graph.validators.validator.new)
+        - `with_agent()` — [Declaration](graph/validators.md#habeas-req-requirements.sdk.graph.validators.validator.with_agent)
+        - `refresh_evidence()` — [Declaration](graph/validators.md#habeas-req-requirements.sdk.graph.validators.validator.refresh_evidence)
+        - `load_evidence()` — [Declaration](graph/validators.md#habeas-req-requirements.sdk.graph.validators.validator.load_evidence)
+        - `check_inputs()` — [Declaration](graph/validators.md#habeas-req-requirements.sdk.graph.validators.validator.check_inputs)
+        - `verify()` — [Declaration](graph/validators.md#habeas-req-requirements.sdk.graph.validators.validator.verify)
+        - `store_evidence()` — [Declaration](graph/validators.md#habeas-req-requirements.sdk.graph.validators.validator.store_evidence)
+        - `with_sources()` — [Declaration](graph/validators.md#habeas-req-requirements.sdk.graph.validators.validator.with_sources)
+  - `mod outline` — [Source outlines](outlines.md)
+    - `struct Outline` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.Outline) · [Inspect selectable items](outlines.md#inspect-selectable-items)
+      - `items`
+      - `new()`
+    - `struct OutlineContent` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.parser) · [Load outline contents](outlines.md#load-outline-contents) · [Select another item from the same snapshot](outlines.md#select-another-item-from-the-same-snapshot)
+      - `from_path()`
+      - `from_id()`
+      - `from_source()`
+      - `from_path_with()`
+      - `from_source_with()`
+      - `select()`
+      - `id()`
+      - `text()`
+      - `outline()`
+      - `structural_hash()`
+      - `fingerprint_scheme()`
+    - `struct OutlineError` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.OutlineError) · [Load outline contents](outlines.md#load-outline-contents)
+      - `line`
+      - `message`
+      - `new()`
+    - `struct OutlineId` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.address_identity) · [Identify a file and item](outlines.md#identify-a-file-and-item)
+      - `path`
+      - `selector`
+      - `root()`
+      - `selector()`
+      - `new()`
+    - `struct OutlineItem` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.OutlineItem) · [Inspect selectable items](outlines.md#inspect-selectable-items)
+      - `selector`
+      - `kind`
+      - `span`
+      - `structural_hash`
+      - `new()`
+    - `trait OutlineLang` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.language_provider) · [Choose an outline language](outlines.md#choose-an-outline-language)
+      - `name()`
+      - `extensions()`
+      - `outline()`
+      - `fingerprint_scheme()`
+      - `search_structure()`
+    - `mod languages` — [Language-specific rules](outlines.md#language-specific-rules)
+      - `struct Css` — [Declaration](sources/css.md#habeas-req-requirements.sdk.sources.css.Css) · [CSS outlines](sources/css.md)
+      - `struct Markdown` — [Declaration](sources/markdown.md#habeas-req-requirements.sdk.sources.markdown.Markdown) · [Markdown outlines](sources/markdown.md)
+      - `struct PlainText` — [Declaration](sources/plain-text.md#habeas-req-requirements.sdk.sources.plain-text.PlainText) · [Plain-text outlines](sources/plain-text.md)
+      - `struct Python` — [Declaration](sources/python.md#habeas-req-requirements.sdk.sources.python.Python) · [Python outlines](sources/python.md)
+      - `struct Rust` — [Declaration](sources/rust.md#habeas-req-requirements.sdk.sources.rust.Rust) · [Rust outlines](sources/rust.md)
+      - `struct Toml` — [Declaration](sources/toml.md#habeas-req-requirements.sdk.sources.toml.Toml) · [TOML outlines](sources/toml.md)
+      - `struct Tsx` — [Declaration](sources/typescript.md#habeas-req-requirements.sdk.sources.typescript.Tsx) · [TypeScript and TSX outlines](sources/typescript.md)
+      - `struct TypeScript` — [Declaration](sources/typescript.md#habeas-req-requirements.sdk.sources.typescript.TypeScript) · [TypeScript and TSX outlines](sources/typescript.md)
+      - `struct Yaml` — [Declaration](sources/yaml.md#habeas-req-requirements.sdk.sources.yaml.Yaml) · [YAML outlines](sources/yaml.md)
+    - `mod selector` — [Parse an outline selector](outlines.md#parse-an-outline-selector)
+      - `enum Label` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.Label) · [Parse an outline selector](outlines.md#parse-an-outline-selector)
+      - `struct Segment` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.Segment) · [Parse an outline selector](outlines.md#parse-an-outline-selector)
+        - `kind`
+        - `label`
+        - `ordinal`
+        - `new()`
+        - `ordinal()`
+        - `base()`
+      - `struct SelectorError` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.SelectorError) · [Parse an outline selector](outlines.md#parse-an-outline-selector)
+        - `selector`
+        - `message`
+        - `new()`
+      - `const HASH_DIGITS` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.HASH_DIGITS) · [Parse an outline selector](outlines.md#parse-an-outline-selector)
+      - `fn parse_selector` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.parse_selector) · [Parse an outline selector](outlines.md#parse-an-outline-selector)
+  - `mod request` — [Agent calls](graph/agent-calls.md)
+    - `struct Ask` — [Declaration](graph/agent-calls.md#habeas-req-requirements.sdk.graph.agent-calls.Ask) · [Build a request](graph/agent-calls.md#build-a-request)
+      - `context()`
+      - `contents_of_current_node()`
+      - `contents_of_successors()`
+    - `struct ContextPhase` — [Declaration](graph/agent-calls.md#habeas-req-requirements.sdk.graph.agent-calls.ContextPhase) · [Build a request](graph/agent-calls.md#build-a-request)
+    - `struct NodePhase` — [Declaration](graph/agent-calls.md#habeas-req-requirements.sdk.graph.agent-calls.NodePhase) · [Build a request](graph/agent-calls.md#build-a-request)
+    - `struct ValidationContext` — [Declaration](graph/validation-context.md#habeas-req-requirements.sdk.graph.validation-context.ValidationContext)
+      - `new()` — [Declaration](graph/validation-context.md#habeas-req-requirements.sdk.graph.validation-context.ValidationContext.new)
+      - `graph()` — [Declaration](graph/validation-context.md#habeas-req-requirements.sdk.graph.validation-context.ValidationContext.graph)
+      - `read()` — [Declaration](graph/validation-context.md#habeas-req-requirements.sdk.graph.validation-context.ValidationContext.read)
+      - `read_snapshot()` — [Declaration](graph/validation-context.md#habeas-req-requirements.sdk.graph.validation-context.ValidationContext.read_snapshot)
+      - `outgoing_edges()` — [Declaration](graph/validation-context.md#habeas-req-requirements.sdk.graph.validation-context.ValidationContext.outgoing_edges)
+      - `dependencies()` — [Declaration](graph/validation-context.md#habeas-req-requirements.sdk.graph.validation-context.ValidationContext.dependencies)
+      - `finish()` — [Declaration](graph/validation-context.md#habeas-req-requirements.sdk.graph.validation-context.ValidationContext.finish)
+      - `read_source()` — [Declaration](graph/validation-context.md#habeas-req-requirements.sdk.graph.validation-context.ValidationContext.read_source)
+      - `node_id()` — [Declaration](graph/validation-context.md#habeas-req-requirements.sdk.graph.validation-context.ValidationContext.node_id)
+      - `successors()` — [Declaration](graph/validation-context.md#habeas-req-requirements.sdk.graph.validation-context.ValidationContext.successors)
+      - `ask()` — [Declaration](graph/validation-context.md#habeas-req-requirements.sdk.graph.validation-context.ValidationContext.ask)
+    - `trait Context` — [Declaration](graph/agent-calls.md#habeas-req-requirements.sdk.graph.agent-calls.agent_context) · [Compose reusable context](graph/agent-calls.md#compose-reusable-context)
+      - `contents()`
+  - `mod sources` — [Select the project directory](sources.md#select-the-project-directory)
+    - `struct SearchResults` — [Declaration](graph/search.md#habeas-req-requirements.sdk.graph.search.SearchResults) · [Search source text](graph/search.md#searching-source-text) · [Search source structure](graph/search.md#searching-source-structure)
+      - `matches`
+      - `complete`
+      - `new()`
+    - `struct SourceFile` — [Declaration](sources.md#habeas-req-requirements.sdk.sources.read_file) · [Read a project file](sources.md#read-a-project-file)
+      - `bytes`
+      - `language`
+      - `new()`
+      - `language()`
+      - `text()`
+    - `struct SourceScope` — [Declaration](graph/search.md#habeas-req-requirements.sdk.graph.search.source_scope) · [Choose a source scope](graph/search.md#choosing-a-source-scope)
+      - `all()`
+      - `under()`
+    - `struct Sources` — [Declaration](sources.md#habeas-req-requirements.sdk.sources.Sources) · [Select the project directory](sources.md#select-the-project-directory)
+      - `new()`
+      - `list()`
+      - `read()`
+      - `parse()`
+      - `search_text()`
+      - `search_structure()`
+    - `struct StructuralMatch` — [Declaration](graph/search.md#habeas-req-requirements.sdk.graph.search.StructuralMatch) · [Search source structure](graph/search.md#searching-source-structure)
+      - `node`
+      - `excerpt`
+      - `new()`
+    - `struct StructuralQuery` — [Declaration](graph/search.md#habeas-req-requirements.sdk.graph.search.StructuralQuery) · [Search source structure](graph/search.md#searching-source-structure)
+      - `scope`
+      - `language`
+      - `rule`
+      - `limit`
+      - `new()`
+      - `scope()`
+      - `limit()`
+    - `struct TextMatch` — [Declaration](graph/search.md#habeas-req-requirements.sdk.graph.search.TextMatch) · [Search source text](graph/search.md#searching-source-text)
+      - `path`
+      - `line`
+      - `excerpt`
+      - `new()`
+    - `struct TextQuery` — [Declaration](graph/search.md#habeas-req-requirements.sdk.graph.search.TextQuery) · [Search source text](graph/search.md#searching-source-text)
+      - `scope`
+      - `pattern`
+      - `context_lines`
+      - `limit`
+      - `new()`
+      - `scope()`
+      - `context_lines()`
+      - `limit()`
+    - `enum SourceError` — [Declaration](sources.md#habeas-req-requirements.sdk.sources.SourceError) · [Listing and read failures](sources.md#select-the-project-directory)
+    - `struct LanguageId` — [Declaration](sources.md#habeas-req-requirements.sdk.sources.language_id) · [Identify a source language](sources.md#identify-a-source-language)
+      - `as_str()`
+    - `type StructuralMatches` — [Declaration](graph/search.md#habeas-req-requirements.sdk.graph.search.StructuralMatches) · [Search source structure](graph/search.md#searching-source-structure)
+      - `matches`
+      - `complete`
+    - `type TextMatches` — [Declaration](graph/search.md#habeas-req-requirements.sdk.graph.search.TextMatches) · [Search source text](graph/search.md#searching-source-text)
+      - `matches`
+      - `complete`
+  - `mod storage` — [Configure the filesystem store](filesystem-storage.md#configure-the-store)
+    - `struct FileEvidenceStorage` — [Declaration](filesystem-storage.md#habeas-req-requirements.sdk.filesystem-storage.FileEvidenceStorage) · [Configure the filesystem store](filesystem-storage.md#configure-the-store)
+      - `new()`
+      - `record_path()`
+      - `load()`
+      - `store()`
+    - `enum FileStorageError` — [Declaration](filesystem-storage.md#habeas-req-requirements.sdk.filesystem-storage.FileStorageError) · [Load and replace records](filesystem-storage.md#load-and-replace-records)
+:::

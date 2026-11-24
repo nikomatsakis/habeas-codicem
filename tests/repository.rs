@@ -137,6 +137,45 @@ fn shared_agent_guidance_documents_post_suite_checks_and_standard_explanations()
     }
 }
 
+// {test}`requirements.install.symposium`
+// {test}`requirements.install.symposium.skill_hook`
+#[test]
+fn installation_guides_cover_setup_hooks_refresh_and_preserving_local_skills() {
+    for path in ["README.md", "md/getting_started.md"] {
+        let text = repository_file(path);
+        for required in [
+            "Cargo project",
+            "book.toml",
+            "SUMMARY.md",
+            "cargo install symposium",
+            "cargo agents init",
+            "cargo add --dev habeas",
+            "cargo agents sync",
+            "**Enable**",
+            "project tracks requirements with Habeas",
+            "load the `habeas` skill",
+            "habeas setup",
+            "after updating the Habeas dependency",
+            ".agents/skills/habeas-*",
+            "local edits",
+            "different names or elsewhere",
+            "remove those old copies",
+        ] {
+            assert!(text.contains(required), "{path} omits {required}");
+        }
+        assert!(text.contains("advises the agent"), "{path}: {text}");
+        assert!(text.find("Save").unwrap() < text.find("remove those old copies").unwrap());
+    }
+    let readme = repository_file("README.md");
+    assert!(readme.contains("Its session-start hook tells the agent that the project tracks requirements with Habeas and to load the `habeas` skill before starting any work."));
+    assert!(readme.contains("The hook also checks the project and advises the agent to run `habeas setup` when configuration is incomplete."));
+    let guide = repository_file("md/getting_started.md");
+    assert!(guide.contains("When an agent starts a session in this project, Habeas's hook tells it that the project tracks requirements with Habeas and to load the `habeas` skill before starting any work."));
+    assert!(guide.contains(
+        "if configuration is missing or incompatible, it advises the agent to run `habeas setup`"
+    ));
+}
+
 /// The lines of one top-level job in a GitHub Actions workflow, from its
 /// `  <name>:` line to the next top-level job.
 // {cite}`habeas:util`
@@ -219,8 +258,15 @@ fn mdbook_preprocessor_renders_definitions_between_stdin_and_stdout() {
         .collect::<Vec<_>>();
     assert_eq!(badge_rows.len(), 2, "{}", chapter.content);
     for row in badge_rows {
-        assert!(row.contains("<img "), "{row}");
-        assert!(row.contains("class=\"habeas-detail-icon\""), "{row}");
+        assert!(
+            row.contains("class=\"habeas-req-badge habeas-badge-kind\""),
+            "{row}"
+        );
+        assert!(
+            row.contains("class=\"habeas-req-badge habeas-badge-name\""),
+            "{row}"
+        );
+        assert!(!row.contains("<svg"), "{row}");
         assert_eq!(row.matches("</a>").count(), 2, "{row}");
     }
     assert!(chapter.sub_items.is_empty());
@@ -255,7 +301,7 @@ fn mdbook_preprocessor_renders_definitions_between_stdin_and_stdout() {
                 _ => None,
             })
             .collect::<Vec<_>>(),
-        ["Coverage gaps", "rules.ready", "rules.cites"]
+        ["Documented coverage gaps", "rules.ready", "rules.cites"]
     );
 }
 
@@ -272,7 +318,7 @@ fn project_book_uses_the_repository_local_preprocessor_alias() {
     );
     assert_eq!(
         preprocessor["renderers"],
-        toml::Value::Array(vec!["html".into()])
+        toml::Value::Array(vec!["habeas".into()])
     );
     let cargo = repository_toml(".cargo/config.toml");
     assert_eq!(
@@ -301,7 +347,7 @@ fn crate_targets_are_declared_in_src() {
 #[test]
 fn book_links_to_the_repository_and_main_branch_edit_pages() {
     let book = repository_toml("book.toml");
-    let html = &book["output"]["html"];
+    let html = &book["output"]["habeas"]["html"];
     assert_eq!(
         html["git-repository-url"].as_str(),
         Some("https://github.com/nikomatsakis/habeas-codicem")
@@ -374,7 +420,7 @@ fn ci_tests_pull_requests_and_main_then_deploys_the_book_from_main() {
 
     let book = repository_toml("book.toml");
     assert_eq!(
-        book["output"]["html"]["site-url"].as_str(),
+        book["output"]["habeas"]["html"]["site-url"].as_str(),
         Some("/habeas-codicem/")
     );
 }
@@ -484,5 +530,78 @@ fn symposium_plugin_installs_the_cli_globally_for_its_session_start_hook() {
     assert_eq!(
         hooks[0]["args"],
         toml::Value::Array(vec!["hook".into(), "session-start".into()])
+    );
+}
+
+// {test}`requirements.references.outline_comments`
+#[test]
+fn workflow_job_marks_belong_to_the_job_that_follows() {
+    for path in [
+        ".github/workflows/ci.yml",
+        ".github/workflows/release-plz.yml",
+    ] {
+        let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
+        let source = std::fs::read_to_string(&file).unwrap();
+        let outline = trust_but_verify::outline_engine::parse(&file, &source).unwrap();
+        for (index, line) in source.lines().enumerate() {
+            let Some(job) = source.lines().nth(index + 1) else {
+                continue;
+            };
+            if line.trim_start().starts_with("# {")
+                && line.starts_with("  #")
+                && job.starts_with("  ")
+                && job.trim_end().ends_with(':')
+            {
+                let owners = outline.comment_owners_at_line(index + 1);
+                let name = job.trim().trim_end_matches(':');
+                assert_eq!(owners.len(), 1, "{path}:{}", index + 1);
+                assert_eq!(
+                    outline.nodes[owners[0]].selector,
+                    format!("pair[jobs]/pair[{name}]"),
+                    "{path}:{}",
+                    index + 1
+                );
+            }
+        }
+    }
+}
+
+// {test}`requirements.layout.project`
+// {test}`requirements.layout.project.workspace`
+#[test]
+fn workspace_contains_frontend_and_sdk_but_not_the_vendor_fork() {
+    let output = std::process::Command::new("cargo")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args([
+            "metadata",
+            "--offline",
+            "--locked",
+            "--no-deps",
+            "--format-version=1",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let members = metadata["workspace_members"].as_array().unwrap();
+    let mut names: Vec<_> = metadata["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|package| members.contains(&package["id"]))
+        .map(|package| package["name"].as_str().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["habeas", "trust-but-verify"]);
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    assert!(root.join("crates/trust-but-verify/src/lib.rs").is_file());
+    let manifest = repository_toml("Cargo.toml");
+    assert_eq!(
+        manifest["dependencies"]["trust-but-verify"]["path"].as_str(),
+        Some("crates/trust-but-verify")
     );
 }

@@ -6,10 +6,12 @@ use regex::Regex;
 use crate::escape_html;
 
 #[derive(Default)]
+// {cite}`habeas:util`
 pub(crate) struct FixmeSummary {
     judgments: Vec<FixmeJudgment>,
 }
 
+// {cite}`habeas:util`
 struct FixmeJudgment {
     name: String,
     kind: &'static str,
@@ -17,6 +19,7 @@ struct FixmeJudgment {
 }
 
 impl FixmeSummary {
+    // {cite}`habeas:util`
     pub(crate) fn add(&mut self, name: &str, kind: &'static str, entries: &[String]) {
         if !entries.is_empty() {
             self.judgments.push(FixmeJudgment {
@@ -27,6 +30,7 @@ impl FixmeSummary {
         }
     }
 
+    // {cite}`habeas:util`
     pub(crate) fn render(&self, verbose: bool) -> String {
         if self.judgments.is_empty() {
             return String::new();
@@ -78,10 +82,12 @@ impl FixmeSummary {
     }
 }
 
+// {cite}`habeas:util`
 fn judgment_word(count: usize) -> &'static str {
     if count == 1 { "judgment" } else { "judgments" }
 }
 
+// {cite}`habeas:util`
 fn render_judgments(output: &mut String, judgments: &[&FixmeJudgment]) {
     for judgment in judgments {
         output.push_str(&format!("- `{}` ({})\n\n", judgment.name, judgment.kind));

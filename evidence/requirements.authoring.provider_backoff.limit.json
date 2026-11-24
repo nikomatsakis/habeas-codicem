@@ -1,8 +1,8 @@
 {
   "requirement": "The harness MUST stop retrying a completion request under\n{cite}`requirements.authoring.provider_backoff` when the next attempt would\nstart more than one minute after the first of its consecutive transient\nfailures, including when a provider `Retry-After` delay would pass that point.\nIt MUST then fail the assessment with an error naming the number of attempts\nand the last failure's HTTP status and provider error code, when available.",
   "determination": true,
-  "rationale": "The two marked tests adequately cover `requirements.authoring.provider_backoff.limit`.\n\n**Obligations.** I derived four from the requirement text:\n1. Stop retrying when the next attempt would start more than one minute after the first of the consecutive transient failures.\n2. Apply that limit when a `Retry-After` delay would pass that point.\n3. Fail the assessment once retrying stops.\n4. Name the number of attempts, and the last failure's HTTP status and provider error code when available, in that error.\n\n**Unit test `src/authoring/providers.rs#mod[tests]/fn[retrying_stops_once_a_request_has_failed_for_a_minute]`.**\n- It loops `ProviderBackoff::retry` with throttling errors, advancing the clock by each returned delay. It asserts that no attempt starts after `start + 60s`, that more than 3 attempts occur, and that the loop ends in `Retry::Stop`.\n- A second failure at 58s still waits, with a delay of at most 2s.\n- It checks the boundary with `Retry-After`. A value of 60 gives `Wait(60s)`, and a value of 61 gives `Stop`. This is the exact \"more than one minute\" edge.\n- A `Retry-After` of 90 stops at once, which covers the \"including when a provider `Retry-After` delay would pass that point\" clause.\n- The stop message contains \"kept failing for a minute\", \"after {attempts+1} attempts\" and \"HTTP 429 ThrottlingException\".\n- The last-failure naming is checked for status only, code only, and a timeout with neither. These cover the \"when available\" qualifier.\n- The first failure arrives at `start+60s` and the second at `start+180s`, so the limit is measured from the first failure rather than the latest. The first call must wait, and the second must stop.\n- A permanent 400 failure stops with its own error and not the \"kept failing\" message.\n\n**Integration test `src/authoring/mod.rs#mod[tests]/fn[a_request_failing_for_a_minute_fails_the_assessment]`.**\n- It runs the whole `assess` flow with a provider that always returns 503 `ServiceUnavailableException`, under a paused tokio clock.\n- It asserts that elapsed time is at most `RETRY_LIMIT`, that more than 3 requests were made, and that the error contains \"after {attempts} attempts; last failure: HTTP 503 ServiceUnavailableException\". The attempt count matches the number of requests actually made.\n- It also asserts that the final attempt's usage-log entry has `retried == false`.\n\n**Delegated to the parent requirement.** Resetting backoff after a success, and the retry, timeout and cancellation behaviour, belong to `requirements.authoring.provider_backoff`. Its tests in `src/authoring/mod.rs` carry that reference, including `success_resets_backoff_and_retries_keep_history_without_repeating_tools`. They are not assessed here.\n\nI found no plausible violating behavior that these tests would accept.",
-  "references": "5fb063cc5fc4c2174bbbc1440a121146cf3db9c0479a84ad171f91d000c94aac",
+  "rationale": "I found no test-adequacy gap in the two {test}-marked tests for `requirements.authoring.provider_backoff.limit`. I did not read the implementation. Expected behavior comes from the requirement text.\n\n**Obligations:**\n1. Stop retrying when the next attempt would start more than one minute after the first of the consecutive transient failures.\n2. Apply that stop even when a `Retry-After` delay would pass the minute.\n3. Fail with an error naming the number of attempts and the last failure's HTTP status and provider error code, when available.\n\n**Unit-level coverage:** `crates/trust-but-verify/src/agent/providers.rs#mod[tests]/fn[retrying_stops_once_a_request_has_failed_for_a_minute]`\n- It drives `ProviderBackoff::retry` with a simulated clock until `Retry::Stop`. It asserts that every `Wait` leaves the next attempt at or before start+60s, and that more than three attempts happen before the stop.\n- A second failure at 58s still gets a `Wait` of at most 2s, so retries are not stopped early.\n- The `Retry-After` boundary is covered. \"60\" waits for exactly 60s. \"61\" stops, so a wait that would start past the minute is refused. \"90\" stops at once.\n- The stop message must contain \"kept failing for a minute\", \"after {attempts+1} attempts\" and \"HTTP 429 ThrottlingException\".\n- Partial reports are covered: status only gives \"HTTP 503\", code only gives \"ThrottlingException\", and a timeout names its own text. Each case is first retried and then stopped past the limit, which also covers the ten-minute no-response failure.\n- A permanent 400 `ValidationException` stops with its own error and without the \"kept failing\" text.\n\n**Integration-level coverage:** `src/authoring/mod.rs#mod[tests]/fn[a_request_failing_for_a_minute_fails_the_assessment]`\n- A provider that always returns 503 `ServiceUnavailableException` runs under paused time through `assess`.\n- Elapsed time is at most `RETRY_LIMIT`, and more than three attempts were made.\n- The error contains \"after {attempts} attempts; last failure: HTTP 503 ServiceUnavailableException\", with `attempts` taken from the provider's actual request count.\n- The usage log marks the final attempt as `retried: false`.\n\n**Not assessed here:** The reset of the backoff after success is a separate `provider_backoff` obligation. I did not require a test for it here. `success_resets_backoff_and_retries_keep_history_without_repeating_tools` exercises that reset. I could not confirm that test also covers the first-failure clock, because `ProviderBackoff` lives in the external `habeas_sdk`. This is a small residual uncertainty about the \"consecutive\" wording, not an established gap. The tests do not cover an HTTP-date `Retry-After` past the minute, but the requirement's limit clause makes no distinction by `Retry-After` form.",
+  "references": "f9afcaaa0c2ffbaaa6fcc3741b735fd3412e3bfaa8f983a0e4da23ef111bb507",
   "inputs": [
     {
       "requirements": "requirements.authoring.provider_backoff.limit",
@@ -60,17 +60,127 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "mod[tests]/fn[a_request_failing_for_a_minute_fails_the_assessment]",
-      "hash": "ab43bc4505e0a92b69ae48a3bb74a71f23c4e6e8d0c4f15a96a0505ad482438e"
+      "hash": "484f739fe2add7b931781790340ba8dcb37040651589ee87f02d7a0deb89aee5"
     },
     {
-      "file": "src/authoring/providers.rs",
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
       "item": "mod[tests]/fn[retrying_stops_once_a_request_has_failed_for_a_minute]",
       "hash": "31f5e084d12f197a98149c0c86ffe81ac942c81cda7d88368a3f66259ee05cec"
     },
     {
-      "file": "src/authoring/providers.rs",
-      "item": "impl[ProviderBackoff]",
-      "hash": "f347d85732c20ce882fad32bf925296bece6c0ce169c2a7523e5479a05e557dc"
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
+      "item": "mod[tests]/fn[jittered_backoff_grows_to_a_ceiling]",
+      "hash": "b6ddc7864bffdd2c828cc983de2bd55154c224b274efd763482bd09616cfaf4e"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[success_resets_backoff_and_retries_keep_history_without_repeating_tools]",
+      "hash": "38575731249476c84c37337b2befc86fe84ffda02823bc3769b50c08e7776c30"
+    }
+  ],
+  "format_version": 1,
+  "review_version": "habeas-review-v1",
+  "dependencies": [
+    {
+      "Node": [
+        {
+          "ReferenceSet": "requirements.authoring.provider_backoff.limit"
+        },
+        {
+          "scheme": "habeas-reference-set-v1",
+          "value": "f9afcaaa0c2ffbaaa6fcc3741b735fd3412e3bfaa8f983a0e4da23ef111bb507"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.authoring.provider_backoff.limit"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "189c6dd4739d756dac55d21d0aeff93422529e14545368352b14531e966d613f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.authoring.provider_backoff"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "3d3e5a9287548ea0dcdad8558946ab6be3bdeaaa28e9694b9520faf30c3ea2c7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/mod.rs"
+            },
+            "selector": "mod[tests]/fn[a_request_failing_for_a_minute_fails_the_assessment]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "a1529d9df6eee3ebe93dcf12ede3fc2b8cce091d1510b4a202682661c0f07d99"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/providers.rs"
+            },
+            "selector": "mod[tests]/fn[retrying_stops_once_a_request_has_failed_for_a_minute]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "755ed49707b65ba44c51c32ec06c4fa4a929262cbd561239110f27baeb6ea51b"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/providers.rs"
+            },
+            "selector": "mod[tests]/fn[jittered_backoff_grows_to_a_ceiling]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "72ad7246303f54d45d8af3b4f4bf46b43616b8f0868b591230504d7e0eb2f1f5"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/mod.rs"
+            },
+            "selector": "mod[tests]/fn[success_resets_backoff_and_retries_keep_history_without_repeating_tools]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "c61e66c4f6cb9c593b44f2fe8d492ef4dbcd6e96826c0fb78b4d08728b0f40a2"
+        }
+      ]
     }
   ]
 }

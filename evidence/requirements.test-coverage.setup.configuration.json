@@ -1,8 +1,8 @@
 {
   "requirement": "`habeas setup` MUST configure native nextest settings in\n`.config/nextest.toml` at the Cargo workspace root so the coverage workflow of\n{cite}`requirements.test-coverage.run` routes each executed test attempt through\nthe per-process collector of {cite}`requirements.test-coverage.processes`.\nThose settings MUST use nextest's own configuration format.\nRepeating setup MUST avoid duplicate configuration, preserve unrelated nextest\nsettings, and report conflicting settings for review rather than overwrite them.",
   "determination": true,
-  "rationale": "I judge the tests adequate for `requirements.test-coverage.setup.configuration`. I read the implementation in `src/execution_coverage/configuration.rs` (`configure`, `check`, `workspace_root`) only to see what the tests' assertions exercise. I took the expected behavior from the requirement text.\n\n**Obligations and the tests that cover them**\n\n1. **Configure native nextest settings in `.config/nextest.toml` at the Cargo workspace root.**\n   - `mod[tests]/fn[workspace_member_uses_the_native_config_at_the_workspace_root]` checks that `configure` run from a workspace member returns the root's `.config/nextest.toml`. It also checks that nothing is created under the member or `target`.\n   - The same test covers a member excluded from the workspace, where the member's own path is used.\n   - `tests/setup.rs#fn[coverage_setup_is_idempotent_and_hook_needs_no_coverage_chapter]` runs the real `habeas setup` and checks that the file is written and contains `coverage-process`.\n\n2. **Route each executed test attempt through the per-process collector.**\n   - `native_settings_inheritance_and_precedence` runs `check` on the generated config for profile `ci` and on inheriting profiles. The check proves an unconditional first `run-wrapper` rule with filter `all()` and no platform.\n   - The same test rejects the following:\n     - a rule with a narrower filter or a platform;\n     - an inheritance cycle;\n     - a wrong command (`wrong` in place of `coverage-process`);\n     - a wrong `target-runner`.\n   - It also checks that a child profile's own wrapper rule overrides a conflicting parent rule.\n\n3. **Use nextest's own configuration format.**\n   - The generated text is validated structurally by `check`. It requires `experimental` to contain `wrapper-scripts`, a `scripts.wrapper.habeas-coverage` table with command `[\"habeas\",\"coverage-process\"]` and `target-runner = \"within-wrapper\"`, and a `profile.default.scripts` run-wrapper rule.\n   - Tests assert that this check passes on the output of `configure`. I found no test that runs real nextest against the file.\n\n4. **Repeating setup avoids duplicate configuration.**\n   - The unit test asserts `configure` on its own output returns identical text.\n   - The CLI test runs `habeas setup` twice and asserts that `.config/nextest.toml` is byte-identical.\n\n5. **Repeating setup preserves unrelated nextest settings.**\n   - The unit test seeds `experimental = ['setup-scripts']`, `retries = 2`, and a setup-script rule. It asserts that all three survive `configure`.\n   - Other CLI tests assert that the coverage chapter and `SUMMARY.md` are left alone.\n\n6. **Report conflicting settings for review rather than overwrite them.**\n   - `setup_conflicts_name_the_setting_and_preserve_existing_native_configuration` covers six conflicts:\n     - a wrong collector command;\n     - a wrong `target-runner`;\n     - `experimental` of the wrong type;\n     - `scripts` of the wrong type;\n     - `profile.default.scripts` of the wrong type;\n     - a conflicting `run-wrapper` rule.\n   - For each, it asserts that the error names the setting and `.config/nextest.toml`, and that the file is unchanged.\n   - `tests/setup.rs#fn[setup_reports_a_conflicting_nextest_wrapper_without_writing_project_files]` does this end to end through the CLI. It asserts a failing exit status, stderr naming the file and setting, and no change to the config, `book.toml`, `SUMMARY.md` or `Cargo.toml`. It also asserts that no coverage chapter or `tests/habeas.rs` is created.\n   - `coverage_setup_is_idempotent_and_hook_needs_no_coverage_chapter` also rewrites the file with a conflicting filter and asserts it is not overwritten.\n\n**Gaps considered**\n\n- I found no unresolved gap.\n- Some branches have no direct test, such as converting an inline-table `scripts` array to an array of tables. The requirement does not single these out as separate obligations.\n- Another example is a pre-existing `experimental` array that already contains `wrapper-scripts`. The idempotency tests exercise this by re-running on generated output.\n\nEvery obligation has a test that exercises it and asserts its outcome, and the tests carry `{test}` references to the subject.",
-  "references": "30d4b59c05997efd61bb4131c2b688ad67924c0439fb900eebf1ea14e56a2062",
+  "rationale": "The reviewed tests adequately cover `requirements.test-coverage.setup.configuration`. I read `configure`, `check`, `validate_setup` and `workspace_root` in `src/execution_coverage/configuration.rs`. I used them only to see what the tests' inputs and assertions exercise.\n\n**Obligations and the tests that cover them**\n\n1. **Setup writes native nextest settings to `.config/nextest.toml` at the Cargo workspace root.**\n   - `mod[tests]/fn[workspace_member_uses_the_native_config_at_the_workspace_root]` runs `configure` from a member crate. It asserts the path is the workspace root's `.config/nextest.toml` and that the member has no `.config` directory. It then checks the excluded-member case, where the member is its own root.\n   - `mod[tests]/fn[explicit_workspace_pointer_places_configuration_at_a_sibling_workspace]` does the same for a `workspace = '../workspace'` pointer.\n   - `tests/setup.rs#fn[coverage_setup_is_idempotent_and_hook_needs_no_coverage_chapter]` runs the real `habeas setup` and asserts `.config/nextest.toml` exists and contains `coverage-process`.\n\n2. **The settings route every executed attempt through the per-process collector.**\n   - The generated source is passed to `check`, which requires the following. The check is asserted to pass for the default profile, for `ci`, and for inherited profiles.\n     - A `wrapper-scripts` experimental feature.\n     - A `scripts.wrapper.habeas-coverage` entry that runs `habeas coverage-process` with `target-runner = \"within-wrapper\"`.\n     - An unconditional `all()` `run-wrapper` rule.\n   - `fn[native_settings_inheritance_and_precedence]` asserts rejection of the following. Together these show the settings must really route all attempts, not merely mention the collector.\n     - A wrong command.\n     - A wrong target-runner.\n     - A filtered rule.\n     - A platform-conditioned rule.\n     - A conflicting inherited rule.\n     - An inheritance cycle.\n   - It also asserts that a child profile can override the conflict.\n\n3. **The settings use nextest's own format.** The tests parse and validate TOML with the native keys (`experimental`, `scripts.wrapper`, `profile.*.scripts`, `run-wrapper`, `inherits`), and `check` is run on the output.\n\n4. **Repeating setup avoids duplicates.**\n   - `fn[native_settings_inheritance_and_precedence]` asserts that `configure` on its own output equals the source.\n   - The integration test runs `habeas setup` twice and asserts the config file is byte-identical.\n\n5. **Setup preserves unrelated settings.** `fn[native_settings_inheritance_and_precedence]` starts from a file with `experimental = ['setup-scripts']`, `retries = 2` and a `setup = 'prepare'` rule. It asserts all three survive in the output of `configure`.\n\n6. **Setup reports conflicts rather than overwriting them.**\n   - `fn[setup_conflicts_name_the_setting_and_preserve_existing_native_configuration]` covers these conflicts:\n     - A wrong wrapper command.\n     - A wrong `target-runner`.\n     - `experimental` of the wrong type.\n     - `scripts` of the wrong type.\n     - `profile.default.scripts` of the wrong type.\n     - A conflicting run-wrapper rule.\n\n     For each one it asserts the error names the setting and `.config/nextest.toml`, and that the file on disk is unchanged.\n   - `tests/setup.rs#fn[setup_reports_a_conflicting_nextest_wrapper_without_writing_project_files]` covers the CLI. The command fails, stderr names the file and the setting, and the config and the other project files are untouched.\n   - The idempotency test also shows the SessionStart hook advises setup on a conflicting config without modifying it.\n\n**Gaps and exemptions**\n\nI found no gaps. The cited requirements `requirements.test-coverage.run` and `requirements.test-coverage.processes` are context only. I did not reassess their implementation or tests. No `{fixme}` acknowledgments apply.",
+  "references": "96b720306e7c96652a5898cfb92a56832cb17c63aaeae24e722eaab32c461e25",
   "inputs": [
     {
       "requirements": "requirements.test-coverage.setup.configuration",
@@ -42,12 +42,14 @@
       ],
       "text": [
         ":::{req} processes",
-        "Each coverage run MUST retain LLVM coverage profiles independently for each",
-        "test process, identifying its nextest binary, test name, and attempt. Concurrent",
-        "tests, tests with the same name in different binaries, retries, and separate",
-        "runs MUST NOT overwrite or combine one another's stored profiles. Profiles from",
-        "instrumented child processes MUST remain separate and associated with the test",
-        "attempt that spawned them.",
+        "LLVM profiles are collected independently for each test process, identifying",
+        "its nextest binary, test name, and attempt. Concurrent tests, same-named tests",
+        "in different binaries, and different attempts do not overwrite or combine",
+        "one another's profiles during collection. Instrumented child-process profiles",
+        "remain separate and associated with the attempt that spawned them.",
+        "",
+        "Profiles for a current result remain available until that result is replaced",
+        "under {cite}`requirements.test-coverage.storage.current`.",
         ":::"
       ]
     },
@@ -65,6 +67,11 @@
       "file": "src/execution_coverage/configuration.rs",
       "item": "mod[tests]/fn[workspace_member_uses_the_native_config_at_the_workspace_root]",
       "hash": "ea4eb9784f5dc6bf40081b54499369025457fedbd7fb499acae47359c9bd7092"
+    },
+    {
+      "file": "src/execution_coverage/configuration.rs",
+      "item": "mod[tests]/fn[explicit_workspace_pointer_places_configuration_at_a_sibling_workspace]",
+      "hash": "cbfcedcbeb8f9794d187ed859520ed08eb94b79933fed3365c2bfab7a4ea74db"
     },
     {
       "file": "tests/setup.rs",
@@ -145,6 +152,428 @@
       "file": "src/execution_coverage/configuration.rs",
       "item": "fn[configure]",
       "hash": "3d65f9964831105d784c1c527d6683061406c8a8a41aa0db1a50ba89753f6b27"
+    },
+    {
+      "file": "src/execution_coverage/configuration.rs",
+      "item": "mod[tests]",
+      "hash": "bedfe8fba527c83262d7b8fc9615a936c263417c3912058f94bdf9fc508ae8d6"
+    }
+  ],
+  "format_version": 1,
+  "review_version": "habeas-review-v1",
+  "dependencies": [
+    {
+      "Node": [
+        {
+          "ReferenceSet": "requirements.test-coverage.setup.configuration"
+        },
+        {
+          "scheme": "habeas-reference-set-v1",
+          "value": "96b720306e7c96652a5898cfb92a56832cb17c63aaeae24e722eaab32c461e25"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.test-coverage.setup.configuration"
+        },
+        "Mandatory",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "2fc5ca2deb605e2bd09548b70f0f9b4152a53fbc15648df0323ad355525a130b"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.test-coverage.setup.configuration"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "d694fdfdabd469a69b42e15e106debf13eea4fc52424fbc0b8ccfda2263226b1"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.test-coverage.run"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "55a65d9c8a06566c62946e311b40dc7acf91da6a6fc088691afc4546ef88a6c9"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.test-coverage.processes"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "1c01a3e718051df96fb951fcfcc12f1f0be53310a05fdf7c0373b9fc85ea8030"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/configuration.rs"
+            },
+            "selector": "mod[tests]/fn[native_settings_inheritance_and_precedence]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "e685e7195a62380b5324a33be3381fce1ae4f11070842e6c676d9920a6509133"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/configuration.rs"
+            },
+            "selector": "mod[tests]/fn[setup_conflicts_name_the_setting_and_preserve_existing_native_configuration]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "2a9b7104080eed3c39b4e57d1448aaef7f366fffd3b6bedd09288619d42a2496"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/configuration.rs"
+            },
+            "selector": "mod[tests]/fn[workspace_member_uses_the_native_config_at_the_workspace_root]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "04d7ec621fe910fa828979aed90cafc26401a19cf6d05f55ee7855b208df70c2"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/configuration.rs"
+            },
+            "selector": "mod[tests]/fn[explicit_workspace_pointer_places_configuration_at_a_sibling_workspace]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "b67fb29db1f5ddb4cc20d2634b0cd079688e748686430c1d14bca89955b1e5ac"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/setup.rs"
+            },
+            "selector": "fn[coverage_setup_is_idempotent_and_hook_needs_no_coverage_chapter]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "a5abeb1db80d411497ad370fa37660831bb000e3a19d506ab4976dce6a3a35e1"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/setup.rs"
+            },
+            "selector": "fn[coverage_setup_preserves_custom_index_and_preflights_conflicts]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "0ce015594c9e997f4e9c8b3c0a0790ac562247a9405b0fa067433149cd7ce800"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/setup.rs"
+            },
+            "selector": "fn[setup_reports_a_conflicting_nextest_wrapper_without_writing_project_files]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "772b2a49d3ddafe1f033ea60e9110a8073660e412a6e0bb7dc4accf8b39ea20d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/configuration.rs"
+            },
+            "selector": "use@e1f72b0ff927"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "04145dc00f120543cc87a736262ebe763947930703dd6be147c682475ceb8fd2"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/configuration.rs"
+            },
+            "selector": "use@0aa5aad345a4"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "01abde2f0e57e9ea64fbcf05fd6b049fc5188d5aea0c9e9f6de40bf9d62b78ab"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/configuration.rs"
+            },
+            "selector": "use@95d18074761c"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "42727585f07806a1034309bfb2ee33557501e760a85119fbfeb1f517d8821cf8"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/configuration.rs"
+            },
+            "selector": "use@3970e6901143"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "2cd441707e0f4ab41a7de8fbb3aa849b48c1e6a640bb2ca055f032d5a84c5f91"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/configuration.rs"
+            },
+            "selector": "use@10e078eeae33"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "39bd61ba238d6522e9c64afa5eaed90418f8b05ffe4e7b81d5b1f80b83b238ed"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/configuration.rs"
+            },
+            "selector": "const[WRAPPER]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "c9f116080e561d951a3c910d7c518ebd5662069e77e17402641eee21f491cfd2"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/configuration.rs"
+            },
+            "selector": "fn[workspace_root]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "c55427b15028731c72e74ddc1e9110d12b317a692e9abc4c1cc087f30f5c8b38"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/configuration.rs"
+            },
+            "selector": "fn[invalid]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "706a7d2c7a521c6701d62778acd6a0e23703e01594ae36c2c2197ca3d6a6058c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/configuration.rs"
+            },
+            "selector": "fn[command_is_collector]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "1e249649ccd5d2d5a495a228cdc869a2dd300ed390c486b9e2e2972b7b87ccb5"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/configuration.rs"
+            },
+            "selector": "fn[table]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "60e4f3c482fbdf6e009e2c9d24125885f374db5029688a32b533ba0789e03359"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/configuration.rs"
+            },
+            "selector": "fn[check]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "3712c5ca257150f2d2b3718838c56ba1ac2fef9ba6e4415e512995ee89d97327"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/configuration.rs"
+            },
+            "selector": "fn[validate_setup]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "9de0e939e234e6532baed42e69a8b171c75654cde5e46a2ed475c2ad083b0199"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/configuration.rs"
+            },
+            "selector": "fn[configure]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "3e9cc419199e1687306e2f9fdbdda67edefb0c1b256cee8e2331b1948fbe49a1"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/configuration.rs"
+            },
+            "selector": "mod[tests]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "254a44a85ad41c0cb783590cb565cf63f804669848ade0d002b1acfbd236e740"
+        }
+      ]
     }
   ]
 }

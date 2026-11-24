@@ -1,8 +1,8 @@
 {
   "requirement": "For backends that accept explicit cache checkpoints, when the backend and model\nsupport prompt caching, every provider request MUST place one cache checkpoint\nafter the system prompt of {cite}`requirements.authoring.prompt_parts` and\nanother at the end of its last message, so each request reuses the tool\ndefinitions and system prompt that earlier assessments of its kind sent, and\nthe conversation its own earlier requests sent. Cache checkpoints MUST NOT\nchange the content of a request.\n\nFor OpenAI, which caches matching prompt prefixes automatically, the harness\nMUST keep the system prompt and tool definitions unchanged across requests in\none conversation and replay prior conversation content in its original order.\nIt MUST NOT insert checkpoint blocks.",
   "determination": true,
-  "rationale": "The tests cover each obligation in `requirements.authoring.cache_checkpoints`.\n\n**Backends with explicit checkpoints (Bedrock)**\n- `tests/authoring_cli.rs#fn[claude_requests_carry_cache_checkpoints_and_record_cache_usage]` runs a two-request Bedrock Claude conversation. It covers a tool-call round and a reasoning turn.\n- For every request it asserts the system array has exactly two entries: the system text, then a `cachePoint`.\n- For every request it asserts the last message's final block is a `cachePoint`. It also asserts the whole body contains exactly two `cachePoint` occurrences, so there are no extra checkpoints.\n- It asserts the second request, which follows a reasoning turn, still ends in a checkpoint.\n- Checkpoints must not change content. The test runs the same conversation against a non-caching model (`fixture-uncached-model`), which gets no `cachePoint`. It then asserts that each cached request, after `without_cache_points` strips the checkpoint blocks, equals the corresponding plain request.\n- \"When the backend and model support caching\" is covered in two places. The CLI test checks the non-caching model end to end. The unit test `src/authoring/providers.rs#mod[tests]/fn[cache_checkpoints_are_requested_for_caching_models]` checks `bedrock_caches` for Claude, an inference-profile ARN, Nova, Llama (negative) and an unknown model (negative).\n- The same unit test checks that `place_cache_checkpoints` sets only the cache option, by comparing the serialized request with an expected one. It also checks that checkpoints are requested after a reasoning turn.\n- Ollama has no explicit checkpoints, so it falls outside the \"backends that accept explicit checkpoints\" clause.\n\n**OpenAI**\n- `tests/authoring_cli.rs#fn[openai_responses_replays_tool_calls_and_records_usage]` asserts the `instructions` (system prompt) are non-empty and identical across both requests. It asserts the `tools` arrays are identical across the requests.\n- It asserts the second request's `input` begins with exactly the first request's input, then the `function_call` and `function_call_output` in order. That covers replay of prior content in its original order.\n- The recursive `assert_no_checkpoints` checks every request body for `cachePoint`, `cache_control`, and `cache_point` or `cache_checkpoint` type blocks. That covers \"MUST NOT insert checkpoint blocks\".\n\n**Not assessed here**\n- The system prompt being identical across assessments of a kind is the job of `requirements.authoring.prompt_parts`. The CLI test also carries a {test} reference to that requirement.\n\nI found no obligation, boundary or failure case without a test and an assertion.",
-  "references": "9802d82ec0fcaf4791b0f4a551fdb985dcc9e468616e5da6d7197d9b6b2f7821",
+  "rationale": "The tests adequately cover `requirements.authoring.cache_checkpoints`.\n\n**Explicit-checkpoint backends (Bedrock).** The implementation only requests checkpoints for Bedrock Claude and Nova models. In `RigProvider::connect`, Ollama and OpenAI get `caches: false`.\n- **Checkpoint placement.** `tests/authoring_cli.rs#fn[claude_requests_carry_cache_checkpoints_and_record_cache_usage]` runs a two-request Bedrock Claude conversation, and for each request body it checks that:\n  - the system array is the prompt text followed by exactly one `cachePoint`, which covers \"after the system prompt\";\n  - the last message's final content block is a `cachePoint`, which covers \"end of its last message\";\n  - the body contains exactly two `cachePoint` strings, so checkpoints do not accumulate over the longer second request.\n- **Request after a reasoning turn.** The test also checks that the second request has three messages and contains `reasoningContent`, and that it still ends in a checkpoint. `providers.rs#mod[tests]/fn[cache_checkpoints_are_requested_for_caching_models]` repeats this at unit level with a `Reasoning` assistant message.\n- **Model support.** The unit test asserts `bedrock_caches` is true for Claude (plain id and inference-profile ARN) and Nova. It asserts false for Llama and the fixture model. The integration test's run with `fixture-uncached-model` asserts no `cachePoint` appears.\n- **No content change.** The unit test compares the serialized request before and after `place_cache_checkpoints` and finds only `options.cache` differs. The integration test strips cache points from each cached body with `without_cache_points` and asserts equality with the uncached model's body.\n- **Prompt reuse.** The system prompt of `requirements.authoring.prompt_parts` is cited context, and the test also carries a `{test}` reference to it. Reuse across requests follows from the placement checks above.\n\n**OpenAI.** `tests/authoring_cli.rs#fn[openai_responses_replays_tool_calls_and_records_usage]` checks, over two requests:\n- `instructions` are non-empty and equal across requests, and `tools` are equal across requests.\n- The second request's `input` begins with exactly the first request's `input`, followed by the `function_call` and `function_call_output` in order.\n- A recursive `assert_no_checkpoints` helper rejects `cachePoint`, `cache_control`, and block types `cache_point` or `cache_checkpoint` anywhere in the body.\n\nI found no uncovered obligation and no gap.",
+  "references": "7dc3ab7e522b944f3792a8b6608bbdfae3ec03a370fa84b40c6559a5d8b701f6",
   "inputs": [
     {
       "requirements": "requirements.authoring.cache_checkpoints",
@@ -36,15 +36,15 @@
         "Each assessment conversation MUST send its prompt as a system prompt followed by",
         "one user message, the subject message, filled from the first and second text",
         "blocks of the prompt requirement for the assessment's kind. The kinds are",
-        "requirement, example, citation review, site review, and a verifier of each of",
-        "those. A system prompt MUST be the same for every assessment of its kind, so",
-        "every placeholder whose value depends on the subject MUST be in the subject",
-        "message.",
+        "test-adequacy requirement, structural requirement, example, citation review, site",
+        "review, and a verifier of each of those. A system prompt MUST be the same for",
+        "every assessment of its kind, so every placeholder whose value depends on the",
+        "subject MUST be in the subject message.",
         ":::"
       ]
     },
     {
-      "file": "src/authoring/providers.rs",
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
       "item": "mod[tests]/fn[cache_checkpoints_are_requested_for_caching_models]",
       "hash": "bf1d467d486bbc62b611a7680d8d2e17f6f1fbddd30ac916a1534ce1aabc1c41"
     },
@@ -59,6 +59,16 @@
       "hash": "36b85b2a7c7ba03ebfe94418424f9b709a095eb2755fcf7b532f5fb5654ff346"
     },
     {
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
+      "item": "fn[bedrock_caches]",
+      "hash": "c316c3bccc7a2cc2f13634677639ec3cd79776825f5a843115d9098a97948485"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
+      "item": "fn[place_cache_checkpoints]",
+      "hash": "faf094ed40b166db2eaebd7866bb146bf9ea99f97597a3eb116802016cdee96a"
+    },
+    {
       "file": "tests/authoring_cli.rs",
       "item": "fn[bedrock_run]",
       "hash": "9ec552e381809690f082f8ea1eab61c18adcad11afb41d94332050ce3e615671"
@@ -69,14 +79,216 @@
       "hash": "b0e3d7fe938ab29f5d6db894480f7fa86aff7baebbfc8da9e77fd6d41498b576"
     },
     {
-      "file": "src/authoring/providers.rs",
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
       "item": "impl[RigProvider]/fn[connect]",
-      "hash": "1a2c0128c6755d08cec22cdca2a433cb68c950d25ab6074438bc1cdada2bd48f"
+      "hash": "4aceeee346dc8ed3d743eb309f00fc0263d4d19929ee2c73cd27fdb6735205c9"
     },
     {
-      "file": "src/authoring/providers.rs",
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
       "item": "impl[RigProvider/CompletionProvider]/fn[complete]",
       "hash": "5ef22d9aeefb3a96a508f39f4a00cbc4d49201508ab909e7079551bcffac0476"
+    }
+  ],
+  "format_version": 1,
+  "review_version": "habeas-review-v1",
+  "dependencies": [
+    {
+      "Node": [
+        {
+          "ReferenceSet": "requirements.authoring.cache_checkpoints"
+        },
+        {
+          "scheme": "habeas-reference-set-v1",
+          "value": "7dc3ab7e522b944f3792a8b6608bbdfae3ec03a370fa84b40c6559a5d8b701f6"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.authoring.cache_checkpoints"
+        },
+        "Mandatory",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "1d47c8f45b40f86f46f6b2c7390dd10269cef6ed93c6d345d63e76cbb482e2f3"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.authoring.cache_checkpoints"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "00b8ced08d9c645ad5a99ccd64133485146982ee30389f6effe664278110abd1"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.authoring.prompt_parts"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "86a1cbea0c395a8e3dbedfe7179361091f673df43422d7bfeb832bdaf4c28a7f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/providers.rs"
+            },
+            "selector": "mod[tests]/fn[cache_checkpoints_are_requested_for_caching_models]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "780db8c466c1a39a4145c8b89e1473053dbb290432b947fed15e2b065601a4a6"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/authoring_cli.rs"
+            },
+            "selector": "fn[claude_requests_carry_cache_checkpoints_and_record_cache_usage]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "a85e2a3af2f50fd3e86d13a050174be041799305458a9fcf780bac45029279a4"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/authoring_cli.rs"
+            },
+            "selector": "fn[openai_responses_replays_tool_calls_and_records_usage]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "e50dd67c6c198e8d09dcd3d098598cd3eb3bf43e0f016b5f45d2d560e6a7e980"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/providers.rs"
+            },
+            "selector": "fn[bedrock_caches]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "87ad17fe64ddd106951c7027af585ae1a5bf7cb6d8474bfbe2f58860c0943621"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/providers.rs"
+            },
+            "selector": "fn[place_cache_checkpoints]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "17e7bdb73229b57fc858b4666ed09afbdd114cff8d6eddb8f66ccba7dc846bc7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/authoring_cli.rs"
+            },
+            "selector": "fn[bedrock_run]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "64e1329164f1642ed1b3b5901dd42c35a67c72220dc38d6ef2ae91b99d49b220"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/authoring_cli.rs"
+            },
+            "selector": "fn[without_cache_points]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "2d8fa664e68292f91d23b870819cdf7dc0c493efb694e26ce87e51f60074a53a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/providers.rs"
+            },
+            "selector": "impl[RigProvider]/fn[connect]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "15aecbe6e1f7394587f8a501b58cf28adc8ce3bff549cfcbe08b6215d04adfa6"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/providers.rs"
+            },
+            "selector": "impl[RigProvider/CompletionProvider]/fn[complete]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "74fd673b60ac93434ae7c9d333ed1fb30a6882aae55e15416eae86e4f118f309"
+        }
+      ]
     }
   ]
 }

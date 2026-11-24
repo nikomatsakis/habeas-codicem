@@ -9,6 +9,7 @@ mod setup;
 
 #[derive(Parser)]
 #[command(name = "habeas")]
+// {impl}`requirements.cli.clap`
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -47,9 +48,6 @@ enum Command {
         /// List the judgments and original FIXME entries within each issue group.
         #[arg(long)]
         verbose: bool,
-        /// Show individual evidence-coverage warnings and history details.
-        #[arg(long)]
-        coverage: bool,
         /// A full requirement or example name, or a definition glob.
         selection: Option<String>,
     },
@@ -109,11 +107,14 @@ enum Command {
 }
 
 #[derive(Subcommand)]
+// {cite}`habeas:util`
 enum MdbookCommand {
     Supports { renderer: String },
+    Render,
 }
 
 #[derive(Subcommand)]
+// {cite}`habeas:util`
 enum HookCommand {
     SessionStart,
 }
@@ -147,7 +148,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     if !matches!(
         cli.command,
         Command::Mdbook {
-            command: Some(MdbookCommand::Supports { .. })
+            command: Some(MdbookCommand::Supports { .. } | MdbookCommand::Render)
         } | Command::Setup { .. }
             | Command::Coverage { .. }
             | Command::CoverageCheck
@@ -183,7 +184,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         Command::Mdbook { command: None } => {
             let (context, mut book) = mdbook_preprocessor::parse_input(io::stdin())?;
             habeas::preprocess_book(&mut book, &context.root)?;
+            habeas::rustdocs::preprocess(&mut book, &context.root, &context.config)?;
             serde_json::to_writer(io::stdout().lock(), &book)?;
+            Ok(())
+        }
+        Command::Mdbook {
+            command: Some(MdbookCommand::Render),
+        } => {
+            let context = mdbook_renderer::RenderContext::from_json(io::stdin())?;
+            habeas::rustdocs::render(context)?;
             Ok(())
         }
         // {impl}`requirements.cli.invocation`
@@ -206,16 +215,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             all,
             selection,
             verbose,
-            coverage,
         } => {
             let root = setup::project_root()?;
             io::stdout().lock().write_all(
-                habeas::status_markdown_with_coverage(
+                habeas::status_markdown_with_github(
                     &root,
                     all,
                     selection.as_deref(),
                     verbose,
-                    coverage,
                     &habeas::GithubIssues::from_env(&root),
                 )?
                 .as_bytes(),
@@ -314,11 +321,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                     summary.push_str(&format!("; policy {policy}"));
                 }
                 println!("{summary}");
-                // A cancelled batch stops at once, without inspecting the
-                // repository again.
-                if !outcome.cancelled {
-                    print_coverage_warnings(&root);
-                }
                 if !outcome.failures.is_empty() {
                     return Err(io::Error::other(
                         "evidence authoring failed for one or more subjects; see diagnostics above",
@@ -349,7 +351,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 println!(
                     "{subject}: evidence is current; 1 skipped as current (use --force to reassess)"
                 );
-                print_coverage_warnings(&root);
                 return Ok(());
             };
             let mut summary = format!(
@@ -377,27 +378,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                     outcome.usage_path.display()
                 );
             }
-            // Warnings go to stderr, so `--stdout` keeps only the record.
-            print_coverage_warnings(&root);
             Ok(())
         }
         // {impl}`requirements.integration.symposium_setup_hook`
         Command::Hook {
             command: HookCommand::SessionStart,
         } => hook::session_start(),
-    }
-}
-
-/// Prints the coverage warnings after an authoring run on stderr, so stdout
-/// keeps only what the command reports there. A failure to compute them is
-/// reported but does not fail the command.
-// {impl}`requirements.references.coverage.report`
-// {impl}`requirements.references.coverage.history`
-fn print_coverage_warnings(root: &std::path::Path) {
-    match habeas::coverage_warnings(root) {
-        Ok(warnings) => {
-            eprintln!("{}", warnings.summary());
-        }
-        Err(error) => eprintln!("cannot compute coverage warnings: {error}"),
     }
 }

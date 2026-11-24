@@ -1,6 +1,6 @@
 ---
 name: habeas-evidence
-description: Use when Habeas evidence needs creating or refreshing, or when `habeas coverage` or `habeas status` reports Habeas findings such as missing, stale, or false evidence, uncovered `{test}` lines, uncovered Rust items, FIXME judgments, citation or site reviews, or disagreeing assessments, even if the user only says "the habeas test is failing". Covers running `habeas author` and fixing what it flags. If evidence went stale because code or requirements moved, use habeas-refactor first.
+description: Use when Habeas evidence needs creating or refreshing, or when `habeas coverage` or `habeas status` reports Habeas findings such as missing, stale, or false evidence, uncovered `{test}` lines, unmarked tests or Cargo examples, FIXME judgments, citation or site reviews, or disagreeing assessments, even if the user only says "the habeas test is failing". Covers running `habeas author` and fixing what it flags. If evidence went stale because code or requirements moved, use habeas-refactor first.
 ---
 
 # Habeas evidence
@@ -14,13 +14,11 @@ Run commands from the project root, the directory with `book.toml` and
       files in the Git index; unstaged edits to tracked files are read.
 - [ ] 2. `habeas status` lists what needs attention; `habeas info <name>` shows
       one definition's judgment, rationale, and findings. Fix what the findings
-      name (see "Fixing findings"), except uncovered Rust items: leave those
-      until after step 3, because an assessment that reads an item covers it.
+      name (see "Fixing findings").
 - [ ] 3. `habeas author --all` assesses every definition whose evidence is
       missing, stale, or invalid and skips current ones; `-v` prints each false
       judgment's rationale. `habeas author <name>` does one.
-- [ ] 4. `habeas coverage`, then handle the coverage warnings of
-      `habeas status --coverage` as "Uncovered Rust items" says. While findings remain
+- [ ] 4. `habeas coverage`, then `habeas coverage-check`. While findings remain
       that you can fix, return to step 2.
 - [ ] 5. Check the "Disagreements" section of `habeas status`. Validation
       accepts a `true` or FIXME whose rationale records a disagreement, so only
@@ -60,15 +58,24 @@ the policy.
 ## Judgments
 
 `habeas author` records, for each requirement and example, a model's judgment
-of whether the reviewed tests adequately check it; `habeas coverage` validates
+of whether the reviewed tests adequately check it, or, for structural assessment
+of a requirement with implementation roots and no test edges, whether its stated
+structure is supported by those implementations; `habeas coverage` validates
 those records without calling a model. A judgment is one of three outcomes:
 
-- `true`: the reviewed tests adequately check the definition, with no gap under
-  the assessment's criteria.
+- `true`: the reviewed tests adequately check the definition, or its
+  implementations support its structural obligations, with no gap under the
+  assessment's criteria. Runtime obligations still require test evidence.
 - `false`: there is a gap that no `{fixme}` reference acknowledges; the
   rationale names it.
 - FIXME: `{fixme}` references acknowledge every remaining gap; validation
   accepts it while each named issue is open.
+
+The intended requirement review checks structure and behavior independently.
+The current choice of one assessment, including its incomplete handling of
+mixed requirements and absent edge kinds, is the accepted gap tracked by issue
+#51. Keep its fenced `{fixme}` acknowledgments until the independent checks
+and their regression tests are implemented.
 
 ## Rules
 
@@ -77,8 +84,8 @@ those records without calling a model. A judgment is one of three outcomes:
   as an independent assessment that the harness records. If authoring cannot
   run, see Gotchas; when the fix needs the user, such as missing credentials,
   stop and report the blocker.
-- Never re-run an assessment to get a different result or to get an item read.
-  Results vary between runs, so a lucky pass or read would not stay true. Fix
+- Never re-run an assessment to get a different result.
+  Results vary between runs, so a lucky pass would not stay true. Fix
   the source, tests, references, or requirement text instead. Use `--force`
   only when something the hash does not see changed: a fix in an ordinary
   comment, a newly staged file, or a reassessment the user asked for.
@@ -98,7 +105,7 @@ those records without calling a model. A judgment is one of three outcomes:
 | false judgment | read the rationale with `habeas info <name>`, fix the gap it names, then `habeas author --all` |
 | uncovered `{test}` line | check the reference names the right definition, then `habeas author <full-name>`; fixing the reference makes the record stale, so no `--force` is needed |
 | rationale identifies an unmarked standalone test | add `{test}` for the requirement or example it verifies; a reached test helper needs no reference of its own |
-| uncovered Rust item | see "Uncovered Rust items" |
+| unmarked test or Cargo example | see "Missing test and example references" |
 | a real gap the user agrees to defer, a FIXME judgment, or a `{fixme}` issue that closed | read [references/fixme.md](references/fixme.md) |
 | false citation or site review | read [references/reviews.md](references/reviews.md) |
 | orphaned citation or site review | `habeas author --all` deletes it |
@@ -111,36 +118,18 @@ the habeas-requirements skill. Behavior with no requirement needs one agreed
 with the user. Each determination stands alone: a false requirement does not
 fail the definitions it implements, tests, or cites, so fix each on its own.
 
-### Uncovered Rust items
+### Missing test and example references
 
-Validation fails for only two kinds of uncovered item: a test function, with
-`#[test]` or another attribute ending in `test`, that has no `{test}`
-reference, and a Cargo example that does not `{cite}` a named example of the
-book. Add the reference.
+A test function with `#[test]` or another attribute ending in `test` needs a
+`{test}` reference. A Cargo example needs to `{cite}` a named example in the
+book. Add the reference for the behavior it checks or illustrates.
 
-Every other uncovered item contributes to the coverage warning count in
-`habeas status` and after `habeas author`, and does not fail validation.
-Use `habeas status --coverage` to see the individual warnings.
-An item has recent coverage
-when it has its own reference, or when a recent version of an existing
-evidence record or review read it: the version on disk or one of its last
-three commits (`[coverage] reauthorings` in `habeas.toml` changes the number).
-Items inside `mod tests` are never warned about. So an item a record stopped
-reading stays quiet for a few re-authorings, while a new item that nothing has
-read, or one whose only record was deleted, is warned about at once.
-
-For each item still warned about after `habeas author --all`, choose
-references by "Choosing references" in the habeas-requirements skill:
-
-Before changing an uncovered item, determine whether it is a requirement root,
-an entry point, an item that serves other code, or dead code. Report dead code
-to the user without editing it.
-
-| Situation | Action |
-| --- | --- |
-| the item is a root of a requirement's implementation | add `{impl}` of that requirement to the item |
-| the item only serves other code | add `` // {cite}`habeas:util` `` |
-| nothing reaches the item | report it to the user as dead code; don't delete it unasked |
+Ordinary functions, types, trait methods, and test helpers need no individual
+book connection. Keep meaningful `{impl}` roots and optional explanatory
+citations. Choose references by "Choosing references" in the habeas-requirements
+skill. Recorded reads track evidence freshness, without Git-history grace
+periods or unreferenced-item warnings. Execution coverage is checked separately
+by `habeas coverage-check`.
 
 ## Disagreeing assessments
 
@@ -173,7 +162,7 @@ the same kind of finding.
   | renaming a node | stale; reassess |
   | editing code, doc comments, or docstrings | stale |
   | adding, removing, or changing the role of an `{impl}`, `{test}`, or `{fixme}`, or editing its commentary | stale |
-  | editing an item with no reference | every record that read it is stale; the item keeps recent coverage while recent versions of those records read it |
+  | editing an item with no reference | every record that read it is stale |
 
   Make related edits to shared helpers together before authoring.
 - After a fix the hash does not see, such as one only in an ordinary comment,

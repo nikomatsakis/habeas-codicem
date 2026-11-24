@@ -1,6 +1,6 @@
 ---
 name: habeas-requirements
-description: Use during design sessions and before changing code, tests, or requirement text in a project that tracks requirements with Habeas, even when the user only asks for a feature, bug fix, CLI flag, test, dependency bump, or wording tweak and never says "requirement". Drafts or edits requirements with the user (or confirms none change), has subagents review them, gets the user's agreement, then implements and adds `{impl}`/`{test}`/`{cite}` references. Not for moving code or requirements between files or outline nodes; use habeas-refactor. For validation findings, use habeas-evidence.
+description: Use during design sessions and before changing code, tests, or requirement text in a project that tracks requirements with Habeas, even when the user only asks for a feature, bug fix, CLI flag, test, dependency bump, or wording tweak and never says "requirement". Also use when writing or revising reference chapters in these projects. Drafts or edits requirements with the user (or confirms none change), has subagents review them, gets the user's agreement, then implements and adds `{impl}`/`{test}`/`{cite}` references. Not for moving code or requirements between files or outline nodes; use habeas-refactor. For validation findings, use habeas-evidence.
 ---
 
 # Habeas requirements
@@ -27,8 +27,9 @@ has the directive and reference syntax.
       compound, or incomplete. Cover each observable outcome and failure case
       of the change without committing to an implementation. Reuse existing
       requirements by full name, and propose a new one only for behavior none
-      covers; one general requirement, such as "invalid arguments MUST be
-      reported with usage", can cover many branches. Note the open product
+      covers; one general requirement, such as "invalid arguments are
+      reported with usage", can cover many branches. Follow "Writing chapters"
+      below. Note the open product
       choices; reviewers get them in step 3.
 - [ ] 3. Review. Sort the new and changed requirements into groups that one
       reviewer should see together: requirements that cite each other or
@@ -84,6 +85,97 @@ place, including renaming an item, needs no requirement review, but references
 move with the code and the evidence is reassessed; moving code to another file
 or outline node is a habeas-refactor task.
 
+## Writing chapters
+
+Write reference chapters as guided explanations of the program. Organize them
+around concepts and responsibilities, with module boundaries reflecting those
+responsibilities when explaining an API. A preferred flow is:
+
+1. What the reader can do.
+2. The concept, introduced by name.
+3. Its public representation and essential relationships.
+4. Requirements explaining its operations and guarantees.
+5. A concrete example with links where the reader encounters related concepts.
+
+Within a concept, prefer **definition → requirement(s) → example**. Adapt the
+order to the reader and subject: an overview can introduce a running example
+before formal interfaces, and later chapters can develop that example.
+
+- Open with what the reader can do and how the chapter fits the surrounding
+  explanation. Use section headings that identify a concrete topic or task.
+- Show composition before its refinements. Introduce the whole and explain how
+  its constituent parts fit together, then develop each part or link to the
+  chapter that does. For example, introduce `Domain` and all its supertraits
+  together before explaining the shared error type.
+- Introduce one concept at a time. Establish its meaning before using it to
+  explain another concept, and explain why it matters before its constraints.
+  When practical, complete its introduction—definition, representation,
+  relevant guarantees, and concrete use—before switching topics. Keep related
+  aspects together so readers can understand the concept without assembling
+  fragments from later sections. Completeness is relative to the reader's
+  current task; subsidiary details can follow once the concept is established.
+- Begin a vocabulary definition's prose with the term in italics and its
+  meaning, for example, "An *agent harness* is the conversation machinery …".
+  Connect the concept to its representation in the program.
+- Layer definitions, requirements, examples, and citations onto a readable
+  narrative. Definitions establish vocabulary; requirements state promised
+  interfaces and guarantees; examples demonstrate concrete cases. Keep promised
+  contracts and their introductory explanation inside the relevant requirement.
+  The explanation should make sense with badges and annotations hidden.
+- Show public declarations in the project's language, or the relevant command
+  and configuration forms. Let them express signatures, type relationships,
+  and structure. Put meaning and semantic guarantees in comments beside the
+  declaration; keep each comment focused on that declaration's concept.
+  Use prose for motivation, connections, and interpretation.
+- Mark partial trait declarations and implementations with a standalone
+  `// ...` before and after the members shown, separated from them by blank
+  lines. A skeleton with no members shown needs one `// ...`. Keep omission
+  markers out of complete declarations.
+- Make universal properties explicit. "Every application domain implements
+  `Clone`" states a requirement; "a cloneable application domain" suggests that
+  cloning distinguishes a subset. Review qualifiers against the intended
+  membership and guarantees.
+- Explain an operation's returned information, observable effects, and relevant
+  errors where the operation is introduced. For tracked observations, explain
+  what is recorded and which changes invalidate it.
+- Develop a running example incrementally across related chapters. Use small,
+  focused examples that show how the reader's concepts map into the interface.
+  Mark illustrative or omitted code clearly so it cannot be mistaken for a
+  promised interface.
+- Name the component responsible for each action or policy. This makes data
+  flow and ownership concrete.
+- Link to definitions, requirements, and related sections where the reader
+  encounters the concept. Keep subsidiary topics in their own sections or
+  chapters. Use tables for comparisons and navigation when helpful.
+- Use `{term}` inside assessed requirements and checked citation passages when
+  relying on shared definitions, so those definitions become recorded inputs.
+  Connect repeated claims through checked citations to their contracts and
+  definition references to their vocabulary.
+  When an interface changes, reconcile its surrounding definitions and all
+  descriptions of its composition, as well as its declaration.
+- Check that every paragraph and code comment advances the explanation around
+  it. Remove tangents, decision history, commentary about rejected alternatives,
+  and internal mechanics unrelated to the public contract. Preserve meaningful
+  operational boundaries, failure cases, and recording guarantees.
+- Reduce conceptual overhead rather than aiming for fewer words. Keep a
+  coherent API declaration together; split independently meaningful obligations.
+  A coherent explanation of one concept can span several separately assessed
+  requirements.
+  Put detailed operational guarantees in the section that explains the
+  operation, preserving guarantees that signatures cannot express.
+
+Before finishing a section, ask:
+
+- Can the reader explain this concept before leaving the section?
+- If this declaration changes, which definitions, examples, and neighboring
+  contracts must change with it?
+
+Express obligations clearly in ordinary prose or commented API declarations.
+RFC-style `MUST`, `SHOULD`, and `MAY` are optional: use them when they clarify a
+distinction or fit the project's chosen style. Do not add them just to make text
+look like a requirement. Preserve whether behavior is required, recommended,
+or permitted; prose and code can be precise without capitalized keywords.
+
 ## Choosing references
 
 The reviewer starts from a requirement's `{impl}` and `{test}` items and follows
@@ -104,11 +196,9 @@ several):
 2. Otherwise a root gets `{impl}`. Leave what it reaches unmarked.
 3. Otherwise, code that should be re-checked when the requirement changes gets
    `{cite}`.
-4. Otherwise, if the item is still uncovered after `habeas author` has run
-   (see Gotchas), and it serves other code and carries out no requirement
-   itself, it gets
-   `` // {cite}`habeas:util` ``. That includes code a library calls, such as a
-   trait implementation it requires.
+4. Otherwise, leave it unmarked. An optional
+   `` // {cite}`habeas:util` `` can explain that an item serves other code;
+   it is not required bookkeeping.
 
 Edge cases:
 
@@ -135,13 +225,27 @@ Edge cases:
   asks: the user may want it as a root, and removing it changes what the
   assessment reads.
 
-`{cite}` implements nothing; a citation review checks project citations' roles
-and built-ins' stated criteria. Execution-coverage exceptions use
+`{cite}` implements nothing. For source items outside the book, citation reviews
+check project citations' roles and built-ins' stated criteria. A closed
+`:::{cite} full.name` fence outside a requirement or example opts a book passage
+into concordance review: its claims must be supported by the cited declarations.
+The outermost eligible fence groups nested commentary citations into one review.
+Ordinary inline book citations retain their existing behavior. Execution-coverage exceptions use
 `habeas:coverage` with an assessed prose justification, as the habeas skill's
 "Testing and coverage artifacts" explains. To defer a requirement gap the user agrees to,
 use `{fixme}` as the habeas-evidence skill's `references/fixme.md` describes.
 
 ## What the review checks
+
+The intended review checks stated structure and behavior independently:
+implementation roots support signatures, relationships, ownership, and required
+delegation; tests support behavioral obligations. Missing implementation or
+test edges must not hide an obligation needing that evidence.
+The current harness selects structural assessment for requirements with
+implementation roots and no test edges, and test adequacy otherwise. Issue #51
+tracks the remaining independent-check and regression-test gaps, acknowledged
+by fenced `{fixme}` references. Examples and distributed requirements retain
+their existing review tasks.
 
 Before running `habeas author`, check the change against what each
 requirement's assessment treats as a gap:
@@ -155,7 +259,7 @@ requirement's assessment treats as a gap:
   too weak to rule out plausible requirement-violating behavior;
 - a standalone test designed to verify the subject without `{test}`; helpers
   reached from marked tests need no reference of their own;
-- an applicable SHOULD with inadequate tests, and text with two equally
+- an applicable recommendation with inadequate tests, and text with two equally
   supported readings that lead to different testing judgments.
 
 An example's review checks that tests' setup and assertions cover its scenario
@@ -168,23 +272,22 @@ adequacy gap, explain what requirement-violating behavior those tests would
 accept, and check whether another reviewed test rules it out. Identify delegated
 obligations and established testing exemptions separately.
 
-The model initially receives the subject and its context, test sources, and
+For test-adequacy assessment, the model initially receives the subject and its context, test sources, and
 comment-only `{fixme}` acknowledgments. An `{impl}` reference or anchor alone
 does not supply implementation source. `references` locates sources without
 reading them; its `roles` filter can select implementations. A `habeas` source
 read is recorded. The model requests implementation only for a specific question;
 its passing judgment establishes test adequacy, not implementation correctness.
+For structural assessment, implementation roots are mandatory inputs and a
+passing judgment establishes the subject's structural obligations, not general
+runtime correctness.
 The supervising agent must still check that the code fulfills each applicable
 requirement and introduces no additional end-user-observable behavior without an
 agreed requirement.
 
 ## Gotchas
 
-- In Rust, every explicit function or method, including trait methods and test
-  helpers, and every struct, enum, and union must be covered: by
-  its own reference, or by a current assessment that read it or an enclosing
-  item. A reference on an enclosing module or `impl` is not the item's own.
-- Search results only locate code; they cover nothing.
-- Reads exist only after `habeas author`, so author before treating an item as
-  uncovered, and before giving it `habeas:util`. For an item still uncovered
-  after that, see "Uncovered Rust items" in the habeas-evidence skill.
+- In Rust, every runnable test needs a `{test}` reference. Ordinary functions,
+  types, trait methods, and test helpers need no individual book connection.
+- Search results locate code. Recorded reads track evidence freshness; they do
+  not satisfy a separate obligation to index every Rust item.
