@@ -34,14 +34,14 @@ fn addresses_reconstruct_without_reading_the_file() {
 // {test}`requirements.sdk.outlines.OutlineError`
 #[test]
 fn outline_errors_preserve_diagnostic_and_line() {
-    let error = trust_but_verify::outline::OutlineError::new(7, "bad selector".into());
+    fn assert_eq_impl<T: Eq>() {}
+    assert_eq_impl::<OutlineError>();
+    let error = OutlineError::new(7, "bad selector".into());
     assert_eq!(error.line, 7);
     assert_eq!(error.message, "bad selector");
     assert_eq!(error, error.clone());
-    assert_ne!(
-        error,
-        trust_but_verify::outline::OutlineError::new(8, error.message.clone())
-    );
+    assert_ne!(error, OutlineError::new(8, error.message.clone()));
+    assert_ne!(error, OutlineError::new(7, "different diagnostic".into()));
     let reported: &dyn std::error::Error = &error;
     assert_eq!(reported.to_string(), "line 7: bad selector");
 }
@@ -52,6 +52,7 @@ fn outline_errors_preserve_diagnostic_and_line() {
 // {test}`requirements.sdk.outlines.selection`
 // {test}`requirements.sdk.sources.plain-text.items`
 // {test}`requirements.sdk.sources.plain-text.fingerprints`
+// {test}`requirements.sdk.sources.plain-text.PlainText`
 #[test]
 fn unknown_extensions_keep_nonblank_lines_and_content_selectors() {
     let first =
