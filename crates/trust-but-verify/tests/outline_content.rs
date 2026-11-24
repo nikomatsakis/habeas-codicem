@@ -1202,6 +1202,7 @@ fn plain_line_fingerprints_use_sha256_words_without_losing_boundaries() {
 
 // {test}`requirements.sdk.sources.redaction`
 // {test}`requirements.sdk.outlines.node_contents`
+// {test}`requirements.sdk.outlines.selection`
 #[test]
 fn formatted_contents_redact_credentials_while_retaining_raw_text_and_spans() {
     let token = format!("gh{}_{}", "p", "16C7e42F292c6912E7710c838347Ae178B4a");

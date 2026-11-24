@@ -31,7 +31,9 @@ async fn source_bytes_error_kinds_and_language_names_round_trip() {
     let encoded = serde_json::to_value(&name).unwrap();
     assert_eq!(encoded, "CustomLang");
     assert_eq!(serde_json::from_value::<LanguageId>(encoded).unwrap(), name);
-    let file = SourceFile::new(std::sync::Arc::from(&b"hello"[..])).language(name.clone());
+    let file = SourceFile::new(std::sync::Arc::from(&b"hello"[..]));
+    assert_eq!(file.language, None);
+    let file = file.language(name.clone());
     assert_eq!(file.text().unwrap(), "hello");
     assert_eq!(file.text().unwrap().as_ptr(), file.bytes.as_ptr());
     assert_eq!(file.language, Some(name.clone()));
@@ -312,6 +314,8 @@ async fn empty_sources_errors_and_retained_snapshots_remain_distinct() {
 // {test}`requirements.sdk.graph.search.StructuralMatches`
 // {test}`requirements.sdk.graph.validation-context.outline_source.fn`
 // {test}`requirements.sdk.sources.Sources`
+// {test}`requirements.sdk.public_api`
+// {test}`requirements.sdk.sources.language_id`
 #[tokio::test]
 async fn built_in_languages_and_structural_search_use_the_project_scope() {
     let root = tempfile::tempdir().unwrap();

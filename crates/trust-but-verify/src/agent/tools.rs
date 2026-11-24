@@ -408,6 +408,7 @@ mod tests {
 
     // {test}`requirements.sdk.graph-edges.outgoing_edges`
     // {test}`requirements.sdk.graph.validation-context.outgoing_edges.mcp`
+    // {test}`requirements.sdk.graph.validation-context.outgoing_edges.behavior`
     #[test]
     fn nested_label_schema_references_resolve_from_the_tool_parameters_root() {
         #[derive(schemars::JsonSchema)]

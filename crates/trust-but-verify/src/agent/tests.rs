@@ -1969,6 +1969,7 @@ async fn application_tool_factories_create_fresh_state_for_each_agent_call() {
 // {test}`requirements.sdk.graph.validation-context.read_node.mcp`
 // {test}`requirements.sdk.graph.validation-context.outgoing_edges.mcp`
 // {test}`requirements.sdk.graph.validation-context.pages.mcp`
+// {test}`requirements.sdk.graph.validation-context.outgoing_edges.behavior`
 #[tokio::test]
 async fn application_tools_preserve_graph_tools_in_the_same_conversation() {
     let contents = "x".repeat(18_000);
@@ -2103,7 +2104,7 @@ async fn graph_read_pages_retain_the_prepared_snapshot_after_contents_change() {
             self.script.complete(request).await
         }
     }
-    let original = "original snapshot ".repeat(1200);
+    let original = format!("{}/second page", "é".repeat(8192));
     let graph = Memory::new(original.clone());
     let agent = ToolAgent::new(ChangingProvider {
         graph: graph.clone(),
@@ -2120,9 +2121,22 @@ async fn graph_read_pages_retain_the_prepared_snapshot_after_contents_change() {
         matches!(&ctx.dependencies()[..], [Dependency::Node(Node(1), fingerprint)] if fingerprint.value == original)
     );
     let requests = agent.provider.script.requests.lock().unwrap();
-    let page = serde_json::to_string(requests[2].chat_history.last().unwrap()).unwrap();
-    assert!(page.contains("original snapshot"), "{page}");
-    assert!(!page.contains("replacement contents"), "{page}");
+    let mut retained = String::new();
+    for (index, request) in requests[1..].iter().enumerate() {
+        let Message::User { content } = request.chat_history.last().unwrap() else {
+            panic!("expected tool response")
+        };
+        let [UserContent::ToolResult(result)] = content.as_slice() else {
+            panic!("expected one page")
+        };
+        let [ToolResultContent::Text(text)] = result.content.as_slice() else {
+            panic!("expected page text")
+        };
+        let page: Value = serde_json::from_str(&text.text).unwrap();
+        assert_eq!(page.get("next").is_some(), index == 0);
+        retained.push_str(page["text"].as_str().unwrap());
+    }
+    assert_eq!(retained, original);
 }
 
 // {test}`requirements.sdk.graph.validation-context.pages.behavior`

@@ -337,6 +337,60 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    // {test}`requirements.sdk.graph.agent-harness.OpenAiConfig`
+    // {test}`requirements.sdk.graph.agent-harness.agent_config.settings`
+    #[test]
+    fn openai_inference_options_only_fill_missing_defaults() {
+        for (reasoning, expected) in [
+            (
+                json!({"summary":"auto"}),
+                json!({"summary":"auto","effort":"low"}),
+            ),
+            (json!({"effort":"high"}), json!({"effort":"high"})),
+        ] {
+            let config = OpenAiConfig::new()
+                .option("max_output_tokens".into(), OptionValue::Integer(42))
+                .option(
+                    "reasoning".into(),
+                    serde_json::from_value(reasoning).unwrap(),
+                );
+            assert_eq!(
+                AgentConfig::OpenAi(config).options_json().unwrap(),
+                json!({"max_output_tokens":42,"reasoning":expected})
+            );
+        }
+    }
+
+    // {test}`requirements.sdk.graph.agent-harness.OpenAiConfig`
+    // {test}`requirements.sdk.graph.agent-harness.agent_config.settings`
+    #[test]
+    fn openai_uses_the_default_credential_variable() {
+        const CHILD: &str = "TBV_TEST_OPENAI_DEFAULT_CREDENTIAL";
+        if std::env::var_os(CHILD).is_some() {
+            assert_eq!(
+                OpenAiConfig::new().resolved_api_key().unwrap(),
+                "test-credential"
+            );
+            return;
+        }
+        let test = format!(
+            "{}::openai_uses_the_default_credential_variable",
+            module_path!().split_once("::").unwrap().1
+        );
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &test])
+            .env(CHILD, "1")
+            .env("OPENAI_API_KEY", "test-credential")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+    }
+
     // {test}`requirements.sdk.graph.agent-harness.agent_config.settings`
     // {test}`requirements.sdk.graph.agent-harness.BedrockConfig`
     // {test}`requirements.sdk.graph.agent-harness.BedrockCredentials`

@@ -614,6 +614,7 @@ fn wildcard_versions_still_check_inputs_and_errors() {
 // {test}`requirements.sdk.graph.validation-context.ValidationContext.node_id`
 // {test}`requirements.sdk.graph.validation-context.ValidationContext.successors`
 // {test}`requirements.sdk.graph.validation-context.ValidationContext.outgoing_edges`
+// {test}`requirements.sdk.graph.validation-context.ValidationContext.new`
 #[test]
 fn labeled_selections_track_only_target_membership_without_reading_contents() {
     let graph = Memory::default();
@@ -712,6 +713,8 @@ fn labeled_selections_track_only_target_membership_without_reading_contents() {
 // {test}`requirements.sdk.graph.evidence.inputs`
 // {test}`requirements.sdk.graph.criteria.criterion_trait.version`
 // {test}`requirements.sdk.graph.evidence.checking_records.version_match`
+// {test}`requirements.sdk.graph.validators.validator.store_evidence`
+// {test}`requirements.sdk.graph.validators.validator.load_evidence`
 #[tokio::test]
 async fn caller_reuses_negative_answers_and_compares_revisions_explicitly() {
     let graph = Memory::default();
@@ -1335,6 +1338,7 @@ async fn later_lighter_agent_calls_preserve_the_contexts_existing_trace() {
 // {test}`requirements.sdk.graph.validators.validate_node`
 // {test}`requirements.sdk.graph.validation-context.root_inputs`
 // {test}`requirements.sdk.graph.evidence.node_inputs`
+// {test}`requirements.sdk.graph.validation-context.ValidationContext.new`
 #[tokio::test]
 async fn concurrent_single_node_validations_keep_separate_traces() {
     let graph = Memory {
@@ -1504,6 +1508,7 @@ fn prefix_hashes_match_known_utf8_sha256_without_normalization() {
 }
 
 // {test}`requirements.sdk.graph.criteria.execute`
+// {test}`requirements.sdk.graph.validators.ValidationError`
 #[test]
 fn agent_errors_expose_the_agreed_string_payload() {
     use std::error::Error;
@@ -1595,8 +1600,6 @@ fn direct_reads_return_complete_unicode_contents_and_snapshots() {
             .contents
             .insert(1, original.clone());
         let inspection = ValidationContext::new(&graph, 1);
-        let contents = inspection.read(&1).unwrap();
-        assert_eq!(contents.format(), original);
         let snapshot = inspection.read_snapshot(&1).unwrap();
         assert_eq!(snapshot.content.format(), original);
         assert_eq!(snapshot.fingerprint, fp(original.clone()));
@@ -1604,6 +1607,8 @@ fn direct_reads_return_complete_unicode_contents_and_snapshots() {
             inspection.dependencies(),
             vec![Dependency::Node(1, fp(original.clone()))]
         );
+        let contents = inspection.read(&1).unwrap();
+        assert_eq!(contents.format(), original);
         graph
             .state
             .lock()

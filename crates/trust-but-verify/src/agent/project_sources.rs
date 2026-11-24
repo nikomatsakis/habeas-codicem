@@ -341,6 +341,47 @@ mod tests {
         assert_eq!(tools.domain.0.lock().unwrap().reads, 0);
     }
 
+    // {test}`requirements.sdk.graph.validation-context.pages.behavior`
+    #[tokio::test]
+    async fn search_pages_return_every_original_match_in_order() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("source.txt");
+        let lines: Vec<_> = (1..=350).map(|i| format!("hit {i}")).collect();
+        std::fs::write(&path, lines.join("\n")).unwrap();
+        let tools = ProjectSources {
+            sources: Sources::new(root.path()),
+            domain: project(""),
+        };
+        let mut session = SessionTools::new(tools.session());
+        let mut delivery = session
+            .dispatch("search_text", &json!({"pattern":"hit"}))
+            .await
+            .unwrap();
+        std::fs::write(&path, "changed").unwrap();
+        let mut count = 0;
+        let mut pages = 0;
+        loop {
+            let page: Value = serde_json::from_str(&delivery.text).unwrap();
+            let matches = page["matches"].as_array().unwrap();
+            assert!(!matches.is_empty());
+            for (index, entry) in matches.iter().enumerate() {
+                assert_eq!(
+                    entry,
+                    &json!({"path":"source.txt", "line":count+1, "excerpt":lines[count], "tag":(index+1).to_string()})
+                );
+                count += 1;
+            }
+            pages += 1;
+            let Some(next) = page.get("next") else { break };
+            delivery = session
+                .dispatch("get_next_page", &json!({"uuid":next}))
+                .await
+                .unwrap();
+        }
+        assert!(pages > 1);
+        assert_eq!(count, lines.len());
+    }
+
     // {test}`requirements.sdk.graph.search.search_structure.inputs`
     // {test}`requirements.sdk.graph.search.finish_search.inputs`
     #[cfg(feature = "default-languages")]
@@ -441,6 +482,16 @@ mod tests {
             )
             .collect();
         assert_eq!(items, expected);
+        let selector = &items.last().unwrap()["selector"];
+        tools.domain.0.lock().unwrap().text = "fn item_399() {}".into();
+        let address = json!({"path":"code.rs", "selector":selector});
+        let read = session.dispatch("read_source", &address).await.unwrap();
+        let page: Value = serde_json::from_str(&read.text).unwrap();
+        assert_eq!(page, json!({"node":address, "text":"fn item_399() {}"}));
+        assert_eq!(
+            tools.domain.0.lock().unwrap().read_nodes,
+            ["code.rs#fn[item_399]"]
+        );
     }
 
     // {test}`requirements.sdk.graph.validation-context.list_sources.mcp`
@@ -703,6 +754,7 @@ mod tests {
 
     // {test}`requirements.sdk.graph.validation-context.read_source.behavior`
     // {test}`requirements.sdk.graph.validation-context.read_source.inputs`
+    // {test}`requirements.sdk.graph.validation-context.read_source.mcp`
     #[tokio::test]
     async fn omitted_and_explicit_empty_selectors_deliver_the_same_whole_file() {
         let root = tempfile::tempdir().unwrap();

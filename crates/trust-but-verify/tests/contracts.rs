@@ -502,6 +502,7 @@ fn criterion_paths_preserve_hierarchy_empty_segments_order_and_unicode() {
 // {test}`requirements.sdk.graph.evidence.node_inputs`
 // {test}`requirements.sdk.graph.evidence.checking_records`
 // {test}`requirements.sdk.graph.validators.validator.check_inputs`
+// {test}`requirements.sdk.graph.validators.validator.new`
 #[tokio::test]
 async fn changing_one_criteria_input_does_not_invalidate_another() {
     let domain = Application::default();
@@ -657,6 +658,7 @@ async fn input_checking_and_execution_keep_separate_observations() {
 // {test}`requirements.sdk.graph.evidence.checking_records`
 // {test}`requirements.sdk.graph.evidence.inputs`
 // {test}`requirements.sdk.graph.validators.validator.check_inputs`
+// {test}`requirements.sdk.graph.validators.validator.store_evidence`
 #[tokio::test]
 async fn dependency_resolution_failures_do_not_execute_or_replace_saved_answers() {
     let domain = Application::default();
@@ -671,6 +673,9 @@ async fn dependency_resolution_failures_do_not_execute_or_replace_saved_answers(
         Dependency::OutgoingEdges(Node(1), 7, edge_fingerprint(&domain, &[])),
     ];
     assert_eq!(value.dependencies(), expected);
+    assert_eq!(validator.check_inputs(&value), Ok(true));
+    domain.0.lock().unwrap().edges.insert((1, 7), vec![Node(3)]);
+    assert_eq!(validator.check_inputs(&value), Ok(false));
     for (read, edges, message) in [(true, false, "read"), (false, true, "edges")] {
         {
             let mut state = domain.0.lock().unwrap();

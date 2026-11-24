@@ -221,6 +221,7 @@ fn summary(outline: &LegacyOutline) -> Vec<String> {
 // {test}`requirements.references.selector_duplicate_names`
 // {test}`requirements.references.outlines`
 // {test}`requirements.sdk.sources.rust.items`
+// {test}`requirements.sdk.outlines.selector_syntax`
 #[test]
 fn rust_selectors_follow_syntactic_ancestry() {
     let source = r#"
