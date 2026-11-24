@@ -279,37 +279,6 @@ impl<D: Domain, O> Fingerprinted<D, O> {
     }
 }
 
-// {cite}`habeas:util`
-/// An ordered, deduplicated log for adapters retaining their own wire inputs.
-#[derive(Clone, Debug)]
-#[doc(hidden)]
-#[cfg(feature = "habeas-integration")]
-pub struct Trace<T> {
-    observations: Vec<T>,
-}
-#[cfg(feature = "habeas-integration")]
-impl<T> Default for Trace<T> {
-    // {cite}`habeas:util`
-    fn default() -> Self {
-        Self {
-            observations: Vec::new(),
-        }
-    }
-}
-#[cfg(feature = "habeas-integration")]
-impl<T: PartialEq> Trace<T> {
-    // {cite}`habeas:util`
-    pub fn observe(&mut self, value: T) {
-        if !self.observations.contains(&value) {
-            self.observations.push(value);
-        }
-    }
-    // {cite}`habeas:util`
-    pub fn observations(&self) -> &[T] {
-        &self.observations
-    }
-}
-
 // {impl}`requirements.sdk.graph.criteria.execute`
 #[derive(Debug)]
 pub enum ValidationError<E> {
@@ -409,3 +378,6 @@ pub fn edge_fingerprint<D: Domain>(graph: &D, targets: &[D::NodeId]) -> Fingerpr
             .collect(),
     }
 }
+
+#[cfg(test)]
+mod validation_tests;

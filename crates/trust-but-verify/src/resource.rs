@@ -23,6 +23,7 @@ pub struct ResourceId {
 /// language. Empty `selector` identifies the resource root.
 // {impl}`requirements.sdk.sources.source_addresses`
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg(test)]
 pub struct OutlineId {
     pub resource: ResourceId,
     pub selector: String,

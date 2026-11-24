@@ -1,6 +1,5 @@
 //! In-process, case-sensitive regular-expression search.
 use std::io;
-use std::path::Path;
 
 // {impl}`requirements.authoring.source_tools`
 pub struct RegexSearch {
@@ -15,32 +14,6 @@ impl RegexSearch {
             .build(pattern)
             .map_err(|error| io::Error::other(format!("invalid ripgrep pattern: {error}")))?;
         Ok(Self { matcher })
-    }
-
-    /// Matching one-based line numbers, stopping at binary data.
-    // {impl}`requirements.authoring.source_tools`
-    pub fn search_path(&self, path: &Path) -> io::Result<Vec<usize>> {
-        let mut searcher = grep_searcher::SearcherBuilder::new()
-            .line_number(true)
-            .binary_detection(grep_searcher::BinaryDetection::quit(0))
-            .build();
-        let mut lines = Vec::new();
-        searcher
-            .search_path(
-                &self.matcher,
-                path,
-                grep_searcher::sinks::Lossy(|number, _| {
-                    lines.push(number as usize);
-                    Ok(true)
-                }),
-            )
-            .map_err(|error| {
-                io::Error::new(
-                    error.kind(),
-                    format!("ripgrep failed to search {}: {error}", path.display()),
-                )
-            })?;
-        Ok(lines)
     }
 
     /// Search a provider's supplied bytes without requiring a local path.
@@ -60,5 +33,24 @@ impl RegexSearch {
             }),
         )?;
         Ok(lines)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RegexSearch;
+
+    // {test}`requirements.authoring.source_tools`
+    #[test]
+    fn byte_search_reports_case_sensitive_one_based_matching_lines() {
+        let search = RegexSearch::compile("hit").unwrap();
+        assert_eq!(
+            search
+                .search_bytes("Hit\nhit hit\nabsent\né hit\n".as_bytes())
+                .unwrap(),
+            [2, 4]
+        );
+        assert!(search.search_bytes(b"\0hit\nhit\n").unwrap().is_empty());
+        assert!(RegexSearch::compile("[").is_err());
     }
 }

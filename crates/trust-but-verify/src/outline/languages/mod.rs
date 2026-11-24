@@ -5,10 +5,6 @@
 pub(crate) mod css;
 pub(crate) mod markdown;
 pub(crate) mod python;
-#[cfg(feature = "habeas-integration")]
-#[doc(hidden)]
-pub mod rust;
-#[cfg(not(feature = "habeas-integration"))]
 pub(crate) mod rust;
 pub(crate) mod toml;
 pub(crate) mod typescript;

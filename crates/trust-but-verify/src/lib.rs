@@ -49,20 +49,7 @@ pub mod redaction;
 #[path = "redaction/mod.rs"]
 mod redaction;
 
-#[cfg(feature = "habeas-integration")]
-#[doc(hidden)]
-#[path = "resource.rs"]
-pub mod resource;
-#[cfg(not(feature = "habeas-integration"))]
-#[path = "resource.rs"]
 mod resource;
-
-#[cfg(feature = "habeas-integration")]
-#[doc(hidden)]
-#[path = "search.rs"]
-pub mod search;
-#[cfg(not(feature = "habeas-integration"))]
-#[path = "search.rs"]
 mod search;
 
 #[cfg(feature = "habeas-integration")]

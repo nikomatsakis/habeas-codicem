@@ -121,17 +121,6 @@ pub fn redact_text(text: &str) -> Cow<'_, str> {
     Cow::Owned(redaction.apply(text).into_owned())
 }
 
-/// Redacts each line of a line list as one text, keeping the line count.
-// {cite}`habeas:util`
-#[cfg(feature = "habeas-integration")]
-pub fn redact_lines(lines: &[String]) -> Vec<String> {
-    let text = lines.join("\n");
-    match redact_text(&text) {
-        Cow::Borrowed(_) => lines.to_vec(),
-        Cow::Owned(text) => text.split('\n').map(str::to_owned).collect(),
-    }
-}
-
 /// Pushes the line breaks in `text`, keeping `\r\n` pairs.
 // {cite}`habeas:util`
 fn push_line_breaks(output: &mut String, text: &str) {

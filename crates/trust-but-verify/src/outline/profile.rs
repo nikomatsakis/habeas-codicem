@@ -10,8 +10,3 @@ pub fn profile_for_path(path: &std::path::Path) -> &'static Profile {
         .map(|provider| provider.profile())
         .unwrap_or(&super::plain::PROFILE)
 }
-
-// {cite}`habeas:util`
-pub fn is_markdown_path(path: &std::path::Path) -> bool {
-    profile_for_path(path).name == "markdown"
-}

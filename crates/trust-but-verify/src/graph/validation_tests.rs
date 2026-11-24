@@ -1,3 +1,12 @@
+use crate::domain::Domain;
+use crate::domain::NodeContents;
+use crate::graph::validator::Validator;
+use crate::graph::*;
+use crate::request::Agent;
+use crate::request::AgentRequest;
+use crate::request::Context;
+use crate::request::ValidationContext;
+use crate::request::context_fingerprint;
 use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -13,15 +22,6 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
-use trust_but_verify::domain::Domain;
-use trust_but_verify::domain::NodeContents;
-use trust_but_verify::graph::validator::Validator;
-use trust_but_verify::graph::*;
-use trust_but_verify::request::Agent;
-use trust_but_verify::request::AgentRequest;
-use trust_but_verify::request::Context;
-use trust_but_verify::request::ValidationContext;
-use trust_but_verify::request::context_fingerprint;
 
 // The test application chooses its own completed-answer format.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -328,7 +328,7 @@ impl Agent<Memory> for MockAgent {
             }
             assert_eq!(request.submission_name, "submit_result");
             for input in &request.inputs {
-                inspection.observe_read(input.node, input.fingerprint.clone());
+                inspection.record_read(input.node, input.fingerprint.clone());
             }
             let n = if self.prefix_result && request.prefix == "independent" {
                 11
