@@ -1,8 +1,8 @@
 {
   "requirement": "`trust_but_verify` exposes `Ask` and its public `ContextPhase` and\n`NodePhase` state types. The validation context starts a builder:\n\n```rust,ignore\n/// Create an independent request borrowing this context through a shared reference.\npub fn ask<R>(&self) -> Ask<'_, 'd, D, R, ContextPhase>\nwhere\n    R: serde::de::DeserializeOwned + schemars::JsonSchema + Send;\n```\n\nBoth states implement `std::future::IntoFuture` with\n`Output = Result<R, ValidationError<D::Error>>` and a `Send` future for\n`R: serde::de::DeserializeOwned + schemars::JsonSchema + Send`.\nAwaiting executes the assembled request, even with no contexts or node\ninsertions. Building it does not invoke an agent.",
   "determination": true,
-  "rationale": "I judged this from the supplied test sources only. I did not request any implementation source.\n\n**Obligations derived from `requirements.sdk.graph.agent-calls.judge`**\n1. `ValidationContext::ask::<R>()` takes `&self` and starts an independent builder in `ContextPhase`.\n2. Both `ContextPhase` and `NodePhase` implement `IntoFuture`. The output is `Result<R, ValidationError<D::Error>>`, and the future is `Send`.\n3. Awaiting executes the assembled request, even with no contexts or node insertions.\n4. Building the request does not invoke an agent.\n\n**Mapping to tests**\n- **Shared `&self` and independence.** `shared_context_allows_independent_concurrent_agent_calls` runs two `ask` builders on one shared context under `futures::join!`. One builder is a `NodePhase` and the other a `ContextPhase`. A barrier forces the calls to overlap. The test asserts that both complete with their own answers and that exactly two agent requests were made.\n- **`Send` futures and `IntoFuture` for both states.**\n  - `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` calls `assert_send` on the `ContextPhase` future. That future comes from `.context(..).context(..).into_future()`.\n  - `explicit_insertions_preserve_order_repetition_and_selection_snapshots` calls `assert_send` on the `NodePhase` future. That future comes from `.contents_of_current_node()` and the other insertion calls.\n  - Many tests await both states directly.\n- **Output type.** The tests call `.unwrap()` on the result and read `answer.n`. They also match `Err(ValidationError::NoAgentConfigured)`, `Err(ValidationError::Graph(\"read\"))`, and the other `Err` variants. This pins the `Result<R, ValidationError<_>>` shape.\n- **Awaiting with nothing queued.** `contexts_render_once_...` awaits a bare `ctx.ask::<Answer>()` and one with an empty `Vec<String>` context. It asserts that each produced an agent request with an empty context string, the matching fingerprint, and no node contents. `queued_reads_selection_and_rendering_fail_before_agent_invocation` awaits `contents_of_successors(7)` with no matching edges, so there are no node reads. That request still executes successfully.\n- **Building does not invoke the agent.**\n  - In `queued_reads_selection_and_rendering_fail_before_agent_invocation`, `drop(ctx.ask::<Answer>().contents_of_current_node())` is followed by an assertion that no agent requests exist.\n  - `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` shows that a dropped builder queues and resolves nothing: no dependencies, reads, or selections are recorded.\n  - The request-count assertion in the concurrent test would also catch any call made at build time on a `ContextPhase` builder.\n  - Failures in reads, edge selection, and rendering return errors before any agent call, and the request count is unchanged.\n\n**Possible gap, not established.** No test drops a bare `ContextPhase` builder and then checks the agent request count directly. The exact-count assertion in the shared-context test covers this indirectly, so I don't treat it as a gap.\n\n**Delegated obligations.** The sub-requirements `judge.node_contents`, `judge.phases`, `judge.rendering`, `judge.submission`, and `judge.caching` have their own tests. They are not assessed here.",
-  "references": "dd4cf79049c56cd55c110c884dd82c146a5a47333742441289767fe6f304d830",
+  "rationale": "I judged the tests adequate for `requirements.sdk.graph.agent-calls.judge`. I did not request implementation source. Each obligation in the text maps to a marked test, as follows.\n\n- **`ValidationContext::ask` starts a builder from `&self`.**\n  - `shared_context_allows_independent_concurrent_agent_calls` calls `ctx.ask::<Answer>()` twice on one shared context. It awaits both with `futures::join!` under a barrier, so the two requests must be in flight together. It asserts both answers and that `agent.requests` holds two entries.\n  - The other tests also call `ask` through `&ctx`.\n- **`ContextPhase` implements `IntoFuture`.**\n  - In `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text`, the builder from `ctx.ask().context(..).context(..)` is turned into a future with `into_future()`.\n  - The test asserts that this future is `Send` with `assert_send`, then awaits it and unwraps the result.\n  - It also directly awaits `ctx.ask::<Answer>()` and `ctx.ask::<Answer>().context(Vec::new())`.\n- **`NodePhase` implements `IntoFuture`.**\n  - In `explicit_insertions_preserve_order_repetition_and_selection_snapshots`, the `NodePhase` builder is turned into a future with `into_future()`.\n  - The test asserts that this future is `Send`, awaits it, and checks `answer.n == 7`.\n  - It also checks the request contents, the read order and the recorded dependencies.\n  - `shared_context_allows_independent_concurrent_agent_calls` awaits a `contents_of_current_node()` builder as well.\n- **`Output = Result<R, ValidationError<D::Error>>`.**\n  - The success value is unwrapped and used as `R` (`Answer.n`) in several tests.\n  - Failure paths assert the error variants. `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` expects `ValidationError::NoAgentConfigured`. `queued_reads_selection_and_rendering_fail_before_agent_invocation` expects `ValidationError::Graph(\"read\")`, `Graph(\"edges\")` and `Graph(\"render\")`. The last three carry the graph's `D::Error`.\n- **Awaiting executes the request, even with no contexts or node insertions.** `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` awaits a bare `ctx.ask::<Answer>()` and an `ask` with an empty `Vec` context. It asserts that the agent received those requests, with empty text, the fingerprint of the empty string, and no node contents.\n- **Building does not invoke an agent.**\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` drops a builder and asserts `agent.requests` is empty.\n  - `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` drops a builder and asserts `ctx.dependencies()` is empty.\n  - That test also asserts that the graph's `reads` and `selections` stay empty after an await that fails with `NoAgentConfigured`.\n\nI found no uncovered obligation or boundary case and no assertion that contradicts the text. The finer sub-requirements are `node_contents`, `rendering`, `caching`, `phases` and `submission`. Each has its own requirement, and I did not assess them here. There are no acknowledgments.",
+  "references": "f4a6a6911b3085a081b20fc75e6f64c38d517244ed26eaf06ba623808fbce4e9",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.agent-calls.judge",
@@ -30,49 +30,29 @@
       ]
     },
     {
-      "file": "crates/trust-but-verify/tests/validation.rs",
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[dropped_builders_and_missing_agents_do_not_resolve_queued_inputs]",
       "hash": "9de7c413a682b7a0c92de76c056167a4ee6272cb8fd4ce0fac8a035a691b1396"
     },
     {
-      "file": "crates/trust-but-verify/tests/validation.rs",
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]",
       "hash": "9359c08e74a3d94de11ac4a169c18f28993284f182871b98d112f3a73c69dbb1"
     },
     {
-      "file": "crates/trust-but-verify/tests/validation.rs",
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text]",
       "hash": "502a9b96c8c750f3f26714ed0698e2edd5bcc644f1fc52b9152ece44614b6bb5"
     },
     {
-      "file": "crates/trust-but-verify/tests/validation.rs",
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[shared_context_allows_independent_concurrent_agent_calls]",
       "hash": "0a08304224981df981cd1d688fefa355db7c7b5bf22c7f6c9ad746fca1e51c42"
     },
     {
-      "file": "crates/trust-but-verify/tests/validation.rs",
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]",
       "hash": "d87746a361dc0b25514fe633d10fa2512926e1ba51ffb2643755ea717b6fd42b"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[ValidationContext<'d,%20D>]#3/fn[ask]",
-      "hash": "d9a60d50f0b840ec20b6a28f2f101abb5fe48bf743b7a81ba471cfb1b7de3f20"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20ContextPhase>]/fn[context]",
-      "hash": "40ee4435e784f834abea244c54a5bcb4d17de21f805197b5532e500d619b7876"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[contents_of_current_node]",
-      "hash": "50662f3870bb500baeb16d5aed70ed501dd6a08a0abe3affa048f8c6e6bfb830"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "macro[await_phase]",
-      "hash": "9b3cfad22c35d028c444016ff671a954ce5a14ea2cc99d1e2b9b757b0dc4e30f"
     }
   ],
   "format_version": 1,
@@ -85,7 +65,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "dd4cf79049c56cd55c110c884dd82c146a5a47333742441289767fe6f304d830"
+          "value": "f4a6a6911b3085a081b20fc75e6f64c38d517244ed26eaf06ba623808fbce4e9"
         }
       ]
     },
@@ -97,7 +77,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "7492da69fbe31e68d6f84ceb73a20460247fcafb064fb412838a93f8e659261c"
+          "value": "a89be6dfdbc7f9f1544e1ce5581cfda2db63a3f907bf06a8ce43def1512c3854"
         }
       ]
     },
@@ -118,14 +98,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
             },
             "selector": "fn[dropped_builders_and_missing_agents_do_not_resolve_queued_inputs]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "2b74ee2c778a43a9109af21182d495181dcb2ba1184b66d0c2b09fb7c80e1341"
+          "value": "016facc5f4f6b3d46e991dbfd1050f1bcf909625306004b4ef7a7dbab58e2d16"
         }
       ]
     },
@@ -135,14 +115,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
             },
             "selector": "fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "a1c4ceae3a7595a1919676e26087c35cc300462f566cd27799498a5d0aa185f5"
+          "value": "5c94ee5e1c6dd62543f7c55c657eb5be70b2e8ff7ca837b4ee768731e025e24b"
         }
       ]
     },
@@ -152,14 +132,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
             },
             "selector": "fn[contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "8a3f246b066ecd3f9787278befc17cfa0f1edbcda260c4acd2e1a3d186ddd1af"
+          "value": "627155af6a9d9076a85d6d72a4867a6548b44cc4e57baa8d85183c2b399a820c"
         }
       ]
     },
@@ -169,14 +149,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
             },
             "selector": "fn[shared_context_allows_independent_concurrent_agent_calls]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "b4d887daad4d48d0ddbe54d76ebae5c76b1bc3a19560be15a5c4e3f3401badd6"
+          "value": "7826cbd7abbb9ed2a3f58ccb5830f907003dadfc5028d8b4273e324a8a0103e7"
         }
       ]
     },
@@ -186,82 +166,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
             },
             "selector": "fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f600679868a81e3df3f2a309538cb211607328389902cad216efd03a50c58104"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "impl[ValidationContext<'d,%20D>]#3/fn[ask]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "1d9367d754e75a8c5866eb59cf8c64fd8830f09eedab383a330c6d08dff3a41e"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20ContextPhase>]/fn[context]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "c27d4527caff3058ab2e02dd6fe948d773116336d797718da0a60bf5027584a8"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[contents_of_current_node]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "3e661a2d40c30d9313097af5fcafd356f62b4e2f6720737764016c1eaf877aab"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "macro[await_phase]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "4f9ca6f441bc2f926c7c00b41ec65e46a439c95f670cad334af79120b2c73e04"
+          "value": "ecbaf6343efa045573bada9b089df3e1d0f8735bf2908de4f96c699b842b3f72"
         }
       ]
     }

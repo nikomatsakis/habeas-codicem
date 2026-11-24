@@ -1,8 +1,8 @@
 {
   "requirement": "```rust,ignore\n// Method on Validator<D>.\n/// Load this criterion's evidence and decode its answer as V::Ok.\n/// Ok(None) means no saved record exists.\npub fn load_evidence<V: Criterion<D>>(\n    &self,\n    criterion: &V,\n) -> impl Future<Output = Result<Option<Fingerprinted<D, V::Ok>>, ValidationError<D::Error>>> + Send;\n```\n\n`load_evidence` captures the source identity and criterion path while constructing\nits future. It retains no reference to the criterion value while storage is\npending, so the criterion needs no `Sync` bound. It loads the complete record and\ndecodes its output under {cite}`requirements.sdk.graph.evidence.record.output`.\nVersion and input comparison are separate steps.",
   "determination": true,
-  "rationale": "The reviewed tests cover every obligation in `check_node`, including the failure cases the text names.\n\n- **Missing record returns `Ok(None)`.**\n  - `criteria_keep_typed_answers_and_persist_only_when_requested` checks this before and after `verify`, and again for another criterion path.\n  - `wildcard_revision_does_not_supply_other_criteria_or_nodes` checks it for a different criterion path and a different source node.\n  - `caller_reuses_negative_answers_and_compares_revisions_explicitly` checks it for another node.\n  - `review_graph_persists_and_reuses_a_negative_validation_through_the_sdk` checks it against a real file store.\n- **The complete record is loaded and the output decoded as `V::Ok`.**\n  - `criteria_keep_typed_answers_and_persist_only_when_requested` compares the loaded output, source node, criterion path, version and dependencies with the stored value.\n  - `dependency_resolution_failures_do_not_execute_or_replace_saved_answers` and `agent_edge_tools_record_selections_without_validating_targets` check that the loaded dependencies equal the saved ones.\n  - `validation_and_answer_need_send_without_sync` decodes a typed `Cell<u32>` output.\n- **Decode failure returns `ValidationError::Output`, including for stale records.**\n  - `typed_loading_reports_decode_errors_even_for_stale_evidence` loads a record with a stale version and stale dependencies and gets `Output`, with no input reads.\n  - `malformed_records_are_storage_errors_and_bad_outputs_are_output_errors` checks the same error with a real file store. It also checks that the stored file is left unchanged.\n- **Malformed stored records and storage failures return `Graph`.**\n  - `malformed_records_are_storage_errors_and_bad_outputs_are_output_errors` checks a malformed file and gets `Graph(FileStorageError::Json)`.\n  - `loading_execution_resolution_and_saving_failures_do_not_publish_answers` and `resolution_storage_and_callback_errors_are_not_judgments` check a failing load and get `Graph(\"load\")`.\n- **Version and input comparison are separate steps.**\n  - `caller_reuses_negative_answers_and_compares_revisions_explicitly` loads a v1 record through a v2 criterion and gets it back. Compatibility is judged only afterwards, and `None` versions are handled.\n  - `wildcard_revision_does_not_supply_other_criteria_or_nodes` loads a record whose version is `None` through a \"future\" revision.\n  - `dependency_resolution_failures_do_not_execute_or_replace_saved_answers` loads the record while input resolution fails.\n  - `changing_one_criteria_input_does_not_invalidate_another` loads two records after an input changes and shows only the changed one fails `check_inputs`.\n- **Source identity and criterion path are captured at construction, with no retained reference to the criterion, so it needs no `Sync` bound.**\n  - `validation_and_answer_need_send_without_sync` wraps `validator.load_evidence(&descriptor)` in `send<T: Send>`. `Review` holds a `Cell`, so it is not `Sync`. A future that kept `&Review` would not be `Send`, and the test would not compile.\n  - The test also asserts `descriptor_reads == 1`, so the source identity is read exactly once.\n\nI found no gap. No acknowledgments apply, and none are needed.",
-  "references": "d2c274df18f5ca1b544baf8695e9815f22ac41d025f4074583844ec7538b294d",
+  "rationale": "The reviewed tests cover every obligation in `check_node`, with the decode and error cases of the cited `record.output`.\n\n- **Missing evidence returns `Ok(None)`.**\n  - `criteria_keep_typed_answers_and_persist_only_when_requested` loads before any save and after `verify` without a save. It checks the result is `None` for a path never stored (`text`).\n  - `caller_reuses_negative_answers_and_compares_revisions_explicitly` checks `None` for a different source node (node 8).\n  - `wildcard_revision_does_not_supply_other_criteria_or_nodes` checks `None` for a different criterion path and a different source node.\n  - `review_graph_persists_and_reuses_a_negative_validation_through_the_sdk` checks `None` before any save, and that no file exists and no agent request was made.\n  - `agent_edge_tools_record_selections_without_validating_targets` checks `None` on an empty store.\n- **The complete record is loaded and its output decoded into `V::Ok`.**\n  - `criteria_keep_typed_answers_and_persist_only_when_requested` compares the loaded `output()`, source node id, criterion path, version and dependencies with the saved value.\n  - `agent_edge_tools_record_selections_without_validating_targets` asserts `saved.dependencies() == result.dependencies()`.\n  - `validation_and_answer_need_send_without_sync` loads a `Cell<u32>` output as 17.\n  - `changing_one_criteria_input_does_not_invalidate_another` checks the loaded dependencies.\n- **A decode failure returns `ValidationError::Output`, even when the record is stale.**\n  - `typed_loading_reports_decode_errors_even_for_stale_evidence` loads with a changed revision and with stale dependencies. Both return `Output`, and no domain reads happen.\n  - `malformed_records_are_storage_errors_and_bad_outputs_are_output_errors` asserts `Output` for a bad output with an obsolete version, and that the stored file is unchanged.\n- **Malformed stored records and storage failures return `ValidationError::Graph`.**\n  - `malformed_records_are_storage_errors_and_bad_outputs_are_output_errors` stores invalid JSON and gets `Graph(Json)`.\n  - `resolution_storage_and_callback_errors_are_not_judgments` and `loading_execution_resolution_and_saving_failures_do_not_publish_answers` set `fail_load` and get `Graph(\"load\")`.\n- **Version and input comparison are separate steps.**\n  - `caller_reuses_negative_answers_and_compares_revisions_explicitly` loads a v1 record with a v2 criterion and gets the record back. The caller then compares versions with `is_compatible_with` and inputs with `check_inputs`.\n  - It also covers a legacy record with no version.\n  - `wildcard_revision_does_not_supply_other_criteria_or_nodes` loads a record with no version using a \"future\" revision.\n  - `dependency_resolution_failures_do_not_execute_or_replace_saved_answers` sets read and edge failures and still loads the record. Only `check_inputs` returns `Err`.\n- **The criterion needs no `Sync` bound, and the future retains no reference to it.**\n  - `validation_and_answer_need_send_without_sync` loads through `send(validator.load_evidence(&descriptor))`, where `send` requires `T: Send`.\n  - The criterion `Review<Cell<u32>>` is not `Sync`, so a future holding `&Review` across storage would not compile.\n  - `descriptor_reads == 1` shows the source identity is read once.\n  - The tests never drop or mutate the criterion between building and polling the future. The compile-time `Send` check still rules out a lazily captured reference, so this is not a gap.\n\nNo gap is left unaddressed, and there are no {fixme} acknowledgments.",
+  "references": "79757b01ccbc6008327298f79b25bbf61576585001ea119e7b4e990ecbc61adf",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.evidence.check_node",
@@ -56,6 +56,16 @@
       "hash": "36b214f59a72f8ede5df6efd55862feab3eb3b2a901b46420cfcc18398cde2dc"
     },
     {
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]",
+      "hash": "1fc8e4a212004565c63e4e7899e6662c3f326fb8963590b1f93e50f02d58be0a"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "fn[resolution_storage_and_callback_errors_are_not_judgments]",
+      "hash": "019d9b3dcaf43b538f3a14448e2ca0e42fc6f000972a6af300f11b86fb14e3ac"
+    },
+    {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[criteria_keep_typed_answers_and_persist_only_when_requested]",
       "hash": "dc7c8956d3d5681384322fad29d3bd3c4276c59bf1bf06d8e742ff1bc993ca3c"
@@ -96,34 +106,19 @@
       "hash": "b79219c20cb618e7f8d8053459c9c17c266067fb44cbe1422f1abc177d01ae59"
     },
     {
-      "file": "crates/trust-but-verify/tests/validation.rs",
-      "item": "fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]",
-      "hash": "1fc8e4a212004565c63e4e7899e6662c3f326fb8963590b1f93e50f02d58be0a"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/validation.rs",
-      "item": "fn[resolution_storage_and_callback_errors_are_not_judgments]",
-      "hash": "019d9b3dcaf43b538f3a14448e2ca0e42fc6f000972a6af300f11b86fb14e3ac"
-    },
-    {
       "file": "src/authoring/sdk.rs",
       "item": "mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]",
       "hash": "26e9e91e533e13fad398db57fc7ced7159c2d03b1c1d690b1236b279ce49f7b0"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "struct[Review]",
-      "hash": "f446c3b083932a8584c9e149398756f344f85189baccc05253e635e24644c7d4"
+      "item": "fn[send]",
+      "hash": "8584e807e9abc79dc59d3352ed10789b3f88c34eaf2710718740786192bf2708"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "impl[Review<O>/Criterion<Application>]/fn[source_node_id]",
       "hash": "535e981a869f261457c6f27c290b9c961da07791d9cc63840cfc68753249695f"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[send]",
-      "hash": "8584e807e9abc79dc59d3352ed10789b3f88c34eaf2710718740786192bf2708"
     }
   ],
   "format_version": 1,
@@ -136,7 +131,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "d2c274df18f5ca1b544baf8695e9815f22ac41d025f4074583844ec7538b294d"
+          "value": "79757b01ccbc6008327298f79b25bbf61576585001ea119e7b4e990ecbc61adf"
         }
       ]
     },
@@ -148,7 +143,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "8ab3d990a9b962309f4c8116c6eef6b7495a6b4c647cd19911aca5816c3bdc1c"
+          "value": "c0eda3b1bd60323494a3dc47c180bf85ffbf90ee8e78d630fd8c1ce774403dcb"
         }
       ]
     },
@@ -188,6 +183,40 @@
         {
           "scheme": "habeas-input-v1",
           "value": "1a801b0c4f1cf101ca7385605a248ae1ac710fc2fc594df745d9273a8b077507"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+            },
+            "selector": "fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "22cc1c3b506b2a8b09671b63c027910beb8d3082e7a70a3f55e4d40c60616175"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+            },
+            "selector": "fn[resolution_storage_and_callback_errors_are_not_judgments]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "175b03b01a251cd962cd06cd5d69fcd1804b0ebd479bfc0f1eb0db1205cf9fac"
         }
       ]
     },
@@ -333,40 +362,6 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
-            },
-            "selector": "fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "32929bfee296947fbc8f86a5970986aabc82ea05ed0bc902d4a932831d7e8856"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
-            },
-            "selector": "fn[resolution_storage_and_callback_errors_are_not_judgments]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "20070e82cba9fb0f95c8851e9b9cfcb8bffcd2426707376c4ebe7fbbaff8baa7"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
               "location": "src/authoring/sdk.rs"
             },
             "selector": "mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]"
@@ -386,12 +381,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/tests/contracts.rs"
             },
-            "selector": "struct[Review]"
+            "selector": "fn[send]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "e3287dd47cc2350d178fc1b8a59049eec4730ab8531a44938f7b100a6cc60501"
+          "value": "86bee7067ca39c280b68dadad8b407627bc90720b9cbf2702e8aa3e626a35880"
         }
       ]
     },
@@ -409,23 +404,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "18ec25046d09f46c79f1b26526f8a7682b9e8054e450992f99195687ef86f69d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "fn[send]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "86bee7067ca39c280b68dadad8b407627bc90720b9cbf2702e8aa3e626a35880"
         }
       ]
     }

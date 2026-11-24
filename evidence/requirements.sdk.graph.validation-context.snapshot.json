@@ -1,8 +1,8 @@
 {
   "requirement": "For a tracked label-specific edge query, the SDK constructs a\n{term}`requirements.sdk.graph.content_snapshot` from the returned targets and\ntheir target-set fingerprint, without another query.\n\nThe public `trust_but_verify::graph::edge_fingerprint(graph, targets)` helper\ncomputes this `Fingerprint` from the domain and a slice of target node IDs.\nIt sorts and deduplicates the targets' `NodePath`s and hashes an unambiguous\nencoding under a versioned scheme, including when the set is empty. Changing\norder, duplicate edges, or another label's relationships leaves this fingerprint\nunchanged. Reading target contents is a separate observation;\n`NodeContents::fingerprint` describes those contents under\n{cite}`requirements.sdk.graph.node_content.fingerprint`.\n\nThe returned vector preserves the graph's ordering and duplicates.\n\n```rust,ignore\npub fn edge_fingerprint<D: Domain>(\n    graph: &D,\n    targets: &[D::NodeId],\n) -> Fingerprint;\n```",
   "determination": true,
-  "rationale": "The reviewed tests adequately cover `requirements.sdk.graph.validation-context.snapshot`. I did not request implementation source. The expected behavior below comes from the requirement text.\n\n**Fingerprint helper**, tested in `crates/trust-but-verify/tests/contracts.rs#fn[edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding]`:\n- **Empty set and version scheme:** the empty target set is pinned to the exact `node-path-set-sha256-v1` scheme and a fixed digest. A one-path set is pinned to a fixed digest too. This covers \"including when the set is empty\" and \"versioned scheme\".\n- **Unambiguous encoding:** it builds eleven NodePath sets, and every pair of resulting fingerprints is asserted different. The sets cover segment-boundary ambiguity (`[\"a/b\"]` vs `[\"a\",\"b\"]`, and `[\"a/b\",\"c\"]` vs `[\"a\",\"b/c\"]`), an empty segment vs an empty path, and Unicode composed vs decomposed forms. They also cover quote, newline and backslash escapes. Each fingerprint must also differ from the empty-set one and share its scheme.\n- **Order and duplicates:** `[0,1,0]` and `[1,0]` must give equal fingerprints. That would fail for an implementation that only deduplicated, or that kept first-occurrence order, because those would hash `[0,1,0]` or `[0,1]` differently from `[1,0]`.\n- **No content reads:** the test asserts that `reads` is empty.\n\n**Snapshot construction**, tested in `crates/trust-but-verify/tests/validation.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]`:\n- **Content and fingerprint:** `outgoing_edges(&1, 7)` returns content `[5,3,5]`, so graph order and duplicates are preserved. Its fingerprint equals `edge_fingerprint(&graph,&[3,5])`, which is sorted and deduplicated. It differs from the fingerprints of changed sets `[3]` and `[3,5,9]`.\n- **No extra query:** the recorded selection list is exactly `[1]` after the call, so one selection query was made.\n- **Tracked dependency:** the finished record contains `Dependency::OutgoingEdges(1, 7, edge_fingerprint(&graph,&[3,5]))`.\n- **Other labels:** adding label-8 edges does not make the record stale. Both the empty record and the full record stay current when only label-8 edges change.\n- **Order and duplicates:** reordering and duplicating label-7 targets leaves the record current. Changing a target (5 to 6) makes it stale. A new target appearing in an empty record also makes it stale.\n- **Empty set:** an empty successor set is tracked and verified.\n- **Failure:** a failed edge query leaves the dependencies unchanged and makes `is_current` return the error.\n- **No content reads:** `reads` is empty throughout.\n\n**Other references:** `fingerprint` of `NodeContents` is only cited here, so it needs no test. The `public_api` test is only incidental.\n\nNo unacknowledged gaps remain.",
-  "references": "fa04d84ea5e6ca3e06cdbf0f59bca5f2607da33847d542d861e39eeb73bf14cf",
+  "rationale": "The tests adequately cover every obligation in `requirements.sdk.graph.validation-context.snapshot`.\n\n**Snapshot built from the returned targets without another query.**\n- `src/graph/validation_tests.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]` calls `selected.outgoing_edges(&1, 7)`. It first clears the recorded selections.\n- It then asserts that exactly one edge query was recorded (`selections == [1]`). The `Memory` domain's `outgoing_edges` pushes to `selections` on every call, so this shows the SDK queries once.\n- It asserts `snapshot.content == [5, 3, 5]` and `snapshot.fingerprint == edge_fingerprint(&graph, &[3, 5])`. The fingerprint is therefore computed from the returned targets.\n- It asserts that the recorded `Dependency::OutgoingEdges` carries that fingerprint, and that `graph.reads` stays empty (no content reads).\n\n**Returned vector preserves ordering and duplicates.** The same test asserts `[5, 3, 5]` for both `successors` and `snapshot.content`. This is the graph's order with the duplicate kept.\n\n**`edge_fingerprint` unchanged by order, duplicates, or another label.**\n- Order and duplicates:\n  - In `tests/contracts.rs#fn[edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding]`, `[Node(0), Node(1), Node(0)]` equals `[Node(1), Node(0)]`.\n  - In the validation test, the fingerprint of the `[5, 3, 5]` result equals the fingerprint of `[3, 5]`.\n  - Together these rule out sort-only, dedup-only, and order-preserving implementations.\n- Another label: after `finish`, the test changes label-8 edges (`(8, 99)`) and `record.is_current` stays true. It changes a label-7 target and `is_current` becomes false. This shows other labels leave the fingerprint unchanged and membership changes alter it.\n\n**Empty set, versioned scheme, unambiguous encoding.**\n- The contract test pins the empty fingerprint to the scheme `node-path-set-sha256-v1` and a fixed digest. It also pins one single-path digest.\n- It builds a table of path sets that would collide under naive encodings: `a/b` vs `a`,`b`; empty segments; `é` vs `e\\u{301}`; quotes, newlines and backslashes; and `[\"a/b\",\"c\"]` vs `[\"a\",\"b/c\"]`. It asserts every fingerprint differs from every other and from the empty one, all with the same scheme.\n- It asserts that no resource reads occurred.\n- The validation test also checks that the empty-target fingerprint is recorded and that `[3]` and `[3,5,9]` differ from `[3,5]`.\n\n**Cited `node_content.fingerprint`.** It is a `{cite}`, so it needs no coverage here. The text says content reads are a separate observation, and the tests check that none occur.\n\n**Public signature.** `tests/public_api.rs#fn[public_exports_match_the_appendix]` checks the export. The tests call the function with `(graph, &[D::NodeId])` and compare the returned `Fingerprint`, which is consistent with the signature.\n\nI found no unmapped obligation or weak assertion. One untested distinction is sorting by `NodePath` rather than by `NodeId`. The text does not call it out as a boundary, so I do not treat it as a gap.",
+  "references": "f3d1ca05cca1320bc4d45524d14bc693371548c9e1d1f837da249f97a4ac9f8a",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.validation-context.snapshot",
@@ -67,14 +67,14 @@
       ]
     },
     {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding]",
-      "hash": "621161bb6afffce27d5676495348a9465fe98e13804111bbde03d638ec32bae2"
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "fn[labeled_selections_track_only_target_membership_without_reading_contents]",
+      "hash": "700de848bf5305dbf1d7bd2affdaa5f3da9aa8554a178553e711fcd3447efa2f"
     },
     {
-      "file": "crates/trust-but-verify/tests/validation.rs",
-      "item": "fn[labeled_selections_track_only_target_membership_without_reading_contents]",
-      "hash": "7c05f1f4c32e0493ba40603ec28208b2788ad1d522c08cb4dea60888ea4de04e"
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "fn[edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding]",
+      "hash": "8a5faaddd5946b2cd70824e1f60bc7b99324a1809bc369ade72c2dec5001db73"
     },
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
@@ -110,14 +110,14 @@
       ]
     },
     {
-      "file": "crates/trust-but-verify/tests/validation.rs",
-      "item": "impl[Memory/Domain]/fn[node_path]",
-      "hash": "89ecd83777890b98d7e124b1c0b9337f16733d6d7cabc12f026b00abe72b3e7d"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/validation.rs",
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "impl[Memory/Domain]/fn[outgoing_edges]",
       "hash": "9ab023ee211eb39f99bb30d42405ff1b9fb61c2f478013c8e7a4ef552030b2a9"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "impl[Memory/Domain]/fn[node_path]",
+      "hash": "89ecd83777890b98d7e124b1c0b9337f16733d6d7cabc12f026b00abe72b3e7d"
     }
   ],
   "format_version": 1,
@@ -130,7 +130,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "fa04d84ea5e6ca3e06cdbf0f59bca5f2607da33847d542d861e39eeb73bf14cf"
+          "value": "f3d1ca05cca1320bc4d45524d14bc693371548c9e1d1f837da249f97a4ac9f8a"
         }
       ]
     },
@@ -142,7 +142,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "f0559090818c7b81d055335e75b7dd4310d52dbe7f8cbf23637ea9ed0e5dc6d9"
+          "value": "92918f6dc3c77665ccc07736f5ea68096b77af21972b7ee2095717c30e59f250"
         }
       ]
     },
@@ -174,14 +174,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
             },
-            "selector": "fn[edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding]"
+            "selector": "fn[labeled_selections_track_only_target_membership_without_reading_contents]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "57d32542650fb01459fa23e311fa77c4410383913cc3e42b99ce081392ee6081"
+          "value": "7ee7dfb9edfada22eb7f8b87a4a01b5600be604557561e3653cbdd9398c2d338"
         }
       ]
     },
@@ -191,14 +191,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
+              "location": "crates/trust-but-verify/tests/contracts.rs"
             },
-            "selector": "fn[labeled_selections_track_only_target_membership_without_reading_contents]"
+            "selector": "fn[edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "e0714a1d548250e980f78b35f1c55e7b5b663f923b80145ec921db2942dc5636"
+          "value": "7958cb0d8cca33b620ee02549f6499b6ad954a6d552d9b1bd018394d36599c57"
         }
       ]
     },
@@ -247,14 +247,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
             },
-            "selector": "impl[Memory/Domain]/fn[node_path]"
+            "selector": "impl[Memory/Domain]/fn[outgoing_edges]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c1c57cf6128b93e4e5398e98ff53b65c26e29eb9846b053cb8df649158eb1d5f"
+          "value": "37df8833f985ca6ed13c4540ed21c308a963c8d59ea5023b2152f05e9d2b348a"
         }
       ]
     },
@@ -264,14 +264,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
             },
-            "selector": "impl[Memory/Domain]/fn[outgoing_edges]"
+            "selector": "impl[Memory/Domain]/fn[node_path]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "4a4ed1778189af756fc0a0391e5602ad7db14dadac6c9ecced7807a55647e2cf"
+          "value": "e4b9fd4efd55932f180407cbb9fe8b0c33d41cc8d1551c3c89bf00be545bd5a5"
         }
       ]
     }

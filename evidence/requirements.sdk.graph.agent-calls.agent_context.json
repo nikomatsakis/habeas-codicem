@@ -1,8 +1,8 @@
 {
   "requirement": "Supplies reusable prompt text for an agent request. `contents` may borrow or own the string.\n\nThe SDK implements this trait for the following combinations:\n\n| Value | Rendering |\n| --- | --- |\n| `String` | Use its text directly. |\n| `str` | Use its text directly; `&str` works through the reference implementation. |\n| `&C`, where `C: Context + ?Sized` | Forward to the referenced value. |\n| `[C]` and `Vec<C>`, where `C: Context` | Render elements in order, separated by two newlines. An empty collection renders an empty string. |\n| Heterogeneous tuples of 2 through 12 `Context` values | Render elements in order, separated by two newlines. |\n\nCombinations can nest and preserve repeated elements. Each `.context(value)`\ncall obtains the text once and retains it for both the prefix and its hash,\nwithout retaining a borrow of `value`. The value needs no `Hash`, `Serialize`,\n`Send`, or `Sync` implementation. Repeated calls use the same two-newline\nseparator as combinations. No context calls give the empty prefix and the\nsame fingerprint as an explicitly empty rendered prefix.\n\nThe cache fingerprint hashes the exact UTF-8 prefix delivered to the agent,\nusing a versioned scheme. It preserves order and repetition and uses neither\nobject addresses nor type identities. It identifies this prefix, including the\nquestion; node inputs, the result schema, and the rest of the request are outside\nthat fingerprint.\n\n```rust,ignore\npub trait Context {\n    fn contents(&self) -> Cow<'_, String>;\n}\n```\n\nTrait implementations\n\n```rust,ignore\nimpl Context for str;\nimpl Context for String;\nimpl<A: Context, B: Context> Context for (A, B);\nimpl<A: Context, B: Context, C: Context> Context for (A, B, C);\nimpl<A: Context, B: Context, C: Context, D: Context> Context for (A, B, C, D);\nimpl<A: Context, B: Context, C: Context, D: Context, E: Context> Context for (A, B, C, D, E);\nimpl<A: Context, B: Context, C: Context, D: Context, E: Context, F: Context> Context for (A, B, C, D, E, F);\nimpl<A: Context, B: Context, C: Context, D: Context, E: Context, F: Context, G: Context> Context for (A, B, C, D, E, F, G);\nimpl<A: Context, B: Context, C: Context, D: Context, E: Context, F: Context, G: Context, H: Context> Context for (A, B, C, D, E, F, G, H);\nimpl<A: Context, B: Context, C: Context, D: Context, E: Context, F: Context, G: Context, H: Context, I: Context> Context for (A, B, C, D, E, F, G, H, I);\nimpl<A: Context, B: Context, C: Context, D: Context, E: Context, F: Context, G: Context, H: Context, I: Context, J: Context> Context for (A, B, C, D, E, F, G, H, I, J);\nimpl<A: Context, B: Context, C: Context, D: Context, E: Context, F: Context, G: Context, H: Context, I: Context, J: Context, K: Context> Context for (A, B, C, D, E, F, G, H, I, J, K);\nimpl<A: Context, B: Context, C: Context, D: Context, E: Context, F: Context, G: Context, H: Context, I: Context, J: Context, K: Context, L: Context> Context for (A, B, C, D, E, F, G, H, I, J, K, L);\nimpl<C: Context + ?Sized> Context for &C;\nimpl<C: Context> Context for [C];\nimpl<C: Context> Context for Vec<C>;\n```",
   "determination": true,
-  "rationale": "The reviewed tests adequately cover `requirements.sdk.graph.agent-calls.agent_context`. I read only the supplied test sources and did not request any implementation source. Each obligation maps to a test and an assertion as follows.\n\n- **`String` and `str` render their own text, and `&str` works through `&C`.** `fn[string_and_str_contexts_deliver_identical_prefixes_and_fingerprints]` sends both `text.to_owned()` and `&str` for `\"\"` and `\"héllo\\0\\n\\npolicy\"`. It asserts that the delivered prefix equals the text and that the fingerprint equals `context_fingerprint(text)`. The inputs include non-ASCII text and a NUL byte.\n- **`&C` forwards to the referenced value.** `.context(&context)` with a custom type is exercised in `fn[contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text]`. `&custom` as a tuple element is exercised in `fn[every_heterogeneous_tuple_arity_renders_elements_in_order]`.\n- **`[C]` and `Vec<C>` render in order with a two-newline separator, and an empty collection renders `\"\"`.**\n  - The slice and `to_vec()` cases in the `string_and_str…` test both produce `\"policy\\n\\nquestion\"`.\n  - `Vec::<String>::new()` is checked through the request. It delivers `\"\"` with the empty-prefix fingerprint.\n  - `let empty: &[String] = &[]` is checked directly in the tuple test and renders `\"\"`.\n- **Tuples of 2 through 12 render in order, separated by two newlines.** `fn[every_heterogeneous_tuple_arity_renders_elements_in_order]` asserts the exact string for every arity from 2 to 12. The tuples are heterogeneous, with a custom type followed by `String`s. The test also asserts `custom.renders.get() == 11`. The 12-`String` tuple appears in the first test.\n- **Nesting and repeated elements are preserved.** The tuple `(vec![\"a\",\"a\"], \"b\")` is asserted to render `\"a\\n\\na\\n\\nb\"`. A tuple of `(String, String)` is passed through `.context`.\n- **`.context(value)` obtains the text once and keeps no borrow of `value`.**\n  - The first test uses a `CountingContext` and asserts one render after two `.context` calls.\n  - It mutates `context.text` after building the request and asserts that the delivered prefix is still `\"héllo…\"`. That mutation would not compile if the builder kept a borrow.\n  - The `string_and_str…` test clears a `String` after `.context(temporary.as_str())` and still passes.\n- **The value needs no `Hash`, `Serialize`, `Send` or `Sync`.** `CountingContext` holds an `Rc` and a `Cell`, so it is non-`Send`. It is used successfully, and the resulting future is asserted `Send`.\n- **Repeated calls use the same separator.** `.context(\"policy\").context(\"question\")` yields `\"policy\\n\\nquestion\"`. That is the same as the tuple, slice and `Vec` forms.\n- **No context calls give an empty prefix with the same fingerprint as an explicitly empty prefix.** `ctx.ask::<Answer>().await` is compared with `context_fingerprint(\"\")`. The test also asserts that no node inputs were supplied for that request.\n- **The fingerprint hashes the exact UTF-8 prefix with a versioned scheme.** `fn[prefix_hashes_match_known_utf8_sha256_without_normalization]` pins known SHA-256 values and the `context-prefix-sha256-v1` scheme tag. It also checks that NFC and NFD forms, and different amounts of whitespace, differ. Together with the exact-prefix assertions, this shows no normalization.\n- **The fingerprint preserves order and repetition.** `\"a\\n\\nb\"` and `\"b\\n\\na\"` have different fingerprints. Repeated elements appear in the delivered, hashed text.\n- **The fingerprint does not depend on type identity or object addresses.** `String`, `&str`, tuple, slice and `Vec` forms of the same text all hash to the same fingerprint.\n- **Node inputs, the result schema and the rest of the request are outside the fingerprint.** In the `string_and_str…` test:\n  - Requests with `contents_of_current_node` and `contents_of_successors` carry node inputs. They have the same text-derived fingerprint as the plain request.\n  - A `Value` schema request and an `Answer` schema request have the same fingerprint.\n  - A request from node 2 has the same fingerprint as the others.\n  - A request with a different `requests[..].3` value still has the same fingerprint.\n\nTwo unexercised cases remain: nested tuples, and a one-element collection. The requirement names neither as a distinct boundary, and the same code paths are covered by the tests above, so I count neither as a gap. The `public_exports_match_the_appendix` test in `public_api.rs` only checks the export inventory. I treated it as supporting evidence and did not rely on it for behavior.",
-  "references": "98548b50bcb35bf7363f2b4edf43844071ad692964c9f6255c3b9f92fb9ac0c8",
+  "rationale": "I found no test-adequacy gap for `requirements.sdk.graph.agent-calls.agent_context`. I did not run the tests. The mapping below comes from reading them.\n\n**Implementations in the table**\n- `String` and `str` use their text directly. `string_and_str_contexts_deliver_identical_prefixes_and_fingerprints` sends `text.to_owned()` and `text` for both an empty string and `\"héllo\\0\\n\\npolicy\"`. It asserts the delivered prefix equals the text and the fingerprint equals `context_fingerprint(text)` for each.\n- The `&str` reference implementation is exercised by the same test's `&str` calls. Forwarding through `&C` is exercised by `.context(&context)` in `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` and by the `&custom` tuple elements in `every_heterogeneous_tuple_arity_renders_elements_in_order`.\n- `[C]` and `Vec<C>` are tested in the string/str test with `contexts.as_slice()` and `contexts.to_vec()`. Both give `\"policy\\n\\nquestion\"`.\n- Empty collections render an empty string. `empty.contents()` on an empty `&[String]` is asserted equal to `\"\"`, and an empty `Vec::<String>::new()` is sent and asserted to give the `\"\"` prefix.\n- Tuples of 2 through 12 are covered by `every_heterogeneous_tuple_arity_renders_elements_in_order`. It covers every arity from 2 to 12 with a custom `Context` mixed with `String`, so the tuples are heterogeneous. Each arity is asserted to join in order with `\\n\\n`. The first test also asserts a 12-`String` tuple.\n\n**Nesting and repetition**\n- The first test asserts a tuple that contains a `Vec` with repeated `\"a\"` elements. It renders `\"a\\n\\na\\n\\nb\"`, so nesting and repeats are preserved.\n\n**`.context(value)` behaviour**\n- The text is obtained once. `CountingContext` counts renders, and the test asserts the count is 1 after the builder is built.\n- No borrow is retained. The test mutates `context.text` to `\"changed\"` while the builder is alive, and the delivered prefix is still `\"héllo...\"`. The string/str test also clears a temporary `String` after calling `.context(temporary.as_str())`.\n- No `Hash`, `Serialize`, `Send` or `Sync` is needed. `CountingContext` uses `Rc<Cell>`, and the test asserts the resulting future is `Send`.\n- Repeated calls use the same separator. The string/str test chains `.context(\"policy\").context(\"question\")` and asserts the same prefix and fingerprint as the tuple, slice and `Vec` forms. The first test chains a context and a tuple.\n- With no context calls, the prefix is empty. The first test asserts the prefix is `\"\"`, the fingerprint equals `context_fingerprint(\"\")`, and no inputs are sent. It makes the same assertions for an explicitly empty `Vec`.\n\n**Fingerprint**\n- `prefix_hashes_match_known_utf8_sha256_without_normalization` pins the versioned scheme `context-prefix-sha256-v1` and known SHA-256 values for `\"\"` and `\"héllo\"`.\n- The same test shows there is no Unicode or whitespace normalization: `\"é\"` differs from `\"e\\u{301}\"`, and `\"a b\"` differs from `\"a  b\"`.\n- Order is preserved. `\"a\\n\\nb\"` and `\"b\\n\\na\"` have different fingerprints.\n- Repeats are preserved. The text with repeated `\"a\"` is hashed over its exact delivered text.\n- Neither addresses nor type identities matter. `String`, `&str`, slice and `Vec` forms of the same text all yield the same fingerprint.\n- The fingerprint excludes node inputs, the result schema and the rest of the request. In the string/str test, requests 8 to 12 all have the fingerprint `context_fingerprint(\"short-lived\")`. Those requests differ in node inputs (none, the current node, successors, a different node). Request 9 and request 10 differ in result schema: `Answer` versus `Value`, which `MockAgent` records as `request.result_schema`.\n- The fingerprint covers the whole prefix, including the question. The question is supplied as a trailing context element in the tests, and the fingerprint matches the whole `\"...question\"` text.\n\n**Other items**\n- The `Cow` borrow-or-own wording is a permission (MAY), so it needs no test.\n- `public_exports_match_the_appendix` only covers the public export inventory, which belongs to other requirements. I did not rely on it here.",
+  "references": "daa5e2cf00001f02a979a24d5758602bcb0a8caaaac2caa9763c2855546bd7db",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.agent-calls.agent_context",
@@ -67,22 +67,22 @@
       ]
     },
     {
-      "file": "crates/trust-but-verify/tests/validation.rs",
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text]",
       "hash": "502a9b96c8c750f3f26714ed0698e2edd5bcc644f1fc52b9152ece44614b6bb5"
     },
     {
-      "file": "crates/trust-but-verify/tests/validation.rs",
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[string_and_str_contexts_deliver_identical_prefixes_and_fingerprints]",
       "hash": "910b163f5bc03a794e0a7dd3ea5739257cb5c1cd33dc7c1c8c5c705782d27daa"
     },
     {
-      "file": "crates/trust-but-verify/tests/validation.rs",
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[every_heterogeneous_tuple_arity_renders_elements_in_order]",
       "hash": "f69b754639db5fb8efab093c1522094cb77a40911eef88aabeb585924883dc95"
     },
     {
-      "file": "crates/trust-but-verify/tests/validation.rs",
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[prefix_hashes_match_known_utf8_sha256_without_normalization]",
       "hash": "6260e7b6f7fd9ef81b09190b6b481cf68f364975828569ce4fb949107002a26f"
     },
@@ -92,29 +92,14 @@
       "hash": "4d6ce6161754fb9e88ad84ef64f9bb131b308298104915179b2c5d573ed2b087"
     },
     {
-      "file": "crates/trust-but-verify/tests/validation.rs",
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "struct[MockAgent]",
       "hash": "a2b03d553c5723ab44f987ef287218fde7ba2d2d485fbd72fdbcd8a9dd358e36"
     },
     {
-      "file": "crates/trust-but-verify/tests/validation.rs",
-      "item": "impl[MockAgent/Agent<Memory>]",
-      "hash": "fabf86c5659cd99abc2244d8ac7d43dc188f4246a0c384a6d18ee8bca05827cd"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/validation.rs",
-      "item": "struct[CountingContext]",
-      "hash": "d3433d172d94dd0db0253df9c9515a770184292a4868ca75802548e140bb3b0f"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/validation.rs",
-      "item": "impl[CountingContext/Context]",
-      "hash": "3a9d546382bba48d2608c0df925969983107ac2df2b315a7e0f094b75abdfa9f"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "fn[context_fingerprint]",
-      "hash": "95cf0505ca2ea5c4b2e0ce09d8359183cc4db409fbf67aca2400df702c9f1b72"
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "impl[MockAgent/Agent<Memory>]/fn[run]",
+      "hash": "316b81d2ed111415ee3e86fc297ef8f241c08120fc13537b04c9771a45e8ca8a"
     }
   ],
   "format_version": 1,
@@ -127,7 +112,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "98548b50bcb35bf7363f2b4edf43844071ad692964c9f6255c3b9f92fb9ac0c8"
+          "value": "daa5e2cf00001f02a979a24d5758602bcb0a8caaaac2caa9763c2855546bd7db"
         }
       ]
     },
@@ -139,7 +124,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "7eca92b017896c14a120e82f2540a9667a8d385279f272d4f7604e11a3fc10b7"
+          "value": "29852b36a0e2c79fb1e668de031659c700ed356134e3eb414d12c211c2abc3ea"
         }
       ]
     },
@@ -160,14 +145,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
             },
             "selector": "fn[contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "8a3f246b066ecd3f9787278befc17cfa0f1edbcda260c4acd2e1a3d186ddd1af"
+          "value": "627155af6a9d9076a85d6d72a4867a6548b44cc4e57baa8d85183c2b399a820c"
         }
       ]
     },
@@ -177,14 +162,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
             },
             "selector": "fn[string_and_str_contexts_deliver_identical_prefixes_and_fingerprints]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "6828e330f7cbe3541a4c9cd78ec83020d3648fcf9dfadb80bd9e350b4e2b7dc7"
+          "value": "4d194459634b12d082009d060933aa7ec0f23ef5468bfafa2d91442d6865a9ad"
         }
       ]
     },
@@ -194,14 +179,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
             },
             "selector": "fn[every_heterogeneous_tuple_arity_renders_elements_in_order]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "164a1704fd99601c7584d215887c63675720764a3eee2dc8aa44b459d97f2f7c"
+          "value": "6af12617d88a0cbbe25b01a79214a822f39c756efabe5e72f106371373589fca"
         }
       ]
     },
@@ -211,14 +196,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
             },
             "selector": "fn[prefix_hashes_match_known_utf8_sha256_without_normalization]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "5e6024ec32d99fa83bbad55c98c1c368e68ed75f606eed75c6648fcf0d81c256"
+          "value": "f63716a6726cdac10468f9b9f19d2041e5cf320b87b3d05e729518eb8dd031b2"
         }
       ]
     },
@@ -245,14 +230,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
             },
             "selector": "struct[MockAgent]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "755a47555447a990feb621c3d536ae27badefcdded1f4c9e8afd20cfd0e8e99b"
+          "value": "fb844e8a4b7f834a17fbcc1d0eba9b119116702afff27d3623340ea7b622fa9e"
         }
       ]
     },
@@ -262,65 +247,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
             },
-            "selector": "impl[MockAgent/Agent<Memory>]"
+            "selector": "impl[MockAgent/Agent<Memory>]/fn[run]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "a718ca48c18ad51fa215d0d18e9f85b3a981dd92c2d6d22b958acabd526850cd"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
-            },
-            "selector": "struct[CountingContext]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "210ddcfefd88ad43d8b9edd494f6fa3a104a25d33335d07312770069326b8304"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
-            },
-            "selector": "impl[CountingContext/Context]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "61040e902e14c54381369f75e536643e9e8e0dcaec8fdadbe416892bc6a5af53"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "fn[context_fingerprint]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "02b4d2ded606844ed7c3904f446efc9a2d906d8f2b664ad765bd8823baf82a5c"
+          "value": "1d7f841f9d8dae0af689789820170da14d39ac9c825e4abd4f376b2063c2ff71"
         }
       ]
     }

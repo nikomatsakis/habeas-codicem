@@ -1,7 +1,7 @@
 {
   "requirement": "The agent accounts for each delivered `search_text` result under\n{cite}`requirements.sdk.graph.search.finish_search.inputs`. Evidence can depend\non selected excerpts. The set of matching identities is untracked.",
   "determination": true,
-  "rationale": "The tests adequately check `requirements.sdk.graph.search.search_text.inputs`. The tests have not been run, and I did not read the implementation. This judgment comes from reading the supplied test sources.\n\n**Obligations.** I derived three from the text:\n1. Each delivered `search_text` result is accounted for through `finish_search`, as described in `finish_search.inputs`, which is cited context.\n2. A selected excerpt tag becomes a dependency.\n3. The set of matching identities is untracked. Delivering a result, or leaving excerpts unselected, adds no dependency.\n\n**Coverage by test:**\n- **Dependencies on selected excerpts, original snapshot.**\n  - `project_sources.rs#mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]` runs `search_text` over a file with many matches. The match tags are unique.\n  - It rewrites the file on disk before closing the search. It then finishes the first page with a selected tag.\n  - The result asserts exactly one `Dependency::Node(\"source-node\", expected)`. `expected` is the fingerprint of the original content, so the dependency comes from the snapshot that produced the excerpt.\n  - Selecting the same tag twice returns the same dependency.\n  - A call mixing a valid tag with an unknown tag is rejected, and the outstanding searches are unchanged.\n- **Untracked match set.**\n  - In the same test, the `search_text` delivery has empty `dependencies`.\n  - Finishing with `used:[]` has empty `dependencies`.\n  - Closing the empty-result search and a limited search with `used:[]` adds nothing.\n  - `fn[fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies]` asserts `search.dependencies.is_empty()` for a hit. It also asserts that the domain `reads` counter stays at 0.\n- **Agent-level accounting.**\n  - `configured.rs#mod[tests]/fn[supplied_agent_uses_attached_project_tools_in_both_configuration_orders]` runs a full agent loop. It runs a search with `^excerpt ` that matches three files.\n  - It finishes with alpha selected, then with beta, and once with an unselected `unused.txt` tag plus an invalid tag. That last call is rejected and leaves earlier inputs intact.\n  - The final `answer.dependencies()` contains alpha and beta with their own fingerprints. It does not contain `unused.txt`, so unselected excerpts add no dependency.\n  - Before the finish calls, it asserts that submission is blocked and that every open `search_id` is listed. This covers the requirement that each delivered result be accounted for.\n  - This test runs under both configuration orders.\n- **Empty searches.**\n  - `agent/tests.rs#fn[source_reads_track_optional_dependencies_and_empty_searches_remain_discovery]`, `fn[source_tools_keep_search_discovery_separate_from_delivered_source_reads]` and `fn[source_discovery_and_its_pages_do_not_register_reads]` each check that discovery through `search_text`, including pages, records no dependency and triggers no observation callback.\n\n**Gaps.** I found none. The assertions check both the positive case (selected tags yield snapshot-based dependencies) and the negative case (match sets, unselected excerpts, empty `used` and invalid calls yield none).",
+  "rationale": "The tests adequately check `requirements.sdk.graph.search.search_text.inputs`. I did not read implementation source. The subject has three obligations: (1) the agent must account for each delivered `search_text` result through `finish_search`; (2) evidence can depend on selected excerpts, with the node identity and fingerprint taken from the snapshot that produced the excerpt; (3) the set of matching identities is untracked.\n\n**Accounting for each delivered result.**\n- `crates/trust-but-verify/src/agent/project_sources.rs#mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]` checks that `search_text` results carry a `search_id` and are listed in `outstanding_searches()` until `finish_search` closes them.\n- The same test closes an empty `search_text` result with `used:[]`. It checks that the first delivery includes instructions and that an invalid `search_id` is rejected.\n- `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[supplied_agent_uses_attached_project_tools_in_both_configuration_orders]` runs the full agent loop.\n  - The scripted agent receives a retry message, \"Call finish_search for every open search_id\", that names both open search ids, so unfinished searches are enforced end to end.\n  - Both empty searches are then closed with `used:[]`.\n\n**Dependencies on selected excerpts.**\n- In `search_obligations_follow_delivery_and_keep_the_original_snapshot`, the file is rewritten after the search. Finishing with the first match's tag then yields exactly `Dependency::Node(\"source-node\", expected)`. `expected` is the fingerprint of the original content, so the snapshot that produced the excerpt is used. This also checks the node identity.\n- The same test selects the same tag twice and gets the same dependency each time. This covers \"selecting a tag again preserves the original dependency\".\n- In the configured end-to-end test, `search_text` with `^excerpt ` returns three matches. `finish_search` selects `alpha.txt` and `beta.txt` in separate calls. The final `answer.dependencies()` contains node 8 for alpha and node 9 for beta. Each carries the fingerprint of that file's content. `unused.txt` is absent. This shows that selected excerpts become evidence and that earlier selections survive later calls. The run is repeated in both attach-order configurations.\n\n**Invalid calls.**\n- `search_obligations_follow_delivery_and_keep_the_original_snapshot` finishes with `[\"1\",\"unknown\"]` and gets an error. It then asserts that two searches are still outstanding.\n- The configured test sends a call with the unused tag plus `\"invalid\"`. It asserts the reply contains \"unknown search tag\". The unused file never appears in the final dependencies, so invalid calls leave recorded inputs intact.\n\n**The match set is untracked.**\n- Every `search_text` delivery asserts `dependencies.is_empty()`. This holds in `search_obligations_follow_delivery_and_keep_the_original_snapshot`, in `crates/trust-but-verify/src/agent/project_sources.rs#mod[tests]/fn[fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies]`, and in the paging tests in `crates/trust-but-verify/src/agent/tests.rs`, including `source_discovery_and_its_pages_do_not_register_reads` and `source_tools_forward_arguments_and_present_discovery_and_read_results`.\n- Empty and unselected results add no dependency. `source_reads_track_optional_dependencies_and_empty_searches_remain_discovery` shows an empty `search_text` leaves the record's dependencies empty, and the observation callback runs only for the later `read_source`.\n- `source_tools_keep_search_discovery_separate_from_delivered_source_reads` shows the only dependency is the one from `read_source`.\n- Unselected `unused.txt` is excluded in the configured end-to-end test.\n\nThe obligations are covered with assertions on the outcomes the requirement states, and I found no unaddressed scenario.",
   "references": "3eed3025919fe2a85bf28051d56337226b6701aebb434337046e391df00b5842",
   "inputs": [
     {
@@ -40,12 +40,12 @@
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]",
-      "hash": "e4bfa8171f02be04ba53e18ee2700fda4f23a25c235d5df6f1b1f0714313483e"
+      "hash": "d4e750a111045bd4fc3682571fad49220e1071b73576108758da126e2a69f80d"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies]",
-      "hash": "0643b397550aaf4ad2cb88164f43a54f6bf96b8866d6cd557aa5758827925d6a"
+      "hash": "07ab11b8642abb344691d4a80bf01c80f4114050fea40e8d042da906090dd0f4"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -65,7 +65,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[source_tools_forward_arguments_and_present_discovery_and_read_results]",
-      "hash": "e5eb0051c0f8bfc4d139914a37034c454043d9aa486e51724e55f434862b2c1e"
+      "hash": "4d23db061e025d47d10b644313820942fa2884f7da7ee95341803244b5c6682d"
     }
   ],
   "format_version": 1,
@@ -146,7 +146,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9b1d4bbd8afe6bf1e4baf3bbfb902aaee1310e7dc5ca27959a4542779d22a41c"
+          "value": "1edbd2d6dab5725d529a1a72d4ace2eac68d0d1639e01919129fddcbab8de052"
         }
       ]
     },
@@ -163,7 +163,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c7c275851d98585a88c64f53d66e01f1008e02e2f779473f49dd7a545e217224"
+          "value": "e8f5d9c70e95b6c9b4b4a2b98e5c9dd200e3804074362ce9f397d4d0f8809e77"
         }
       ]
     },
@@ -231,7 +231,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "657a1a932933a71631de43f2f0278c35286b50c8d39fa5594c7e787a6be51c5f"
+          "value": "70f5670e7ddb89c4e5069fcfeae868ff34cb50ae0b80a61f9f87477f61ce3d20"
         }
       ]
     }

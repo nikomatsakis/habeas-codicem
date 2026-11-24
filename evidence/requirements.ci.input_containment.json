@@ -1,7 +1,7 @@
 {
   "requirement": "Every file named directly by an evidence input or resolved from its selector MUST resolve within the project root unless permitted by workspace path configuration or discovered Cargo generated-output policy. Symlink targets MUST follow the same policy. Validation MUST enforce explicit workspace disallow entries and report missing, unreadable, or excluded files. It MUST check existing generated inputs without running a build. {cite}`requirements.configuration.evidence_paths` {cite}`requirements.authoring.generated_inputs`",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation in `requirements.ci.input_containment`. I judged this from the supplied test text alone and requested no implementation source.\n\n**Containment, with exceptions for workspace config and discovered Cargo output**\n- `tests/evidence_boundaries.rs#fn[configured_external_inputs_validate_and_remain_subject_to_freshness_and_disallow]` records an absolute external path. With no `allow` entry it fails with \"outside the repository\". With an `allow` entry it validates cleanly. It still reports a stale outline hash after the file changes, and it reports \"disallowed\" once the same path is disallowed.\n- `tests/evidence_boundaries.rs#fn[discovered_external_cargo_outputs_validate_freshness_and_obey_disallow]` covers a discovered external build-script `out` directory. It uses a `.cargo/config.toml` with an external `build-dir`.\n  - It checks that the discovered output validates, and that a stale hash is reported.\n  - It checks that a disallow on the file, or on the build directory, overrides the generated-output permission.\n  - It checks that an unrelated external file stays denied.\n- `src/authoring/access.rs#fn[explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets]` shows that an explicit allow admits external paths through both `access.file` and `resolve_evidence_file`, and that a more specific disallow wins.\n\n**Symlink targets follow the same policy**\n- `tests/evidence_boundaries.rs#fn[symlinks_may_resolve_inside_but_not_to_a_sibling_with_the_same_prefix]` shows that a symlink resolving inside the project is accepted. A symlink to a sibling directory with the same name prefix is rejected as \"resolves outside the repository\".\n- `tests/evidence_boundaries.rs#fn[validation_checks_alias_targets_for_external_allow_and_disallow]` covers aliases inside and outside the project.\n  - Without an allow entry, the alias is rejected as outside the repository.\n  - With an allow entry for the target, the alias validates.\n  - Allowing the alias while disallowing only the target is rejected as \"disallowed\".\n- `tests/evidence_boundaries.rs#fn[evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sources]` and the `src/authoring/access.rs` tests `disallowed_ancestors_cannot_redirect_reads_into_allowed_targets` and `policy_resolves_symlinks_before_parent_components_without_allowing_wrong_subtrees` cover ancestor and `..` redirection through symlinks.\n\n**Explicit workspace disallow, including inputs resolved from a selector**\n- `tests/evidence_boundaries.rs#fn[definition_and_requirements_inputs_obey_containment_for_declaring_files]` covers definition and requirements inputs. Their declaring file is disallowed, and each input reports \"disallowed\" with the file path.\n- `tests/commands.rs#fn[status_applies_workspace_disallow_to_existing_evidence]` shows that the CLI `status` command reports `Invalid` and \"disallowed\" for a disallowed recorded file.\n\n**Reporting missing, unreadable, and excluded files**\n- `tests/evidence_boundaries.rs#fn[unreadable_and_missing_inputs_are_reported]` asserts \"cannot open gone.txt\" for a missing file. It asserts \"cannot read locked.txt\" for an unreadable one. The unreadable assertion runs only when the file really is unreadable, which is the right guard for privileged test runs.\n- The \"excluded\" outcome is covered by the \"disallowed\" assertions above. The requirement's wording (\"explicit workspace disallow entries … excluded files\") supports that reading.\n\n**No build is run**\n- The discovered-output test ends with `assert!(!target.exists(), \"metadata must not run a build\")`. Its `target-dir` is configured to a nonexistent external path, so a build would have created it.\n\nDiscovery that tolerates missing builds is an obligation of `requirements.authoring.generated_inputs`. The test sources mark it separately, and it is not assessed as part of this subject.\n\nI found no plausible violating behavior that these tests would accept.",
+  "rationale": "The tests adequately cover every obligation in `requirements.ci.input_containment`.\n\n**Containment within the project root**\n- `tests/evidence_boundaries.rs#fn[configured_external_inputs_validate_and_remain_subject_to_freshness_and_disallow]` shows that an absolute path outside the root is rejected with \"outside the repository\" when no allow applies.\n- The same test shows the path validates once the allow is configured. It then reports \"outline input changed\" after the file is edited, and reports \"disallowed\" once a matching disallow is added.\n\n**Symlink targets follow the same policy**\n- `fn[symlinks_may_resolve_inside_but_not_to_a_sibling_with_the_same_prefix]` accepts an in-project symlink to an in-project file. It rejects a symlink to a sibling directory with the same name prefix.\n- `fn[validation_checks_alias_targets_for_external_allow_and_disallow]` covers aliases inside and outside the project. It checks denial without an allow, acceptance with an allow on the target, and \"disallowed\" when only the resolved target is disallowed.\n- `fn[evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sources]` covers a disallowed ancestor reached through a symlink or a `..` component.\n- The unit tests in `src/authoring/access.rs` also exercise `resolve_evidence_file`. They are `explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets` and `policy_resolves_symlinks_before_parent_components_without_allowing_wrong_subtrees`. Both cover alias targets and disallow precedence.\n\n**Explicit workspace disallow entries**\n- The tests above assert \"disallowed\" errors that name the file.\n- `fn[definition_and_requirements_inputs_obey_containment_for_declaring_files]` covers files resolved from a selector. It shows the declaring files for definition and requirements inputs are rejected when disallowed.\n- `tests/commands.rs#fn[status_applies_workspace_disallow_to_existing_evidence]` covers the same behavior through the `status` command.\n- The declaring-file test only exercises disallow. It does not exercise containment for selector-resolved files. I checked the implementation for this. Selector-resolved files go through the same shared `resolve_evidence_file` path, so I don't count this as a gap.\n\n**Missing and unreadable files**\n- `fn[unreadable_and_missing_inputs_are_reported]` asserts \"cannot open gone.txt\" for a missing file. It asserts \"cannot read locked.txt\" for a mode-000 file. The unreadable assertion runs only when the process really cannot read the file, which is a sound guard for privileged users.\n- `src/evidence.rs#fn[collects_missing_orphan_format_false_and_changed_line_errors]` also asserts error collection, including a missing-node error.\n\n**Discovered Cargo generated-output policy, with no build run**\n- `fn[discovered_external_cargo_outputs_validate_freshness_and_obey_disallow]` builds an external Cargo build directory. It shows a discovered output validates and an alias to it validates, including a project-local alias.\n- The same test shows an external alias and an unrelated external file are still denied. A changed file is reported as stale, and disallow overrides the generated-output permission.\n- It ends by asserting `!target.exists()`, which checks that no build ran.\n\n**Search tool**\n- `src/authoring/tools.rs#fn[search_uses_the_validated_target_when_symlinks_precede_parent_components]` adds coverage of symlink-before-parent resolution.\n\nI found no obligation without a test that asserts its outcome.",
   "references": "8e89e778622a56b6ea11b66756116dd038b46d49387ad7f8d1bc51d1ad6c5056",
   "inputs": [
     {
@@ -106,7 +106,7 @@
     {
       "file": "tests/evidence_boundaries.rs",
       "item": "fn[outline_inputs_survive_moves_and_unhashed_comments_but_not_edits]",
-      "hash": "f3f43479daa44decd163d41f84be8845c1140552efd9c14aac2adb5e42440a58"
+      "hash": "09135b5e2b51e954d6997aed606b99b12ca8fb0c96e1ef052d083393dfba274b"
     },
     {
       "file": "tests/evidence_boundaries.rs",
@@ -142,6 +142,21 @@
       "file": "tests/evidence_boundaries.rs",
       "item": "fn[discovered_external_cargo_outputs_validate_freshness_and_obey_disallow]",
       "hash": "1efd7ca613e40ea841b16e3cb287bc0adc6a17b5b58a193391c79cf9bb6a73c7"
+    },
+    {
+      "file": "src/authoring/access/policy.rs",
+      "item": "fn[resolve_evidence_file]",
+      "hash": "acd5215ac7dec5d7999dc479729c5df614deb37bb4eda635f670ad323bd30b75"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "fn[check_project_file]",
+      "hash": "d229a2e14bc49aad09e4bca7ab3bdab6d475f05819973da2477323152e7aa4e5"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[resolve_evidence_file]",
+      "hash": "3aae732db53590c875dbe84b199e33bdaaed4327bffadef49cc1b63ed6445ad9"
     }
   ],
   "format_version": 1,
@@ -318,7 +333,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "95cd64fe6fbb50a5a9f0baead5ff3cb0acf73d83980b1f05581cbb0a91c75dc3"
+          "value": "0f07343dd20628d5f7fc2d079fd44d71b27293db49d8eee85fdff0265fa27430"
         }
       ]
     },
@@ -438,6 +453,57 @@
         {
           "scheme": "habeas-input-v1",
           "value": "fffd8e639fdc37c3a6b2cc83b4f6d4ff44bc9bff67e8439e77130e541b4002fa"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/access/policy.rs"
+            },
+            "selector": "fn[resolve_evidence_file]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "11750355adbac73d510249fc050194954f64f9e1b4ad9dd62d04336db3bf1f1f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/inputs.rs"
+            },
+            "selector": "fn[check_project_file]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "e8820c29adc4645a547d0c21ca577d80ed339d31840d6eb35967ddc89f20cb77"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/access.rs"
+            },
+            "selector": "fn[resolve_evidence_file]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "fad08d4c304686462a3084a2dbf58045862be098a086ff6c8ac6045ff61229cf"
         }
       ]
     }

@@ -1,8 +1,8 @@
 {
   "requirement": "{cite}`requirements.sdk.graph.criteria.criterion_trait`\n\n`Criterion::execute` receives a context for its\n{term}`requirements.sdk.graph.criteria.source_node` and computes its\ncompleted answer:\n\n```rust,ignore\nuse std::future::Future;\n\npub trait Criterion<D: Domain>: Send + Sized {\n    // ...\n\n    /// Select inputs through cx and compute the completed answer.\n    fn execute(\n        self,\n        cx: &mut ValidationContext<'_, D>,\n    ) -> impl Future<Output = Result<Self::Ok, ValidationError<D::Error>>> + Send;\n\n    // ...\n}\n```\n\nAn `Ok` value is the answer defined by\n{cite}`requirements.sdk.graph.criteria.criterion_trait.answer`.\nAn `Err` value reports a [validation error](validators.md#habeas-req-requirements.sdk.graph.validators.ValidationError).",
   "determination": true,
-  "rationale": "I judged this from the supplied test sources only. I did not request any implementation source.\n\n**Obligations derived from `requirements.sdk.graph.criteria.execute`**\n1. `Criterion::execute` takes `self` and a `&mut ValidationContext` for the criterion's source node. Reads and agent calls go through that context.\n2. It returns a `Send` future.\n3. `Ok` carries the completed answer, as defined by `criterion_trait.answer`. That answer includes a negative assessment, and its Serde form must round-trip.\n4. `Err` carries a `ValidationError<D::Error>`.\n\n**Mapping to tests**\n- **Ok answer, source-node context, dependencies.**\n  - `crates/trust-but-verify/src/agent/tests.rs#fn[deterministic_validation_uses_required_storage_without_an_agent]` runs a deterministic criterion. It asserts the negative `result` and the rationale. It also asserts that the recorded dependency is `Node(1, fingerprint)`, which shows the context read the source node.\n  - `src/authoring/sdk.rs#mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]` runs an SDK criterion that returns a negative answer (`determination: false`). It asserts `source_node_id`, then checks that the stored record equals the output. It also checks that a reloaded record has non-empty dependencies and gives back the same output, with only one agent request.\n- **Send.** `crates/trust-but-verify/tests/contracts.rs#fn[validation_and_answer_need_send_without_sync]` passes verification, storing and refreshing through a `send(...)` helper. That helper is a compile-time `Send` check, so a non-`Send` future would fail to compile. The same test asserts the answers (17, 23) and the execution counts.\n- **Negative answer is `Ok`, plus decode error.** `crates/trust-but-verify/tests/validation.rs#fn[criterion_decode_errors_are_execution_errors_and_false_is_a_completed_answer]` implements a custom `Criterion::execute` that reads the source node through `cx`.\n  - Invalid JSON gives `Err(ValidationError::Output)`, and nothing is stored.\n  - `false` gives `Ok(false)`, with dependency `Node(1, fp(\"false\"))`. Storing it records `json!(false)`, so the answer round-trips through Serde.\n- **Err variants.**\n  - `fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]` covers `NoAgentConfigured` and then a successful run with an intermediate agent call.\n  - `fn[resolution_storage_and_callback_errors_are_not_judgments]` covers `Graph(\"missing\")` returned from execute and checks that no record is stored.\n  - `fn[invalid_typed_submission_is_an_agent_error]` covers `Agent(_)` returned from execute.\n  - `fn[agent_errors_expose_the_agreed_string_payload]` checks the error payload shape.\n\n**Gaps considered.** I found no obligation that lacks a test with an outcome assertion. Success and each error class are exercised and asserted. The negative-answer case is covered, and the `Send` bound is enforced at compile time. The source-node context is evidenced by the dependency assertions. I found no ambiguity in the text that leads to different conclusions. There are no `{fixme}` acknowledgments, and none are needed.",
-  "references": "92f00a7a9b1677fe86e0dd6cd5850a82acfa0772e140f9a501f5db2552c605a9",
+  "rationale": "I judged this from the supplied test source only. I did not request any implementation source.\n\n**Obligations derived from `requirements.sdk.graph.criteria.execute`**\n1. `Criterion::execute` runs with a context for the criterion's source node, and inputs are selected through that context.\n2. An `Ok` value is the completed answer (`Criterion::Ok`). That includes a negative answer, and the answer must survive Serde JSON. `Ok` is `Send`.\n3. An `Err` value is a `ValidationError`, which reports a failure rather than an answer.\n\n**Mapping obligations to tests**\n- **Completed answer, including a negative one:**\n  - `agent/tests.rs#fn[deterministic_validation_uses_required_storage_without_an_agent]` runs a deterministic criterion and asserts `result.output().result` is false. It also asserts the rationale, and that the saved evidence has a `Dependency::Node(Node(1), …)` fingerprint, so the context read the source node.\n  - `validation_tests.rs#fn[criterion_decode_errors_are_execution_errors_and_false_is_a_completed_answer]` shows a `false` output is a completed `Ok` answer. It asserts the dependencies, stores the answer, and checks that the stored output is `json!(false)`.\n  - `src/authoring/sdk.rs#mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]` checks a negative determination end to end. It asserts the `Ok` output, that storing it and loading it back gives the same value (the Serde round trip), and that the reloaded answer is reused without another agent call.\n  - `contracts.rs#fn[validation_and_answer_need_send_without_sync]` verifies and stores an answer through `send(...)` wrappers, so the future and the answer are `Send`. It also checks the stored value reloads with the same output.\n- **Context for the source node and tracked reads:**\n  - `runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls` shows execution reads the source node, records it as a dependency, and supports intermediate agent calls.\n  - `invalid_typed_submission_is_an_agent_error` asserts the context reads exactly `[1]`, the source node.\n- **`Err` reports a `ValidationError`:**\n  - `runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls` returns `NoAgentConfigured` and stores nothing.\n  - `resolution_storage_and_callback_errors_are_not_judgments` returns `Graph(\"missing\")` from a callback read and stores nothing.\n  - `invalid_typed_submission_is_an_agent_error` returns `ValidationError::Agent`.\n  - The decode-error test returns `ValidationError::Output` with `is_syntax()` and stores nothing.\n  - `agent_errors_expose_the_agreed_string_payload` checks the `Agent` and `Graph` variants' payload, display text and source.\n\n**Conclusion**\nThe `Ok` path (positive and negative answers, serialization round trip, `Send`) and the `Err` path (several distinct `ValidationError` variants, none persisted) are each exercised with assertions on their outcomes. The source-node context is checked through recorded dependencies and reads. The tests carry `{test}` references to the subject. I found no unaddressed obligation or marking gap.",
+  "references": "ca8c72b1d2aa86c63bfcb176991e161f0fda5d6d9aba88e09da6e89b007e2216",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.criteria.execute",
@@ -101,34 +101,34 @@
       "hash": "6855ceb72cad4207905aa0be9cadc3210222330178b8fb3ab152cdfe7279b242"
     },
     {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[validation_and_answer_need_send_without_sync]",
-      "hash": "949fb3a00a164a6932b73fcd42652fd7673f951f9b81ee20b692b383da14aafa"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/validation.rs",
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]",
       "hash": "ef92d36a914b81c7f8d15011c753be5105671105cb4f15126fcad9e6e7381e39"
     },
     {
-      "file": "crates/trust-but-verify/tests/validation.rs",
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[resolution_storage_and_callback_errors_are_not_judgments]",
       "hash": "019d9b3dcaf43b538f3a14448e2ca0e42fc6f000972a6af300f11b86fb14e3ac"
     },
     {
-      "file": "crates/trust-but-verify/tests/validation.rs",
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[invalid_typed_submission_is_an_agent_error]",
       "hash": "0ed7147a293572f742ccd38d834b657775dacd782fd7c24f463a19bdf24cbccf"
     },
     {
-      "file": "crates/trust-but-verify/tests/validation.rs",
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[criterion_decode_errors_are_execution_errors_and_false_is_a_completed_answer]",
       "hash": "67747fa0df0f479bc22c45c8dbcbf1abf3bd5852f5b8c41992fcc3ce449eb070"
     },
     {
-      "file": "crates/trust-but-verify/tests/validation.rs",
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[agent_errors_expose_the_agreed_string_payload]",
       "hash": "d788d79becc748845a1b77564884c70b0f26de23c117265b29227e804c07ee9a"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "fn[validation_and_answer_need_send_without_sync]",
+      "hash": "949fb3a00a164a6932b73fcd42652fd7673f951f9b81ee20b692b383da14aafa"
     },
     {
       "file": "src/authoring/sdk.rs",
@@ -204,7 +204,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "92f00a7a9b1677fe86e0dd6cd5850a82acfa0772e140f9a501f5db2552c605a9"
+          "value": "ca8c72b1d2aa86c63bfcb176991e161f0fda5d6d9aba88e09da6e89b007e2216"
         }
       ]
     },
@@ -216,7 +216,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "7ec8061b3bc97b2a684f1c370a0922fe3f4f39b11037515de9d12b23387abe47"
+          "value": "27de3a338dc83633a39a4b669dc72610285f607dda5ba9724915acd6321fbff1"
         }
       ]
     },
@@ -276,6 +276,91 @@
           "Source": {
             "resource": {
               "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+            },
+            "selector": "fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "ca7f5b87fc70e690aaa5f1e5fa32637faf13af432bd4ff67a17f3d9c8e788025"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+            },
+            "selector": "fn[resolution_storage_and_callback_errors_are_not_judgments]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "175b03b01a251cd962cd06cd5d69fcd1804b0ebd479bfc0f1eb0db1205cf9fac"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+            },
+            "selector": "fn[invalid_typed_submission_is_an_agent_error]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "10b75e61a349b0f0c4cdbb6936c7a6d630a2b88170af1cdee8df6d73834908ad"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+            },
+            "selector": "fn[criterion_decode_errors_are_execution_errors_and_false_is_a_completed_answer]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "7ad5ee2433b3c5b2e16464c35603cfa6dbe15471a272e7a9b9d25681b970f7b7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+            },
+            "selector": "fn[agent_errors_expose_the_agreed_string_payload]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "2d82c2cde133f650c9e6c3792f9791f6aa711c8a58c7b6793cd8bd89aba524f0"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
               "location": "crates/trust-but-verify/tests/contracts.rs"
             },
             "selector": "fn[validation_and_answer_need_send_without_sync]"
@@ -284,91 +369,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "7471cd4ee7b747fb3311ee29c366819e7254e34994aebc929463dd434e9ea1e3"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
-            },
-            "selector": "fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "595da3d6ec08a011b32ec22a42c3dd080fc1c4b8f22de86cc363bbb36957ecd4"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
-            },
-            "selector": "fn[resolution_storage_and_callback_errors_are_not_judgments]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "20070e82cba9fb0f95c8851e9b9cfcb8bffcd2426707376c4ebe7fbbaff8baa7"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
-            },
-            "selector": "fn[invalid_typed_submission_is_an_agent_error]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "4f0129702ca187f2f299c16a98af018ed1070686cea5a410d3982a52ec3c0250"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
-            },
-            "selector": "fn[criterion_decode_errors_are_execution_errors_and_false_is_a_completed_answer]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "332317ebd6b86eb438d577b4e56bb01d2849ecbdb9f7ee18ee60bcf78600ae63"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
-            },
-            "selector": "fn[agent_errors_expose_the_agreed_string_payload]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "15a4cebcc6be600d025838718b6c0d16a8fa98b831d36362acb7411ca53f0e94"
         }
       ]
     },
