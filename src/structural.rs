@@ -368,34 +368,24 @@ fn owning_site(
 /// violation query's matches only inside a site of its `within` query in
 /// the same snippet. A snippet that does not parse is an error.
 pub(crate) fn snippet_matches(
-    queries: &[DeclaredQuery],
-    query: &DeclaredQuery,
+    language: &str,
+    rule: &StructuralRule,
+    site_rule: Option<&StructuralRule>,
     snippet: &str,
 ) -> Result<usize, String> {
-    let rule = StructuralRule::compile(&query.body.language, &query.body.rule_core())?;
     let filename = format!("snippet.{}", rule.language().profile.extensions[0]);
     let outline = crate::outline_items::for_file(Path::new(&filename), snippet)
-        .map_err(|error| format!("does not parse as {}: {error}", query.body.language))?;
+        .map_err(|error| format!("does not parse as {language}: {error}"))?;
     if let Some(error) = &outline.diagnostic {
-        return Err(format!(
-            "does not parse as {}: {error}",
-            query.body.language
-        ));
+        return Err(format!("does not parse as {language}: {error}"));
     }
-    let within = match within_query(queries, query)? {
-        None => None,
-        Some(target) => {
-            let site_rule =
-                StructuralRule::compile(&target.body.language, &target.body.rule_core())?;
-            Some(
-                site_rule
-                    .matches(snippet)
-                    .iter()
-                    .map(|range| outline.owner(range))
-                    .collect::<Vec<_>>(),
-            )
-        }
-    };
+    let within = site_rule.map(|site_rule| {
+        site_rule
+            .matches(snippet)
+            .iter()
+            .map(|range| outline.owner(range))
+            .collect::<Vec<_>>()
+    });
     Ok(rule
         .matches(snippet)
         .iter()
@@ -424,6 +414,24 @@ mod tests {
                 text,
             }
         };
+        for field in ["language", "rule", "match", "no_match"] {
+            let lines = [
+                "language: rust",
+                "rule: {kind: function_item}",
+                "match: ['fn f() {}']",
+                "no_match: ['struct S;']",
+            ];
+            let incomplete = lines
+                .into_iter()
+                .filter(|line| line.split_once(':').unwrap().0 != field)
+                .collect::<Vec<_>>()
+                .join("\n");
+            let (queries, errors) =
+                parse_queries(&declaration(&format!("```yaml\n{incomplete}\n```")));
+            assert!(queries.is_empty());
+            assert_eq!(errors.len(), 1);
+            assert!(errors[0].contains(field), "{errors:?}");
+        }
         for yaml in ["42", "[one, two]", "plain scalar"] {
             let body = format!("```yaml\n{yaml}\n```");
             let (queries, errors) = parse_queries(&declaration(&body));

@@ -338,6 +338,7 @@ fn validate_queries<'a>(
     let mut valid = BTreeSet::new();
     let mut seen = BTreeSet::new();
     let mut runnable = Vec::new();
+    let mut examples = Vec::new();
     let has_sites = queries.iter().any(|query| query.kind == QueryKind::Sites);
     for query in queries {
         let location = format!("{}:{}", declaration.file, query.line);
@@ -361,16 +362,33 @@ fn validate_queries<'a>(
         }
         // With no site queries, the diagnostic above already explains why
         // a supplied target cannot resolve. Missing `within` is independent.
-        if !(query.kind == QueryKind::Violations && !has_sites && query.body.within.is_some()) {
-            if let Err(error) = crate::structural::within_query(queries, query) {
-                problems.push(error);
-            }
+        let within = crate::structural::within_query(queries, query);
+        if let Err(error) = &within
+            && !(query.kind == QueryKind::Violations && !has_sites && query.body.within.is_some())
+        {
+            problems.push(error.clone());
         }
-        if let Err(error) = crate::structural::StructuralRule::compile(
+        let rule = crate::structural::StructuralRule::compile(
             &query.body.language,
             &query.body.rule_core(),
-        ) {
-            problems.push(error);
+        );
+        match (rule, within) {
+            (Err(error), _) => problems.push(error),
+            (Ok(rule), Ok(target)) => {
+                // A target's compilation error is reported at its declaration.
+                let site_rule = target
+                    .map(|target| {
+                        crate::structural::StructuralRule::compile(
+                            &target.body.language,
+                            &target.body.rule_core(),
+                        )
+                    })
+                    .transpose();
+                if let Ok(site_rule) = site_rule {
+                    examples.push((query, rule, site_rule));
+                }
+            }
+            (Ok(_), Err(_)) => {}
         }
         for (field, snippets) in [
             ("match", &query.body.matches),
@@ -399,14 +417,19 @@ fn validate_queries<'a>(
             .as_ref()
             .is_none_or(|within| valid.contains(within))
     });
-    for query in &runnable {
+    for (query, rule, site_rule) in examples {
         let location = format!("{}:{}", declaration.file, query.line);
         for (field, snippets, expect_match) in [
             ("match", &query.body.matches, true),
             ("no_match", &query.body.no_match, false),
         ] {
             for (index, snippet) in snippets.iter().enumerate() {
-                let problem = match crate::structural::snippet_matches(queries, query, snippet) {
+                let problem = match crate::structural::snippet_matches(
+                    &query.body.language,
+                    &rule,
+                    site_rule.as_ref(),
+                    snippet,
+                ) {
                     Err(error) => Some(error),
                     Ok(0) if expect_match => Some("contains no match of the query".to_owned()),
                     Ok(count) if !expect_match && count > 0 => {
@@ -1317,6 +1340,7 @@ no_match: ["struct S;"]
             );
         };
         expect(4, "single identifier segment");
+        expect(4, "no_match[0] snippet contains 1 matches");
         // The first matching snippet has no match, the no_match snippet does
         // not parse, and nothing in the project matches.
         expect(13, "match[0] snippet contains no match");
