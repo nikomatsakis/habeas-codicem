@@ -75,6 +75,7 @@ async fn storage_preserves_completed_answers_containing_credential_shaped_text()
 // {test}`requirements.sdk.filesystem-storage.interface`
 // {test}`requirements.sdk.filesystem-storage.keys`
 // {test}`requirements.sdk.filesystem-storage.load`
+// {test}`requirements.sdk.filesystem-storage.FileEvidenceStorage`
 #[tokio::test]
 async fn paths_are_injective_and_loading_missing_records_has_no_side_effects() {
     let temp = tempfile::tempdir().unwrap();
@@ -196,6 +197,7 @@ async fn source_and_criterion_boundaries_preserve_independent_records() {
 // {test}`requirements.sdk.graph.evidence.record`
 // {test}`requirements.sdk.graph.evidence.dependencies`
 // {test}`requirements.sdk.graph.fingerprint`
+// {test}`requirements.sdk.filesystem-storage.FileStorageError`
 #[tokio::test]
 async fn records_round_trip_and_malformed_or_incompatible_data_is_an_error() {
     let temp = tempfile::tempdir().unwrap();
@@ -250,6 +252,8 @@ async fn records_round_trip_and_malformed_or_incompatible_data_is_an_error() {
     };
     assert!(!error.to_string().is_empty());
     assert_eq!(error.to_string(), cause.to_string());
+    let reported: &dyn std::error::Error = &error;
+    assert!(format!("{reported:?}").contains("Json"));
     std::fs::remove_file(store.record_path(&path, &criterion())).unwrap();
     std::fs::create_dir(store.record_path(&path, &criterion())).unwrap();
     let error = store
@@ -261,6 +265,7 @@ async fn records_round_trip_and_malformed_or_incompatible_data_is_an_error() {
         panic!("expected I/O error")
     };
     assert_eq!(error.to_string(), cause.to_string());
+    assert!(format!("{error:?}").contains("Io"));
 }
 
 // {test}`requirements.sdk.filesystem-storage.interface`
@@ -358,6 +363,7 @@ async fn failed_serialization_preserves_records_and_failed_replacement_cleans_up
 // {test}`requirements.sdk.filesystem-storage.store`
 // {test}`requirements.sdk.filesystem-storage.interface`
 // {test}`requirements.sdk.graph.evidence.evidence_storage`
+// {test}`requirements.sdk.filesystem-storage.FileEvidenceStorage`
 #[test]
 fn concurrent_readers_only_observe_complete_records_from_competing_writes() {
     let temp = tempfile::tempdir().unwrap();

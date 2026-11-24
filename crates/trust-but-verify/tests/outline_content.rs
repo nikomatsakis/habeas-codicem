@@ -82,6 +82,7 @@ fn unknown_extensions_keep_nonblank_lines_and_content_selectors() {
 // {test}`requirements.sdk.outlines.selection`
 // {test}`requirements.sdk.outlines.snapshot`
 // {test}`requirements.sdk.outlines.node_contents`
+// {test}`requirements.sdk.graph.NodeContents`
 #[test]
 fn selected_contents_outlive_handles_and_later_file_edits() {
     let directory = tempfile::tempdir().unwrap();

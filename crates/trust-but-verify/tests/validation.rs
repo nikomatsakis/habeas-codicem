@@ -256,6 +256,7 @@ async fn historical_freshness_reads_do_not_enter_the_replacement_trace() {
 // {test}`requirements.sdk.graph.agent-harness.with_agent`
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
 // {test}`requirements.sdk.graph.criteria.execute`
+// {test}`requirements.sdk.graph.agent-calls.Ask`
 #[tokio::test]
 async fn runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls() {
     let graph = Memory {
@@ -801,6 +802,8 @@ async fn dropped_builders_and_missing_agents_do_not_resolve_queued_inputs() {
 // {test}`requirements.sdk.graph.agent-calls.judge.submission`
 // {test}`requirements.sdk.graph.snapshot`
 // {test}`requirements.sdk.graph.validation-context.root_inputs`
+// {test}`requirements.sdk.graph.agent-calls.Ask`
+// {test}`requirements.sdk.graph.agent-calls.NodePhase`
 #[tokio::test]
 async fn explicit_insertions_preserve_order_repetition_and_selection_snapshots() {
     let graph = Memory::default();
