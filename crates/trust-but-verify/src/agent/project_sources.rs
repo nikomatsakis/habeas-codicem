@@ -18,6 +18,30 @@ pub(crate) struct ProjectSources<D: SourceNodes> {
     pub domain: D,
 }
 
+impl<D: SourceNodes> ProjectSources<D>
+where
+    D::Error: std::fmt::Display,
+{
+    // Text context can span several outline items. Capture the file root from
+    // the bytes searched so every line in the delivered excerpt is covered.
+    fn text_input(
+        &self,
+        path: &std::path::Path,
+        file: &crate::sources::SourceFile,
+    ) -> Result<Dependency<D::NodeId, D::EdgeLabel>, String> {
+        let contents = crate::outline::OutlineContent::from_source(
+            path,
+            file.text().map_err(|e| e.to_string())?.into(),
+        )
+        .map_err(|e| e.to_string())?;
+        let node = self
+            .domain
+            .source_node(contents.id())
+            .map_err(|e| e.to_string())?;
+        Ok(Dependency::Node(node, contents.fingerprint()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::tools::SessionTools;
@@ -101,6 +125,9 @@ mod tests {
     }
     impl SourceNodes for Project {
         fn source_node(&self, item: &OutlineId) -> io::Result<String> {
+            if item.path == std::path::Path::new("code.rs") {
+                return Ok(format!("code.rs#{}", item.selector));
+            }
             if item.path != std::path::Path::new("source.txt") || !item.selector.is_empty() {
                 return Err(io::Error::other("unsupported source item"));
             }
@@ -140,6 +167,101 @@ mod tests {
             record: None,
             fail_read: false,
         })))
+    }
+
+    // {test}`requirements.sdk.graph.search.first_search.instructions`
+    // {test}`requirements.sdk.graph.search.first_search.instructions.content`
+    // {test}`requirements.sdk.graph.search.finish_search.behavior`
+    // {test}`requirements.sdk.graph.search.finish_search.inputs`
+    #[tokio::test]
+    async fn search_obligations_follow_delivery_and_keep_the_original_snapshot() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("source.txt");
+        let original = "hit me here\n".repeat(300);
+        std::fs::write(&path, &original).unwrap();
+        let expected = crate::outline::OutlineContent::from_source("source.txt", original.into())
+            .unwrap()
+            .fingerprint();
+        let tools = ProjectSources {
+            sources: Sources::new(root.path()),
+            domain: project("unrelated domain text"),
+        };
+        let mut session = SessionTools::new(tools.session());
+        let mut peer = SessionTools::new(tools.session());
+        assert!(
+            session
+                .dispatch("search_text", &json!({"pattern":"("}))
+                .await
+                .is_err()
+        );
+        let call = |text: &str| json!({"pattern":text});
+        let empty = session
+            .dispatch("search_text", &call("absent"))
+            .await
+            .unwrap();
+        let empty: Value = serde_json::from_str(&empty.text).unwrap();
+        let instructions = empty["instructions"].as_str().unwrap();
+        assert!(instructions.contains("finish_search") && instructions.contains("used:[]"));
+        let finish = |page: &Value, used: Value| json!({"search_id":page["search_id"],"used":used});
+        let closed = session
+            .dispatch("finish_search", &finish(&empty, json!([])))
+            .await
+            .unwrap();
+        assert!(closed.dependencies.is_empty());
+        assert_eq!(
+            serde_json::from_str::<Value>(&closed.text).unwrap(),
+            json!({"search_id":empty["search_id"],"finished":true})
+        );
+        let result = session.dispatch("search_text", &call("hit")).await.unwrap();
+        let first: Value = serde_json::from_str(&result.text).unwrap();
+        assert!(first.get("instructions").is_none());
+        assert!(result.dependencies.is_empty());
+        let next = json!({"uuid":first["next"]});
+        assert!(
+            session
+                .dispatch(
+                    "finish_search",
+                    &json!({"search_id":first["next"],"used":[]})
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            peer.dispatch("finish_search", &finish(&first, json!([])))
+                .await
+                .is_err()
+        );
+        assert!(peer.dispatch("get_next_page", &next).await.is_err());
+        std::fs::write(&path, "changed after search").unwrap();
+        let delivery = session.dispatch("get_next_page", &next).await.unwrap();
+        let second: Value = serde_json::from_str(&delivery.text).unwrap();
+        assert!(second.get("instructions").is_none());
+        assert_ne!(first["search_id"], second["search_id"]);
+        assert!(
+            session
+                .dispatch("finish_search", &finish(&first, json!(["1", "unknown"])))
+                .await
+                .is_err()
+        );
+        assert_eq!(session.outstanding_searches().len(), 2);
+        let selected = finish(&first, json!([first["matches"][0]["tag"]]));
+        for _ in 0..2 {
+            let closed = session.dispatch("finish_search", &selected).await.unwrap();
+            assert_eq!(
+                closed.dependencies,
+                [Dependency::Node("source-node".into(), expected.clone())]
+            );
+        }
+        session
+            .dispatch("finish_search", &finish(&second, json!([])))
+            .await
+            .unwrap();
+        assert_eq!(
+            session.dispatch("get_next_page", &next).await.unwrap().text,
+            delivery.text
+        );
+        assert!(session.outstanding_searches().is_empty());
+        assert_eq!(tools.domain.0.lock().unwrap().reads, 0);
     }
 
     // {test}`requirements.sdk.graph.validation-context.list_sources.mcp`
@@ -227,7 +349,8 @@ mod tests {
                 "outline_source",
                 "read_source",
                 "search_text",
-                "search_structure"
+                "search_structure",
+                "finish_search"
             ]
         );
         let listing = session
@@ -264,8 +387,8 @@ mod tests {
             .unwrap();
         assert!(search.dependencies.is_empty());
         assert_eq!(
-            serde_json::from_str::<Value>(&search.text).unwrap(),
-            json!({"complete":true,"matches":[{"path":"source.txt","line":1,"excerpt":"disk text"}]})
+            serde_json::from_str::<Value>(&search.text).unwrap()["matches"],
+            json!([{"path":"source.txt","line":1,"excerpt":"disk text","tag":"1"}])
         );
         #[cfg(feature = "default-languages")]
         {
@@ -292,11 +415,11 @@ mod tests {
                 .unwrap();
             assert!(search.dependencies.is_empty());
             assert_eq!(
-                serde_json::from_str::<Value>(&search.text).unwrap(),
-                json!({"complete":true,"matches":[{
+                serde_json::from_str::<Value>(&search.text).unwrap()["matches"],
+                json!([{
                     "node":{"path":"code.rs","selector":"fn[chosen]"},
-                    "excerpt":"call()"
-                }]})
+                    "excerpt":"call()","tag":"1"
+                }])
             );
         }
         assert_eq!(domain.0.lock().unwrap().reads, 0);
@@ -626,6 +749,31 @@ mod tests {
             );
             assert_eq!(excerpt.lines().count(), raw.lines().count());
             assert!(!first.text.contains(&token));
+            assert_eq!(result.get("instructions").is_some(), tool == "search_text");
+            let selected = session
+                .dispatch(
+                    "finish_search",
+                    &json!({"search_id":result["search_id"], "used":[result["matches"][0]["tag"]]}),
+                )
+                .await
+                .unwrap();
+            let selector = if tool == "search_text" {
+                ""
+            } else {
+                "fn[chosen]"
+            };
+            let snapshot =
+                crate::outline::OutlineContent::from_source("code.rs", raw.as_str().into())
+                    .unwrap()
+                    .select(selector)
+                    .unwrap();
+            assert_eq!(
+                selected.dependencies,
+                [Dependency::Node(
+                    format!("code.rs#{selector}"),
+                    snapshot.fingerprint()
+                )]
+            );
             for line in key_body {
                 assert!(!first.text.contains(line));
             }
@@ -720,12 +868,8 @@ where
     // {impl}`requirements.sdk.graph.search.search_text.mcp.description`
     // {impl}`requirements.sdk.graph.search.search_structure.mcp`
     // {impl}`requirements.sdk.graph.search.search_structure.mcp.description`
-    // :::{fixme} requirements.sdk.graph.search.finish_search.mcp
-    // The SDK tool list does not yet expose finish_search.
-    // :::
-    // :::{fixme} requirements.sdk.graph.search.finish_search.mcp.description
-    // The SDK will expose the description when it ports finish_search.
-    // :::
+    // {impl}`requirements.sdk.graph.search.finish_search.mcp`
+    // {impl}`requirements.sdk.graph.search.finish_search.mcp.description`
     fn definitions(&self) -> io::Result<Vec<ToolDefinition>> {
         [
             json!({"name":"list_sources","description":"List available project files.",
@@ -738,21 +882,24 @@ where
                 "parameters":{"type":"object","required":["pattern"],"properties":{"pattern":{"type":"string"},"prefix":{"type":"string"},"context_lines":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":0}}}}),
             json!({"name":"search_structure","description":"Find structural matches in available files. Read selected nodes separately.",
                 "parameters":{"type":"object","required":["language","rule"],"properties":{"language":{"type":"string"},"rule":{"type":"object"},"prefix":{"type":"string"},"limit":{"type":"integer","minimum":0}}}}),
+        json!({
+            "name":"finish_search",
+            "description":"Close a delivered search and record dependencies for snippets you used to justify your conclusion without an additional source read. search_id is the result's UUID and used is an array of its short entry tags, e.g. {\"search_id\":\"11111111-1111-4111-8111-111111111111\",\"used\":[\"1\"]}. Entries whose source you also read may be omitted; including them is harmless. Use used:[] when no entries qualify, including an empty search. Every delivered search must be finished before submission. The result is {search_id, finished:true}; no additional source is delivered.",
+            "parameters":{"type":"object","properties":{
+                "search_id":{"type":"string","format":"uuid"},
+                "used":{"type":"array","items":{"type":"string"}}
+            },"required":["search_id","used"],"additionalProperties":false}
+        }),
         ]
         .into_iter()
         .map(|definition| serde_json::from_value(definition).map_err(io::Error::other))
         .collect()
     }
 
-    // :::{fixme} requirements.sdk.graph.search.search_text.mcp
-    // Text search returns matches without the search_id and tags needed for finish_search.
-    // :::
-    // :::{fixme} requirements.sdk.graph.search.search_structure.mcp
-    // Structural search returns matches without the search_id and tags needed for finish_search.
-    // :::
-    // :::{fixme} requirements.sdk.graph.search.first_search.instructions
-    // The SDK returns search pages without the per-conversation instructions.
-    // :::
+    // {impl}`requirements.sdk.graph.search.search_text.behavior`
+    // {impl}`requirements.sdk.graph.search.search_structure.behavior`
+    // {impl}`requirements.sdk.graph.search.search_text.inputs`
+    // {impl}`requirements.sdk.graph.search.search_structure.inputs`
     // {impl}`requirements.sdk.graph.validation-context.list_sources.behavior`
     // {impl}`requirements.sdk.graph.validation-context.list_sources.inputs`
     // {impl}`requirements.sdk.graph.validation-context.outline_source.behavior`
@@ -856,58 +1003,64 @@ where
                     let text = crate::redaction::redact_text(&contents.format()).into_owned();
                     (json!({"node":item}), "text", Value::String(text))
                 }
+                "finish_search" => return pages.finish_search(args),
                 "search_text" => {
-                    let matches = self
-                        .tools
-                        .sources
-                        .search_text(&TextQuery {
-                            scope,
-                            pattern: string("pattern")?.into(),
-                            context_lines: optional_number("context_lines")?.unwrap_or(0),
-                            limit,
-                        })
-                        .await
-                        .map_err(io::Error::other)?;
-                    (
-                        json!({"complete":matches.complete}),
-                        "matches",
-                        json!(
-                            matches
-                                .matches
-                                .into_iter()
-                                .map(|found| json!({"path":found.path,"line":found.line,
-                            "excerpt":crate::redaction::redact_text(&found.excerpt)}))
-                                .collect::<Vec<_>>()
-                        ),
+                    let query = TextQuery {
+                        scope,
+                        pattern: string("pattern")?.to_owned(),
+                        context_lines: optional_number("context_lines")?.unwrap_or(0),
+                        limit,
+                    };
+                    let matches = crate::source_engine::defaults::search_text_with(
+                        &self.tools.sources.analysis.provider,
+                        &query,
+                        |path, file| self.tools.text_input(path, file),
+                        |found, input| {
+                            let excerpt = crate::redaction::redact_text(&found.excerpt);
+                            let entry =
+                                json!({"path":found.path,"line":found.line,"excerpt":excerpt});
+                            (entry, input.clone())
+                        },
                     )
+                    .await
+                    .map_err(io::Error::other)?;
+                    return Ok(pages.search(matches));
                 }
                 "search_structure" => {
-                    let matches = self
-                        .tools
-                        .sources
-                        .search_structure(&StructuralQuery {
-                            scope,
-                            language: string("language")?.into(),
-                            rule: args["rule"]
-                                .as_object()
-                                .ok_or_else(|| io::Error::other("rule must be an object"))?
-                                .clone(),
-                            limit,
-                        })
-                        .await
-                        .map_err(io::Error::other)?;
-                    (
-                        json!({"complete":matches.complete}),
-                        "matches",
-                        json!(
-                            matches
-                                .matches
-                                .into_iter()
-                                .map(|found| json!({"node":found.node,
-                            "excerpt":crate::redaction::redact_text(&found.excerpt)}))
-                                .collect::<Vec<_>>()
-                        ),
+                    let query = StructuralQuery {
+                        scope,
+                        language: string("language")?.into(),
+                        rule: args["rule"]
+                            .as_object()
+                            .ok_or_else(|| io::Error::other("rule must be an object"))?
+                            .clone(),
+                        limit,
+                    };
+                    let analysis = &self.tools.sources.analysis;
+                    let matches = crate::source_engine::defaults::search_structure_with(
+                        &analysis.provider,
+                        &query,
+                        &analysis.languages,
+                        |found, parsed, node| {
+                            let scheme = format!("{}-structural-v1", parsed.outline.profile.name);
+                            let fingerprint = crate::graph::Fingerprint::new(
+                                scheme,
+                                node.structural_hash.clone(),
+                            );
+                            let input = self
+                                .tools
+                                .domain
+                                .source_node(&found.node)
+                                .map(|id| Dependency::Node(id, fingerprint))
+                                .map_err(|error| error.to_string());
+                            let excerpt = crate::redaction::redact_text(&found.excerpt);
+                            let entry = json!({"node":found.node,"excerpt":excerpt});
+                            (entry, input)
+                        },
                     )
+                    .await
+                    .map_err(io::Error::other)?;
+                    return Ok(pages.search(matches));
                 }
                 _ => return Err(io::Error::other(format!("unknown source tool {name:?}"))),
             };

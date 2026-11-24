@@ -176,6 +176,7 @@ fn signature_parts(text: &str) -> BTreeSet<(String, String)> {
     signatures
 }
 
+// {test}`requirements.sdk.public_api`
 #[test]
 fn member_order_is_free_but_field_and_method_types_are_committed() {
     let contract = "pub struct Example { pub field: T }\nimpl Example {\npub fn get(&self) -> T;\npub fn clear(&mut self);\n}";

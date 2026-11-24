@@ -111,6 +111,15 @@ pub mod defaults {
         provider: &P,
         query: &TextQuery,
     ) -> Result<TextMatches, P::Error> {
+        search_text_with(provider, query, |_, _| (), |found, _| found).await
+    }
+
+    pub(crate) async fn search_text_with<P: SourceProvider + ?Sized, O, T>(
+        provider: &P,
+        query: &TextQuery,
+        mut observe: impl FnMut(&Path, &SourceFile) -> O,
+        mut map: impl FnMut(TextMatch, &O) -> T,
+    ) -> Result<SearchResults<T>, P::Error> {
         let search = RegexSearch::compile(&query.pattern).map_err(SourceError::from)?;
         let mut matches = Vec::new();
         for id in provider.list(&query.scope).await? {
@@ -123,6 +132,7 @@ pub mod defaults {
                 .map_err(SourceError::from)?;
             let text = String::from_utf8_lossy(&file.bytes);
             let lines: Vec<_> = text.lines().collect();
+            let mut observation = None;
             for line in found {
                 if query.limit.is_some_and(|limit| matches.len() == limit) {
                     return Ok(SearchResults {
@@ -132,11 +142,14 @@ pub mod defaults {
                 }
                 let start = (line - 1).saturating_sub(query.context_lines);
                 let end = line.saturating_add(query.context_lines).min(lines.len());
-                matches.push(TextMatch {
-                    path: PathBuf::from(&id.location),
-                    line,
-                    excerpt: lines[start..end].join("\n"),
-                });
+                matches.push(map(
+                    TextMatch {
+                        path: PathBuf::from(&id.location),
+                        line,
+                        excerpt: lines[start..end].join("\n"),
+                    },
+                    observation.get_or_insert_with(|| observe(Path::new(&id.location), &file)),
+                ));
             }
         }
         Ok(SearchResults {
@@ -151,6 +164,15 @@ pub mod defaults {
         query: &StructuralQuery,
         languages: &Registry,
     ) -> Result<StructuralMatches, P::Error> {
+        search_structure_with(provider, query, languages, |found, _, _| found).await
+    }
+
+    pub(crate) async fn search_structure_with<P: SourceProvider + ?Sized, T>(
+        provider: &P,
+        query: &StructuralQuery,
+        languages: &Registry,
+        mut map: impl FnMut(StructuralMatch, &ParsedSource, &outline::OutlineNode) -> T,
+    ) -> Result<SearchResults<T>, P::Error> {
         let language = languages.named(query.language.as_str()).ok_or_else(|| {
             SourceError::Invalid(format!(
                 "unknown source language {:?}",
@@ -183,13 +205,17 @@ pub mod defaults {
                     });
                 }
                 let node = &parsed.outline.nodes[innermost_node(&parsed.outline, text, &range)];
-                matches.push(StructuralMatch {
-                    node: crate::outline::OutlineId {
-                        path: PathBuf::from(&id.location),
-                        selector: node.selector.clone(),
+                matches.push(map(
+                    StructuralMatch {
+                        node: crate::outline::OutlineId {
+                            path: PathBuf::from(&id.location),
+                            selector: node.selector.clone(),
+                        },
+                        excerpt: text[range].to_owned(),
                     },
-                    excerpt: text[range].to_owned(),
-                });
+                    &parsed,
+                    node,
+                ));
             }
         }
         Ok(SearchResults {

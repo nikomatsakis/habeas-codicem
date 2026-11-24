@@ -42,6 +42,10 @@ impl<'a, D: Domain> SessionTools<'a, D> {
         }
     }
 
+    pub(super) fn outstanding_searches(&self) -> Vec<String> {
+        self.pages.outstanding()
+    }
+
     pub(super) async fn dispatch(
         &mut self,
         name: &str,
@@ -246,7 +250,15 @@ where
     }
     // {cite}`habeas:util`
     // {impl}`requirements.sdk.graph.agent-harness.submission.invalid`
+    // {impl}`requirements.sdk.graph.search.finish_search.behavior`
     fn submit(&mut self, _: &str, arguments: &Value) -> io::Result<Submission<Value>> {
+        let outstanding = self.tools.outstanding_searches();
+        if !outstanding.is_empty() {
+            return Ok(Submission::Retry(format!(
+                "Call finish_search for every open search_id (use used:[] if none contributed), then resubmit: {}",
+                outstanding.join(", ")
+            )));
+        }
         submitted_value(arguments).map(Submission::Accepted)
     }
     // {cite}`habeas:util`

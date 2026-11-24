@@ -7,10 +7,6 @@ Rust callers receive all matches found within the query limit in one return
 value. The following agent signatures describe the agreed search protocol.
 Use `next` with `get_next_page` to retrieve more matches. Use `search_id`
 with `finish_search` to account for the excerpts on the page already received.
-Habeas authoring implements excerpt selection and search completion. The SDK
-harness currently returns paged matches with excerpts. It still needs to issue
-search IDs and tags, send first-result instructions, record selected excerpts
-through `finish_search`, and reject submissions while any delivered page is open.
 
 ## Choosing a source scope
 

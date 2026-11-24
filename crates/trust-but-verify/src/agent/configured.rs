@@ -519,6 +519,7 @@ mod tests {
         }
     }
 
+    // {test}`requirements.sdk.graph.search.finish_search.behavior`
     // {test}`requirements.sdk.sources.provider.attachment`
     // {test}`requirements.sdk.sources.local_provider`
     // {test}`requirements.sdk.sources.source_nodes`
@@ -559,7 +560,7 @@ mod tests {
         let server = std::thread::spawn(move || {
             let mut requests = Vec::new();
             let deadline = Instant::now() + Duration::from_secs(15);
-            for turn in 0..8 {
+            for turn in 0..14 {
                 let (mut stream, _) = loop {
                     match listener.accept() {
                         Ok(stream) => break stream,
@@ -603,7 +604,7 @@ mod tests {
                     serde_json::from_slice::<Value>(&bytes[header_end..header_end + length])
                         .unwrap(),
                 );
-                let (name, arguments) = match turn % 4 {
+                let (name, arguments) = match turn % 7 {
                     0 => ("list_sources", serde_json::json!({"prefix":"visible"})),
                     1 => (
                         "read_source",
@@ -613,6 +614,27 @@ mod tests {
                         "read_source",
                         serde_json::json!({"path":"visible/selected.txt"}),
                     ),
+                    3 => (
+                        "search_text",
+                        serde_json::json!({"pattern":"no matching line"}),
+                    ),
+                    5 => {
+                        let reply = &requests[turn - 1]["input"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .rev()
+                            .find(|item| item["type"] == "function_call_output")
+                            .unwrap()["output"];
+                        let page: Value = serde_json::from_str(reply.as_str().unwrap()).unwrap();
+                        assert!(page["instructions"].is_string());
+                        let retry = requests[turn]["input"].to_string();
+                        assert!(retry.contains("Call finish_search for every open search_id"));
+                        (
+                            "finish_search",
+                            serde_json::json!({"search_id":page["search_id"],"used":[]}),
+                        )
+                    }
                     _ => ("submit_result", serde_json::json!({"result":true})),
                 };
                 let body = serde_json::json!({
@@ -663,8 +685,8 @@ mod tests {
             );
         }
         let requests = server.join().unwrap();
-        assert_eq!(requests.len(), 8);
-        for first in [0, 4] {
+        assert_eq!(requests.len(), 14);
+        for first in [0, 7] {
             let tools = requests[first]["tools"].as_array().unwrap();
             assert_eq!(
                 tools
@@ -680,7 +702,8 @@ mod tests {
                     "outline_source",
                     "read_source",
                     "search_text",
-                    "search_structure"
+                    "search_structure",
+                    "finish_search"
                 ]
             );
             let output = |request: &Value, name: &str| -> String {
