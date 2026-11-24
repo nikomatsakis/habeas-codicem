@@ -318,6 +318,18 @@ async fn domain_relationships_accept_opaque_types_and_send_only_errors() {
     assert_eq!(send(error).0.get(), 255);
 }
 
+// {test}`requirements.sdk.graph.node_path_struct`
+#[test]
+fn node_paths_round_trip_empty_and_separated_segments() {
+    for parts in [vec![], vec![""], vec!["a/b"], vec!["a", "b"]] {
+        let path = NodePath::new(parts.iter().map(|part| part.to_string()).collect());
+        let bytes = serde_json::to_vec(&path).unwrap();
+        let decoded: NodePath = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(decoded.segments(), parts);
+        assert_eq!(decoded, path);
+    }
+}
+
 // {test}`requirements.sdk.graph.criteria.criterion_path`
 // {test}`requirements.sdk.graph.criteria.criterion_trait`
 // {test}`requirements.sdk.graph.criteria.criterion_trait.answer`
@@ -335,6 +347,7 @@ async fn domain_relationships_accept_opaque_types_and_send_only_errors() {
 // {test}`requirements.sdk.graph.evidence.inputs`
 // {test}`requirements.sdk.graph.evidence.checking_records`
 // {test}`requirements.sdk.graph.criteria.output_policy`
+// {test}`requirements.sdk.graph.evidence.recorded_criterion_version`
 #[tokio::test]
 async fn criteria_keep_typed_answers_and_persist_only_when_requested() {
     let domain = Application::default();
@@ -673,6 +686,7 @@ async fn dependency_resolution_failures_do_not_execute_or_replace_saved_answers(
 // {test}`requirements.sdk.graph.evidence.checking_records.version_match`
 // {test}`requirements.sdk.graph.evidence.check_node`
 // {test}`requirements.sdk.graph.criteria.criterion_path`
+// {test}`requirements.sdk.graph.evidence.recorded_criterion_version`
 #[tokio::test]
 async fn wildcard_revision_does_not_supply_other_criteria_or_nodes() {
     let domain = Application::default();
@@ -779,6 +793,7 @@ async fn refresh_reuses_current_positive_negative_and_legacy_answers_without_sav
 
 // {test}`requirements.sdk.graph.evidence.refresh_evidence`
 // {test}`requirements.sdk.graph.evidence.checking_records`
+// {test}`requirements.sdk.graph.evidence.checking_records.version_match`
 #[tokio::test]
 async fn refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace() {
     for cause in ["missing", "revision", "contents", "successors"] {

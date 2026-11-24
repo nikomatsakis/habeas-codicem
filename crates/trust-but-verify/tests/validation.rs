@@ -363,6 +363,12 @@ struct Answer {
 // {test}`requirements.sdk.graph.validation-context.tracked_inspection`
 // {test}`requirements.sdk.graph.validation-context.read_node.behavior`
 // {test}`requirements.sdk.graph.validation-context.read_node.inputs`
+// {test}`requirements.sdk.graph.validation-context.ValidationContext.new`
+// {test}`requirements.sdk.graph.validation-context.ValidationContext.read`
+// {test}`requirements.sdk.graph.validation-context.ValidationContext.read_snapshot`
+// {test}`requirements.sdk.graph.validation-context.ValidationContext.finish`
+// {test}`requirements.sdk.graph.validation-context.ValidationContext.dependencies`
+// {test}`requirements.sdk.graph.validation-context.ValidationContext.graph`
 #[test]
 fn snapshots_record_exact_reads_and_retain_distinct_versions() {
     let graph = Memory::default();
@@ -373,7 +379,12 @@ fn snapshots_record_exact_reads_and_retain_distinct_versions() {
         .contents
         .insert(1, "before".into());
     let inspection = ValidationContext::new(&graph, 1);
+    assert!(std::ptr::eq(inspection.graph(), &graph));
+    assert_eq!(inspection.graph().node_content(&1).unwrap().0, "before");
+    assert!(inspection.dependencies().is_empty());
+    graph.state.lock().unwrap().reads.clear();
     assert_eq!(inspection.read(&1).unwrap().0, "before");
+    let earlier = inspection.dependencies();
     assert_eq!(
         inspection.read_snapshot(&1).unwrap().fingerprint,
         fp("before")
@@ -385,6 +396,7 @@ fn snapshots_record_exact_reads_and_retain_distinct_versions() {
         .contents
         .insert(1, "after".into());
     assert_eq!(inspection.read(&1).unwrap().0, "after");
+    assert_eq!(earlier, [Dependency::Node(1, fp("before"))]);
     assert!(inspection.read(&2).is_err());
     assert_eq!(
         inspection.dependencies(),
@@ -394,6 +406,12 @@ fn snapshots_record_exact_reads_and_retain_distinct_versions() {
         ]
     );
     assert_eq!(graph.state.lock().unwrap().reads, vec![1, 1, 1, 2]);
+    let invalid_json_keys = std::collections::BTreeMap::from([((1, 2), 3)]);
+    assert!(
+        inspection
+            .finish(CriterionVersion::new("v1"), invalid_json_keys)
+            .is_err()
+    );
     let record = inspection
         .finish(
             CriterionVersion::new("v1"),
@@ -404,6 +422,11 @@ fn snapshots_record_exact_reads_and_retain_distinct_versions() {
             },
         )
         .unwrap();
+    assert_eq!(record.version, Some(CriterionVersion::new("v1")));
+    assert_eq!(
+        record.output,
+        json!({"result":true,"rationale":"ok","metadata":null})
+    );
     assert_eq!(
         record.dependencies,
         vec![
@@ -419,6 +442,7 @@ fn snapshots_record_exact_reads_and_retain_distinct_versions() {
 }
 
 // {test}`requirements.sdk.graph.evidence.checking_records`
+// {test}`requirements.sdk.graph.evidence.record.is_current`
 #[test]
 fn a_matching_dependency_does_not_hide_a_later_changed_dependency() {
     for edge_dependency in [false, true] {
@@ -460,6 +484,33 @@ fn a_matching_dependency_does_not_hide_a_later_changed_dependency() {
                 .unwrap()
         );
     }
+}
+
+// {test}`requirements.sdk.graph.evidence.record.is_current`
+#[test]
+fn record_freshness_short_circuits_before_later_graph_reads() {
+    let graph = Memory::default();
+    let version = CriterionVersion::new("v1");
+    let mut record = Record::new(Some(version.clone()), vec![], json!(true));
+    assert_eq!(record.is_current(&graph, &version), Ok(true));
+    record.dependencies = vec![
+        Dependency::Node(1, fp("old")),
+        Dependency::Node(2, fp("later")),
+    ];
+    assert_eq!(
+        record.is_current(&graph, &CriterionVersion::new("v2")),
+        Ok(false)
+    );
+    assert!(graph.state.lock().unwrap().reads.is_empty());
+    assert_eq!(record.is_current(&graph, &version), Err("missing"));
+    {
+        let mut state = graph.state.lock().unwrap();
+        assert_eq!(state.reads, [1]);
+        state.reads.clear();
+        state.contents.insert(1, "changed".into());
+    }
+    assert_eq!(record.is_current(&graph, &version), Ok(false));
+    assert_eq!(graph.state.lock().unwrap().reads, [1]);
 }
 
 // {test}`requirements.sdk.graph.criteria.criterion_version`
@@ -540,6 +591,7 @@ fn wildcard_versions_still_check_inputs_and_errors() {
         ("V42", "v42", false),
         ("v42", "v42", true),
         ("v*", "v42", false),
+        ("v*", "v*", true),
         ("", "v42", false),
         ("*", "anything", true),
     ] {
@@ -557,11 +609,18 @@ fn wildcard_versions_still_check_inputs_and_errors() {
 // {test}`requirements.sdk.graph.validation-context.snapshot`
 // {test}`requirements.sdk.graph.validation-context.outgoing_edges.behavior`
 // {test}`requirements.sdk.graph.validation-context.outgoing_edges.inputs`
+// {test}`requirements.sdk.graph.validation-context.ValidationContext.node_id`
+// {test}`requirements.sdk.graph.validation-context.ValidationContext.successors`
+// {test}`requirements.sdk.graph.validation-context.ValidationContext.outgoing_edges`
 #[test]
 fn labeled_selections_track_only_target_membership_without_reading_contents() {
     let graph = Memory::default();
     let ctx = ValidationContext::new(&graph, 1);
     assert_eq!(ctx.node_id(), &1);
+    let other = ctx.outgoing_edges(&9, 7).unwrap();
+    assert!(other.content.is_empty());
+    assert_eq!(graph.state.lock().unwrap().selections, [9]);
+    graph.state.lock().unwrap().selections.clear();
     assert!(ctx.successors(&7).unwrap().is_empty());
     assert_eq!(graph.state.lock().unwrap().selections, [1]);
     let output = || Assessment {
@@ -647,6 +706,7 @@ fn labeled_selections_track_only_target_membership_without_reading_contents() {
 // {test}`requirements.sdk.graph.evidence.procedure_identity`
 // {test}`requirements.sdk.graph.evidence.inputs`
 // {test}`requirements.sdk.graph.criteria.criterion_trait.version`
+// {test}`requirements.sdk.graph.evidence.checking_records.version_match`
 #[tokio::test]
 async fn caller_reuses_negative_answers_and_compares_revisions_explicitly() {
     let graph = Memory::default();
@@ -805,6 +865,7 @@ async fn dropped_builders_and_missing_agents_do_not_resolve_queued_inputs() {
 // {test}`requirements.sdk.graph.validation-context.root_inputs`
 // {test}`requirements.sdk.graph.agent-calls.Ask`
 // {test}`requirements.sdk.graph.agent-calls.NodePhase`
+// {test}`requirements.sdk.graph.validation-context.ValidationContext.ask`
 #[tokio::test]
 async fn explicit_insertions_preserve_order_repetition_and_selection_snapshots() {
     let graph = Memory::default();
@@ -1512,6 +1573,8 @@ async fn queued_reads_selection_and_rendering_fail_before_agent_invocation() {
 // {test}`requirements.sdk.graph.validation-context.read_node.inputs`
 // {test}`requirements.sdk.graph.evidence.node_inputs`
 // {test}`requirements.sdk.graph.snapshot`
+// {test}`requirements.sdk.graph.validation-context.ValidationContext.read_snapshot`
+// {test}`requirements.sdk.graph.validation-context.ValidationContext.read`
 #[test]
 fn direct_reads_return_complete_unicode_contents_and_snapshots() {
     for original in [

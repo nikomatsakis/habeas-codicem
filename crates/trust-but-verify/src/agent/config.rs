@@ -357,8 +357,15 @@ mod tests {
             json!({"model": "ollama-model"})
         );
 
-        let credentials =
-            BedrockCredentials::new("id".into(), "secret".into()).session_token("token".into());
+        let permanent = BedrockCredentials::new("id".into(), "secret".into());
+        let encoded = json!({"access_key_id":"id", "secret_access_key":"secret"});
+        assert_eq!(serde_json::to_value(&permanent).unwrap(), encoded);
+        assert_eq!(
+            serde_json::from_value::<BedrockCredentials>(encoded).unwrap(),
+            permanent
+        );
+        let credentials = permanent.clone().session_token("token".into());
+        assert_ne!(credentials, permanent);
         let bedrock = bedrock
             .aws_profile("dev".into())
             .region("region".into())
@@ -427,6 +434,7 @@ mod tests {
 
     // {test}`requirements.sdk.graph.agent-harness.agent_config.serialization`
     // {test}`requirements.sdk.graph.agent-harness.SecretString`
+    // {test}`requirements.sdk.graph.agent-harness.agent_config.settings`
     #[test]
     fn configuration_debug_hides_credentials() {
         let secret: SecretString = "an-explicit-secret".into();
@@ -452,8 +460,14 @@ mod tests {
 
     // {test}`requirements.sdk.graph.agent-harness.agent_config`
     // {test}`requirements.sdk.graph.agent-harness.OptionValue`
+    // {test}`requirements.sdk.graph.agent-harness.OpenAiConfig`
+    // {test}`requirements.sdk.graph.agent-harness.OllamaConfig`
+    // {test}`requirements.sdk.graph.agent-harness.agent_config.settings`
     #[test]
     fn option_defaults_and_credential_resolution_are_deterministic() {
+        let ollama = OllamaConfig::new("example".into());
+        assert_eq!(ollama.resolved_endpoint(), "http://localhost:11434");
+        assert_eq!(ollama.resolved_api_key().unwrap(), None);
         let config = OpenAiConfig::default();
         assert_eq!(config.resolved_model(), "gpt-6.1-sol");
         assert_eq!(config.resolved_endpoint(), "https://api.openai.com/v1");

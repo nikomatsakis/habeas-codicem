@@ -171,6 +171,7 @@ mod tests {
 
     // {test}`requirements.sdk.graph.search.first_search.instructions`
     // {test}`requirements.sdk.graph.search.first_search.instructions.content`
+    // {test}`requirements.sdk.graph.search.search_structure.inputs`
     // {test}`requirements.sdk.graph.search.finish_search.behavior`
     // {test}`requirements.sdk.graph.search.finish_search.inputs`
     // {test}`requirements.sdk.graph.search.search_text.inputs`
@@ -254,6 +255,10 @@ mod tests {
             let page: Value = serde_json::from_str(&first.text).unwrap();
             assert_eq!(page["matches"], json!([]));
             assert_eq!(page["instructions"], instructions);
+            assert_eq!(
+                peer.outstanding_searches(),
+                [page["search_id"].as_str().unwrap()]
+            );
             let closed = peer
                 .dispatch(
                     "finish_search",
@@ -333,6 +338,58 @@ mod tests {
         assert_eq!(tools.domain.0.lock().unwrap().reads, 0);
     }
 
+    // {test}`requirements.sdk.graph.search.search_structure.inputs`
+    // {test}`requirements.sdk.graph.search.finish_search.inputs`
+    #[cfg(feature = "default-languages")]
+    #[tokio::test]
+    async fn structural_tags_select_only_the_original_enclosing_item() {
+        let root = tempfile::tempdir().unwrap();
+        let code = root.path().join("code.rs");
+        std::fs::write(&code, "fn one(){call();} fn two(){call();}").unwrap();
+        let domain = project("");
+        let tools = ProjectSources {
+            sources: Sources::new(root.path()),
+            domain: domain.clone(),
+        };
+        let mut session = SessionTools::new(tools.session());
+        let args = json!({"language":"rust","rule":{"rule":{"pattern":"call()"}}});
+        let search = session.dispatch("search_structure", &args).await.unwrap();
+        assert!(search.dependencies.is_empty());
+        let page: Value = serde_json::from_str(&search.text).unwrap();
+        let matches = page["matches"].as_array().unwrap();
+        assert_eq!(matches.len(), 2);
+        let tag = &matches
+            .iter()
+            .find(|m| m["node"]["selector"] == "fn[two]")
+            .unwrap()["tag"];
+        let expected = crate::outline::OutlineContent::from_path(&code)
+            .unwrap()
+            .select("fn[two]")
+            .unwrap()
+            .fingerprint();
+        std::fs::write(&code, "fn two(){changed();}").unwrap();
+        let finish = |used: Value| json!({"search_id":page["search_id"],"used":used});
+        assert!(
+            session
+                .dispatch("finish_search", &finish(json!([])))
+                .await
+                .unwrap()
+                .dependencies
+                .is_empty()
+        );
+        for _ in 0..2 {
+            let selected = session
+                .dispatch("finish_search", &finish(json!([tag])))
+                .await
+                .unwrap();
+            assert_eq!(
+                selected.dependencies,
+                [Dependency::Node("code.rs#fn[two]".into(), expected.clone())]
+            );
+        }
+        assert_eq!(domain.0.lock().unwrap().reads, 0);
+    }
+
     // {test}`requirements.sdk.graph.validation-context.list_sources.mcp`
     // {test}`requirements.sdk.graph.validation-context.pages.behavior`
     // {test}`requirements.sdk.graph.validation-context.list_sources.inputs`
@@ -388,6 +445,7 @@ mod tests {
     // {test}`requirements.sdk.graph.agent-harness.fixed_tools`
     // {test}`requirements.sdk.graph.validation-context.list_sources.mcp`
     // {test}`requirements.sdk.graph.validation-context.outline_source.mcp`
+    // {test}`requirements.sdk.graph.search.search_text.behavior`
     #[tokio::test]
     async fn fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies() {
         let root = tempfile::tempdir().unwrap();
@@ -673,6 +731,7 @@ mod tests {
     // {test}`requirements.sdk.graph.validation-context.read_source.inputs`
     // {test}`requirements.sdk.sources.source_nodes`
     // {test}`requirements.sdk.sources.provider_observations`
+    // {test}`requirements.sdk.graph.validation-context.ValidationContext.read_source`
     #[test]
     fn direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns() {
         let domain = project("prepared contents");

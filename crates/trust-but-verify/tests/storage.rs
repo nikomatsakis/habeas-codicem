@@ -200,6 +200,7 @@ async fn source_and_criterion_boundaries_preserve_independent_records() {
 // {test}`requirements.sdk.graph.evidence.dependencies`
 // {test}`requirements.sdk.graph.fingerprint`
 // {test}`requirements.sdk.filesystem-storage.FileStorageError`
+// {test}`requirements.sdk.filesystem-storage.FileEvidenceStorage`
 #[tokio::test]
 async fn records_round_trip_and_malformed_or_incompatible_data_is_an_error() {
     let temp = tempfile::tempdir().unwrap();
@@ -322,6 +323,7 @@ impl Serialize for BadNode {
 
 // {test}`requirements.sdk.filesystem-storage.store`
 // {test}`requirements.sdk.filesystem-storage.FileStorageError`
+// {test}`requirements.sdk.filesystem-storage.FileEvidenceStorage`
 #[tokio::test]
 async fn failed_serialization_preserves_records_and_failed_replacement_cleans_up() {
     let temp = tempfile::tempdir().unwrap();
