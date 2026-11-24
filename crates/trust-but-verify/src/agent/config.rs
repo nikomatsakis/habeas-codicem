@@ -413,6 +413,7 @@ mod tests {
     // {test}`requirements.sdk.graph.agent-harness.OpenAiConfig`
     // {test}`requirements.sdk.graph.agent-harness.OllamaConfig`
     // {test}`requirements.sdk.graph.agent-harness.OptionValue`
+    // {test}`requirements.sdk.graph.agent-harness.agent_config.settings`
     #[test]
     fn all_backends_preserve_nested_settings_and_credentials() {
         for value in [
@@ -469,6 +470,38 @@ mod tests {
         let ollama = OllamaConfig::new("example".into());
         assert_eq!(ollama.resolved_endpoint(), "http://localhost:11434");
         assert_eq!(ollama.resolved_api_key().unwrap(), None);
+        let env_name = "TBV_TEST_ABSENT_BACKEND_KEY";
+        let ollama = ollama.api_key_env(env_name.into());
+        let openai = OpenAiConfig::new().api_key_env(env_name.into());
+        assert!(
+            ollama
+                .resolved_api_key()
+                .unwrap_err()
+                .to_string()
+                .contains(env_name)
+        );
+        assert!(
+            openai
+                .resolved_api_key()
+                .unwrap_err()
+                .to_string()
+                .contains(env_name)
+        );
+        assert_eq!(
+            ollama
+                .api_key("explicit".into())
+                .resolved_api_key()
+                .unwrap()
+                .as_deref(),
+            Some("explicit")
+        );
+        assert_eq!(
+            openai
+                .api_key("explicit".into())
+                .resolved_api_key()
+                .unwrap(),
+            "explicit"
+        );
         let config = OpenAiConfig::default();
         assert_eq!(config.resolved_model(), "gpt-6.1-sol");
         assert_eq!(config.resolved_endpoint(), "https://api.openai.com/v1");

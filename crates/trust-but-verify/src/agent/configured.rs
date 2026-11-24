@@ -233,13 +233,11 @@ mod tests {
     // {test}`requirements.sdk.graph.agent-harness.with_agent`
     #[tokio::test]
     async fn bedrock_configuration_attaches_to_a_validator_without_being_persisted() {
-        let config = AgentConfig::Bedrock(super::super::BedrockConfig {
-            model: "us.anthropic.claude-sonnet-5-5".into(),
-            aws_profile: Some("development".into()),
-            region: Some("us-east-1".into()),
-            credentials: None,
-            options: Default::default(),
-        });
+        let config = AgentConfig::Bedrock(
+            super::super::BedrockConfig::new("us.anthropic.claude-sonnet-5-5".into())
+                .aws_profile("development".into())
+                .region("us-east-1".into()),
+        );
         let domain = TestDomain::default();
         let validator = Validator::new(domain.clone()).with_agent(config);
         let verified = validator.refresh_evidence(Question(false)).await.unwrap();
@@ -257,6 +255,7 @@ mod tests {
     // {test}`requirements.sdk.graph.agent-harness.submission.mcp`
     // {test}`requirements.sdk.graph.agent-harness.submission.acceptance`
     // {test}`requirements.sdk.graph.agent-harness.fixed_tools`
+    // {test}`requirements.sdk.graph.agent-harness.OpenAiConfig`
     #[tokio::test]
     async fn supplied_openai_backend_runs_independent_calls_against_a_local_transport() {
         use std::{
@@ -397,6 +396,7 @@ mod tests {
     // {test}`requirements.sdk.graph.agent-harness.with_agent`
     // {test}`requirements.sdk.graph.agent-harness.submission`
     // {test}`requirements.sdk.graph.agent-harness.submission.mcp`
+    // {test}`requirements.sdk.graph.agent-harness.OllamaConfig`
     #[tokio::test]
     async fn supplied_ollama_backend_delivers_tools_and_results_over_native_chat() {
         use std::{
