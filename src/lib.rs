@@ -25,7 +25,6 @@ mod outline {
     pub(crate) use trust_but_verify::outline_engine::comment_ranges;
     pub(crate) use trust_but_verify::outline_engine::parse;
     pub(crate) use trust_but_verify::outline_engine::parse_redacted;
-    pub(crate) use trust_but_verify::outline_engine::parse_with;
     pub(crate) use trust_but_verify::outline_engine::profile::profile_for_path;
 
     pub(crate) fn uses_language(
@@ -47,6 +46,7 @@ mod outline {
     }
 }
 mod evidence_format;
+mod outline_items;
 mod redaction;
 mod refactor;
 mod rust_coverage;

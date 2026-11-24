@@ -57,6 +57,9 @@ pub(crate) struct ParsedSource {
     /// lines as `source`.
     pub(crate) redacted: String,
     pub(crate) outline: Outline,
+    /// Public spans and attachments share the redacted outline's item preorder.
+    /// Both parses use the original bytes. Only their hash inputs can differ.
+    pub(crate) items: crate::outline_items::OutlineItems,
 }
 
 #[cfg(test)]
@@ -73,6 +76,7 @@ mod ownership_tests {
             path: PathBuf::from("a.md"),
             source: source.to_owned(),
             redacted: source.to_owned(),
+            items: crate::outline_items::for_file(Path::new("a.md"), source).unwrap(),
             outline: outline::parse(Path::new("a.md"), source).unwrap(),
         };
         let ordinary = parsed.reference_owner_at_line(2);
@@ -92,6 +96,7 @@ mod ownership_tests {
             path: PathBuf::from("a.rs"),
             source: rust.to_owned(),
             redacted: rust.to_owned(),
+            items: crate::outline_items::for_file(Path::new("a.rs"), rust).unwrap(),
             outline: outline::parse(Path::new("a.rs"), rust).unwrap(),
         };
         assert_eq!(
@@ -222,6 +227,7 @@ impl OutlineCache {
                     format!("{file}: cannot parse {} source: {error}", profile.name)
                 })?;
             Ok(ParsedSource {
+                items: crate::outline_items::for_file(&path, &source)?,
                 redacted: redaction.apply(&source).into_owned(),
                 path: fs::canonicalize(&path).unwrap_or(path),
                 source,
@@ -304,7 +310,13 @@ impl ParsedSource {
     /// the innermost paragraph.
     // {impl}`requirements.references.outline_comments`
     pub(crate) fn reference_owner_at_line(&self, line: usize) -> usize {
-        let owner = self.outline.owner_at_line(line);
+        let owner = self
+            .items
+            .comments
+            .iter()
+            .find(|comment| comment.lines.contains(&line))
+            .map(|comment| comment.owner)
+            .unwrap_or_else(|| self.outline.owner_at_line(line));
         if self.outline.profile.name != "markdown" {
             return owner;
         }

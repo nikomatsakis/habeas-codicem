@@ -73,17 +73,13 @@ impl OutlineNode {
 /// One comment and the outline node it belongs to.
 #[derive(Clone, Debug)]
 // {impl}`requirements.references.outline_comments`
-#[doc(hidden)]
-pub struct OutlineComment {
+pub(crate) struct OutlineComment {
     pub byte_start: usize,
     pub byte_end: usize,
     pub line_start: usize,
     pub line_end: usize,
     /// Index of the owning node in [`LegacyOutline::nodes`].
     pub owner: usize,
-    /// Index of the comment run containing this comment; comments of one run
-    /// share it, and runs are numbered in source order.
-    pub run: usize,
 }
 
 /// A parsed outline.
@@ -95,7 +91,7 @@ pub struct LegacyOutline {
     /// Nodes in source pre-order; index 0 is the root.
     pub nodes: Vec<OutlineNode>,
     /// Comments in source order.
-    pub comments: Vec<OutlineComment>,
+    pub(crate) comments: Vec<OutlineComment>,
     pub(crate) annotations: Vec<(usize, std::ops::Range<usize>)>,
 }
 
@@ -133,8 +129,10 @@ pub fn parse(path: &std::path::Path, source: &str) -> Result<LegacyOutline, Outl
 /// Parses a source with a given profile, redacting by `secretshape` rules.
 // {impl}`requirements.references.outlines`
 // {impl}`requirements.authoring.redaction`
-#[doc(hidden)]
-pub fn parse_with(profile: &'static Profile, source: &str) -> Result<LegacyOutline, OutlineError> {
+pub(crate) fn parse_with(
+    profile: &'static Profile,
+    source: &str,
+) -> Result<LegacyOutline, OutlineError> {
     parse_redacted(profile, source, &Redaction::of_text(source))
 }
 
@@ -756,12 +754,6 @@ fn assign_comments(
         .map(|node| (node.line_start, node.line_end))
         .collect::<Vec<_>>();
     let mut owners = vec![0; drafts.len()];
-    let mut run_of = vec![0; drafts.len()];
-    for (run_index, run) in runs.iter().enumerate() {
-        for index in run {
-            run_of[*index] = run_index;
-        }
-    }
     for run in &runs {
         let first = &drafts[run[0]];
         let last = &drafts[*run.last().expect("nonempty run")];
@@ -787,8 +779,7 @@ fn assign_comments(
     drafts
         .into_iter()
         .zip(owners)
-        .zip(run_of)
-        .map(|((comment, owner), run)| {
+        .map(|(comment, owner)| {
             let (line_start, line_end) = lines.range(comment.byte_start, comment.byte_end);
             OutlineComment {
                 byte_start: comment.byte_start,
@@ -796,7 +787,6 @@ fn assign_comments(
                 line_start,
                 line_end,
                 owner,
-                run,
             }
         })
         .collect()
@@ -923,7 +913,7 @@ impl LegacyOutline {
 
     /// The owners of comments touching a line.
     // {cite}`habeas:util`
-    pub fn comment_owners_at_line(&self, line: usize) -> Vec<usize> {
+    fn comment_owners_at_line(&self, line: usize) -> Vec<usize> {
         let mut owners = self
             .comments
             .iter()

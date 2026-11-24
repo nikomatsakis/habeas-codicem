@@ -316,9 +316,9 @@ fn rewrite_source(mappings: &Mappings, path: &Path, content: &str) -> (String, u
     let mut edits = Vec::new();
     // Only roles that count as references are rewritten; a role in a string
     // literal is literal text.
-    let contexts = crate::evidence::reference_contexts(path, content);
+    let contexts = crate::evidence::ReferenceContexts::parse(path, content);
     for role in crate::reference_roles(content, markdown) {
-        if !crate::evidence::in_reference_context(contexts.as_deref(), role.start) {
+        if !contexts.allows(role.start) {
             continue;
         }
         if !matches!(
@@ -339,7 +339,7 @@ fn rewrite_source(mappings: &Mappings, path: &Path, content: &str) -> (String, u
     let line_starts = std::iter::once(0)
         .chain(content.match_indices('\n').map(|(index, _)| index + 1))
         .collect::<Vec<_>>();
-    for fence in crate::fenced::source_fences(path, content) {
+    for fence in contexts.fences(content) {
         let Some(new) = mappings.name(&fence.name) else {
             continue;
         };

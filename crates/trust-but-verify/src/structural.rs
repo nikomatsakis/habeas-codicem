@@ -207,7 +207,11 @@ fn error_chain(error: &dyn std::error::Error) -> String {
 /// outline was parsed from. A match within a comment belongs to the
 /// comment's owner; a node contains the lines attached before it.
 // {impl}`requirements.references.outline_comments`
-pub fn innermost_node(outline: &LegacyOutline, _source: &str, range: &Range<usize>) -> usize {
+pub(crate) fn innermost_node(
+    outline: &LegacyOutline,
+    _source: &str,
+    range: &Range<usize>,
+) -> usize {
     if let Some(comment) = outline
         .comments
         .iter()

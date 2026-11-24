@@ -110,12 +110,12 @@ fn diagnostic(content: &mut String, error: &str) {
 
 pub(super) fn doc_comments(parsed: &ParsedSource, owner: usize) -> String {
     parsed
-        .outline
+        .items
         .comments
         .iter()
         .filter(|comment| comment.owner == owner)
         .filter_map(|comment| {
-            let text = &parsed.source[comment.byte_start..comment.byte_end];
+            let text = &parsed.source[comment.span.clone()];
             if let Some(text) = text
                 .strip_prefix("///")
                 .or_else(|| text.strip_prefix("//!"))

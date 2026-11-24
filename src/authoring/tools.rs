@@ -722,11 +722,7 @@ fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<
                     |found| {
                         let range = (line_offsets[line - 1] + found.start())
                             ..(line_offsets[line - 1] + found.end());
-                        let index = crate::structural::innermost_node(
-                            &parsed.outline,
-                            &parsed.source,
-                            &range,
-                        );
+                        let index = parsed.items.owner(&range);
                         nodes.add(index, line..=line, start..=end);
                         true
                     },
@@ -796,13 +792,13 @@ impl SearchNodes {
                 let mut first = node.source_start;
                 let mut last = node.byte_end;
                 for comment in parsed
-                    .outline
+                    .items
                     .comments
                     .iter()
                     .filter(|comment| comment.owner == index)
                 {
-                    first = first.min(comment.byte_start);
-                    last = last.max(comment.byte_end);
+                    first = first.min(comment.span.start);
+                    last = last.max(comment.span.end);
                 }
                 let lines = matched.union(&around);
                 let mut shown_lines = Vec::new();
@@ -1181,7 +1177,7 @@ fn structural(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
             {
                 continue;
             }
-            let index = crate::structural::innermost_node(&parsed.outline, &text, &range);
+            let index = parsed.items.owner(&range);
             nodes.add(index, first..=last, first..=last);
         }
         entries.extend(nodes.entries(&file, parsed));

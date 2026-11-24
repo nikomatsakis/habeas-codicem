@@ -2002,31 +2002,61 @@ pub(crate) fn collect_references_with_progress(
     references
 }
 
-/// The inline and fenced references in one text file, in line order.
-/// Where roles count as references in a file's content: the byte ranges of
-/// its comments when it has a language outline, or `None` where roles count
-/// anywhere: Markdown, which has its own rules, and plain text. Syntax errors
-/// do not expand the grammar's comment ranges.
+/// The source regions in which inline and fenced references can occur.
 // {impl}`requirements.references.reference_contexts`
-pub(crate) fn reference_contexts(
-    file: &Path,
-    content: &str,
-) -> Option<Vec<std::ops::Range<usize>>> {
-    if crate::outline::is_markdown_path(file) {
-        return None;
-    }
-    let profile = crate::outline::profile_for_path(file);
-    profile.language?;
-    crate::outline::comment_ranges(profile, content).ok()
+pub(crate) enum ReferenceContexts {
+    Text {
+        markdown: bool,
+    },
+    Parsed {
+        items: crate::outline_items::OutlineItems,
+        rust: bool,
+    },
+    Recovered(Vec<std::ops::Range<usize>>),
 }
 
-/// Whether a role at byte `start` counts under [`reference_contexts`].
-// {impl}`requirements.references.reference_contexts`
-pub(crate) fn in_reference_context(
-    contexts: Option<&[std::ops::Range<usize>]>,
-    start: usize,
-) -> bool {
-    contexts.is_none_or(|ranges| ranges.iter().any(|range| range.contains(&start)))
+impl ReferenceContexts {
+    pub(crate) fn parse(file: &Path, content: &str) -> Self {
+        let profile = crate::outline::profile_for_path(file);
+        if profile.language.is_none() || profile.name == "markdown" {
+            return Self::Text {
+                markdown: profile.name == "markdown",
+            };
+        }
+        match crate::outline_items::for_file(file, content) {
+            Ok(items) => Self::Parsed {
+                items,
+                rust: profile.name == "rust",
+            },
+            // Invalid source has no public outline. Preserve grammar recovery
+            // for inline references in intact comments around a syntax error.
+            Err(_) => Self::Recovered(
+                crate::outline::comment_ranges(profile, content).unwrap_or_default(),
+            ),
+        }
+    }
+
+    pub(crate) fn allows(&self, byte: usize) -> bool {
+        match self {
+            Self::Text { .. } => true,
+            Self::Parsed { items, .. } => items
+                .comments
+                .iter()
+                .any(|comment| comment.span.contains(&byte)),
+            Self::Recovered(ranges) => ranges.iter().any(|range| range.contains(&byte)),
+        }
+    }
+
+    pub(crate) fn fences(&self, content: &str) -> Vec<crate::fenced::SourceFence> {
+        if !content.contains(":::") {
+            return Vec::new();
+        }
+        match self {
+            Self::Text { markdown } => crate::fenced::text_fences(content, *markdown),
+            Self::Parsed { items, rust } => crate::fenced::comment_fences(content, items, *rust),
+            Self::Recovered(_) => Vec::new(),
+        }
+    }
 }
 
 // {impl}`requirements.references.reference_contexts`
@@ -2034,18 +2064,17 @@ fn file_references(file: &Path, content: &str, in_book: bool) -> Vec<SourceRefer
     let markdown = crate::outline::is_markdown_path(file);
     let mut references = Vec::new();
     let roles = reference_roles(content, markdown);
-    let contexts = if roles.is_empty() {
-        None
-    } else {
-        reference_contexts(file, content)
-    };
+    if roles.is_empty() && !content.contains(":::") {
+        return references;
+    }
+    let contexts = ReferenceContexts::parse(file, content);
     let declarations = if markdown {
         declaration_line_ranges(content)
     } else {
         Vec::new()
     };
     for role in roles {
-        if !in_reference_context(contexts.as_deref(), role.start) {
+        if !contexts.allows(role.start) {
             continue;
         }
         let line = content[..role.start]
@@ -2066,7 +2095,7 @@ fn file_references(file: &Path, content: &str, in_book: bool) -> Vec<SourceRefer
                 .any(|&(start, end)| start < line && line < end),
         });
     }
-    let fences = crate::fenced::source_fences(file, content);
+    let fences = contexts.fences(content);
     for fence in fences {
         references.push(SourceReference {
             in_declaration: declarations

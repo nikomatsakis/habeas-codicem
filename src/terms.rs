@@ -124,7 +124,17 @@ fn direct_references(
                         trust_but_verify::outline::languages::Rust,
                     ) =>
                 {
-                    for range in crate::rust_coverage::comments(&text) {
+                    // Selected evidence may be an incomplete Rust fragment. Keep the
+                    // existing lexical recovery for fragments the outline rejects.
+                    let ranges = match crate::outline_items::for_file(Path::new(&file), &text) {
+                        Ok(items) => items
+                            .comments
+                            .into_iter()
+                            .map(|comment| comment.span)
+                            .collect(),
+                        Err(_) => crate::rust_coverage::comments(&text),
+                    };
+                    for range in ranges {
                         referenced_terms(&text[range], false, &mut pending);
                     }
                 }
@@ -132,13 +142,12 @@ fn direct_references(
                 // {impl}`requirements.references.reference_contexts`
                 InputSelector::Outline { file, .. } => {
                     let markdown = crate::outline::is_markdown_path(Path::new(&file));
-                    match crate::evidence::reference_contexts(Path::new(&file), &text) {
-                        Some(ranges) => {
-                            for range in ranges {
-                                referenced_terms(&text[range], markdown, &mut pending);
-                            }
+                    let contexts =
+                        crate::evidence::ReferenceContexts::parse(Path::new(&file), &text);
+                    for role in reference_roles(&text, markdown) {
+                        if role.kind == ReferenceKind::Term && contexts.allows(role.start) {
+                            pending.insert(role.name.to_owned());
                         }
-                        None => referenced_terms(&text, markdown, &mut pending),
                     }
                 }
                 InputSelector::Requirements { .. } => {

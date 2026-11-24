@@ -5,7 +5,7 @@
 
 use std::ops::Range;
 
-use crate::outline::Outline;
+use crate::outline_items::{Comment, OutlineItems};
 use crate::{ReferenceKind, colon_fence, overlaps_protected, protected_ranges};
 
 /// One line in which fences may be recognized, with its one-based source line.
@@ -210,28 +210,37 @@ pub(crate) fn strip_comment_delimiters(line: &str) -> &str {
 
 /// Fenced references in the comment runs of a parsed source. Each fence must
 /// open and close within one run.
-pub(crate) fn comment_fences(source: &str, outline: &Outline) -> Vec<SourceFence> {
+pub(crate) fn comment_fences(source: &str, outline: &OutlineItems, rust: bool) -> Vec<SourceFence> {
     let mut fences = Vec::new();
-    let mut start = 0;
-    while start < outline.comments.len() {
-        let run = outline.comments[start].run;
-        let end = (start..outline.comments.len())
-            .find(|&index| outline.comments[index].run != run)
-            .unwrap_or(outline.comments.len());
+    let trailing = |comment: &Comment| {
+        source[..comment.span.start]
+            .rsplit('\n')
+            .next()
+            .is_some_and(|prefix| !prefix.trim().is_empty())
+    };
+    let inner_doc = |comment: &Comment| {
+        rust && (source[comment.span.clone()].starts_with("//!")
+            || source[comment.span.clone()].starts_with("/*!"))
+    };
+    for run in outline.comments.chunk_by(|left, right| {
+        left.owner == right.owner
+            && right.lines.start() <= &(left.lines.end() + 1)
+            && !trailing(left)
+            && !trailing(right)
+            && inner_doc(left) == inner_doc(right)
+            && source[left.span.end..right.span.start].trim().is_empty()
+    }) {
         let mut lines = Vec::new();
-        for comment in &outline.comments[start..end] {
-            let text = source
-                .get(comment.byte_start..comment.byte_end)
-                .unwrap_or("");
-            for (offset, line) in text.lines().enumerate() {
+        for comment in run {
+            for (offset, line) in source[comment.span.clone()].lines().enumerate() {
                 lines.push(FenceLine {
                     text: strip_comment_delimiters(line.strip_suffix('\r').unwrap_or(line)),
-                    line: comment.line_start + offset,
+                    line: comment.lines.start() + offset,
                     protected: false,
                 });
             }
         }
-        let owner = outline.comments[start].owner;
+        let owner = run[0].owner;
         for fence in find_fences(&lines) {
             fences.push(SourceFence {
                 body: body(&lines, &fence),
@@ -242,7 +251,6 @@ pub(crate) fn comment_fences(source: &str, outline: &Outline) -> Vec<SourceFence
                 owner: Some(owner),
             });
         }
-        start = end;
     }
     fences
 }
@@ -261,27 +269,6 @@ pub(crate) fn text_fences(content: &str, markdown: bool) -> Vec<SourceFence> {
             owner: None,
         })
         .collect()
-}
-
-/// Fenced references in a source file: in Markdown text, in every line of a
-/// plain-text file, or in the comment runs of another supported language. A
-/// source its grammar cannot parse has no recognized fences; its parse
-/// failure is reported by the checks that outline it.
-// {impl}`requirements.references.roles`
-pub(crate) fn source_fences(path: &std::path::Path, content: &str) -> Vec<SourceFence> {
-    if !content.contains(":::") {
-        return Vec::new();
-    }
-    if crate::outline::is_markdown_path(path) {
-        return text_fences(content, true);
-    }
-    let profile = crate::outline::profile_for_path(path);
-    if profile.language.is_none() {
-        return text_fences(content, false);
-    }
-    crate::outline::parse_with(profile, content)
-        .map(|outline| comment_fences(content, &outline))
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -390,13 +377,32 @@ mod tests {
         assert_eq!(strip_comment_delimiters("<!-- ::: -->"), " ::: ");
     }
 
+    // {test}`requirements.references.outline_comments`
+    #[test]
+    fn distinct_runs_with_the_same_owner_do_not_close_each_others_fences() {
+        // A change from inner docs to an ordinary comment, or a trailing
+        // opener, ends the run even when adjacent comments share an owner.
+        for source in [
+            "//! :::{cite} habeas:util\n// :::\n",
+            "fn f() { let a = (); // :::{cite} habeas:util\n// :::\n}\n",
+        ] {
+            let contexts =
+                crate::evidence::ReferenceContexts::parse(std::path::Path::new("lib.rs"), source);
+            let fences = contexts.fences(source);
+            assert_eq!(fences.len(), 1);
+            assert!(!fences[0].closed);
+        }
+    }
+
     // {test}`requirements.references.roles`
     // {test}`requirements.references.outline_comments`
     #[test]
     fn comment_fences_close_within_one_comment_run() {
         let source = "// :::{cite} habeas:util\n// Exists for its caller.\n// :::\nfn a() {}\n\n// :::{cite} habeas:util\n// never closed here\n\n// :::\nfn b() {}\n/*\n * :::{impl} requirements.ready\n * Checks it.\n * :::\n */\nfn c() {}\n".to_owned();
         let outline = crate::outline::parse(std::path::Path::new("lib.rs"), &source).unwrap();
-        let fences = comment_fences(&source, &outline);
+        let fences =
+            crate::evidence::ReferenceContexts::parse(std::path::Path::new("lib.rs"), &source)
+                .fences(&source);
         assert_eq!(fences.len(), 3, "{fences:?}");
         assert_eq!(fences[0].body, "Exists for its caller.");
         assert!(fences[0].closed);

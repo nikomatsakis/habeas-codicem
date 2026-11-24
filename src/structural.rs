@@ -1,7 +1,7 @@
 //! Distributed requirement queries built on the SDK structural search engine.
 use crate::evidence::Declaration;
 use crate::inputs::OutlineCache;
-use crate::outline::Outline;
+use crate::outline_items::OutlineItems;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -10,7 +10,6 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 pub(crate) use trust_but_verify::structural::QueryLanguage;
 pub(crate) use trust_but_verify::structural::StructuralRule;
-pub(crate) use trust_but_verify::structural::innermost_node;
 
 // {impl}`requirements.references.distributed`
 /// Which directive declares a query.
@@ -310,8 +309,7 @@ pub(crate) fn query_matches(
         });
         let line_of = |byte: usize| text[..byte].matches('\n').count() + 1;
         for range in ranges {
-            let Some(index) = owning_site(&parsed.outline, &text, &range, within_nodes.as_deref())
-            else {
+            let Some(index) = owning_site(&parsed.items, &range, within_nodes.as_deref()) else {
                 continue;
             };
             found.push(QueryMatch {
@@ -351,17 +349,16 @@ pub(crate) fn within_query<'a>(
 /// The site a match belongs to: the innermost outline node containing it,
 /// or, with `within`, the innermost of those nodes containing it.
 fn owning_site(
-    outline: &Outline,
-    source: &str,
+    outline: &OutlineItems,
     range: &Range<usize>,
     within: Option<&[usize]>,
 ) -> Option<usize> {
-    let mut node = Some(innermost_node(outline, source, range));
+    let mut node = Some(outline.owner(range));
     if let Some(within) = within {
         while let Some(index) = node
             && !within.contains(&index)
         {
-            node = outline.nodes[index].parent;
+            node = outline.parent(index);
         }
     }
     node
@@ -376,7 +373,8 @@ pub(crate) fn snippet_matches(
     snippet: &str,
 ) -> Result<usize, String> {
     let rule = StructuralRule::compile(&query.body.language, &query.body.rule_core())?;
-    let outline = crate::outline::parse_with(rule.language().profile, snippet)
+    let filename = format!("snippet.{}", rule.language().profile.extensions[0]);
+    let outline = crate::outline_items::for_file(Path::new(&filename), snippet)
         .map_err(|error| format!("does not parse as {}: {error}", query.body.language))?;
     let within = match within_query(queries, query)? {
         None => None,
@@ -387,7 +385,7 @@ pub(crate) fn snippet_matches(
                 site_rule
                     .matches(snippet)
                     .iter()
-                    .map(|range| innermost_node(&outline, snippet, range))
+                    .map(|range| outline.owner(range))
                     .collect::<Vec<_>>(),
             )
         }
@@ -395,7 +393,7 @@ pub(crate) fn snippet_matches(
     Ok(rule
         .matches(snippet)
         .iter()
-        .filter(|range| owning_site(&outline, snippet, range, within.as_deref()).is_some())
+        .filter(|range| owning_site(&outline, range, within.as_deref()).is_some())
         .count())
 }
 
