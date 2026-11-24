@@ -14,15 +14,26 @@ use trust_but_verify::graph::Fingerprint;
 use trust_but_verify::graph::NodePath;
 #[cfg(test)]
 use trust_but_verify::request::ValidationContext;
-use trust_but_verify::resource::OutlineId;
-use trust_but_verify::resource::ResourceId;
+
+/// Source address as stored in Habeas evidence records.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct OutlineId {
+    pub resource: ResourceId,
+    pub selector: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ResourceId {
+    pub scheme: String,
+    pub location: String,
+}
 
 // {cite}`habeas:util`
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct RequirementId(pub String);
 
 // {cite}`habeas:util`
-/// Habeas node identities use the SDK's common outline address for sources.
+/// Habeas node identities preserve the source address stored in existing evidence.
 // :::{fixme} requirements.sdk.habeas.github_nodes
 // :github: nikomatsakis/habeas-codicem#26
 // GitHub issue graph nodes are deferred. Stable owner/repository/number identity

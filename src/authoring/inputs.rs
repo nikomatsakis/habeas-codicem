@@ -59,7 +59,7 @@ pub(crate) struct AssessmentSources {
     issue_states: Vec<Vec<(String, &'static str)>>,
     /// GitHub reads for the `github` tool and the states above.
     pub(crate) github: GithubIssues,
-    recorded: trust_but_verify::graph::Trace<Value>,
+    recorded: Vec<Value>,
 }
 
 impl AssessmentSources {
@@ -327,7 +327,7 @@ impl AssessmentSources {
             mandatory,
             issue_states,
             github,
-            recorded: trust_but_verify::graph::Trace::default(),
+            recorded: Vec::new(),
         })
     }
 
@@ -424,7 +424,7 @@ impl AssessmentSources {
             mandatory,
             issue_states,
             github,
-            recorded: trust_but_verify::graph::Trace::default(),
+            recorded: Vec::new(),
         })
     }
 
@@ -543,7 +543,7 @@ impl AssessmentSources {
             mandatory,
             issue_states,
             github,
-            recorded: trust_but_verify::graph::Trace::default(),
+            recorded: Vec::new(),
         })
     }
 
@@ -600,7 +600,7 @@ impl AssessmentSources {
     /// selector, and hash.
     // {impl}`requirements.authoring.delivered_inputs`
     pub(crate) fn recorded_inputs(&self) -> &[Value] {
-        self.recorded.observations()
+        &self.recorded
     }
 
     // {impl}`requirements.authoring.delivered_inputs`
@@ -610,7 +610,9 @@ impl AssessmentSources {
         // evidence input form.
         for input in inputs.iter().filter(|input| input.get("builtin").is_none()) {
             let input = recorded_input(input);
-            self.recorded.observe(input);
+            if !self.recorded.contains(&input) {
+                self.recorded.push(input);
+            }
         }
     }
 
@@ -705,9 +707,7 @@ impl AssessmentSources {
                     None,
                 )?
                 .into_iter()
-                .filter(|definition| {
-                    definition != input && !self.recorded.observations().contains(definition)
-                })
+                .filter(|definition| definition != input && !self.recorded.contains(definition))
                 .collect())
             })
             .collect()
@@ -724,7 +724,7 @@ impl AssessmentSources {
             None,
         )?
         .into_iter()
-        .filter(|input| !inputs.contains(input) && !self.recorded.observations().contains(input))
+        .filter(|input| !inputs.contains(input) && !self.recorded.contains(input))
         .collect())
     }
 }

@@ -119,7 +119,10 @@ fn direct_references(
                 }
                 // {impl}`requirements.references.reference_contexts`
                 InputSelector::Outline { file, .. }
-                    if crate::outline::profile_for_path(Path::new(&file)).name == "rust" =>
+                    if crate::outline::uses_language(
+                        Path::new(&file),
+                        trust_but_verify::outline::languages::Rust,
+                    ) =>
                 {
                     for range in crate::rust_coverage::comments(&text) {
                         referenced_terms(&text[range], false, &mut pending);

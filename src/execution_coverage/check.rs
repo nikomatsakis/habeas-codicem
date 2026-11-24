@@ -481,7 +481,7 @@ mod tests {
     // {cite}`habeas:util`
     fn process(root: &Path, lines: &[(u32, u64)], count: u64) -> Process {
         let source = fs::read_to_string(root.join("code.rs")).unwrap();
-        let parsed = crate::outline::parse_with(&crate::outline::RUST_PROFILE, &source).unwrap();
+        let parsed = crate::outline::parse(Path::new("code.rs"), &source).unwrap();
         Process {
             pid: 1,
             profiles: vec!["profile.profraw".into()],
@@ -981,8 +981,8 @@ mod tests {
             result.text
         );
         assert!(!result.text.contains("fn[declaration]"));
-        let parsed = crate::outline::parse_with(
-            &crate::outline::RUST_PROFILE,
+        let parsed = crate::outline::parse(
+            Path::new("fixture.rs"),
             "struct S;\ntrait T { fn declaration(); }\n",
         )
         .unwrap();
@@ -991,13 +991,10 @@ mod tests {
                 .unwrap()
                 .1
         );
-        let parsed =
-            crate::outline::parse_with(&crate::outline::RUST_PROFILE, "make_functions!();")
-                .unwrap();
+        let parsed = crate::outline::parse(Path::new("fixture.rs"), "make_functions!();").unwrap();
         assert!(!inventory("make_functions!();", &parsed).unwrap().1);
         let parsed =
-            crate::outline::parse_with(&crate::outline::RUST_PROFILE, "#[derive(Clone)] struct S;")
-                .unwrap();
+            crate::outline::parse(Path::new("fixture.rs"), "#[derive(Clone)] struct S;").unwrap();
         assert!(!inventory("#[derive(Clone)] struct S;", &parsed).unwrap().1);
     }
 

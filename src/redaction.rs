@@ -1,10 +1,19 @@
-use std::{fs, ops::Range, path::Path};
+use std::{borrow::Cow, fs, ops::Range, path::Path};
 
 use toml_edit::{Item, Value};
 use trust_but_verify::redaction::Redaction as SourceRedaction;
 use trust_but_verify::redaction::Region;
-pub(crate) use trust_but_verify::redaction::redact_lines;
 pub(crate) use trust_but_verify::redaction::redact_text;
+
+/// Redacts each line of a line list as one text, keeping the line count.
+// {cite}`habeas:util`
+pub(crate) fn redact_lines(lines: &[String]) -> Vec<String> {
+    let text = lines.join("\n");
+    match redact_text(&text) {
+        Cow::Borrowed(_) => lines.to_vec(),
+        Cow::Owned(text) => text.split('\n').map(str::to_owned).collect(),
+    }
+}
 
 /// HC's configuration recognition layered on the SDK's fixed secret rules.
 #[derive(Clone, Debug, Default)]

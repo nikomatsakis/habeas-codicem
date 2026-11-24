@@ -20,15 +20,31 @@ mod index;
 mod inputs;
 pub mod judgment;
 mod outline {
-    pub(crate) use trust_but_verify::outline::languages::rust::PROFILE as RUST_PROFILE;
     pub(crate) use trust_but_verify::outline_engine::LegacyOutline as Outline;
     pub(crate) use trust_but_verify::outline_engine::ResolveError;
     pub(crate) use trust_but_verify::outline_engine::comment_ranges;
     pub(crate) use trust_but_verify::outline_engine::parse;
     pub(crate) use trust_but_verify::outline_engine::parse_redacted;
     pub(crate) use trust_but_verify::outline_engine::parse_with;
-    pub(crate) use trust_but_verify::outline_engine::profile::is_markdown_path;
     pub(crate) use trust_but_verify::outline_engine::profile::profile_for_path;
+
+    pub(crate) fn uses_language(
+        path: &std::path::Path,
+        language: impl trust_but_verify::outline::OutlineLang,
+    ) -> bool {
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| {
+                language
+                    .extensions()
+                    .iter()
+                    .any(|candidate| ext.eq_ignore_ascii_case(candidate))
+            })
+    }
+
+    pub(crate) fn is_markdown_path(path: &std::path::Path) -> bool {
+        uses_language(path, trust_but_verify::outline::languages::Markdown)
+    }
 }
 mod evidence_format;
 mod redaction;
@@ -408,12 +424,14 @@ fn omit_fenced_citation_paragraphs(
     namespace: &str,
     definitions: &BTreeMap<String, Definition>,
 ) -> String {
+    use trust_but_verify::outline::{OutlineLang, languages::Markdown};
+
     if !content.contains("{cite}`") || !content.contains(":::") {
         return content.to_owned();
     }
     // Reuse the SDK's Markdown grammar for nesting, literal contexts, and
     // unclosed containers instead of recognizing another set of fence rules.
-    let Ok(outline) = outline::parse(Path::new("chapter.md"), content) else {
+    let Ok(outline) = Markdown.outline(content) else {
         return content.to_owned();
     };
     let blocks = definition_blocks(content);
@@ -445,11 +463,11 @@ fn omit_fenced_citation_paragraphs(
             }
         }
     }
-    for node in &outline.nodes {
+    for node in &outline.items {
         if node.kind != "block" {
             continue;
         }
-        let source = &content[node.byte_start..node.byte_end];
+        let source = &content[node.span.clone()];
         let opening = source.lines().next().unwrap_or_default();
         let Some((suffix, length)) = colon_fence(opening) else {
             continue;
@@ -463,12 +481,12 @@ fn omit_fenced_citation_paragraphs(
             && (!name.starts_with(char::is_whitespace)
                 || !valid_name(&full_requirement_name(namespace, name.trim())))
         {
-            literal_definitions.push(node.byte_start..node.byte_end);
+            literal_definitions.push(node.span.clone());
             continue;
         }
         let body_start =
-            node.byte_start + source.find('\n').map_or(source.len(), |offset| offset + 1);
-        let end = node.byte_start + source.trim_end_matches(['\r', '\n']).len();
+            node.span.start + source.find('\n').map_or(source.len(), |offset| offset + 1);
+        let end = node.span.start + source.trim_end_matches(['\r', '\n']).len();
         let last_line = content[..end].rfind('\n').map_or(0, |offset| offset + 1);
         let closing = &content[last_line..end];
         let prefix = closing.len() - closing.trim_start_matches([' ', '\t', '>']).len();
@@ -480,14 +498,14 @@ fn omit_fenced_citation_paragraphs(
             masked[last_line + prefix..end].fill(b' ');
             last_line
         } else {
-            node.byte_end
+            node.span.end
         };
         if body_start <= body_end {
             bodies.push(body_start..body_end);
         }
         // Blank delimiters let CommonMark identify top-level paragraphs while
         // retaining the original byte offsets and list/blockquote structure.
-        for byte in &mut masked[node.byte_start..body_start] {
+        for byte in &mut masked[node.span.start..body_start] {
             if !matches!(*byte, b'\r' | b'\n') {
                 *byte = b' ';
             }

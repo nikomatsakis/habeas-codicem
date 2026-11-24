@@ -349,7 +349,7 @@ pub(crate) fn validate_rust_functions(
                 continue;
             }
         };
-        match outline::parse_with(&outline::RUST_PROFILE, &source) {
+        match outline::parse(&file, &source) {
             Ok(outline) => {
                 for (_, line, name) in untested_tests(&source, &outline, definitions) {
                     errors.push(format!("{label}:{line}: test function {name} has no {{test}} reference to a requirement or example"));
@@ -502,7 +502,7 @@ mod tests {
             "// {impl}`requirements.example`\n#[test] fn only_implemented() {}\n",
             "#[doc = \"a ] #[test] string\"] fn documented_helper() {}\n",
         );
-        let outline = crate::outline::parse_with(&crate::outline::RUST_PROFILE, source).unwrap();
+        let outline = crate::outline::parse(std::path::Path::new("fixture.rs"), source).unwrap();
         let names: Vec<String> = super::untested_tests(source, &outline, &definitions())
             .into_iter()
             .map(|(_, _, name)| name)
@@ -539,7 +539,7 @@ mod tests {
             "// {test}`requirements.case`\n#[test]\nfn traced() {}\n\n",
             "// {test}`requirements.orphan`\n#[test]\nfn orphan() {}\n",
         );
-        let outline = crate::outline::parse_with(&crate::outline::RUST_PROFILE, source).unwrap();
+        let outline = crate::outline::parse(std::path::Path::new("fixture.rs"), source).unwrap();
         let names: Vec<String> = super::untested_tests(source, &outline, &definitions)
             .into_iter()
             .map(|(_, _, name)| name)

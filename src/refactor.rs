@@ -116,7 +116,7 @@ impl Mappings {
                 *value = mapped;
             }
         };
-        let source = |value: &mut trust_but_verify::resource::OutlineId| {
+        let source = |value: &mut crate::sdk::OutlineId| {
             if value.resource.scheme == "repo" {
                 let mapped = if back {
                     self.node_back(&value.resource.location, &value.selector)
