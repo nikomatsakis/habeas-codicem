@@ -348,6 +348,10 @@ fn node_paths_round_trip_empty_and_separated_segments() {
 // {test}`requirements.sdk.graph.evidence.checking_records`
 // {test}`requirements.sdk.graph.criteria.output_policy`
 // {test}`requirements.sdk.graph.evidence.recorded_criterion_version`
+// {test}`requirements.sdk.graph.validators.validator.new`
+// {test}`requirements.sdk.graph.validators.validator.verify`
+// {test}`requirements.sdk.graph.validators.validator.store_evidence`
+// {test}`requirements.sdk.graph.validators.validator.load_evidence`
 #[tokio::test]
 async fn criteria_keep_typed_answers_and_persist_only_when_requested() {
     let domain = Application::default();
@@ -497,6 +501,7 @@ fn criterion_paths_preserve_hierarchy_empty_segments_order_and_unicode() {
 // {test}`requirements.sdk.graph.validators.validate_node`
 // {test}`requirements.sdk.graph.evidence.node_inputs`
 // {test}`requirements.sdk.graph.evidence.checking_records`
+// {test}`requirements.sdk.graph.validators.validator.check_inputs`
 #[tokio::test]
 async fn changing_one_criteria_input_does_not_invalidate_another() {
     let domain = Application::default();
@@ -557,6 +562,7 @@ async fn changing_one_criteria_input_does_not_invalidate_another() {
 // {test}`requirements.sdk.graph.validators.validate_node.errors`
 // {test}`requirements.sdk.graph.evidence.check_node`
 // {test}`requirements.sdk.graph.evidence.checking_records`
+// {test}`requirements.sdk.graph.validators.validator.load_evidence`
 #[tokio::test]
 async fn typed_loading_reports_decode_errors_even_for_stale_evidence() {
     let domain = Application::default();
@@ -603,6 +609,8 @@ async fn typed_loading_reports_decode_errors_even_for_stale_evidence() {
 // {test}`requirements.sdk.graph.validators.validate_node`
 // {test}`requirements.sdk.graph.evidence.record`
 // {test}`requirements.sdk.graph.evidence.checking_records`
+// {test}`requirements.sdk.graph.validators.validator.check_inputs`
+// {test}`requirements.sdk.graph.validators.validator.verify`
 #[tokio::test]
 async fn input_checking_and_execution_keep_separate_observations() {
     let domain = Application::default();
@@ -648,6 +656,7 @@ async fn input_checking_and_execution_keep_separate_observations() {
 // {test}`requirements.sdk.graph.evidence.check_node`
 // {test}`requirements.sdk.graph.evidence.checking_records`
 // {test}`requirements.sdk.graph.evidence.inputs`
+// {test}`requirements.sdk.graph.validators.validator.check_inputs`
 #[tokio::test]
 async fn dependency_resolution_failures_do_not_execute_or_replace_saved_answers() {
     let domain = Application::default();
@@ -751,6 +760,7 @@ async fn validation_and_answer_need_send_without_sync() {
 
 // {test}`requirements.sdk.graph.evidence.refresh_evidence`
 // {test}`requirements.sdk.graph.evidence.checking_records.version_match`
+// {test}`requirements.sdk.graph.validators.validator.refresh_evidence`
 #[tokio::test]
 async fn refresh_reuses_current_positive_negative_and_legacy_answers_without_saving() {
     for satisfied in [true, false] {
@@ -794,6 +804,7 @@ async fn refresh_reuses_current_positive_negative_and_legacy_answers_without_sav
 // {test}`requirements.sdk.graph.evidence.refresh_evidence`
 // {test}`requirements.sdk.graph.evidence.checking_records`
 // {test}`requirements.sdk.graph.evidence.checking_records.version_match`
+// {test}`requirements.sdk.graph.validators.validator.refresh_evidence`
 #[tokio::test]
 async fn refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace() {
     for cause in ["missing", "revision", "contents", "successors"] {
@@ -869,6 +880,7 @@ async fn refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh
 
 // {test}`requirements.sdk.graph.evidence.refresh_evidence`
 // {test}`requirements.sdk.graph.evidence.record.output`
+// {test}`requirements.sdk.graph.validators.ValidationError`
 #[tokio::test]
 async fn refresh_propagates_load_decode_check_execution_and_save_errors() {
     for stage in [

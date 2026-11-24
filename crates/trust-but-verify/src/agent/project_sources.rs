@@ -176,6 +176,8 @@ mod tests {
     // {test}`requirements.sdk.graph.search.finish_search.inputs`
     // {test}`requirements.sdk.graph.search.search_text.inputs`
     // {test}`requirements.sdk.graph.search.search_text.behavior`
+    // {test}`requirements.sdk.graph.validation-context.pages.mcp`
+    // {test}`requirements.sdk.graph.validation-context.pages.behavior`
     #[tokio::test]
     async fn search_obligations_follow_delivery_and_keep_the_original_snapshot() {
         let root = tempfile::tempdir().unwrap();
@@ -390,9 +392,61 @@ mod tests {
         assert_eq!(domain.0.lock().unwrap().reads, 0);
     }
 
+    // {test}`requirements.sdk.graph.validation-context.outline_source.mcp`
+    // {test}`requirements.sdk.graph.validation-context.outline_source.behavior`
+    // {test}`requirements.sdk.graph.validation-context.pages.mcp`
+    // {test}`requirements.sdk.graph.validation-context.pages.behavior`
+    #[cfg(feature = "default-languages")]
+    #[tokio::test]
+    async fn outline_continuations_keep_the_file_and_complete_ordered_items() {
+        let root = tempfile::tempdir().unwrap();
+        let names: Vec<_> = (0..400).map(|i| format!("item_{i}")).collect();
+        let code: String = names
+            .iter()
+            .map(|name| format!("fn {name}() {{}}\n"))
+            .collect();
+        std::fs::write(root.path().join("code.rs"), code).unwrap();
+        let tools = ProjectSources {
+            sources: Sources::new(root.path()),
+            domain: project(""),
+        };
+        let mut session = SessionTools::new(tools.session());
+        let mut delivery = session
+            .dispatch("outline_source", &json!({"path":"code.rs"}))
+            .await
+            .unwrap();
+        let mut items = Vec::new();
+        let mut pages = 0;
+        loop {
+            let page: Value = serde_json::from_str(&delivery.text).unwrap();
+            assert!(delivery.dependencies.is_empty());
+            assert_eq!(page["path"], "code.rs");
+            let chunk = page["items"].as_array().unwrap();
+            assert!(!chunk.is_empty());
+            items.extend(chunk.iter().cloned());
+            pages += 1;
+            let Some(next) = page.get("next") else { break };
+            delivery = session
+                .dispatch("get_next_page", &json!({"uuid":next}))
+                .await
+                .unwrap();
+        }
+        assert!(pages > 1);
+        let expected: Vec<_> = std::iter::once(json!({"selector":"","kind":""}))
+            .chain(
+                names
+                    .iter()
+                    .map(|name| json!({"selector":format!("fn[{name}]"),"kind":"fn"})),
+            )
+            .collect();
+        assert_eq!(items, expected);
+    }
+
     // {test}`requirements.sdk.graph.validation-context.list_sources.mcp`
     // {test}`requirements.sdk.graph.validation-context.pages.behavior`
     // {test}`requirements.sdk.graph.validation-context.list_sources.inputs`
+    // {test}`requirements.sdk.graph.validation-context.list_sources.behavior`
+    // {test}`requirements.sdk.graph.validation-context.pages.mcp`
     #[tokio::test]
     async fn listing_continuations_return_complete_paths_from_the_original_listing() {
         let root = tempfile::tempdir().unwrap();
@@ -785,6 +839,7 @@ mod tests {
     // {test}`requirements.sdk.graph.validation-context.read_source.behavior`
     // {test}`requirements.sdk.graph.validation-context.read_source.inputs`
     // {test}`requirements.sdk.sources.redaction`
+    // {test}`requirements.sdk.graph.validation-context.read_source.mcp`
     #[tokio::test]
     async fn fixed_source_reads_redact_delivery_and_propagate_preparation_errors() {
         let root = tempfile::tempdir().unwrap();
@@ -829,6 +884,16 @@ mod tests {
             )]
         );
         assert_eq!(domain.0.lock().unwrap().reads, 2);
+        std::fs::write(root.path().join("code.rs"), "fn selected() {}").unwrap();
+        let address = json!({"path":"code.rs","selector":"fn[selected]"});
+        let selected = session.dispatch("read_source", &address).await.unwrap();
+        let page: Value = serde_json::from_str(&selected.text).unwrap();
+        assert_eq!(page["node"], address);
+        assert_eq!(
+            domain.0.lock().unwrap().read_nodes.last().unwrap(),
+            "code.rs#fn[selected]"
+        );
+        assert!(page["text"].as_str().unwrap().starts_with("visible text"));
     }
 
     // {test}`requirements.sdk.sources.redaction`

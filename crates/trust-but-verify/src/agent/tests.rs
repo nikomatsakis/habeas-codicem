@@ -564,10 +564,10 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
             if *node == 1 && self.lookups.fetch_add(1, Ordering::SeqCst) != 0 {
                 return Err(io::Error::other("must not relist inspected edges"));
             }
-            Ok(if *node == 1 {
-                vec![if label == 7 { 2 } else { 3 }]
-            } else {
-                vec![]
+            Ok(match (*node, label) {
+                (1, 7) => vec![3, 2, 3],
+                (1, 8) => vec![3],
+                _ => vec![],
             })
         }
 
@@ -680,7 +680,7 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
         vec![Dependency::OutgoingEdges(
             1,
             7,
-            edge_fingerprint(&graph, &[2])
+            edge_fingerprint(&graph, &[2, 3])
         )]
     );
     let requests = agent.provider.requests.lock().unwrap();
@@ -694,7 +694,8 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
     assert_eq!(
         result.content,
         vec![ToolResultContent::text(
-            json!({"targets":[{"segments":["2"]}]}).to_string()
+            json!({"targets":[{"segments":["3"]},{"segments":["2"]},{"segments":["3"]}]})
+                .to_string()
         )]
     );
     drop(requests);
@@ -751,17 +752,20 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
             "outgoing_edges",
             json!({"path":{"segments":["1"]},"label":8}),
         )]),
+        Some(vec![(
+            "outgoing_edges",
+            json!({"path":{"segments":["3"]},"label":7}),
+        )]),
         Some(vec![("submit_result", json!({"result":true}))]),
     ]));
     let ctx = ValidationContext::with_agent(&graph, 1, &agent);
     assert!(ctx.ask::<bool>().await.unwrap());
     assert_eq!(
         ctx.dependencies(),
-        vec![Dependency::OutgoingEdges(
-            1,
-            8,
-            edge_fingerprint(&graph, &[3])
-        )]
+        vec![
+            Dependency::OutgoingEdges(1, 8, edge_fingerprint(&graph, &[3])),
+            Dependency::OutgoingEdges(3, 7, edge_fingerprint(&graph, &[]))
+        ]
     );
     let requests = agent.provider.requests.lock().unwrap();
     let Message::User { content } = requests[1].chat_history.last().unwrap() else {
@@ -2052,10 +2056,39 @@ async fn application_tools_preserve_graph_tools_in_the_same_conversation() {
     );
 }
 
+// {test}`requirements.sdk.graph.validation-context.read_node.mcp`
+// {test}`requirements.sdk.graph.validation-context.read_node.behavior`
+#[tokio::test]
+async fn a_complete_node_read_has_text_and_no_continuation() {
+    let graph = Memory::new("short text".into());
+    let agent = ToolAgent::new(Script::new(vec![
+        Some(vec![("read_node", json!({"path":{"segments":["1"]}}))]),
+        Some(vec![("submit_result", json!({"result":true}))]),
+    ]));
+    let ctx = ValidationContext::with_agent(&graph, Node(1), &agent);
+    assert!(ctx.ask::<bool>().await.unwrap());
+    let requests = agent.provider.requests.lock().unwrap();
+    let Message::User { content } = requests[1].chat_history.last().unwrap() else {
+        panic!("expected read_node response")
+    };
+    let [UserContent::ToolResult(reply)] = content.as_slice() else {
+        panic!("expected one tool result")
+    };
+    assert_eq!(
+        reply.content,
+        [ToolResultContent::text(
+            json!({"text":"short text"}).to_string()
+        )]
+    );
+    assert_eq!(ctx.dependencies().len(), 1);
+}
+
 // {test}`requirements.sdk.graph.validation-context.pages.behavior`
 // {test}`requirements.sdk.graph.validation-context.pages.inputs`
 // {test}`requirements.sdk.graph.validation-context.read_node.inputs`
 // {test}`requirements.sdk.graph.evidence.node_inputs`
+// {test}`requirements.sdk.graph.validation-context.read_node.behavior`
+// {test}`requirements.sdk.graph.validation-context.read_node.mcp`
 #[tokio::test]
 async fn graph_read_pages_retain_the_prepared_snapshot_after_contents_change() {
     struct ChangingProvider {

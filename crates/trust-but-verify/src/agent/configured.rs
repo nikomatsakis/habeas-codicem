@@ -202,6 +202,8 @@ mod tests {
     // {test}`requirements.sdk.graph.agent-harness.with_agent`
     // {test}`requirements.sdk.graph.agent-harness.tool_agent.provider_failure`
     // {test}`requirements.sdk.graph.criteria.deterministic_procedures`
+    // {test}`requirements.sdk.graph.validators.validator.with_agent`
+    // {test}`requirements.sdk.graph.validators.validator.new`
     #[tokio::test]
     async fn configured_agents_initialize_only_when_asked_and_report_setup_errors() {
         // An explicitly empty credential fails before any request is sent.
@@ -535,6 +537,8 @@ mod tests {
     // {test}`requirements.sdk.graph.agent-harness.fixed_tools`
     // {test}`requirements.sdk.graph.validation-context.read_source.behavior`
     // {test}`requirements.sdk.graph.validation-context.list_sources.behavior`
+    // {test}`requirements.sdk.graph.validation-context.list_sources.mcp`
+    // {test}`requirements.sdk.graph.validators.validator.with_sources`
     #[tokio::test]
     async fn supplied_agent_uses_attached_project_tools_in_both_configuration_orders() {
         use std::{

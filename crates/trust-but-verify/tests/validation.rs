@@ -257,6 +257,8 @@ async fn historical_freshness_reads_do_not_enter_the_replacement_trace() {
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
 // {test}`requirements.sdk.graph.criteria.execute`
 // {test}`requirements.sdk.graph.agent-calls.Ask`
+// {test}`requirements.sdk.graph.validators.validator.new`
+// {test}`requirements.sdk.graph.validators.ValidationError`
 #[tokio::test]
 async fn runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls() {
     let graph = Memory {
@@ -653,6 +655,9 @@ fn labeled_selections_track_only_target_membership_without_reading_contents() {
     assert_eq!(graph.state.lock().unwrap().selections, [1]);
     assert_eq!(snapshot.content, [5, 3, 5]);
     assert_eq!(snapshot.fingerprint, edge_fingerprint(&graph, &[3, 5]));
+    for changed in [vec![3], vec![3, 5, 9]] {
+        assert_ne!(snapshot.fingerprint, edge_fingerprint(&graph, &changed));
+    }
     selected.successors(&7).unwrap();
     let record = selected
         .finish(CriterionVersion::new("v1"), output())
@@ -1391,6 +1396,7 @@ async fn concurrent_single_node_validations_keep_separate_traces() {
 
 // {test}`requirements.sdk.graph.agent-calls.judge.submission`
 // {test}`requirements.sdk.graph.criteria.execute`
+// {test}`requirements.sdk.graph.validators.ValidationError`
 #[tokio::test]
 async fn invalid_typed_submission_is_an_agent_error() {
     let graph = Memory {

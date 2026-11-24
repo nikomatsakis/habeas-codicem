@@ -193,6 +193,7 @@ async fn gitignore_is_shared_by_all_operations_with_or_without_a_git_repository(
 // {test}`requirements.sdk.sources.provider_results.parse_snapshot`
 // {test}`requirements.sdk.sources.provider_results.search_completeness`
 // {test}`requirements.sdk.sources.source_addresses`
+// {test}`requirements.sdk.graph.validation-context.outline_source.fn`
 #[tokio::test]
 async fn empty_sources_errors_and_retained_snapshots_remain_distinct() {
     let root = tempfile::tempdir().unwrap();
@@ -272,6 +273,7 @@ async fn empty_sources_errors_and_retained_snapshots_remain_distinct() {
 // {test}`requirements.sdk.graph.search.StructuralQuery`
 // {test}`requirements.sdk.graph.search.StructuralMatch`
 // {test}`requirements.sdk.graph.search.StructuralMatches`
+// {test}`requirements.sdk.graph.validation-context.outline_source.fn`
 #[tokio::test]
 async fn built_in_languages_and_structural_search_use_the_project_scope() {
     let root = tempfile::tempdir().unwrap();
