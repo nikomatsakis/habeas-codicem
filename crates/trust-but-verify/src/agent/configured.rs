@@ -576,7 +576,18 @@ mod tests {
             let mut requests = Vec::new();
             let deadline = Instant::now() + Duration::from_secs(15);
             let mut page = Value::Null;
-            for turn in 0..24 {
+            fn last_output(request: &Value) -> &str {
+                request["input"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .rev()
+                    .find(|item| item["type"] == "function_call_output")
+                    .unwrap()["output"]
+                    .as_str()
+                    .unwrap()
+            }
+            for turn in 0..30 {
                 let (mut stream, _) = loop {
                     match listener.accept() {
                         Ok(stream) => break stream,
@@ -620,7 +631,7 @@ mod tests {
                     serde_json::from_slice::<Value>(&bytes[header_end..header_end + length])
                         .unwrap(),
                 );
-                let (name, arguments) = match turn % 12 {
+                let (name, arguments) = match turn % 15 {
                     0 => ("list_sources", serde_json::json!({"prefix":"visible"})),
                     1 => (
                         "read_source",
@@ -630,59 +641,46 @@ mod tests {
                         "read_source",
                         serde_json::json!({"path":"visible/selected.txt"}),
                     ),
-                    3 => (
+                    3 | 4 => (
                         "search_text",
                         serde_json::json!({"pattern":"no matching line"}),
                     ),
-                    5 => {
-                        let reply = &requests[turn - 1]["input"]
-                            .as_array()
-                            .unwrap()
-                            .iter()
-                            .rev()
-                            .find(|item| item["type"] == "function_call_output")
-                            .unwrap()["output"];
-                        let page: Value = serde_json::from_str(reply.as_str().unwrap()).unwrap();
-                        assert!(page["instructions"].is_string());
-                        let retry = requests[turn]["input"].to_string();
+                    6 => {
+                        let ids = [turn - 2, turn - 1].map(|i| {
+                            let args: Value =
+                                serde_json::from_str(last_output(&requests[i])).unwrap();
+                            args["search_id"].as_str().unwrap().to_owned()
+                        });
+                        assert_ne!(ids[0], ids[1]);
+                        let retry = last_output(&requests[turn]);
                         assert!(retry.contains("Call finish_search for every open search_id"));
-                        let output = requests[turn]["input"]
-                            .as_array()
-                            .unwrap()
-                            .iter()
-                            .rev()
-                            .find(|item| item["type"] == "function_call_output")
-                            .unwrap();
-                        assert!(
-                            output["output"]
-                                .as_str()
-                                .unwrap()
-                                .contains(page["search_id"].as_str().unwrap())
-                        );
+                        assert!(ids.iter().all(|id| retry.contains(id)));
+                        ("prose", Value::Null)
+                    }
+                    step @ 7..=8 => {
+                        if step == 7 {
+                            assert!(
+                                requests[turn]["input"].to_string().contains(
+                                    "Reminder: you MUST invoke submit_result exactly once"
+                                )
+                            );
+                        }
+                        let empty: Value =
+                            serde_json::from_str(last_output(&requests[turn - 3])).unwrap();
+                        assert_eq!(empty.get("instructions").is_some(), step == 7);
                         (
                             "finish_search",
-                            serde_json::json!({"search_id":page["search_id"],"used":[]}),
+                            serde_json::json!({"search_id":empty["search_id"],"used":[]}),
                         )
                     }
-                    6 => ("search_text", serde_json::json!({"pattern":"^excerpt "})),
-                    step @ 7..=10 => {
-                        if step == 7 {
-                            let reply = requests[turn]["input"]
-                                .as_array()
-                                .unwrap()
-                                .iter()
-                                .rev()
-                                .find(|item| item["type"] == "function_call_output")
-                                .unwrap();
-                            page = serde_json::from_str(reply["output"].as_str().unwrap()).unwrap();
+                    9 => ("search_text", serde_json::json!({"pattern":"^excerpt "})),
+                    step @ 10..=13 => {
+                        if step == 10 {
+                            page = serde_json::from_str(last_output(&requests[turn])).unwrap();
                             assert_eq!(page["matches"].as_array().unwrap().len(), 3);
                         }
-                        if step == 9 {
-                            assert!(
-                                requests[turn]["input"]
-                                    .to_string()
-                                    .contains("unknown search tag")
-                            );
+                        if step == 12 {
+                            assert!(last_output(&requests[turn]).contains("unknown search tag"));
                         }
                         let tag = |file: &str| {
                             page["matches"]
@@ -694,8 +692,8 @@ mod tests {
                                 .clone()
                         };
                         let used = match step {
-                            8 => serde_json::json!([tag("unused.txt"), "invalid"]),
-                            9 => serde_json::json!([tag("beta.txt")]),
+                            11 => serde_json::json!([tag("unused.txt"), "invalid"]),
+                            12 => serde_json::json!([tag("beta.txt")]),
                             _ => serde_json::json!([tag("alpha.txt")]),
                         };
                         (
@@ -705,12 +703,17 @@ mod tests {
                     }
                     _ => ("submit_result", serde_json::json!({"result":true})),
                 };
+                let reply = if name == "prose" {
+                    serde_json::json!({"type":"message","id":format!("msg_{turn}"),"role":"assistant","status":"completed","content":[{"type":"output_text","text":"Tentative result","annotations":[]}]})
+                } else {
+                    serde_json::json!({"type":"function_call","id":format!("fc_{turn}"),
+                        "call_id":format!("call_{turn}"),"name":name,
+                        "arguments":arguments.to_string(),"status":"completed"})
+                };
                 let body = serde_json::json!({
                     "id":format!("response_{turn}"),"object":"response",
                     "created_at":1,"model":"local-source-test","status":"completed",
-                    "output":[{"type":"function_call","id":format!("fc_{turn}"),
-                        "call_id":format!("call_{turn}"),"name":name,
-                        "arguments":arguments.to_string(),"status":"completed"}],
+                    "output":[reply],
                     "usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}
                 })
                 .to_string();
@@ -775,8 +778,8 @@ mod tests {
             );
         }
         let requests = server.join().unwrap();
-        assert_eq!(requests.len(), 24);
-        for first in [0, 12] {
+        assert_eq!(requests.len(), 30);
+        for first in [0, 15] {
             let tools = requests[first]["tools"].as_array().unwrap();
             assert_eq!(
                 tools

@@ -118,6 +118,7 @@ async fn scoped_text_results_keep_line_numbers_context_and_completeness() {
 // {test}`requirements.sdk.graph.search.search_text.behavior`
 // {test}`requirements.sdk.graph.search.source_scope`
 // {test}`requirements.sdk.sources.Sources`
+// {test}`requirements.sdk.sources.read_file`
 #[tokio::test]
 async fn gitignore_is_shared_by_all_operations_with_or_without_a_git_repository() {
     for repository in [false, true] {
@@ -409,6 +410,7 @@ async fn built_in_languages_and_structural_search_use_the_project_scope() {
 
 // {test}`requirements.sdk.sources.local_provider`
 #[cfg(unix)]
+// {test}`requirements.sdk.sources.read_file`
 #[tokio::test]
 async fn symlinks_cannot_reopen_ignored_files_or_leave_the_project() {
     use std::os::unix::fs::symlink;

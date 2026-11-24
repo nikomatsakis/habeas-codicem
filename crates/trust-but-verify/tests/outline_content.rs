@@ -845,6 +845,15 @@ fn bundled_structural_search_returns_matches_and_rejects_bad_rules_and_source() 
 // {test}`requirements.sdk.sources.rust.Rust`
 #[test]
 fn rust_items_attach_documentation_and_preserve_structural_hashes() {
+    let qualified = OutlineContent::from_source(
+        "qualified.rs",
+        "impl core::fmt::Display for Thing {}".into(),
+    )
+    .unwrap();
+    assert_eq!(
+        qualified.outline().items[1].selector,
+        "impl[Thing/core::fmt::Display]"
+    );
     let source = "mod auth {\n    /// Check tokens.\n    #[inline]\n    fn check() { allow(); }\n    struct Token;\n}\nfn last() {}\n";
     let contents = OutlineContent::from_source("auth.rs", source.into()).unwrap();
     let selectors = contents
@@ -1132,6 +1141,15 @@ fn python_selected_source_includes_its_decorators() {
     let selected = root.select("def[checked]").unwrap();
     assert!(selected.text().starts_with("@cache\ndef checked():"));
     assert_eq!(root.outline().items[1].span.start, 0);
+    let classes = "@first\nclass Checked: pass\n@second\nclass Checked: pass\n";
+    let root = OutlineContent::from_source("decorated.py", classes.into()).unwrap();
+    for (selector, decorator) in [
+        ("class[Checked]#1", "@first"),
+        ("class[Checked]#2", "@second"),
+    ] {
+        let selected = root.select(selector).unwrap();
+        assert!(selected.text().starts_with(decorator));
+    }
 }
 
 #[cfg(feature = "default-languages")]

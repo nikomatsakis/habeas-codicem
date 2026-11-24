@@ -173,6 +173,7 @@ mod tests {
     // {test}`requirements.sdk.graph.search.first_search.instructions.content`
     // {test}`requirements.sdk.graph.search.search_structure.inputs`
     // {test}`requirements.sdk.graph.search.finish_search.behavior`
+    // {test}`requirements.sdk.graph.search.finish_search.mcp`
     // {test}`requirements.sdk.graph.search.finish_search.inputs`
     // {test}`requirements.sdk.graph.search.search_text.inputs`
     // {test}`requirements.sdk.graph.search.search_text.behavior`
