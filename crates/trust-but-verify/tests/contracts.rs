@@ -275,7 +275,12 @@ async fn domain_relationships_accept_opaque_types_and_send_only_errors() {
 
     // Compile generic consumer code against the declared bounds, so loosening
     // a required bound fails as well as adding a bound the opaque fixture lacks.
-    fn check_bounds<G: Domain>() {
+    fn check_bounds<G: Domain>(
+        graph: &G,
+        node: &G::NodeId,
+        criterion: &CriterionPath,
+        record: &Record<G::NodeId, G::EdgeLabel>,
+    ) {
         fn domain<T: Clone + Send + Sync>() {}
         fn identity<T: Clone + Eq + Send + Sync>() {}
         fn label<T: Clone + Send + Sync>() {}
@@ -286,12 +291,13 @@ async fn domain_relationships_accept_opaque_types_and_send_only_errors() {
         label::<G::EdgeLabel>();
         error::<G::Error>();
         contents::<G::NodeContent>();
+        drop(send(graph.load_evidence(node, criterion)));
+        drop(send(graph.store_evidence(node, criterion, record)));
     }
 
     fn successors<G: Domain>(graph: &G, node: &G::NodeId, label: G::EdgeLabel) -> Vec<G::NodeId> {
         graph.outgoing_edges(node, label).ok().unwrap()
     }
-    check_bounds::<Relationships>();
     let graph = Relationships;
     let content = graph.node_content(&Identity(1)).ok().unwrap();
     assert_eq!(content.format(), "1");
@@ -306,6 +312,7 @@ async fn domain_relationships_accept_opaque_types_and_send_only_errors() {
             .is_none()
     );
     let record = Record::new(Some(CriterionVersion::new("v1")), vec![], json!(false));
+    check_bounds(&graph, &Identity(1), &criterion, &record);
     assert!(
         send(graph.store_evidence(&Identity(1), &criterion, &record))
             .await
@@ -1272,6 +1279,8 @@ fn edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding() 
         vec!["a\\b"],
         vec!["a/b", "c"],
         vec!["a", "b/c"],
+        vec!["a"],
+        vec!["b"],
     ];
     for (index, segments) in paths.into_iter().enumerate() {
         domain.1.insert(
@@ -1279,6 +1288,10 @@ fn edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding() 
             NodePath::new(segments.into_iter().map(str::to_owned).collect()),
         );
     }
+    assert_ne!(
+        edge_fingerprint(&domain, &[Node(1)]),
+        edge_fingerprint(&domain, &[Node(11), Node(12)])
+    );
     let empty = edge_fingerprint(&domain, &[]);
     assert_eq!(
         empty,

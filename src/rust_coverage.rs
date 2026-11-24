@@ -483,6 +483,7 @@ mod tests {
 
     // {test}`requirements.references.coverage.tests`
     // {test}`requirements.references.procedure`
+    // {test}`requirements.references.outline_comments`
     #[test]
     fn test_functions_need_a_test_reference() {
         let source = concat!(

@@ -2277,6 +2277,15 @@ pub(crate) mod tests {
             ),
             ["f.comment"]
         );
+        for (file, prefix, declaration) in [
+            ("lib.rs", "///", "fn f() {}"),
+            ("tool.py", "#", "value = 1"),
+        ] {
+            let source = format!(
+                "{prefix} :::{{impl}} f.docs\n{prefix} Body.\n{prefix} :::\n{declaration}\n"
+            );
+            assert_eq!(names(file, source), ["f.docs"], "{file}");
+        }
         // Plain text has no comments: roles count anywhere.
         assert_eq!(
             names("notes.txt", format!("see {}\n", role("d.text"))),

@@ -834,6 +834,7 @@ fn bundled_structural_search_returns_matches_and_rejects_bad_rules_and_source() 
 // {test}`requirements.sdk.sources.rust.items`
 // {test}`requirements.sdk.sources.rust.fingerprints`
 // {test}`requirements.sdk.sources.rust.Rust`
+// {test}`requirements.sdk.outlines.Outline`
 #[test]
 fn rust_items_attach_documentation_and_preserve_structural_hashes() {
     let qualified = OutlineContent::from_source(
@@ -903,6 +904,7 @@ fn rust_items_attach_documentation_and_preserve_structural_hashes() {
 }
 
 // {test}`requirements.sdk.outlines.errors`
+// {test}`requirements.sdk.outlines.Outline`
 #[test]
 fn recovered_outlines_keep_the_diagnostic_and_intact_items() {
     use trust_but_verify::outline::AttachmentKind;
@@ -1141,6 +1143,13 @@ fn yaml_selection_ends_before_trailing_comment_tokens() {
     let selected = root.select("pair[key]").unwrap();
     assert_eq!(selected.text(), "key: value");
     assert_eq!(root.outline().items[1].span, 0..10);
+    let nested = "a:\n  b: 1\n# before next\nd: 2\n";
+    let root = OutlineContent::from_source("nested.yml", nested.into()).unwrap();
+    assert_eq!(root.select("pair[a]").unwrap().text(), "a:\n  b: 1");
+    assert_eq!(
+        root.select("pair[a]/pair[b]").unwrap().text().trim_start(),
+        "b: 1"
+    );
 }
 
 // {test}`requirements.sdk.sources.python.items`
@@ -1306,6 +1315,10 @@ fn rust_attachments_keep_the_owner_kind_and_original_bytes() {
     assert!(items[2].attachments[0].span.end <= items[2].attachments[1].span.start);
 }
 
+// {test}`requirements.sdk.outlines.attachments.comments`
+// {test}`requirements.sdk.outlines.attachments.span`
+// {test}`requirements.sdk.outlines.AttachmentKind`
+// {test}`requirements.sdk.sources.rust.attachments`
 // {test}`requirements.sdk.outlines.attachments.empty`
 // {test}`requirements.sdk.sources.python.attachments`
 // {test}`requirements.sdk.sources.markdown.attachments`
@@ -1328,14 +1341,31 @@ fn bundled_languages_classify_only_their_attachment_syntax() {
             ],
         ),
         (
+            "blocks.rs",
+            "/*! inner */\n/** outer */\n/* ordinary */\nfn f() {}\n",
+            vec![
+                (Comment, "/*! inner */"),
+                (Comment, "/** outer */"),
+                (Comment, "/* ordinary */"),
+            ],
+        ),
+        (
+            "class.py",
+            "@pkg.decorate(\n  1\n)\nclass C:\n    pass # trailing\n",
+            vec![
+                (Annotation, "@pkg.decorate(\n  1\n)"),
+                (Comment, "# trailing"),
+            ],
+        ),
+        (
             "test.ts",
-            "/** doc */\nconst s = '// string'; // trailing\n",
+            "/** doc */\nconst s = '// string'; // trailing\n@dec class C {}\n",
             vec![(Comment, "/** doc */"), (Comment, "// trailing")],
         ),
         (
             "test.tsx",
-            "/* doc */\nconst s = <p>// text</p>;\n",
-            vec![(Comment, "/* doc */")],
+            "/* doc */\nconst s = <p>// text</p>; // trailing\n@dec class C {}\n",
+            vec![(Comment, "/* doc */"), (Comment, "// trailing")],
         ),
         (
             "test.css",
@@ -1344,18 +1374,25 @@ fn bundled_languages_classify_only_their_attachment_syntax() {
         ),
         (
             "test.yaml",
-            "a: |\n  # literal\nb: 1 # real\n",
-            vec![(Comment, "# real")],
+            "a: |\n  # literal\n# standalone\nb: '# literal' # real\nc: \"# literal\"\n",
+            vec![(Comment, "# standalone"), (Comment, "# real")],
         ),
         (
             "test.toml",
-            "a = '# literal' # real\n",
-            vec![(Comment, "# real")],
+            "# first\n# second\na = '# literal' # real\n\"# key\" = \"\"\"# literal\"\"\"\n",
+            vec![
+                (Comment, "# first"),
+                (Comment, "# second"),
+                (Comment, "# real"),
+            ],
         ),
         (
             "test.md",
-            "<!-- block -->\n\nA <!-- inline --> word.\n\n```html\n<!-- code -->\n```\n",
-            vec![(Comment, "<!-- block -->")],
+            "<!-- block -->\n\n<!-- multi\nline -->\n\n<div>html</div>\n\nA <!-- inline --> word.\n\n```html\n<!-- code -->\n```\n\n<!-- unfinished\n",
+            vec![
+                (Comment, "<!-- block -->"),
+                (Comment, "<!-- multi\nline -->"),
+            ],
         ),
         ("test.txt", "# just text\n", vec![]),
     ] {
@@ -1375,6 +1412,21 @@ fn bundled_languages_classify_only_their_attachment_syntax() {
             expected,
             "{path}"
         );
+        if path == "class.py" {
+            let class = snapshot
+                .outline()
+                .items
+                .iter()
+                .find(|item| item.selector == "class[C]")
+                .unwrap();
+            assert_eq!(
+                source[class.attachments[0].span.clone()].trim_end(),
+                "@pkg.decorate(\n  1\n)"
+            );
+        }
+        if path == "test.ts" || path == "test.tsx" {
+            assert!(snapshot.text().contains("@dec class C"));
+        }
         if path == "test.py" {
             assert_eq!(
                 snapshot
@@ -1427,4 +1479,40 @@ fn custom_attachment_spans_are_checked_against_the_original_snapshot() {
     assert_eq!(&snapshot.text()[attachment.span.clone()], "é");
     assert!(load(1..2).is_err());
     assert!(load(0..3).is_err());
+}
+
+// {test}`requirements.sdk.outlines.Outline`
+// {test}`requirements.sdk.outlines.OutlineItem`
+#[test]
+fn outline_constructors_preserve_fields_and_replace_attachments() {
+    use trust_but_verify::outline::{AttachmentKind, OutlineAttachment};
+    let item = OutlineItem::new("fn[f]".into(), "fn".into(), 2..12, "digest".into());
+    assert!(item.attachments.is_empty());
+    let item = item
+        .with_attachments(vec![OutlineAttachment::new(AttachmentKind::Comment, 2..4)])
+        .with_attachments(vec![OutlineAttachment::new(
+            AttachmentKind::Annotation,
+            4..6,
+        )]);
+    let outline = Outline::new(vec![item.clone()]);
+    assert!(outline.diagnostic.is_none());
+    assert!(!format!("{outline:?}").is_empty());
+    let cloned = outline.clone();
+    let [item] = cloned.items.as_slice() else {
+        panic!("{cloned:?}")
+    };
+    assert_eq!(
+        (
+            &*item.selector,
+            &*item.kind,
+            item.span.clone(),
+            &*item.structural_hash
+        ),
+        ("fn[f]", "fn", 2..12, "digest")
+    );
+    let [attachment] = item.attachments.as_slice() else {
+        panic!("{item:?}")
+    };
+    assert_eq!(attachment.kind, AttachmentKind::Annotation);
+    assert_eq!(attachment.span, 4..6);
 }

@@ -368,6 +368,7 @@ fn anonymous_selectors_use_identity_hashes() {
 // {test}`requirements.references.selector_raw_lines`
 // {test}`requirements.references.outlines`
 // {test}`requirements.sdk.sources.rust.fingerprints`
+// {test}`requirements.sdk.outlines.attachments.fingerprint`
 #[test]
 fn hashes_skip_whitespace_and_plain_comments_but_not_doc_comments() {
     let base = concat!(
@@ -693,6 +694,7 @@ fn plain_text_lines_are_interchangeable_anonymous_nodes() {
 }
 
 // {test}`requirements.references.outlines`
+// {test}`requirements.sdk.outlines.Outline`
 #[test]
 fn reports_recovered_syntax_errors_with_lines() {
     let error = parse(Path::new("src/lib.rs"), "fn ok() {}\nfn broken( {\n")
@@ -1344,6 +1346,7 @@ fn comments_are_excluded_from_hashes_in_every_other_profile() {
 // {test}`requirements.references.structural_hash`
 // {test}`requirements.sdk.sources.python.items`
 // {test}`requirements.sdk.sources.python.fingerprints`
+// {test}`requirements.sdk.outlines.attachments.fingerprint`
 #[test]
 fn python_decorators_attach_to_the_decorated_definition_for_hashing() {
     let source = "@cache\ndef f():\n    pass\n";

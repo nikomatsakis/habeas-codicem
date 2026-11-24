@@ -68,6 +68,7 @@ fn outline(root: &Path, file: &str, item: &str) -> Value {
 // {test}`requirements.ci.fixme_stale_input`
 // {test}`requirements.references.selector_raw_lines`
 // {test}`requirements.references.structural_hash`
+// {test}`requirements.references.outlines`
 #[test]
 fn outline_inputs_survive_moves_and_unhashed_comments_but_not_edits() {
     let temp = fixture();
@@ -171,12 +172,16 @@ fn outline_inputs_survive_moves_and_unhashed_comments_but_not_edits() {
         let found = errors(vec![input]);
         assert!(found.contains(expected), "missing {expected:?}: {found}");
     }
-    fs::write(root.join("src/broken.rs"), "fn {").unwrap();
+    fs::write(
+        root.join("src/broken.rs"),
+        "fn valid() {}\n\nfn broken( {\n",
+    )
+    .unwrap();
     let found = errors(vec![
         json!({"file":"src/broken.rs", "item":"", "hash":hash}),
     ]);
     assert!(
-        found.contains("src/broken.rs: cannot parse rust source"),
+        found.contains("src/broken.rs: cannot parse rust source: line 3:"),
         "{found}"
     );
 }

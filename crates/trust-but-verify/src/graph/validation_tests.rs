@@ -622,6 +622,14 @@ fn labeled_selections_track_only_target_membership_without_reading_contents() {
     assert_eq!(ctx.node_id(), &1);
     let other = ctx.outgoing_edges(&9, 7).unwrap();
     assert!(other.content.is_empty());
+    assert_eq!(
+        ctx.dependencies(),
+        [Dependency::OutgoingEdges(
+            9,
+            7,
+            edge_fingerprint(&graph, &[])
+        )]
+    );
     assert_eq!(graph.state.lock().unwrap().selections, [9]);
     graph.state.lock().unwrap().selections.clear();
     assert!(ctx.successors(&7).unwrap().is_empty());
@@ -1285,6 +1293,7 @@ async fn shared_context_allows_independent_concurrent_agent_calls() {
 // {test}`requirements.sdk.domain`
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
 // {test}`requirements.sdk.graph.evidence.node_inputs`
+// {test}`requirements.sdk.graph.validation-context.ValidationContext.ask`
 #[tokio::test]
 async fn later_lighter_agent_calls_preserve_the_contexts_existing_trace() {
     let graph = Memory::default();
