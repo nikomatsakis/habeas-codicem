@@ -3,7 +3,7 @@
 This appendix collects the items introduced throughout the SDK chapters.
 
 :::{req} exports
-With its default features, `trust-but-verify` exposes the crate and module items
+`trust-but-verify` exposes the crate and module items
 listed below under {cite}`requirements.sdk.public_api`. Each declaration link opens
 the requirement that owns the item. The index names its public fields, methods,
 and associated types. The linked requirement gives their signatures and bounds,
@@ -13,8 +13,8 @@ Changes to those interfaces require a change to the owning requirement.
 Trait methods are listed on their trait. Signatures use Rustdoc’s short type
 names. Rustdoc’s automatic and blanket implementations are outside the inventory.
 
-The internal `habeas-integration` feature supports Habeas interoperability; its
-hidden items are outside this supported interface.
+The `trust-but-verify` crate defines no Cargo features. Habeas uses only the
+documented TBV public API.
 
 - `crate trust_but_verify` — [SDK public interface](../sdk.md)
   - `mod agent` — [Configure the validator’s agent](graph/agent-harness.md#configure-the-validators-agent)
@@ -131,9 +131,13 @@ hidden items are outside this supported interface.
         - `store_evidence()` — [Declaration](graph/validators.md#habeas-req-requirements.sdk.graph.validators.validator.store_evidence)
         - `with_sources()` — [Declaration](graph/validators.md#habeas-req-requirements.sdk.graph.validators.validator.with_sources)
   - `mod outline` — [Source outlines](outlines.md)
+    - `enum AttachmentKind` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.AttachmentKind) · [Inspect attachments](outlines.md#inspect-attachments)
     - `struct Outline` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.Outline) · [Inspect selectable items](outlines.md#inspect-selectable-items)
       - `items`
       - `new()`
+    - `struct OutlineAttachment` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.OutlineAttachment) · [Inspect attachments](outlines.md#inspect-attachments)
+      - `kind`
+      - `span`
     - `struct OutlineContent` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.parser) · [Load outline contents](outlines.md#load-outline-contents) · [Select another item from the same snapshot](outlines.md#select-another-item-from-the-same-snapshot)
       - `from_path()`
       - `from_id()`
@@ -161,6 +165,7 @@ hidden items are outside this supported interface.
       - `kind`
       - `span`
       - `structural_hash`
+      - `attachments`
       - `new()`
     - `trait OutlineLang` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.language_provider) · [Choose an outline language](outlines.md#choose-an-outline-language)
       - `name()`

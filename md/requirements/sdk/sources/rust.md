@@ -57,6 +57,12 @@ containment within the file. Outer attributes and outer documentation comments
 attach to the following item; inner documentation comments belong to their
 containing item or file root.
 
+The outline reports ordinary and documentation comments as `Comment`
+attachments and each attached outer attribute as an `Annotation` under
+{cite}`requirements.sdk.outlines.attachments`. For example, a function
+preceded by `/// Verify the token.` and `#[inline]` owns two attachments,
+in that order. Their spans include `///` and the full `#[inline]` respectively.
+
 Item selectors, percent encoding, anonymous identities, and duplicate-name
 suffixes follow {cite}`requirements.references.outline_selectors`.
 :::

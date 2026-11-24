@@ -47,6 +47,11 @@ Nested definitions appear beneath their nearest enclosing outline item.
 Decorators attach to the definition they decorate and are included in its
 selected source and structural hash.
 
+Each decorator is one `Annotation` attachment on the decorated definition
+under {cite}`requirements.sdk.outlines.attachments`. Its span starts at `@`
+and includes the decorator expression and any arguments. Python comments are
+`Comment` attachments. Docstrings are string expressions.
+
 Item selectors, percent encoding, anonymous identities, and duplicate-name
 suffixes follow {cite}`requirements.references.outline_selectors`.
 :::

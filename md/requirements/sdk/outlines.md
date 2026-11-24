@@ -418,6 +418,9 @@ impl Debug for Outline;
 :test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
 
 `selector` addresses the item and `kind` describes it. `span` is a half-open byte range in the retained source. `structural_hash` identifies the item’s outline-relevant contents.
+`attachments` lists the source constructs assigned to this item under
+{cite}`requirements.sdk.outlines.attachments`. `OutlineItem::new` initializes
+the list to empty.
 
 ```rust,ignore
 #[non_exhaustive]
@@ -426,6 +429,7 @@ pub struct OutlineItem {
     pub kind: String,
     pub span: Range<usize>,
     pub structural_hash: String,
+    pub attachments: Vec<OutlineAttachment>,
 }
 
 impl OutlineItem {
@@ -452,6 +456,75 @@ for item in &file.outline().items {
     println!("{}: {}", item.kind, item.selector);
 }
 ```
+
+## Inspect attachments
+
+:::{req} attachments
+An outline language assigns attachments to their owning items, which may
+include the file root. Each item lists its own attachments in source order.
+An item with no attachments has an empty list. A language may return empty
+lists for every item.
+
+Each attachment's `span` is a half-open byte range in the original file
+snapshot, even when the caller has selected a nested item. Slicing that
+snapshot at the span yields the complete source construct, including its
+delimiters. Repeated occurrences have their own spans.
+
+The bundled languages report each recognized source comment as `Comment` on
+the item that owns it under {cite}`requirements.references.outline_comments`.
+Each comment in a run has its own span and the run's owner. Consumers interpret
+the comment text. Each language's fingerprint rules determine which attachments
+contribute to the owning item's structural hash.
+:::
+
+:::{req} OutlineAttachment
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+`kind` classifies the construct and `span` locates it under
+{cite}`requirements.sdk.outlines.attachments`. Language providers can
+construct an attachment from these two fields.
+
+```rust,ignore
+pub struct OutlineAttachment {
+    pub kind: AttachmentKind,
+    pub span: Range<usize>,
+}
+```
+
+Trait implementations
+
+```rust,ignore
+impl Clone for OutlineAttachment;
+impl Debug for OutlineAttachment;
+```
+:::
+
+:::{req} AttachmentKind
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+`Comment` covers source comments, including documentation comments.
+`Annotation` covers language constructs such as attributes and decorators
+that annotate a declaration. Providers use the common kind when it applies
+and `Other` with a language-defined name for additional kinds.
+
+```rust,ignore
+#[non_exhaustive]
+pub enum AttachmentKind {
+    Comment,
+    Annotation,
+    Other(String),
+}
+```
+
+Trait implementations
+
+```rust,ignore
+impl Clone for AttachmentKind;
+impl Debug for AttachmentKind;
+impl PartialEq for AttachmentKind;
+impl Eq for AttachmentKind;
+```
+:::
 
 ## Choose an outline language
 
