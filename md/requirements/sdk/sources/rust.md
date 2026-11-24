@@ -61,6 +61,11 @@ Item selectors, percent encoding, anonymous identities, and duplicate-name
 suffixes follow {cite}`requirements.references.outline_selectors`.
 :::
 
+For `impl<T> Trait for Wrapper<T>`, the selector is `impl[Wrapper<T>/Trait]`
+and the {cite}`requirements.sdk.outlines.name_span` highlights `Trait for Wrapper<T>`.
+For a bare `extern { … }` block, the selector is `extern[Rust]` and the span
+highlights the `extern` keyword.
+
 This source contains `mod[auth]/fn[check_token]`:
 
 ```rust

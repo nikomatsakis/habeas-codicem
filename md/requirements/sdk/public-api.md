@@ -166,9 +166,11 @@ documented TBV public API.
       - `selector`
       - `kind`
       - `span`
+      - `name_span`
       - `structural_hash`
       - `attachments`
       - `new()`
+      - `with_name_span()`
       - `with_attachments()`
     - `trait OutlineLang` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.language_provider) · [Choose an outline language](outlines.md#choose-an-outline-language)
       - `name()`

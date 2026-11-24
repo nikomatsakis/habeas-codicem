@@ -4,7 +4,6 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use crate::evidence::{Declaration, InspectionProgress};
-use crate::outline;
 use crate::reference_roles;
 
 /// The inspection phase label for Rust function coverage.
@@ -169,7 +168,7 @@ pub(crate) fn untested_tests(
             tested[owner] = true;
         }
     }
-    let missing: Vec<_> = public
+    Ok(public
         .items
         .iter()
         .enumerate()
@@ -181,19 +180,9 @@ pub(crate) fn untested_tests(
                         && TEST_ATTRIBUTE.is_match(&source[attachment.span])
                 })
         })
-        .map(|(index, _)| index)
-        .collect();
-    if missing.is_empty() {
-        return Ok(Vec::new());
-    }
-    // Diagnostics use the declared name's line, which can follow a multiline
-    // attribute or signature. The public item span includes the attributes.
-    let declarations = outline::parse(Path::new("source.rs"), source)?;
-    Ok(missing
-        .into_iter()
-        .filter_map(|index| {
-            let node = &declarations.nodes[index];
-            Some((index, node.declaration_line, node.display_name()?))
+        .filter_map(|(index, item)| {
+            let name = item.name_span?;
+            Some((index, items.line_at(name.start), source[name].to_owned()))
         })
         .collect())
 }
@@ -501,6 +490,11 @@ mod tests {
             "mod inline { #[cfg(test)] #[tokio::test] async fn inline_test() {} fn helper() {} }\n",
             "// {impl}`requirements.example`\n#[test] fn only_implemented() {}\n",
             "#[doc = \"a ] #[test] string\"] fn documented_helper() {}\n",
+        );
+        let multiline = "#[test]\nfn\n    café() {}";
+        assert_eq!(
+            super::untested_tests(multiline, &definitions()).unwrap(),
+            [(1, 3, "café".into())]
         );
         let names: Vec<String> = super::untested_tests(source, &definitions())
             .unwrap()

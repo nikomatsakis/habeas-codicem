@@ -14,6 +14,7 @@ pub(crate) struct OutlineItems {
     parents: Vec<Option<usize>>,
     children: Vec<Vec<usize>>,
     spans: Vec<Range<usize>>,
+    line_starts: Vec<usize>,
 }
 
 impl OutlineItems {
@@ -63,10 +64,15 @@ impl OutlineItems {
         Self {
             diagnostic: outline.diagnostic.clone(),
             comments,
+            line_starts,
             parents,
             children,
             spans,
         }
+    }
+
+    pub(crate) fn line_at(&self, byte: usize) -> usize {
+        self.line_starts.partition_point(|start| *start <= byte)
     }
 
     pub(crate) fn parent(&self, item: usize) -> Option<usize> {

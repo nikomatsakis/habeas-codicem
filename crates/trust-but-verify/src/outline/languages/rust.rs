@@ -8,44 +8,40 @@ use crate::outline_engine::language::Profile;
 use crate::outline_engine::language::text;
 
 /// Names an impl by its syntactic self type and optional trait path.
-fn impl_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, usize)> {
+fn impl_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, std::ops::Range<usize>)> {
     let self_type = node.child_by_field_name("type")?;
     let name = text(self_type, source).to_owned();
     // The name begins at whichever of the trait and self type comes first.
     Some(match node.child_by_field_name("trait") {
         Some(path) => (
             vec![name, text(path, source).to_owned()],
-            path.start_byte().min(self_type.start_byte()),
+            path.start_byte()..self_type.end_byte(),
         ),
-        None => (vec![name], self_type.start_byte()),
+        None => (vec![name], self_type.byte_range()),
     })
 }
 
 /// Names an extern block by its ABI string, `Rust` when absent.
 // {cite}`habeas:util`
-fn extern_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, usize)> {
+fn extern_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, std::ops::Range<usize>)> {
     let mut cursor = node.walk();
     let modifier = node
         .named_children(&mut cursor)
-        .find(|child| child.kind() == "extern_modifier");
-    let abi = modifier.and_then(|modifier| {
-        let mut cursor = modifier.walk();
-        let literal = modifier
-            .named_children(&mut cursor)
-            .find(|child| child.kind() == "string_literal")?;
+        .find(|child| child.kind() == "extern_modifier")?;
+    let mut cursor = modifier.walk();
+    if let Some(literal) = modifier
+        .named_children(&mut cursor)
+        .find(|child| child.kind() == "string_literal")
+    {
         let mut cursor = literal.walk();
         let content = literal
             .named_children(&mut cursor)
             .find(|child| child.kind() == "string_content")
             .map_or_else(String::new, |content| text(content, source).to_owned());
-        Some((content, literal.start_byte()))
-    });
-    // Without an ABI string the name is not written, so the block is declared
-    // where it starts.
-    Some(match abi {
-        Some((abi, byte)) => (vec![abi], byte),
-        None => (vec!["Rust".to_owned()], node.start_byte()),
-    })
+        Some((vec![content], literal.byte_range()))
+    } else {
+        Some((vec!["Rust".to_owned()], modifier.byte_range()))
+    }
 }
 
 /// Whether a grammar node sits directly in an item list.

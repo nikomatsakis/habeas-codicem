@@ -13,7 +13,7 @@ use crate::outline_engine::language::text;
 /// Names an at-rule by its normalised prelude: the text between the at-keyword
 /// and the block.
 // {cite}`habeas:util`
-fn prelude_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, usize)> {
+fn prelude_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, std::ops::Range<usize>)> {
     let keyword = node.child(0)?;
     let mut cursor = node.walk();
     let block = node
@@ -22,7 +22,7 @@ fn prelude_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, usize)> {
     let raw = source.get(keyword.end_byte()..block.start_byte())?;
     let start = keyword.end_byte() + (raw.len() - raw.trim_start().len());
     let prelude = normalized(raw);
-    (!prelude.is_empty()).then(|| (vec![prelude], start))
+    (!prelude.is_empty()).then(|| (vec![prelude], start..start + raw.trim().len()))
 }
 
 // {impl}`requirements.references.outline_comments`
@@ -32,14 +32,14 @@ fn is_comment(node: Node<'_>, source: &str) -> bool {
 
 /// Names a rule set by its normalised selector list.
 // {cite}`habeas:util`
-fn selectors_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, usize)> {
+fn selectors_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, std::ops::Range<usize>)> {
     let mut cursor = node.walk();
     let selectors = node
         .named_children(&mut cursor)
         .find(|child| child.kind() == "selectors")?;
     Some((
         vec![normalized(text(selectors, source))],
-        selectors.start_byte(),
+        selectors.byte_range(),
     ))
 }
 

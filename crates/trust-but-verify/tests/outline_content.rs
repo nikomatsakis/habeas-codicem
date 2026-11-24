@@ -15,7 +15,13 @@ fn span_indexes_str_at_utf8_byte_boundaries() {
     let source = "aé🦀";
     assert_eq!(&source[Span::new(1, 3)], "é");
     assert_eq!(&source[Span::new(7, 7)], "");
-    for span in [Span::new(2, 3), Span::new(0, 8), Span::new(3, 1)] {
+    for span in [
+        Span::new(2, 3),
+        Span::new(0, 2),
+        Span::new(2, 2),
+        Span::new(0, 8),
+        Span::new(3, 1),
+    ] {
         assert!(std::panic::catch_unwind(|| &source[span]).is_err());
     }
 }
@@ -187,7 +193,8 @@ impl OutlineLang for CustomLanguage {
                 "part".into(),
                 self.span,
                 "selected-digest".into(),
-            ),
+            )
+            .with_name_span(self.span),
         ]))
     }
 
@@ -302,16 +309,19 @@ fn ambiguous_items_are_errors_except_for_identical_plain_text_lines() {
                 "root".into(),
             )];
             for (index, span) in [Span::new(0, 4), Span::new(5, 9)].into_iter().enumerate() {
-                items.push(OutlineItem::new(
-                    format!("{}[same]", self.kind),
-                    self.kind.into(),
-                    span,
-                    if self.different_hashes && index == 1 {
-                        "different".into()
-                    } else {
-                        "same".into()
-                    },
-                ));
+                items.push(
+                    OutlineItem::new(
+                        format!("{}[same]", self.kind),
+                        self.kind.into(),
+                        span,
+                        if self.different_hashes && index == 1 {
+                            "different".into()
+                        } else {
+                            "same".into()
+                        },
+                    )
+                    .with_name_span(span),
+                );
             }
             Ok(Outline::new(items))
         }
@@ -788,6 +798,7 @@ fn multiline_setext_sections_keep_original_source_spans_and_skip_code() {
 
 // {test}`requirements.sdk.sources.markdown.sections`
 // {test}`requirements.sdk.outlines.items`
+// {test}`requirements.sdk.outlines.Span`
 #[test]
 fn setext_sections_inside_directives_lists_and_quotes_retain_container_spans() {
     let cases = [
@@ -809,7 +820,10 @@ fn setext_sections_inside_directives_lists_and_quotes_retain_container_spans() {
             .unwrap_or_else(|| panic!("missing setext section in {source:?}"));
         assert!(item.selector.starts_with("section[Root]/"));
         assert_eq!(item.selector.contains("/block@"), in_block);
-        assert_eq!(item.span.start, source.find("Résumé").unwrap());
+        let first = source.find("Résumé").unwrap();
+        let end = source.find("two").unwrap() + "two".len();
+        assert_eq!(item.span.start, first);
+        assert_eq!(item.name_span, Some(Span::new(first, end)));
         let selected = contents.select(&item.selector).unwrap();
         assert!(selected.text().contains(underline), "{source:?}");
         assert!(selected.text().contains("body"), "{source:?}");
@@ -1503,6 +1517,8 @@ fn custom_attachment_spans_are_checked_against_the_original_snapshot() {
 
 // {test}`requirements.sdk.outlines.Outline`
 // {test}`requirements.sdk.outlines.OutlineItem`
+// {test}`requirements.sdk.outlines.name_span`
+// {test}`requirements.sdk.public_api`
 #[test]
 fn outline_constructors_preserve_fields_and_replace_attachments() {
     use trust_but_verify::outline::{AttachmentKind, OutlineAttachment};
@@ -1512,8 +1528,10 @@ fn outline_constructors_preserve_fields_and_replace_attachments() {
         Span::new(2, 12),
         "digest".into(),
     );
+    assert_eq!(item.name_span, None);
     assert!(item.attachments.is_empty());
     let item = item
+        .with_name_span(Span::new(7, 8))
         .with_attachments(vec![OutlineAttachment::new(
             AttachmentKind::Comment,
             Span::new(2, 4),
@@ -1538,9 +1556,87 @@ fn outline_constructors_preserve_fields_and_replace_attachments() {
         ),
         ("fn[f]", "fn", Span::new(2, 12), "digest")
     );
+    assert_eq!(item.name_span, Some(Span::new(7, 8)));
     let [attachment] = item.attachments.as_slice() else {
         panic!("{item:?}")
     };
     assert_eq!(attachment.kind, AttachmentKind::Annotation);
     assert_eq!(attachment.span, Span::new(4, 6));
+}
+
+// {test}`requirements.sdk.outlines.name_span`
+// {test}`requirements.sdk.sources.rust.items`
+#[test]
+fn rust_name_spans_highlight_spelling_in_the_original_source() {
+    let source = "use x;\nimpl<T> Trait for Wrapper<T> {\n #[test]\n fn café() {}\n}\nimpl Wrapper<u8> {}\nunsafe extern {}\nextern \"C\" {}\n";
+    let contents = OutlineContent::from_source("names.rs", source.into()).unwrap();
+    let named: Vec<_> = contents
+        .outline()
+        .items
+        .iter()
+        .map(|item| (item.kind.as_str(), item.name_span.map(|span| &source[span])))
+        .collect();
+    assert_eq!(
+        named,
+        [
+            ("", None),
+            ("use", None),
+            ("impl", Some("Trait for Wrapper<T>")),
+            ("fn", Some("café")),
+            ("impl", Some("Wrapper<u8>")),
+            ("extern", Some("extern")),
+            ("extern", Some("\"C\""))
+        ]
+    );
+    assert_eq!(
+        contents.outline().items[2].selector,
+        "impl[Wrapper<T>/Trait]"
+    );
+    assert_eq!(contents.outline().items[5].selector, "extern[Rust]");
+}
+
+// {test}`requirements.sdk.outlines.name_span`
+#[test]
+fn language_name_spans_retain_original_bytes_when_selectors_are_normalized() {
+    for (path, source, expected) in [
+        ("a.py", "@cache\nclass Café: pass\n", vec![Some("Café")]),
+        (
+            "a.ts",
+            "function f() {}\nfunction f() {}",
+            vec![Some("f"), Some("f")],
+        ),
+        ("a.tsx", "function F() { return <i/>; }", vec![Some("F")]),
+        (
+            "a.css",
+            "@media  screen   and (color) { .a,  .b {} }",
+            vec![Some("screen   and (color)"), Some(".a,  .b")],
+        ),
+        (
+            "a.toml",
+            "[a.b]\n'c/d' = 1",
+            vec![Some("a.b"), Some("'c/d'")],
+        ),
+        ("a.yml", "key: [1]\n", vec![Some("key")]),
+        (
+            "a.md",
+            ":::{note}\nCafé   title\n===\n:::\n",
+            vec![None, None, Some("Café   title")],
+        ),
+        ("a.txt", "plain\n", vec![None]),
+    ] {
+        let root = OutlineContent::from_source(path, source.into()).unwrap();
+        let items = &root.outline().items;
+        assert_eq!(items[0].name_span, None);
+        assert_eq!(
+            items[1..]
+                .iter()
+                .map(|item| item.name_span.map(|span| &source[span]))
+                .collect::<Vec<_>>(),
+            expected,
+            "{path}"
+        );
+        if path == "a.ts" {
+            assert_ne!(items[1].name_span, items[2].name_span);
+        }
+    }
 }

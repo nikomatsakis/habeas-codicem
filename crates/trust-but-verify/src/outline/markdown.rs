@@ -9,8 +9,8 @@ use pulldown_cmark::{Event, Parser as CommonMark};
 use tree_sitter::Node;
 
 use super::{
-    DraftComment, Encoder, HASH_DIGITS, Label, LegacyOutline, LineIndex, NameRule, OutlineError,
-    OutlineNode, Profile, Redaction, Segment, assign_comments, disambiguate, parse_tree, root_node,
+    DraftComment, Encoder, HASH_DIGITS, Label, LegacyOutline, LineIndex, OutlineError, OutlineNode,
+    Profile, Redaction, Segment, assign_comments, disambiguate, parse_tree, root_node,
     syntax_diagnostic,
 };
 
@@ -295,38 +295,26 @@ impl Builder<'_> {
             });
         let rule = self.profile.rule(node);
         let owner = if colon || rule.is_some() {
-            let (kind, name, declaration) = if colon {
-                ("block", None, range.start)
+            let (kind, name, name_span) = if colon {
+                ("block", None, None)
             } else {
                 let rule = rule.expect("mapped node");
-                let named = match rule.name {
-                    NameRule::Custom(name) => name(node, &view.text),
-                    NameRule::Anonymous => None,
-                    NameRule::Field(field) => node.child_by_field_name(field).map(|child| {
-                        (
-                            vec![view.text[child.byte_range()].to_owned()],
-                            child.start_byte(),
-                        )
-                    }),
-                    NameRule::FirstChild(kinds) => children
-                        .iter()
-                        .find(|child| child.is_named() && kinds.contains(&child.kind()))
-                        .map(|child| {
-                            (
-                                vec![view.text[child.byte_range()].to_owned()],
-                                child.start_byte(),
-                            )
-                        }),
-                };
-                let (name, declaration) = named.map_or((None, range.start), |(name, byte)| {
-                    (Some(name), view.offsets[byte])
-                });
-                (rule.kind, name, declaration)
+                let (name, name_span) = rule
+                    .name
+                    .resolve(node, &view.text)
+                    .map(|(parts, bytes)| {
+                        // The next projected byte may skip a container prefix or newline.
+                        let start = view.offsets[bytes.start];
+                        let end = bytes.last().map_or(start, |last| view.offsets[last] + 1);
+                        (parts, crate::outline::Span::new(start, end))
+                    })
+                    .unzip();
+                (rule.kind, name, name_span)
             };
             if kind == "section" && name.is_none() && parent != 0 {
                 parent
             } else {
-                self.push(kind, name, declaration, range.clone(), syntax, parent)
+                self.push(kind, name, name_span, range.clone(), syntax, parent)
             }
         } else {
             parent
@@ -390,7 +378,7 @@ impl Builder<'_> {
         &mut self,
         kind: &'static str,
         name: Option<Vec<String>>,
-        declaration: usize,
+        name_span: Option<crate::outline::Span>,
         range: Range<usize>,
         syntax: usize,
         parent: usize,
@@ -401,13 +389,16 @@ impl Builder<'_> {
         self.nodes.push(OutlineNode {
             kind,
             name,
+            name_span,
             segment: String::new(),
             selector: String::new(),
             parent: Some(parent),
             children: Vec::new(),
             line_start,
             line_end,
-            declaration_line: self.lines.line(declaration),
+            declaration_line: self
+                .lines
+                .line(name_span.map_or(range.start, |span| span.start)),
             byte_start: range.start,
             byte_end: range.end,
             source_start: range.start,

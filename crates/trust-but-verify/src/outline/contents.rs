@@ -121,6 +121,8 @@ pub struct OutlineItem {
     pub selector: String,
     pub kind: String,
     pub span: Span,
+    /// Source to highlight for the selector name.
+    pub name_span: Option<Span>,
     pub structural_hash: String,
     pub attachments: Vec<OutlineAttachment>,
 }
@@ -132,9 +134,17 @@ impl OutlineItem {
             selector,
             kind,
             span,
+            name_span: None,
             structural_hash,
             attachments: Vec::new(),
         }
+    }
+
+    /// Set the source highlight for a named item.
+    // {impl}`requirements.sdk.outlines.name_span`
+    pub fn with_name_span(mut self, span: Span) -> Self {
+        self.name_span = Some(span);
+        self
     }
 
     /// Set the language-defined attachments in source order.
@@ -400,6 +410,7 @@ impl NodeContents for OutlineContent {
 
 impl Outline {
     // {impl}`requirements.sdk.outlines.attachments`
+    // {impl}`requirements.sdk.outlines.name_span`
     // {impl}`requirements.sdk.outlines.attachments.order`
     // {impl}`requirements.sdk.outlines.attachments.comments`
     pub(crate) fn from_legacy(outline: LegacyOutline) -> Self {
@@ -407,15 +418,14 @@ impl Outline {
             .nodes
             .into_iter()
             .map(|node| {
-                OutlineItem::new(
+                let mut item = OutlineItem::new(
                     node.selector,
                     node.kind.to_owned(),
-                    Span {
-                        start: node.source_start,
-                        end: node.byte_end,
-                    },
+                    Span::new(node.source_start, node.byte_end),
                     node.structural_hash,
-                )
+                );
+                item.name_span = node.name_span;
+                item
             })
             .collect();
         for comment in outline.comments {
@@ -445,6 +455,7 @@ impl Outline {
 }
 
 // {impl}`requirements.sdk.outlines.attachments.span`
+// {impl}`requirements.sdk.outlines.name_span`
 fn validate_outline(outline: &Outline, source: &str) -> Result<(), OutlineError> {
     if outline
         .items
@@ -472,7 +483,22 @@ fn validate_outline(outline: &Outline, source: &str) -> Result<(), OutlineError>
         {
             return Err(selection_error("attachments must be in source order"));
         }
-        parse_selector(&item.selector).map_err(selection_error)?;
+        let selector = parse_selector(&item.selector).map_err(selection_error)?;
+        let named = selector
+            .last()
+            .is_some_and(|segment| matches!(segment.label, selector::Label::Named(_)));
+        if named != item.name_span.is_some() {
+            return Err(selection_error(
+                "name span must be present exactly for named outline items",
+            ));
+        }
+        if let Some(name) = item.name_span
+            && (name.start < item.span.start
+                || name.end > item.span.end
+                || source.get(name.range()).is_none())
+        {
+            return Err(selection_error("outline item has an invalid name span"));
+        }
     }
     Ok(())
 }
@@ -517,3 +543,39 @@ impl fmt::Display for OutlineError {
 }
 
 impl std::error::Error for OutlineError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // {test}`requirements.sdk.outlines.name_span`
+    #[test]
+    fn provider_name_spans_match_selector_kind_and_item_boundaries() {
+        let source = "_é_";
+        let root = OutlineItem::new(String::new(), String::new(), Span::new(0, 4), "root".into());
+        for (selector, name, valid) in [
+            ("part[name]", Some(Span::new(1, 3)), true),
+            ("part[name]", None, false),
+            ("part[name]", Some(Span::new(1, 2)), false),
+            ("part[name]", Some(Span::new(3, 1)), false),
+            ("part[name]", Some(Span::new(0, 3)), false),
+            ("part[name]", Some(Span::new(1, 4)), false),
+            ("part@0123456789ab", None, true),
+            ("part@0123456789ab", Some(Span::new(1, 3)), false),
+        ] {
+            let mut item = OutlineItem::new(
+                selector.into(),
+                "part".into(),
+                Span::new(1, 3),
+                "item".into(),
+            );
+            item.name_span = name;
+            let outline = Outline::new(vec![root.clone(), item]);
+            assert_eq!(
+                validate_outline(&outline, source).is_ok(),
+                valid,
+                "{selector} {name:?}"
+            );
+        }
+    }
+}

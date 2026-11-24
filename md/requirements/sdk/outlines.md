@@ -456,6 +456,7 @@ impl Debug for Outline;
 :test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
 
 `selector` addresses the item and `kind` describes it. `span` locates the whole item under {cite}`requirements.sdk.outlines.Span`.
+`name_span` locates the name under {cite}`requirements.sdk.outlines.name_span`.
 `structural_hash` identifies the item’s outline-relevant contents.
 `attachments` lists the source constructs assigned to this item under
 {cite}`requirements.sdk.outlines.attachments`. `OutlineItem::new` initializes
@@ -467,6 +468,7 @@ pub struct OutlineItem {
     pub selector: String,
     pub kind: String,
     pub span: Span,
+    pub name_span: Option<Span>,
     pub structural_hash: String,
     pub attachments: Vec<OutlineAttachment>,
 }
@@ -478,6 +480,7 @@ impl OutlineItem {
         span: Span,
         structural_hash: String,
     ) -> Self;
+    pub fn with_name_span(self, span: Span) -> Self;
     pub fn with_attachments(self, attachments: Vec<OutlineAttachment>) -> Self;
 }
 ```
@@ -496,6 +499,15 @@ for item in &file.outline().items {
     println!("{}: {}", item.kind, item.selector);
 }
 ```
+
+:::{req} name_span
+A named item's `name_span` is `Some` with the span to highlight for its name
+in the original source snapshot. The highlighted text may differ from the
+name in the selector. Use `selector` to address the item. The file root and
+anonymous items have `name_span` set to `None`. `OutlineItem::new` starts with
+`None`. Language providers use `with_name_span` to set the highlight within
+the item’s own span.
+:::
 
 ## Inspect attachments
 

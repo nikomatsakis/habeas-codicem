@@ -24,7 +24,6 @@ use hash::Encoder;
 #[doc(hidden)]
 use profile::profile_for_path;
 pub(crate) use profile::{LanguageProvider, Profile};
-use profile::{NameRule, text};
 pub(crate) use selector::{HASH_DIGITS, Label, Segment, SelectorError, parse_selector};
 
 /// One outline node. Line numbers are one-based and inclusive.
@@ -37,6 +36,7 @@ pub struct OutlineNode {
     /// Name parts; `None` for an anonymous node. Most names have one part;
     /// a Rust trait impl has two, the self type and the trait.
     pub name: Option<Vec<String>>,
+    pub(crate) name_span: Option<crate::outline::Span>,
     /// This node's selector segment; empty for the root.
     pub segment: String,
     /// Full selector from the root; empty for the root.
@@ -292,6 +292,7 @@ fn plain_text(
         nodes.push(OutlineNode {
             kind: "line",
             name: None,
+            name_span: None,
             selector: segment.clone(),
             segment,
             parent: Some(0),
@@ -328,6 +329,7 @@ fn root_node(
     OutlineNode {
         kind: "",
         name: None,
+        name_span: None,
         segment: String::new(),
         selector: String::new(),
         parent: None,
@@ -348,7 +350,7 @@ fn root_node(
 struct Draft<'tree> {
     kind: &'static str,
     name: Option<Vec<String>>,
-    declaration_byte: usize,
+    name_span: Option<crate::outline::Span>,
     parent: Option<usize>,
     core: Node<'tree>,
     attached: Vec<Node<'tree>>,
@@ -390,7 +392,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
             drafts: vec![Draft {
                 kind: "",
                 name: None,
-                declaration_byte: 0,
+                name_span: None,
                 parent: None,
                 core: root,
                 attached: Vec::new(),
@@ -436,30 +438,6 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         }
     }
 
-    /// Names a mapped node, returning its parts and the byte where the name
-    /// is declared.
-    // {cite}`habeas:util`
-    fn name(&self, rule: NameRule, node: Node<'_>) -> Option<(Vec<String>, usize)> {
-        let named = |child: Node<'_>| {
-            (
-                vec![text(child, self.source).to_owned()],
-                child.start_byte(),
-            )
-        };
-        match rule {
-            NameRule::Anonymous => None,
-            NameRule::Field(field) => node.child_by_field_name(field).map(named),
-            NameRule::FirstChild(kinds) => {
-                let mut cursor = node.walk();
-                let child = node
-                    .named_children(&mut cursor)
-                    .find(|child| kinds.contains(&child.kind()));
-                child.map(named)
-            }
-            NameRule::Custom(rule) => rule(node, self.source),
-        }
-    }
-
     // {cite}`habeas:util`
     fn walk(&mut self, node: Node<'tree>, parent: usize) {
         let mut cursor = node.walk();
@@ -488,17 +466,18 @@ impl<'tree, 'source> Builder<'tree, 'source> {
                 continue;
             }
             if let Some(rule) = self.profile.rule(child) {
-                let (name, declaration_byte) = match self.name(rule.name, child) {
-                    Some((parts, byte)) => (Some(parts), byte),
-                    None => (None, child.start_byte()),
-                };
+                let (name, name_span) = rule
+                    .name
+                    .resolve(child, self.source)
+                    .map(|(parts, range)| (parts, crate::outline::Span::from_range(range)))
+                    .unzip();
                 let attached = children
                     .iter()
                     .zip(&attached_to)
                     .filter(|(_, target)| **target == Some(index))
                     .map(|(sibling, _)| *sibling)
                     .collect::<Vec<_>>();
-                let draft = self.push(rule.kind, name, declaration_byte, parent, child, attached);
+                let draft = self.push(rule.kind, name, name_span, parent, child, attached);
                 self.walk(child, draft);
             } else {
                 // Unmapped grammar nodes are transparent; source in no mapped
@@ -514,7 +493,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         &mut self,
         kind: &'static str,
         name: Option<Vec<String>>,
-        declaration_byte: usize,
+        name_span: Option<crate::outline::Span>,
         parent: usize,
         core: Node<'tree>,
         attached: Vec<Node<'tree>>,
@@ -527,7 +506,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         self.drafts.push(Draft {
             kind,
             name,
-            declaration_byte,
+            name_span,
             parent: Some(parent),
             core,
             attached,
@@ -637,13 +616,18 @@ impl<'tree, 'source> Builder<'tree, 'source> {
             nodes.push(OutlineNode {
                 kind: draft.kind,
                 name: draft.name.clone(),
+                name_span: draft.name_span,
                 segment: Segment::base(draft.kind, &label),
                 selector: String::new(),
                 parent: Some(parent),
                 children: Vec::new(),
                 line_start,
                 line_end,
-                declaration_line: lines.line(draft.declaration_byte),
+                declaration_line: lines.line(
+                    draft
+                        .name_span
+                        .map_or(draft.core.start_byte(), |span| span.start),
+                ),
                 byte_start: draft.core.start_byte(),
                 source_start: start,
                 byte_end: if self.profile.trailing_comments_outside {

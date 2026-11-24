@@ -22,6 +22,7 @@ pub mod judgment;
 mod outline {
     pub(crate) use trust_but_verify::outline_engine::LegacyOutline as Outline;
     pub(crate) use trust_but_verify::outline_engine::ResolveError;
+    #[cfg(test)]
     pub(crate) use trust_but_verify::outline_engine::parse;
     pub(crate) use trust_but_verify::outline_engine::parse_redacted;
     pub(crate) use trust_but_verify::outline_engine::profile::profile_for_path;

@@ -279,6 +279,7 @@ mod tests {
     // {test}`requirements.sdk.outlines.parse_selector`
     // {test}`requirements.sdk.outlines.Segment`
     // {test}`requirements.sdk.outlines.SelectorError`
+    // {test}`requirements.sdk.public_api`
     #[test]
     fn parses_named_anonymous_and_ordinal_segments() {
         assert!(parse_selector("").unwrap().is_empty());

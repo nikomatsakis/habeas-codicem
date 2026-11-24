@@ -11,16 +11,16 @@ use crate::outline_engine::language::text;
 
 /// Names a section by its heading's normalised text; a section without a
 /// heading, before the first heading, is anonymous.
-fn heading_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, usize)> {
+fn heading_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, std::ops::Range<usize>)> {
     let mut cursor = node.walk();
     let heading = node
         .named_children(&mut cursor)
         .find(|child| matches!(child.kind(), "atx_heading" | "setext_heading"))?;
     let content = heading.child_by_field_name("heading_content")?;
-    Some((
-        vec![normalized(text(content, source))],
-        content.start_byte(),
-    ))
+    let raw = text(content, source);
+    let start = content.start_byte() + raw.len() - raw.trim_start().len();
+    let title = raw.trim();
+    Some((vec![normalized(title)], start..start + title.len()))
 }
 
 /// HTML comment blocks are Markdown's comments.

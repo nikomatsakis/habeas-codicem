@@ -2,9 +2,8 @@
 
 use tree_sitter::{Language, Node};
 
-/// A profile-specific naming rule: the name's parts and the byte where the
-/// name begins.
-pub type CustomName = fn(Node<'_>, &str) -> Option<(Vec<String>, usize)>;
+/// A profile-specific naming rule: the selector's name parts and the source to highlight.
+pub type CustomName = fn(Node<'_>, &str) -> Option<(Vec<String>, std::ops::Range<usize>)>;
 
 /// How an outline node of a mapped kind is named.
 #[derive(Clone, Copy)]
@@ -17,10 +16,28 @@ pub enum NameRule {
     /// Named by the first named child whose kind is listed, as written.
     FirstChild(&'static [&'static str]),
     /// Named by a profile-specific rule returning the name's parts, which are
-    /// joined by an unencoded `/` in the segment, and the byte where the name
-    /// begins in the source (the node's start when the name is not written
-    /// there). `None` makes the node anonymous.
+    /// joined by an unencoded `/` in the segment, and the source range to highlight. `None` makes the node anonymous.
     Custom(CustomName),
+}
+
+impl NameRule {
+    /// Resolve the selector name and the source range that supplies it.
+    // {impl}`requirements.sdk.outlines.name_span`
+    pub(crate) fn resolve(
+        self,
+        node: Node<'_>,
+        source: &str,
+    ) -> Option<(Vec<String>, std::ops::Range<usize>)> {
+        let child = match self {
+            Self::Anonymous => return None,
+            Self::Custom(rule) => return rule(node, source),
+            Self::Field(field) => node.child_by_field_name(field)?,
+            Self::FirstChild(kinds) => node
+                .named_children(&mut node.walk())
+                .find(|child| kinds.contains(&child.kind()))?,
+        };
+        Some((vec![text(child, source).to_owned()], child.byte_range()))
+    }
 }
 
 /// One row of a profile's kind table.
