@@ -331,6 +331,7 @@ fn identity_hashes_include_own_attached_siblings_but_not_descendants() {
 // {test}`requirements.references.outline_selectors`
 // {test}`requirements.references.structural_hash`
 // {test}`requirements.sdk.sources.rust.items`
+// {test}`requirements.sdk.outlines.selector_syntax`
 #[test]
 fn anonymous_selectors_use_identity_hashes() {
     let before = outline(
@@ -667,6 +668,7 @@ fn line_queries_find_innermost_nodes() {
 // {test}`requirements.references.outline_selectors`
 // {test}`requirements.sdk.sources.plain-text.items`
 // {test}`requirements.sdk.sources.plain-text.fingerprints`
+// {test}`requirements.sdk.outlines.selector_syntax`
 #[test]
 fn plain_text_lines_are_interchangeable_anonymous_nodes() {
     let outline = outline("notes.txt", "alpha\n\n  beta  \nalpha\n");
@@ -892,6 +894,7 @@ fn anonymous_container_selectors_use_identity_hashes_and_survive_descendant_edit
 // {test}`requirements.references.selector_use`
 // {test}`requirements.references.outlines`
 // {test}`requirements.sdk.sources.rust.items`
+// {test}`requirements.sdk.outlines.selector_syntax`
 #[test]
 fn selectors_name_syntactic_ancestry_and_duplicates() {
     let source = r#"
@@ -1134,6 +1137,7 @@ fn a_comment_after_another_comment_on_its_line_forms_its_own_run() {
 
 // {test}`requirements.references.selector_duplicate_names`
 // {test}`requirements.references.outlines`
+// {test}`requirements.sdk.outlines.selector_syntax`
 #[test]
 fn duplicate_names_are_numbered_in_source_order_without_line_numbers() {
     let source = "#[cfg(a)]\nfn run() { a() }\n#[cfg(b)]\nfn run() { b() }\n";

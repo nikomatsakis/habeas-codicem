@@ -260,7 +260,7 @@ pub fn parse_selector(selector: &str) -> Result<Vec<Segment>, SelectorError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Label, decode_name, encode_name, parse_selector};
+    use super::{Label, Segment, SelectorError, decode_name, encode_name, parse_selector};
 
     // {test}`requirements.sdk.outlines.selector_syntax`
     #[test]
@@ -275,6 +275,10 @@ mod tests {
     }
 
     // {test}`requirements.sdk.outlines.selector_syntax`
+    // {test}`requirements.sdk.outlines.Label`
+    // {test}`requirements.sdk.outlines.parse_selector`
+    // {test}`requirements.sdk.outlines.Segment`
+    // {test}`requirements.sdk.outlines.SelectorError`
     #[test]
     fn parses_named_anonymous_and_ordinal_segments() {
         assert!(parse_selector("").unwrap().is_empty());
@@ -285,6 +289,12 @@ mod tests {
             Label::Named(vec!["Thing".into(), "Trait<T>".into()])
         );
         assert_eq!(segments[1].ordinal, Some(2));
+        let plain = Segment::new("fn".into(), Label::Named(vec!["run".into()]));
+        assert_eq!(plain.ordinal, None);
+        assert_eq!(Segment::base(&plain.kind, &plain.label), "fn[run]");
+        let numbered = plain.ordinal(2);
+        assert_eq!(numbered.to_string(), "fn[run]#2");
+        assert_eq!(numbered, segments[1]);
         assert_eq!(segments[2].label, Label::Hash("0123456789ab".into()));
         assert_eq!(segments[2].to_string(), "use@0123456789ab");
         for invalid in [
@@ -296,7 +306,13 @@ mod tests {
             "fn[run]x",
             "a//b",
         ] {
-            assert!(parse_selector(invalid).is_err(), "{invalid}");
+            let error = parse_selector(invalid).unwrap_err();
+            assert_eq!(error.selector, invalid);
+            assert!(!error.message.is_empty());
+            assert_eq!(error.clone(), SelectorError::new(invalid, &error.message));
+            let displayed: &dyn std::error::Error = &error;
+            assert!(displayed.to_string().contains(invalid));
+            assert!(displayed.to_string().contains(&error.message));
         }
     }
 }

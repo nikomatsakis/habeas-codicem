@@ -8,6 +8,39 @@ fn file(location: &str) -> PathBuf {
     location.into()
 }
 
+// {test}`requirements.sdk.sources.SourceError`
+// {test}`requirements.sdk.sources.read_file`
+// {test}`requirements.sdk.sources.language_id`
+// {test}`requirements.sdk.public_api`
+#[tokio::test]
+async fn source_bytes_error_kinds_and_language_names_round_trip() {
+    use trust_but_verify::sources::{LanguageId, SourceError, SourceFile};
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("binary"), [0xff, 0xfe]).unwrap();
+    let sources = Sources::new(root.path());
+    let binary = sources.read("binary").await.unwrap();
+    assert_eq!(&*binary.bytes, &[0xff, 0xfe]);
+    assert!(binary.language.is_none());
+    assert!(matches!(binary.text(), Err(SourceError::Invalid(message)) if !message.is_empty()));
+    let io = SourceError::from(std::io::Error::other("unreadable source"));
+    assert!(matches!(io, SourceError::Io(_)));
+    assert_eq!(io.to_string(), "unreadable source");
+    let name = LanguageId::from("CustomLang");
+    assert_eq!(name.as_str(), "CustomLang");
+    assert_eq!(LanguageId::from(String::from("CustomLang")), name);
+    let encoded = serde_json::to_value(&name).unwrap();
+    assert_eq!(encoded, "CustomLang");
+    assert_eq!(serde_json::from_value::<LanguageId>(encoded).unwrap(), name);
+    let file = SourceFile::new(std::sync::Arc::from(&b"hello"[..])).language(name.clone());
+    assert_eq!(file.text().unwrap(), "hello");
+    assert_eq!(file.text().unwrap().as_ptr(), file.bytes.as_ptr());
+    assert_eq!(file.language, Some(name.clone()));
+    let unknown = StructuralQuery::new(name, Default::default());
+    assert!(
+        matches!(sources.search_structure(&unknown).await, Err(SourceError::Invalid(message)) if message.contains("CustomLang"))
+    );
+}
+
 fn git(root: &Path, args: &[&str]) {
     let result = Command::new("git")
         .current_dir(root)
@@ -26,6 +59,7 @@ fn git(root: &Path, args: &[&str]) {
 // {test}`requirements.sdk.graph.search.TextMatches`
 // {test}`requirements.sdk.graph.search.search_text.behavior`
 // {test}`requirements.sdk.graph.search.source_scope`
+// {test}`requirements.sdk.public_api`
 #[tokio::test]
 async fn scoped_text_results_keep_line_numbers_context_and_completeness() {
     let root = tempfile::tempdir().unwrap();
@@ -83,6 +117,7 @@ async fn scoped_text_results_keep_line_numbers_context_and_completeness() {
 // {test}`requirements.sdk.graph.search.search_text.fn`
 // {test}`requirements.sdk.graph.search.search_text.behavior`
 // {test}`requirements.sdk.graph.search.source_scope`
+// {test}`requirements.sdk.sources.Sources`
 #[tokio::test]
 async fn gitignore_is_shared_by_all_operations_with_or_without_a_git_repository() {
     for repository in [false, true] {
@@ -194,6 +229,7 @@ async fn gitignore_is_shared_by_all_operations_with_or_without_a_git_repository(
 // {test}`requirements.sdk.sources.provider_results.search_completeness`
 // {test}`requirements.sdk.sources.source_addresses`
 // {test}`requirements.sdk.graph.validation-context.outline_source.fn`
+// {test}`requirements.sdk.sources.read_file`
 #[tokio::test]
 async fn empty_sources_errors_and_retained_snapshots_remain_distinct() {
     let root = tempfile::tempdir().unwrap();
@@ -274,6 +310,7 @@ async fn empty_sources_errors_and_retained_snapshots_remain_distinct() {
 // {test}`requirements.sdk.graph.search.StructuralMatch`
 // {test}`requirements.sdk.graph.search.StructuralMatches`
 // {test}`requirements.sdk.graph.validation-context.outline_source.fn`
+// {test}`requirements.sdk.sources.Sources`
 #[tokio::test]
 async fn built_in_languages_and_structural_search_use_the_project_scope() {
     let root = tempfile::tempdir().unwrap();

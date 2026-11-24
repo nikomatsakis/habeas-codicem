@@ -12,6 +12,10 @@ use trust_but_verify::outline::languages;
 #[test]
 fn addresses_reconstruct_without_reading_the_file() {
     let id = OutlineId::new("not-present.rs", "mod[auth]/fn[check]".into()).unwrap();
+    let root = OutlineId::root("not-present.rs");
+    assert!(root.selector.is_empty());
+    assert_eq!(root.clone().selector(id.selector.clone()).unwrap(), id);
+    assert!(root.selector("fn[".into()).is_err());
     let encoded = serde_json::to_string(&id).unwrap();
     assert_eq!(serde_json::from_str::<OutlineId>(&encoded).unwrap(), id);
     assert_eq!(id.path, std::path::Path::new("not-present.rs"));
@@ -25,6 +29,21 @@ fn addresses_reconstruct_without_reading_the_file() {
         id,
         OutlineId::new("not-present.rs", "mod[auth]".into()).unwrap()
     );
+}
+
+// {test}`requirements.sdk.outlines.OutlineError`
+#[test]
+fn outline_errors_preserve_diagnostic_and_line() {
+    let error = trust_but_verify::outline::OutlineError::new(7, "bad selector".into());
+    assert_eq!(error.line, 7);
+    assert_eq!(error.message, "bad selector");
+    assert_eq!(error, error.clone());
+    assert_ne!(
+        error,
+        trust_but_verify::outline::OutlineError::new(8, error.message.clone())
+    );
+    let reported: &dyn std::error::Error = &error;
+    assert_eq!(reported.to_string(), "line 7: bad selector");
 }
 
 // {test}`requirements.sdk.outlines.parser.supplied_source`
@@ -400,6 +419,15 @@ fn outline_only_languages_report_unsupported_structural_search() {
 // {test}`requirements.sdk.sources.yaml.fingerprints`
 // {test}`requirements.sdk.outlines.language_provider.structural_search`
 // {test}`requirements.sdk.outlines.language_provider`
+// {test}`requirements.sdk.sources.rust.Rust`
+// {test}`requirements.sdk.sources.python.Python`
+// {test}`requirements.sdk.sources.typescript.TypeScript`
+// {test}`requirements.sdk.sources.typescript.Tsx`
+// {test}`requirements.sdk.sources.toml.Toml`
+// {test}`requirements.sdk.sources.yaml.Yaml`
+// {test}`requirements.sdk.sources.plain-text.PlainText`
+// {test}`requirements.sdk.sources.css.Css`
+// {test}`requirements.sdk.sources.markdown.Markdown`
 #[test]
 fn bundled_languages_claim_extensions_and_supply_the_same_public_outline() {
     fn check<L: OutlineLang + Default + Copy>(
@@ -546,6 +574,7 @@ fn unicode_spans_use_bytes_and_whitespace_only_lines_create_no_items() {
 // {test}`requirements.sdk.outlines.items`
 // {test}`requirements.sdk.outlines.selection`
 // {test}`requirements.sdk.sources.markdown.sections`
+// {test}`requirements.sdk.sources.markdown.Markdown`
 #[test]
 fn markdown_heading_levels_resolve_encoded_duplicates_and_anonymous_items() {
     let source = "préface\n\n# Main / [x] # @ % end\n### Deep\nnested\n\n## Same\nfirst\n\n## Same\nsecond\n\n# End\nLevel two\n---------\n:::{note}\ninside\n:::\n\n## Peer\nlast\n";
@@ -660,6 +689,7 @@ fn css_media_and_supports_preludes_collapse_whitespace() {
 #[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.sources.css.items`
 // {test}`requirements.sdk.outlines.selection`
+// {test}`requirements.sdk.sources.css.Css`
 #[test]
 fn css_duplicate_names_are_numbered_after_normalization_within_each_parent() {
     let source = "a  b { color: red; }\na b { color: blue; }\n@media  print { a { color: red; } }\n@media print { a { color: blue; } }\n@keyframes spin { from { opacity: 0; } }\n@keyframes spin { to { opacity: 1; } }\n";
@@ -812,6 +842,7 @@ fn bundled_structural_search_returns_matches_and_rejects_bad_rules_and_source() 
 // {test}`requirements.sdk.outlines.errors`
 // {test}`requirements.sdk.sources.rust.items`
 // {test}`requirements.sdk.sources.rust.fingerprints`
+// {test}`requirements.sdk.sources.rust.Rust`
 #[test]
 fn rust_items_attach_documentation_and_preserve_structural_hashes() {
     let source = "mod auth {\n    /// Check tokens.\n    #[inline]\n    fn check() { allow(); }\n    struct Token;\n}\nfn last() {}\n";
@@ -1009,6 +1040,8 @@ fn bundled_fingerprints_exclude_comments_and_preserve_word_boundaries() {
 
 #[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.sources.typescript.items`
+// {test}`requirements.sdk.sources.typescript.TypeScript`
+// {test}`requirements.sdk.sources.typescript.Tsx`
 #[test]
 fn typescript_and_tsx_share_signatures_abstract_classes_and_module_kinds() {
     let source = "function* generated() { yield 1; }\ndeclare function signed(x: number): void;\nabstract class Abstract { abstract run(): void; }\ndeclare module \"remote\" { export interface Thing {} }\nnamespace Outer { export class Inner { call() {} } }\n";
@@ -1050,6 +1083,7 @@ fn typescript_and_tsx_share_signatures_abstract_classes_and_module_kinds() {
 
 #[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.sources.toml.items`
+// {test}`requirements.sdk.sources.toml.Toml`
 #[test]
 fn toml_preserves_written_dotted_literal_and_quoted_header_names() {
     let source = "a.b = 1\n'lit key' = 2\nkey_7-2 = 3\n[\"space #/@[]\"]\nvalue = 4\n[[items.parts]]\n\"nested/key\" = { 'deep key' = 5 }\n";
@@ -1078,6 +1112,7 @@ fn toml_preserves_written_dotted_literal_and_quoted_header_names() {
 
 #[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.sources.yaml.items`
+// {test}`requirements.sdk.sources.yaml.Yaml`
 #[test]
 fn yaml_selection_ends_before_trailing_comment_tokens() {
     let root = OutlineContent::from_source("config.yaml", "key: value # trailing comment\n".into())
@@ -1089,6 +1124,7 @@ fn yaml_selection_ends_before_trailing_comment_tokens() {
 
 #[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.sources.python.items`
+// {test}`requirements.sdk.sources.python.Python`
 #[test]
 fn python_selected_source_includes_its_decorators() {
     let source = "@cache\ndef checked():\n    pass\n";
@@ -1128,6 +1164,7 @@ fn markdown_sections_include_setext_headings_and_anonymous_preamble() {
 }
 
 // {test}`requirements.sdk.sources.plain-text.fingerprints`
+// {test}`requirements.sdk.sources.plain-text.PlainText`
 #[test]
 fn plain_line_fingerprints_use_sha256_words_without_losing_boundaries() {
     fn line(text: &str) -> trust_but_verify::graph::Fingerprint {

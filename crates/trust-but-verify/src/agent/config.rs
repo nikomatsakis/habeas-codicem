@@ -342,6 +342,7 @@ mod tests {
     // {test}`requirements.sdk.graph.agent-harness.BedrockCredentials`
     // {test}`requirements.sdk.graph.agent-harness.OpenAiConfig`
     // {test}`requirements.sdk.graph.agent-harness.OllamaConfig`
+    // {test}`requirements.sdk.public_api`
     #[test]
     fn backend_builders_set_only_the_requested_fields() {
         let bedrock = BedrockConfig::new("bedrock-model".into());
