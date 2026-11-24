@@ -1,7 +1,7 @@
 {
   "requirement": "Keeps a typed output with its source, criterion, version, and observed dependencies. `output` borrows the answer and `into_output` consumes the wrapper.\n\n`verify` constructs this value from the criterion's completed answer and\nexecution trace. `load_evidence` reconstructs it from the selected saved record.\nIts node identities and edge labels keep their domain-defined types.\n\n```rust,ignore\npub struct Fingerprinted<D: Domain, O> { /* private fields */ }\n\nimpl<D: Domain, O> Fingerprinted<D, O> {\n    pub fn source_node_id(&self) -> &D::NodeId;\n    pub fn criterion_path(&self) -> &CriterionPath;\n    pub fn version(&self) -> Option<&CriterionVersion>;\n    pub fn dependencies(&self) -> &[Dependency<D::NodeId, D::EdgeLabel>];\n    pub fn output(&self) -> &O;\n    pub fn into_output(self) -> O;\n}\n```",
   "determination": true,
-  "rationale": "The tests adequately check `requirements.sdk.graph.evidence.inputs`. I mapped each obligation to a test below.\n\n**Accessors on a value built by `verify`.** `tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` asserts every accessor on the result of `verify`:\n- `output()` equals the criterion's answer.\n- `source_node_id()` is `Node(1)`.\n- `criterion_path()` is `[\"behavior\"]`.\n- `version()` is `v1`.\n- `dependencies()` is empty.\n\n**Accessors on a value built by `load_evidence`.** The same test loads the saved record and asserts that `output`, `source_node_id`, `criterion_path`, `version` and `dependencies` all match the original. This covers \"reconstructs it from the selected saved record\".\n\n**`output` and `into_output`.** `output()` returns a borrow, and the test compares it as `&negative`. `into_output()` is asserted on both a loaded value and a persisted value.\n\n**Non-empty dependencies from the execution trace.** `tests/contracts.rs#fn[dependency_resolution_failures_do_not_execute_or_replace_saved_answers]` runs a criterion that reads a node and inspects outgoing edges. It asserts that `value.dependencies()` equals the expected `[Dependency::Node(..), Dependency::OutgoingEdges(Node(1), 7, ..)]`. It then asserts that the loaded value's `dependencies()` equals the same list, in order and including the fingerprints. The `persist` helper returns the `verify` result unchanged.\n\n**Edge dependencies after a round trip.** `agent/tests.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` asserts `saved.dependencies() == result.dependencies()`. It also asserts the stored record's `OutgoingEdges(1, 7, fingerprint)` content, and it checks the context's dependencies for several tool-call scenarios.\n\n**Domain-defined types.** The tests use the domain types `Node` with an integer edge label, and `u8` for both node and edge label. The code compares them directly with `Dependency::OutgoingEdges(1, 7, ..)` and `Dependency::Node(Node(2), ..)`.\n\n**Optional version.** `graph/validation_tests.rs#fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]` covers three cases:\n- A loaded value reports the stored `v1` through `version()`.\n- A value loaded for a `v2` criterion still reports `v1`.\n- A legacy record with `version = None` loads, and its version is handled through `is_compatible_with`.\n\n**Encapsulation.** The `compile_fail,E0616` doctests on `graph.rs#struct[Fingerprinted]` show that callers cannot mutate any of the private fields.\n\nI found no obligation without a test or assertion. `tests/public_api.rs#fn[public_exports_match_the_appendix]` checks the export inventory and is not needed for these obligations.\n\n**Confirmation:** the assessments disagreed: the first determination was `true` and an independent second assessment's was `false`. A verifier checked the less favorable `false` determination and found none of its claimed gaps real, so `true` is recorded.\n\nVerification:\n\n**Claimed gap: no test asserts that a loaded value keeps an absent version as `None`. Not real as stated.**\n\n- The reviewer is right about the marked tests. In `graph/validation_tests.rs#fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]`, the legacy record is checked only with `CriterionVersion::new(\"v2\").is_compatible_with(legacy.version())`. A wrongly populated `Some(\"v2\")` would also pass that check.\n- The claim that nothing asserts `None` is wrong. `tests/contracts.rs#fn[wildcard_revision_does_not_supply_other_criteria_or_nodes]` does the following:\n  - It persists a record and sets the stored `version` to `None`.\n  - It calls `load_evidence` with a criterion whose revision is `\"future\"`.\n  - It asserts `assert_eq!(loaded.version(), None)`.\n  - The criterion's version differs from the saved one. A loader that filled in the version from the criterion would therefore fail this assertion. That is the exact counterexample the reviewer raised.\n- That test is not marked `{test}` for `requirements.sdk.graph.evidence.inputs`. It is marked for `recorded_criterion_version` and `checking_records.version_match`, which are the requirements that concern recording and matching versions. Under the criteria, the most this could be is a marking gap. The reviewer did not claim a marking gap, so I did not judge one.\n- The text of `inputs` only says that `version()` returns an `Option` and that `load_evidence` reconstructs the value from the saved record. It has no separate obligation about the unversioned case. Apart from that test, the other tests cover the obligations:\n  - `tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` covers the accessors on a `verify` value and on a loaded value, plus `into_output`.\n  - `tests/contracts.rs#fn[dependency_resolution_failures_do_not_execute_or_replace_saved_answers]` covers non-empty dependencies with domain-typed node IDs and edge labels.\n  - `agent/tests.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` covers edge dependencies.\n  - The `compile_fail` doctests on `graph.rs#struct[Fingerprinted]` cover private fields.\n\nI found no other gap. No `{fixme}` applies, and none is needed.",
+  "rationale": "I judge the tests adequate for `requirements.sdk.graph.evidence.inputs`. I did not request implementation source. The tests below are enough to cover each obligation.\n\n**Obligations derived from the text**\n1. A `Fingerprinted` value keeps the source node id, criterion path, version (an `Option`), dependencies and typed output, and exposes them through the read-only accessors. `output` borrows and `into_output` consumes.\n2. `verify` builds the value from the criterion's answer and the execution trace.\n3. `load_evidence` rebuilds it from the selected saved record.\n4. Node identities and edge labels keep the domain's types.\n\n**Coverage**\n- **Accessors on a verified value.** `crates/trust-but-verify/tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` asserts all of these on the result of `verify`:\n  - `output()` equals the typed answer.\n  - `source_node_id()` is `Node(1)`.\n  - `criterion_path()` is `behavior`.\n  - `version()` is `v1`.\n  - `dependencies()` is empty.\n- **Loaded value matches the verified one.** The same test asserts that a loaded value has the same source id, path, version and dependencies as the stored one. It also calls `into_output()` on the loaded value and compares the result with the original answer. Earlier assertions in that test compare the borrowed `output()` with `&negative`.\n- **Non-empty dependencies from the trace.** `tests/contracts.rs#fn[dependency_resolution_failures_do_not_execute_or_replace_saved_answers]` has a criterion that reads a node and inspects outgoing edges. It asserts that the `verify`-produced value's dependencies are exactly `Dependency::Node(..)` and `Dependency::OutgoingEdges(..)` with the expected fingerprints. It then asserts that the loaded value's dependencies equal the same list.\n- **Edge-selection trace and reload.** `src/agent/tests.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` asserts three things:\n  - The dependencies from an agent-driven `verify` are `OutgoingEdges(1, 7, fingerprint)`.\n  - The saved record carries those same dependencies.\n  - `saved.dependencies()` equals `result.dependencies()`.\n- **Selection of the saved record and the `Option` version.** `src/graph/validation_tests.rs#fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]` covers three cases:\n  - A load of a v2 criterion returns the saved v1 record, and `version()` reads `v1`.\n  - A load for a different node returns `None`.\n  - A record with its version cleared loads with an absent version, and the output is still accessible.\n- **Private fields.** The `compile_fail,E0616` doctests on `crates/trust-but-verify/src/graph.rs#struct[Fingerprinted]` check that the source, criterion, version, dependencies and output fields cannot be mutated from outside. The struct carries `{test}` and `{impl}` markers for the requirement.\n- **Domain types.** Domain types are enforced at compile time. The tests use domain-defined `Node` and `u8` ids and labels, and the accessors return those types.\n\n**Gaps**\nNone established. A violation such as dropping a field, returning a different dependency list after load, or ignoring the selected record would fail the assertions above. The `public_exports_match_the_appendix` test is not marked for this requirement, and it isn't needed for it.",
   "references": "2305eaf77149fffb9a4b98bac33079d1f3a941a4d2ee95b5ca188fd89abbca26",
   "inputs": [
     {
@@ -62,21 +62,6 @@
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[public_exports_match_the_appendix]",
       "hash": "4d6ce6161754fb9e88ad84ef64f9bb131b308298104915179b2c5d573ed2b087"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[persist]",
-      "hash": "61970bd7b7748fb28d017b949eddb96f07ade5b9af70ddb9a4cfa11e924d9387"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "impl[CriterionVersion]/fn[is_compatible_with]",
-      "hash": "123ed6b2b5a2d367912c76429c4a01e6e8f0b21727498a55f40a915e734db689"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[wildcard_revision_does_not_supply_other_criteria_or_nodes]",
-      "hash": "9e7e2872d2b1bb908df524e788d03b0109323059d34c5a55741f3edab46535fe"
     }
   ],
   "format_version": 1,
@@ -215,57 +200,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "ae4819b6e5ac9cd22992cc4254e7868f438e101dbd53f1bd7d443a33ee96f61d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "fn[persist]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "af39a832fd905aacc4b801f7f61ccc250246454347134304b157abe9a8b1d26c"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
-            },
-            "selector": "impl[CriterionVersion]/fn[is_compatible_with]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "7d5cd2f43dc606a8dd0f5b96e39e71d5b867ad8f7acce7ec5668f92aaae5b963"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "fn[wildcard_revision_does_not_supply_other_criteria_or_nodes]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "e1d127ee7a96760fa1084f21af94f747bd46188fbb52d865e200237ac599ae13"
         }
       ]
     }

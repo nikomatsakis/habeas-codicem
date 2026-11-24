@@ -1,7 +1,7 @@
 {
   "requirement": "Usage MUST record, for each failed provider request, its HTTP status and\nprovider error code when the provider reports them, and whether the harness\nretried it. It MUST NOT record the failure's message text.",
   "determination": true,
-  "rationale": "The tests adequately cover `requirements.authoring.usage_requests.failures`.\n\n**Obligations derived from the requirement**\n1. Each failed request records its HTTP status when the provider reports one.\n2. Each failed request records the provider error code when the provider reports one.\n3. Each failed request records whether the harness retried it.\n4. The failure record does not contain the failure's message text.\n\n**Coverage**\n- **Status and code extraction:** `providers.rs#mod[tests]/fn[failure_codes_are_the_status_and_code_a_provider_reports]` covers three cases. A provider error carrying 429 and `ThrottlingException` yields `(Some(429), Some(\"ThrottlingException\"))`. A plain error and a `TimedOut` error with no provider report both yield `(None, None)`. That covers \"when the provider reports them\".\n- **Status and code preserved through the SDK path:** `sdk.rs#mod[tests]/fn[sdk_string_errors_preserve_habeas_provider_reports_and_error_kinds]` checks that a 403 and `AccessDeniedException` survive the SDK error path for two error kinds. It checks `failure_codes` on the resulting error.\n- **Retried failures:** `authoring/mod.rs#mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]` has five throttled failures followed by a success. It asserts that each of the five failed requests has a `failure` equal to `{\"http_status\":429,\"error_code\":\"ThrottlingException\",\"retried\":true}`. It also asserts that the completed request has no `failure` key.\n- **Permanent failures:** `authoring/mod.rs#mod[tests]/fn[permanent_provider_failure_returns_without_waiting_or_retrying]` asserts a `failure` of `{\"http_status\":400,\"error_code\":\"ValidationException\",\"retried\":false}`. This covers the not-retried value in an end-to-end run.\n- **Usage log unit test:** `usage.rs#mod[tests]/fn[failed_submission_can_be_confirmed_on_a_later_attempt]` asserts the persisted failure JSON after `end_request`. It shows `retried` false at first. After `log.retried(first)` it shows `retried` true, so the retried flag transition is covered.\n- **No message text:** each assertion compares the whole `failure` object with `assert_eq!` against a JSON value holding only status, code, and retried. A message field added to the failure record would fail every one of those tests. In the permanent-failure test the error message is \"Too many tokens\", so a leaked message would be a visible extra field. The `RequestFailure` struct has no message field.\n\n**Gaps and exemptions**\n- I found no uncovered obligation.\n- The `None`/`None` case has no persisted-log assertion. It would need only the `Option` pass-through in `end_request`, which has no conditional of its own. The `(None, None)` extraction is tested.\n- There are no acknowledgments or FIXME entries in scope.",
+  "rationale": "I judge the tests adequate for `requirements.authoring.usage_requests.failures`. Each obligation below maps to marked tests that assert its outcome.\n\n**Obligations**\n1. The log records the HTTP status and the provider error code for each failed request, when the provider reports them.\n2. The log records whether the harness retried the request.\n3. The log does not record the failure's message text.\n\n**Coverage**\n- **Status and code extraction.** `failure_codes_are_the_status_and_code_a_provider_reports` in `crates/trust-but-verify/src/agent/providers.rs` checks that `failure_codes` returns `(Some(429), Some(\"ThrottlingException\"))` for a provider error that reports both. It returns `(None, None)` for a plain error and for a `TimedOut` error that carries no provider report. This covers the \"when the provider reports them\" condition, both reported and not reported.\n- **SDK path.** `sdk_string_errors_preserve_habeas_provider_reports_and_error_kinds` in `src/authoring/sdk.rs` checks that status 403 and code `AccessDeniedException` survive through `assess`, for two error kinds.\n- **Recording and retry flag.** `throttled_requests_retry_unchanged_and_record_every_attempt` in `src/authoring/mod.rs` runs five throttled failures followed by a success. It asserts that each failed request's `failure` object equals `{\"http_status\":429,\"error_code\":\"ThrottlingException\",\"retried\":true}`. It also asserts that the successful request has no `failure` entry.\n- **Not retried.** `permanent_provider_failure_returns_without_waiting_or_retrying` asserts `{\"http_status\":400,\"error_code\":\"ValidationException\",\"retried\":false}` for a permanent failure. Together with the test above, this covers both values of the retry flag in the end-to-end flow.\n- **Usage-log unit level.** `failed_submission_can_be_confirmed_on_a_later_attempt` in `src/authoring/usage.rs` passes a status and code to `end_request`. It asserts `retried:false` on the persisted failure, then asserts it flips to `true` after `log.retried(...)`.\n- **No message text.** These tests compare the whole `failure` object with `assert_eq!` against a three-key JSON value, so any extra message field would fail them. The `RequestFailure` struct in `src/authoring/usage.rs` has only `http_status`, `error_code` and `retried`. The permanent-failure test's provider error carries a \"Too many tokens\" message, and that message does not appear in the recorded failure.\n\n**Residual points, not treated as gaps**\n- There is no log-level test of a failure where neither a status nor a code is reported. There is also no test where only one of the two is reported. The values are `Option` fields passed through unchanged, and `failure_codes` is tested for the `(None, None)` case.\n- No test searches the whole log for message text outside the `failure` object. The requirement concerns the failure record, and the exact-equality assertions cover it.",
   "references": "84847014386e817e824449139f8d03f23553c3d0664aef169ade58e9f7184000",
   "inputs": [
     {
@@ -51,16 +51,6 @@
       "file": "src/authoring/usage.rs",
       "item": "impl[UsageLog]/fn[end_request]",
       "hash": "c8c24e43409f1c7aff6305ff0e4cc8d368450501a4ea70eddca4d5181d330780"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/backoff.rs",
-      "item": "fn[failure_codes]",
-      "hash": "3f2f86fed18b664162ba7bfccce1aede1d7fa1e9ae142b4534d7d66158a44d9f"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "impl[HabeasConversation<'_,%20F>/trust_but_verify::agent_runtime::Conversation]/fn[end_request]",
-      "hash": "d12a021f34e62a65d5e3249783729b7a3e4f48e0799d2263c792bc499b133236"
     }
   ],
   "format_version": 1,
@@ -216,40 +206,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "79e049d4deb1a24be320e1194207776129955a2076035c04d565d9406849b376"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/backoff.rs"
-            },
-            "selector": "fn[failure_codes]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "dadd94957e2ab61c3c236621db577bfee1170a88b41b5529d0a2460306189f26"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/mod.rs"
-            },
-            "selector": "impl[HabeasConversation<'_,%20F>/trust_but_verify::agent_runtime::Conversation]/fn[end_request]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "fa53c7be706885110b13d0bf8ebeefbcd3220aae76ba0dd527a48a97ef85900d"
         }
       ]
     }

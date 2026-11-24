@@ -1,7 +1,7 @@
 {
   "requirement": "A delivered read page records the dependencies retained by that page under\n{cite}`requirements.sdk.graph.evidence.node_inputs`. Each continuation of a\nnode or mapped source read retains the original node identity and content\nfingerprint; reading a later page does not observe a newer version. A change\nto that node's fingerprint can invalidate the evidence even if it happens\nbetween pages. Agent tools record on delivery. Discovery pages record no evidence\ninputs, just like their initial result. Preparing an undelivered page records\nno read.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation of `requirements.sdk.graph.validation-context.pages.inputs`. I found no gaps.\n\nI read `pages.rs#impl[Pages<N, L>]/fn[prepare]` for one question: do all pages share one code path? It does. Every page, first or continuation, is built from the same metadata and a clone of the same dependency list. Retained continuations are replayed unchanged. Behavior therefore does not differ by tool, and the tests need no per-tool variants.\n\n**Obligations and tests**\n\n1. **A delivered read page records the dependencies retained by that page.**\n   - `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` reads an 18,000-character node, so the read is paged, then calls `get_next_page`. It asserts that `ctx.dependencies()` holds exactly the edge observation and one `Dependency::Node` whose fingerprint equals the full contents. Repeating the same observation therefore adds nothing. It also asserts that the finished record's dependencies equal those observations.\n   - `source_read_pages_retain_text_and_dependencies_without_another_read` asserts that every continuation delivery carries exactly `[Dependency::Node(Node(7), fingerprint)]` with the original fingerprint.\n   - `project_sources.rs#mod[tests]/fn[fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies]` asserts that each continuation's dependencies equal the initial read's dependencies.\n\n2. **Continuations retain the original node identity and content fingerprint, and later pages do not observe a newer version.**\n   - `graph_read_pages_retain_the_prepared_snapshot_after_contents_change` swaps the graph contents between page 1 and page 2. It asserts that the graph was read once, that the recorded fingerprint equals the original, and that the concatenated page text equals the original.\n   - `source_read_pages_retain_text_and_dependencies_without_another_read` rewrites the file after the first page. It asserts the original fingerprint on each continuation, the same `node.selector` on each page, original text, and exactly one observation callback.\n   - The `project_sources.rs` test changes the domain text after preparing the first page. It asserts the original dependencies, the same `node` on each page, the original text, and a read count that stays at 3 (the two initial reads plus one earlier read).\n\n3. **A change to the fingerprint between pages can invalidate the evidence.** This follows from the retained fingerprint and the `node_inputs` recording, both asserted above. The `node_inputs` handling of differing fingerprints belongs to that requirement.\n\n4. **Agent tools record on delivery.** The graph test records the read only after the page reaches the agent. A node read followed by a provider failure leaves `ctx.dependencies()` empty. A failure raised after delivery, in `contents_of_current_node`, leaves one recorded dependency.\n\n5. **Discovery pages record no evidence inputs.** `source_discovery_and_its_pages_do_not_register_reads` drives `list_sources`, `search_text` and `outline_source`, including their `get_next_page` continuations. `search_text` over 1,500 matching lines forces paging. It asserts empty dependencies on every delivery and zero observation callbacks. `source_tools_forward_arguments_and_present_discovery_and_read_results` and `project_sources.rs#mod[tests]/fn[fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies]` assert empty dependencies for `search_structure` and the other discovery tools.\n\n6. **Preparing an undelivered page records no read.** The graph test's failed-delivery case covers this for graph reads. The source tests assert that continuations do not trigger further observations or reads.\n\n**Residual note.** The `search_structure` tests do not exercise a paged continuation with a `next` field. Their only paged-excerpt case returns no `next`. Because the shared `prepare` path is generic and the paged discovery tools are tested, I do not count this as a gap.",
+  "rationale": "The reviewed tests adequately check `requirements.sdk.graph.validation-context.pages.inputs`. Each obligation maps to at least one test with assertions.\n\n**Delivered read pages record their dependencies, and agent tools record on delivery.**\n- `agent/tests.rs#fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]` reads an 18,000-character node and then calls `get_next_page`. It asserts exactly two observations: the edge observation and one `Dependency::Node` whose fingerprint holds the full content. The continuation therefore adds no duplicate or altered observation. It also asserts that the finished record's dependencies equal the observed ones.\n- `project_sources.rs#mod[tests]/fn[fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies]` asserts that the initial `read_source` delivery carries the `Dependency::Node` with the domain content's fingerprint. It asserts that every `get_next_page` delivery carries dependencies equal to the initial ones (`expected`).\n\n**Continuations retain the original node identity and fingerprint, and a later page does not observe a newer version.**\n- `agent/tests.rs#fn[graph_read_pages_retain_the_prepared_snapshot_after_contents_change]` changes the graph contents between the first page and the continuation. It asserts that the only recorded dependency is the original fingerprint. It also asserts that the concatenated pages equal the original text and that the graph was read only once.\n- `agent/tests.rs#fn[source_read_pages_retain_text_and_dependencies_without_another_read]` rewrites the file after the first page. It asserts that every continuation delivery carries the original fingerprint, that the `node.selector` is unchanged, that the reassembled text is the original, and that the observation callback ran once.\n- The fixed-tools test mutates the domain text to `\"replacement\"` between pages. It asserts the same dependencies on each page, the same `node` on each page, the original reassembled text, and `reads == 3`, so no page re-reads.\n- The clause that a change between pages can invalidate the evidence follows from retaining the original fingerprint, which these tests check.\n\n**Discovery pages record no evidence inputs.**\n- `agent/tests.rs#fn[source_discovery_and_its_pages_do_not_register_reads]` pages through `search_text` (1,500 matches) and `outline_source`, and also dispatches `list_sources`. It asserts empty dependencies on every initial and continuation delivery, and asserts that the observation callback count stays 0.\n- `source_tools_forward_arguments_and_present_discovery_and_read_results` asserts empty dependencies for `list_sources`, `search_text`, `search_structure`, and `outline_source`. It asserts that the read callback ran only for the three `read_source` calls, including after a large structural result.\n- Neither test exercises a continuation page for `list_sources` or `search_structure`. The paging code (`pages.rs#impl[Pages<N, L>]/fn[prepare]`) is shared and clones the dependencies it is given, so I did not count this as a gap.\n\n**Preparing an undelivered page records no read.**\n- The failed-run case in `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` has the agent call `read_node` and then the provider fails before delivery. It asserts that `ctx.dependencies()` is empty. In `tools.rs`, the `dispatch` function only queues observations in `pending`, and `delivered` records them. This test therefore exercises the prepared-but-undelivered path.\n- The adjacent case, where ordinary code calls `contents_of_current_node`, asserts one recorded dependency.\n\nI found no gaps and no acknowledgments are needed.",
   "references": "94c6e8dccb52e57ddb081217e97a7432f46c803a8ea032975218c72b3cf9e620",
   "inputs": [
     {
@@ -70,11 +70,6 @@
       "hash": "4d23db061e025d47d10b644313820942fa2884f7da7ee95341803244b5c6682d"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/pages.rs",
-      "item": "impl[Pages<N,%20L>]/fn[prepare]",
-      "hash": "632f615582cfa7b3b3d9c8db380d57b13d91e0279a1cca13d44142abc73ff19a"
-    },
-    {
       "file": "crates/trust-but-verify/src/agent/tools.rs",
       "item": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[delivered]",
       "hash": "c5fc2757743fbf411ad3c510ec80c2bbb1e1a1dc1fde6f2ccfaa234fd476a8ef"
@@ -85,9 +80,14 @@
       "hash": "104fd5a20dd3f9fbd585ffe05fd0d12053dbba1c62a990fbacc215d18a0523df"
     },
     {
+      "file": "crates/trust-but-verify/src/agent/pages.rs",
+      "item": "impl[Pages<N,%20L>]/fn[prepare]",
+      "hash": "632f615582cfa7b3b3d9c8db380d57b13d91e0279a1cca13d44142abc73ff19a"
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
-      "item": "mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]",
-      "hash": "d4e750a111045bd4fc3682571fad49220e1071b73576108758da126e2a69f80d"
+      "item": "mod[tests]/fn[listing_continuations_return_complete_paths_from_the_original_listing]",
+      "hash": "80a3ad990d2e2be97c98fdbca678e310fa91336d72fff5b2b46597045795fdbd"
     }
   ],
   "format_version": 1,
@@ -246,23 +246,6 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/pages.rs"
-            },
-            "selector": "impl[Pages<N,%20L>]/fn[prepare]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "081d644887aa56af012f04ba64618abef8bd2a890a38d4b128a69fb3ba37a1ea"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/tools.rs"
             },
             "selector": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[delivered]"
@@ -297,14 +280,31 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+              "location": "crates/trust-but-verify/src/agent/pages.rs"
             },
-            "selector": "mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]"
+            "selector": "impl[Pages<N,%20L>]/fn[prepare]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1edbd2d6dab5725d529a1a72d4ace2eac68d0d1639e01919129fddcbab8de052"
+          "value": "081d644887aa56af012f04ba64618abef8bd2a890a38d4b128a69fb3ba37a1ea"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "mod[tests]/fn[listing_continuations_return_complete_paths_from_the_original_listing]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "bf524c5bfee229bd006d00a99245d94358c94f0cc6da12d368490656a4cd2372"
         }
       ]
     }

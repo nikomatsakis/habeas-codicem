@@ -1,7 +1,7 @@
 {
   "requirement": "```rust,ignore\n// Method on Validator<D>.\n/// Encode the answer and atomically replace this source/criterion's record.\npub fn store_evidence<O: serde::Serialize>(\n    &self,\n    inputs: &Fingerprinted<D, O>,\n) -> impl Future<Output = Result<(), ValidationError<D::Error>>> + Send;\n```\n\nThe method saves under the source identity and criterion path captured in\n`Fingerprinted`, preserving its version, input trace, and completed answer. Encoding follows\n{cite}`requirements.sdk.graph.evidence.record.output`; atomic replacement follows\n{cite}`requirements.sdk.graph.evidence.evidence_storage`. The result type needs\nno `Sync` bound: the method encodes the answer and captures the record and\nstorage key before constructing the storage future.",
   "determination": true,
-  "rationale": "The tests I reviewed adequately cover `requirements.sdk.graph.evidence.store_evidence`. I judged this from the supplied test sources and did not request implementation source.\n\n**Obligations and the tests that cover them**\n- **Key from the `Fingerprinted` identity.**\n  - `tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` stores records under the criterion paths `behavior`, `structure` and `text`. It then finds each stored record by its criterion path and checks the stored output.\n  - It also checks that loading afterwards returns the same source id and criterion path.\n  - `src/agent/tests.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` stores a record under source node 1 and asserts that the record's key is node 1.\n- **Version, input trace and answer preserved.**\n  - In `criteria_keep_typed_answers_and_persist_only_when_requested`, the loaded record's `version()`, `dependencies()` and `output()` equal the stored value's. The tested dependencies are empty in that test.\n  - Non-empty dependencies are asserted in `tests/contracts.rs#fn[input_checking_and_execution_keep_separate_observations]`. That test checks the stored `Dependency::Node` fingerprint.\n  - They are also asserted in `src/graph/validation_tests.rs#fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]`.\n  - The agent edge test checks `Dependency::OutgoingEdges` in the stored record.\n  - `tests/contracts.rs#fn[concurrent_same_criterion_executions_keep_complete_independent_records]` checks the stored version together with its dependencies.\n- **Replacing the record.**\n  - `input_checking_and_execution_keep_separate_observations` and `tests/contracts.rs#fn[typed_loading_reports_decode_errors_even_for_stale_evidence]` store over an existing record. The first checks that the record now holds the new dependencies. The second checks that exactly one record remains.\n  - `concurrent_same_criterion_executions_keep_complete_independent_records` runs two competing stores. It asserts that one record remains and that its version, dependencies and output all come from the same save.\n- **Encoding, as required by the cited `record.output`.**\n  - `tests/contracts.rs#fn[serialization_failure_leaves_the_existing_record_unchanged]` checks that an unencodable answer returns `ValidationError::Output`. It also checks that the stored version, dependencies and output are unchanged and that no extra write happened.\n  - The encoded JSON is asserted in `criteria_keep_typed_answers_and_persist_only_when_requested`.\n- **Storage failure.**\n  - `src/graph/validation_tests.rs#fn[resolution_storage_and_callback_errors_are_not_judgments]` sets `fail_store`. It asserts `ValidationError::Graph(\"store\")` and that no record was written.\n  - `tests/storage.rs#fn[malformed_records_are_storage_errors_and_bad_outputs_are_output_errors]` covers the file-backed store path.\n- **No `Sync` bound on the result.**\n  - `tests/contracts.rs#fn[validation_and_answer_need_send_without_sync]` stores and reloads a `Cell<u32>` answer. That type is `Send` but not `Sync`.\n  - The test wraps the store call in the `send` helper. That helper presumably requires the future to be `Send`, but I did not read it.\n  - The test asserts the reloaded value is 17.\n\n**Gaps and marking**\nI found no test or marking gap and no unacknowledged gap. The remaining obligation, atomicity of the domain's replacement, belongs to the cited `evidence_storage` requirement and is not reassessed here.",
+  "rationale": "The reviewed tests cover every obligation in `store_evidence`.\n\n**Save under the captured source and criterion path, preserving version, input trace and answer**\n- `criteria_keep_typed_answers_and_persist_only_when_requested` verifies the following.\n  - It stores a verified value, then loads it back.\n  - The loaded value has the same output, `source_node_id`, `criterion_path`, `version` and `dependencies`.\n  - Raw stored records for different criteria (`behavior`, `text`) hold the expected JSON output under the right criterion path.\n  - A later `verify` with a replacement answer does not change the stored record until an explicit save.\n- `input_checking_and_execution_keep_separate_observations` stores a record with a non-empty `Dependency::Node` trace. It asserts the stored dependencies equal the expected fingerprint, so the input trace is saved with its content.\n- `agent_edge_tools_record_selections_without_validating_targets` stores a result that has `Dependency::OutgoingEdges`. It asserts the record is keyed by node 1, the loaded dependencies equal the original, and the stored dependencies equal the expected edge fingerprint.\n- `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer` round-trips the source, criterion path, version and dependencies of a stored record.\n- `typed_loading_reports_decode_errors_even_for_stale_evidence` and the storage test check that the stored version is the one the executed criterion produced.\n\n**Serialization failure returns `ValidationError::Output` and leaves the existing record unchanged**\n- `serialization_failure_leaves_the_existing_record_unchanged` stores an old record, then tries to store an `Unencodable` answer.\n- It asserts the error is `ValidationError::Output` with the expected message.\n- It asserts the stored version, dependencies and output are unchanged.\n- It asserts the write count is still 1.\n\n**Storage failure returns `ValidationError::Graph`**\n- `resolution_storage_and_callback_errors_are_not_judgments` sets `fail_store` and asserts `Err(ValidationError::Graph(\"store\"))`, with no record written.\n\n**Result type needs `Send` but no `Sync`**\n- `validation_and_answer_need_send_without_sync` uses a `Cell<u32>` answer, which is not `Sync`. It passes the `store_evidence` future through the `send` helper and checks the round trip.\n\n**Atomic replacement and key preservation**\n- These are delegated to the cited `evidence_storage` requirement.\n- `concurrent_same_criterion_executions_keep_complete_independent_records` stores two competing records for the same criterion. It asserts exactly one record remains and that its version, dependencies and output all belong to the same save.\n\n**Real storage**\n- `malformed_records_are_storage_errors_and_bad_outputs_are_output_errors` stores through the `FileEvidenceStorage` backend.\n\nVersion `None` is not tested, but the requirement does not name it, so I do not count it as a gap. The assertions are strong enough to catch dropped or mutated fields, a wrong key, a missing error mapping, or a partial write. I found no unacknowledged gap.",
   "references": "3906913037a414bf0e63f366419c56b540e2a75f2ebcc7c0f2f06df82088f0f8",
   "inputs": [
     {
@@ -175,21 +175,6 @@
         ":::",
         "::::"
       ]
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph/runtime.rs",
-      "item": "impl[Validator<D>]#1/fn[store_evidence]",
-      "hash": "6755e25156b0ec9907696bfc7023ab66384bf1369235d0d8b307158797c066f2"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
-      "item": "fn[enum_node_ids_distinguish_requirements_and_source_items_in_one_domain]",
-      "hash": "de4ef23efec56bf68236da93453ee7a761a59ba35e241442f6b5305d155d2714"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
-      "item": "fn[concurrent_single_node_validations_keep_separate_traces]",
-      "hash": "115849fed971c0f86fe91027c5874818c0a7a0d3e2f9137ac0bd76f1e9b73367"
     }
   ],
   "format_version": 1,
@@ -446,57 +431,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "1f3d0d387ce356e5b4cc0cc22d20543142b5dcd7352c1eb5e4dd8dd73b058a34"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph/runtime.rs"
-            },
-            "selector": "impl[Validator<D>]#1/fn[store_evidence]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "36b86c5f29f208041a1edf9109869b0caf61a1dbb720b5cb89a558fd51448b97"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
-            },
-            "selector": "fn[enum_node_ids_distinguish_requirements_and_source_items_in_one_domain]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "8b4b87d028692f4e4692dd7ea0d3ddc3446cfe77868b7c2efcb315a080ad27ea"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
-            },
-            "selector": "fn[concurrent_single_node_validations_keep_separate_traces]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "8b86a973054f33a768361b9c97c8db8354f533c39c830d4f407846326b831c24"
         }
       ]
     }

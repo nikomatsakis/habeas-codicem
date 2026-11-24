@@ -1,8 +1,8 @@
 {
   "requirement": "Run the criterion with a fresh `ValidationContext`. `execute` borrows it for this call. The returned `Fingerprinted` owns the answer and the dependencies collected during execution. Call `store_evidence` to persist it. See {cite}`requirements.sdk.graph.validators.validate_node`.\n\n```rust,ignore\nimpl<D: Domain> Validator<D> {\n    pub fn verify<V: Criterion<D>>(\n        &self,\n        criterion: V,\n    ) -> impl Future<Output = Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>>> + Send;\n}\n```",
   "determination": true,
-  "rationale": "The reviewed tests adequately check `requirements.sdk.graph.validators.validator.verify`.\n\n**Obligations derived from the text**\n1. `verify` runs the criterion with a fresh `ValidationContext` that `execute` borrows for the call.\n2. The returned `Fingerprinted` owns the answer, including a negative one.\n3. The returned `Fingerprinted` also owns the dependencies collected during execution.\n4. `verify` does not persist. Only `store_evidence` does.\n5. The signature returns `Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>>` from a `Send` future.\n\n**Coverage**\n- `crates/trust-but-verify/tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` covers the owned answer, no persistence, and fresh executions.\n  - It calls `verify` with a negative answer and asserts `value.output()` equals that answer. It also asserts the source node, criterion path and version, and empty dependencies.\n  - Right after that `verify`, it asserts executions = 1 and writes = 0, and that `load_evidence` still returns `None`. So `verify` runs `execute` once and does not persist.\n  - Only the later `store_evidence` makes the record loadable, and the loaded record matches the value.\n  - A second `verify` of the same criterion path with a different answer leaves the stored record unchanged. This shows `verify` runs `execute` again, ignores saved records and does not write.\n  - Final counts of 4 executions and 3 writes, plus stored outputs and empty dependencies, confirm the behavior across multiple calls.\n  - The `Review` test criterion in the same file holds a `Cell`, which makes the future `Send` but not `Sync`. The `Send` bound is therefore exercised at compile time, and the tests run as `#[tokio::test]`.\n- `crates/trust-but-verify/tests/contracts.rs#fn[input_checking_and_execution_keep_separate_observations]` covers dependency collection.\n  - The criterion's `execute` (`impl[Review<O>/Criterion<Application>]/fn[execute]`) reads Node(2) through the context.\n  - After `persist` (which calls `verify` and then `store_evidence`), the test asserts the stored dependencies are exactly one `Dependency::Node(Node(2), Fingerprint(\"text-v1\",\"after\"))`. The fingerprint reflects the current content.\n  - It asserts the graph was read exactly once, `[2]`, during execution, after earlier `check_inputs` reads had been cleared. This shows each `verify` call uses its own context and records only its own reads.\n  - The stored dependencies come from the `Fingerprinted` that `verify` returned. The test does not assert `value.dependencies()` on a `verify` result that has reads, so this is indirect. The assertion on the stored record still pins down the collected dependencies.\n\n**Not counted as coverage**\n`crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]` only checks the public export inventory. It does not exercise `verify` behavior.\n\n**Delegated obligations**\nThe cited `requirements.sdk.graph.validators.validate_node` obligations (fresh context identifying the source node, the answer and dependencies forming the `Fingerprinted`) are cited context. Both tests also carry `{test}` references for `validate_node`.\n\nI found no unacknowledged gap. The text states no error-path obligation for `verify` beyond the signature.",
-  "references": "237bf72fcbf65e441b497bf32a66b1aeb863d3d12dd739612e4e27990b9eefeb",
+  "rationale": "The reviewed tests adequately cover `requirements.sdk.graph.validators.validator.verify`.\n\n**Fresh context per call and dependencies owned by the result**\n- `concurrent_single_node_validations_keep_separate_traces` runs three `verify` calls concurrently on one `Validator`. Each call reads its own node and its own outgoing edges.\n- After `store_evidence`, each stored record's dependencies are exactly that node's `Dependency::Node` and `Dependency::OutgoingEdges`. This would fail if contexts were shared or if dependencies leaked between calls.\n- `input_checking_and_execution_keep_separate_observations` calls `verify` twice for the same criterion through the `persist` helper, which calls `verify` and then `store_evidence`. The second record's dependencies are exactly one `Dependency::Node(2, ...)` with the post-change fingerprint. The earlier call's read is not carried over, so the second call used a fresh context.\n\n**Returned `Fingerprinted` owns the answer and dependencies**\n- `criteria_keep_typed_answers_and_persist_only_when_requested` asserts the returned value's `output()`, including a negative answer. It also asserts `source_node_id()`, `criterion_path()`, `version()` and `dependencies()` (empty here).\n- `input_checking_and_execution_keep_separate_observations` asserts a non-empty dependency list captured during execution.\n\n**`verify` does not persist; `store_evidence` does**\n- In `criteria_keep_typed_answers_and_persist_only_when_requested`, `load_evidence` returns `None` after `verify`, and the state shows executions = 1 and writes = 0.\n- After `store_evidence`, `load_evidence` returns the record.\n- A second `verify` with a different answer leaves the stored record unchanged, so `verify` ignores saved records and does not overwrite them.\n\n**Borrowing and the signature**\n- `validation_and_answer_need_send_without_sync` requires the `verify` future to be `Send` and works with a non-`Sync` `Cell` answer. This matches the `+ Send` future in the signature, and the code compiling against it checks the return type.\n- The `execute` borrow is a compile-time property, which the many compiling `verify` calls exercise.\n\nThe completed answer, including a negative one, is covered by the negative-answer case. The cited `validate_node` and `evidence.inputs` behaviours are context, so I did not reassess them. I found no unacknowledged gap.",
+  "references": "7b80c1e061e58a37a805e18a50ec39ac7b8c2963480888aa2c1bd42baec39a2e",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.validators.validator.verify",
@@ -40,6 +40,11 @@
       ]
     },
     {
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "fn[concurrent_single_node_validations_keep_separate_traces]",
+      "hash": "115849fed971c0f86fe91027c5874818c0a7a0d3e2f9137ac0bd76f1e9b73367"
+    },
+    {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[criteria_keep_typed_answers_and_persist_only_when_requested]",
       "hash": "dc7c8956d3d5681384322fad29d3bd3c4276c59bf1bf06d8e742ff1bc993ca3c"
@@ -50,19 +55,14 @@
       "hash": "d0327f7a62e7d7c48025532340cb37752d8a9aff3c88ee38c1101860d5c6c165"
     },
     {
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "fn[validation_and_answer_need_send_without_sync]",
+      "hash": "949fb3a00a164a6932b73fcd42652fd7673f951f9b81ee20b692b383da14aafa"
+    },
+    {
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[public_exports_match_the_appendix]",
       "hash": "4d6ce6161754fb9e88ad84ef64f9bb131b308298104915179b2c5d573ed2b087"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "impl[Review<O>/Criterion<Application>]",
-      "hash": "80125238d6844df754be58fea7fc6f11ec8e35bfb8d1b7ca3637783d4fedb707"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "impl[Review<O>/Criterion<Application>]/fn[execute]",
-      "hash": "c4a9fd7d7ca663e3de896fea2a1cc714dcba7de8c81a97d04fb6edab0dd3cac2"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
@@ -71,8 +71,23 @@
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "impl[Review<O>/Criterion<Application>]/fn[execute]",
+      "hash": "c4a9fd7d7ca663e3de896fea2a1cc714dcba7de8c81a97d04fb6edab0dd3cac2"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "struct[Review]",
       "hash": "f446c3b083932a8584c9e149398756f344f85189baccc05253e635e24644c7d4"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "impl[Review<O>]/fn[new]",
+      "hash": "0d9b5bd44e4aea8dc1b7160f78e0b45e9612c2466952ee5ab718ad4bab241577"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "fn[refresh_propagates_load_decode_check_execution_and_save_errors]",
+      "hash": "7a76effe6e5aee96d30a1d488105785d0bc3d59d572f2ef141e9c405129d4cff"
     }
   ],
   "format_version": 1,
@@ -85,7 +100,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "237bf72fcbf65e441b497bf32a66b1aeb863d3d12dd739612e4e27990b9eefeb"
+          "value": "7b80c1e061e58a37a805e18a50ec39ac7b8c2963480888aa2c1bd42baec39a2e"
         }
       ]
     },
@@ -97,7 +112,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "8cbc4849a5f6afdd22b70ef1d7d99f4da03f4b9fcb98b846647dbef66c6be7ab"
+          "value": "3186f23ae96999a8deff60ec8262688409312c9d293a03d746f03170ea22bd57"
         }
       ]
     },
@@ -120,6 +135,23 @@
         {
           "scheme": "habeas-input-v1",
           "value": "1be8539750cec84b761b1773e3f5415d1be5b2a628d9ea27d106f9982e067438"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+            },
+            "selector": "fn[concurrent_single_node_validations_keep_separate_traces]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "8b86a973054f33a768361b9c97c8db8354f533c39c830d4f407846326b831c24"
         }
       ]
     },
@@ -163,6 +195,23 @@
           "Source": {
             "resource": {
               "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/contracts.rs"
+            },
+            "selector": "fn[validation_and_answer_need_send_without_sync]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "7471cd4ee7b747fb3311ee29c366819e7254e34994aebc929463dd434e9ea1e3"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
               "location": "crates/trust-but-verify/tests/public_api.rs"
             },
             "selector": "fn[public_exports_match_the_appendix]"
@@ -171,40 +220,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "ae4819b6e5ac9cd22992cc4254e7868f438e101dbd53f1bd7d443a33ee96f61d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "impl[Review<O>/Criterion<Application>]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "ec4b506d81f1c1eb1ff7e707aae8846c8c7182cd67ef16e12eed86066915efdc"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "impl[Review<O>/Criterion<Application>]/fn[execute]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "70ee85d410c130160153afe7fbc26f04c2f6a75350632754be4db1149ba36564"
         }
       ]
     },
@@ -233,12 +248,63 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/tests/contracts.rs"
             },
+            "selector": "impl[Review<O>/Criterion<Application>]/fn[execute]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "70ee85d410c130160153afe7fbc26f04c2f6a75350632754be4db1149ba36564"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/contracts.rs"
+            },
             "selector": "struct[Review]"
           }
         },
         {
           "scheme": "habeas-input-v1",
           "value": "e3287dd47cc2350d178fc1b8a59049eec4730ab8531a44938f7b100a6cc60501"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/contracts.rs"
+            },
+            "selector": "impl[Review<O>]/fn[new]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "018e35edbbc7f528b6b80f00ad004d5320581ac64d917532b24bada377d09bc5"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/contracts.rs"
+            },
+            "selector": "fn[refresh_propagates_load_decode_check_execution_and_save_errors]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "f4bb2a4c6a299badf772c4ce94834b176aac1c0163e82a8c3c34e694db38cdaa"
         }
       ]
     }

@@ -1,7 +1,7 @@
 {
   "example": "The model calls `list_files` to find a directory, then `ripgrep` to find matching\nlines in a Rust file. The listing creates no evidence input; the search returns\nthe selector of the innermost Rust item containing each match, with the\nmatching and context lines but no line numbers, and creates no evidence input. An `outline` request\nfor that file lists its items without content and creates no evidence input. A\n`habeas` request with the file and one item's selector returns and records that\nitem, along with any required terminology. A line-range request omitting\n`line_end` reads through EOF and records the outline nodes it covers.\n{cite}`requirements.authoring.file_discovery`\n{cite}`requirements.authoring.text_search`\n{cite}`requirements.authoring.source_tools`\n{cite}`requirements.authoring.delivered_inputs`",
   "determination": true,
-  "rationale": "The example describes a concrete scenario with stated outcomes: `list_files`, then `ripgrep` on a Rust file, then `outline`, then a `habeas` item read, then a `habeas` line-range read with no `line_end`. The test `src/authoring/tools.rs#mod[tests]/fn[additional_read_flow_searches_outlines_and_reads_a_rust_file]` runs this whole flow against a Rust file `src/lib.rs`. That file has `fn work` with an attached `{term}` comment, plus `fn other`. Each outcome is checked as follows:\n\n- **Listing creates no input.**\n  - The root `list_files` returns a `src` entry of kind `directory`, and `directories.inputs` is empty.\n  - Listing `src` returns exactly one file entry for `src/lib.rs`, and `listing.inputs` is empty.\n  - `listed_git_directories_need_an_eligible_descendant_at_any_depth` adds Git-worktree listing checks and confirms that listings record no inputs.\n- **Search returns the innermost item, no line numbers, and no input.**\n  - `ripgrep` with pattern `work` and `context` 0 on `src/lib.rs` is compared with `assert_eq!` to an exact JSON value. That value has file `src/lib.rs`, item `fn[work]`, kind `fn`, and one matching line with no line-number fields.\n  - `search.inputs` is empty.\n  - `search_merges_context_windows_and_respects_ignore_rules` also asserts that entries and lines have no line-number keys. `search_records_nothing_clamps_at_eof_and_reports_failures` checks that no definitions are returned, that nothing is recorded, and that item-boundary context stops at the item.\n- **Outline lists items without content and creates no input.** The `outline` result's items equal `[\"fn[work]\",\"fn[other]\"]`. The result does not contain the body text of `fn other`, and `outline.inputs` is empty.\n- **Item read returns and records the item with terminology.**\n  - The `habeas` read with `file` and `item` returns an input whose item is `fn[work]` and whose text includes the `fn work` source line.\n  - It returns one definition, `terms.value`, and its `inputs` has length 2.\n  - After `record_inputs`, the recorded set contains the `fn[work]` outline input, and its length is 2.\n- **Line range without `line_end` reads through EOF and records the covered nodes.**\n  - A `habeas` request with only `line_start` returns inputs whose items equal `[\"fn[work]\",\"fn[other]\"]`.\n  - After recording, both outline inputs and the terminology definition are present.\n\nThe CLI test `tests/authoring_cli.rs#fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]` checks the end-to-end flow, which strengthens the `habeas` and listing assertions:\n\n- `list_files` records no evidence input.\n- `ripgrep` only locates lines. It counts toward usage but is not an evidence input.\n- A line-range read with no `line_end` is recorded as the plain-text line nodes it covers. A repeated read is recorded once, by selector and hash only.\n\nThe tests cover every outcome the example states, and the expected values come from the example and the cited requirements. They would reject an implementation that gave a search or listing an evidence input, added line numbers or item content to results, or failed to record the item, the line-range nodes or the terminology. I found no unresolved gap.",
+  "rationale": "The example describes a concrete scenario. It runs `list_files`, then `ripgrep` on a Rust file, then `outline`, then a `habeas` item read, then a `habeas` line-range read with no `line_end`. Each step has a stated expected outcome. The supplied tests cover each outcome.\n\nThe main test is `src/authoring/tools.rs#mod[tests]/fn[additional_read_flow_searches_outlines_and_reads_a_rust_file]`. It builds a Rust file `src/lib.rs` with `fn work` and `fn other`, plus a term definition.\n\n- **Listing records nothing.** It lists the root and then `src`. It asserts the `src` entry is a directory and the `src` listing is exactly `[{path: \"src/lib.rs\", kind: \"file\"}]`. It asserts `inputs.is_empty()` for both listings. `.../fn[listed_git_directories_need_an_eligible_descendant_at_any_depth]` also asserts that listings produce no inputs, in a Git worktree.\n- **Search returns the innermost Rust item and records nothing.** It runs `ripgrep` for `work` in `src/lib.rs` with `context: 0`. It asserts the whole match entry is `{file, item: \"fn[work]\", kind: \"fn\", tag, lines: [{text: \"fn work() {}\", matched: true}]}`. That shows the innermost item selector, matched-line marking, and no line-number fields. It also asserts `search.inputs.is_empty()`.\n- **Context lines and no line numbers.** `.../fn[search_records_nothing_clamps_at_eof_and_reports_failures]` searches Rust with `context: 5`. It shows the context lines stopping at the item boundary, with the attached comment as a non-matching line. It asserts that no definitions are returned and that `recorded_inputs()` is empty. `.../fn[search_merges_context_windows_and_respects_ignore_rules]` asserts that `line_start` and `line` fields are absent.\n- **Outline lists items without content and records nothing.** It asserts `outline.inputs.is_empty()` and that the items are `[\"fn[work]\", \"fn[other]\"]`. It asserts the output does not contain `fn other()`.\n- **Item read returns and records the item with terminology.** `habeas` with `file` and `item: \"fn[work]\"` returns an input whose item is `fn[work]` and whose text contains `fn work() {}`. It returns exactly one definition, `terms.value`. It returns two inputs, the outline node and the definition. After `record_inputs`, the recorded set contains the `outline_input` for `fn[work]` and has size 2.\n- **Line range without `line_end` reads through EOF.** `habeas` with `line_start: 2` covers `[\"fn[work]\", \"fn[other]\"]`. That includes the last item, so the read ran to EOF. After recording, both outline nodes and the `terms.value` definition are present.\n\nThe end-to-end test `tests/authoring_cli.rs#fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]` backs this up through the CLI. A `list_files` call is not an input. A `ripgrep` call followed by `habeas` reads at `line_start: 10` records only the plain-text line nodes for lines 10–12. A repeated read is deduplicated, and evidence stores selector and hash, not the source payload.\n\nI found no unasserted outcome and no assertion that contradicts the example. The cited requirements are applied in the example's own case. The cited requirements for file discovery, text search, source tools and delivered inputs are covered by the checks above: selectors without line numbers, no inputs from listings or searches, outline-input records, and the EOF read. I found no unacknowledged gaps.",
   "references": "5a10fcccc9f65401742794bd54ccb3b6cdadb4a3b80e754b7853e95f95756ddc",
   "inputs": [
     {
@@ -251,8 +251,31 @@
     }
   ],
   "format_version": 1,
-  "review_version": "*",
+  "review_version": "habeas-review-v1",
   "dependencies": [
+    {
+      "Node": [
+        {
+          "ReferenceSet": "requirements.authoring.additional_read"
+        },
+        {
+          "scheme": "habeas-reference-set-v1",
+          "value": "5a10fcccc9f65401742794bd54ccb3b6cdadb4a3b80e754b7853e95f95756ddc"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.authoring.additional_read"
+        },
+        "Mandatory",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "2f0c1b429137144a30261fdb3d58c50d7543d085bc3403aa32b045ab9ba8b6d7"
+        }
+      ]
+    },
     {
       "Node": [
         {
@@ -390,17 +413,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "11c82d7b9346bfb24542e10b6851069926343cfea0dc76f3a7ec5baf71a854a9"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.authoring.additional_read"
-        },
-        {
-          "scheme": "habeas-reference-set-v1",
-          "value": "5a10fcccc9f65401742794bd54ccb3b6cdadb4a3b80e754b7853e95f95756ddc"
         }
       ]
     }

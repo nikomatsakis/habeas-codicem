@@ -1,7 +1,7 @@
 {
   "requirement": "An inference option may contain nested arrays and maps. Scalars retain their value types when serialized. Floating-point options must be finite when building a backend request.\n\nDownstream callers matching on individual variants must include a fallback arm for future variants.\n\n```rust,ignore\n#[non_exhaustive]\npub enum OptionValue {\n    String(String),\n    Boolean(bool),\n    Integer(i64),\n    Float(f64),\n    Array(Vec<OptionValue>),\n    Map(BTreeMap<String, OptionValue>),\n}\n```\n\nTrait implementations\n\n```rust,ignore\nimpl Clone for OptionValue;\nimpl Debug for OptionValue;\nimpl<'de> Deserialize<'de> for OptionValue;\nimpl PartialEq for OptionValue;\nimpl Serialize for OptionValue;\n```",
   "determination": true,
-  "rationale": "The reviewed tests adequately check `requirements.sdk.graph.agent-harness.OptionValue`.\n\n**Obligations and the tests that cover them**\n\n- **Nested arrays and maps.** `config.rs#mod[tests]/fn[all_backends_preserve_nested_settings_and_credentials]` deserializes configs for all three backends. The Bedrock case has a map containing a map that holds an array, `{\"nested\":{\"enabled\":true,\"array\":[\"x\",2,0.5]}}`. The OpenAI case has a nested map. The test asserts that `serde_json::to_value` returns exactly the input JSON. It also asserts that a JSON string round trip gives an equal `AgentConfig`, which exercises `PartialEq`, `Debug`, `Serialize` and `Deserialize`.\n- **Scalars keep their value types when serialized.** The same test has string, boolean, integer (`1024`, `2`) and float (`0.5`) scalars. It checks that the serialized form equals the original JSON, so a scalar that changed type would fail. In `config.rs#mod[tests]/fn[option_defaults_and_credential_resolution_are_deterministic]`, `from_value::<OptionValue>(json!(1))` must give `Integer(1)` and `json!(1.0)` must give `Float(1.0)`. This pins the integer/float distinction for whole-number floats.\n- **Floats must be finite when building a backend request.** The same test asserts that `OptionValue::Map{nested: Float(INFINITY)}.validate()` is an error. It also asserts that `AgentConfig::Ollama` with `Array[Float(NAN)]` makes `options_json()` return an error. Together these cover both non-finite kinds (infinity and NaN), nesting inside maps and arrays, and the request-building entry point.\n- **`#[non_exhaustive]` and the fallback-arm rule for downstream callers.** This is an attribute on the type plus a rule for callers. It has no runtime behaviour to test, and the public-API inventory test `public_api.rs#fn[public_exports_match_the_appendix]` covers the export surface.\n- **Trait implementations** (`Clone`, `Debug`, `Deserialize`, `PartialEq`, `Serialize`). The enum uses `#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]` with `#[serde(untagged)]`, so there is no hand-written conditional logic. The tests use `Debug`, `PartialEq`, `Serialize` and `Deserialize` through their assertions.\n\n**Possible gaps considered**\n\n- Tests do not separately check negative infinity, or non-finite floats on the Bedrock or OpenAI paths. These are the same input class as the tested cases, and the finite check sits in the shared `OptionValue::validate` and `options_json` code. The requirement does not distinguish them.\n- The tests do not serialize `Float(1.0)` directly. The round-trip test covers float serialization with `0.5`, and the deserialization test covers whole-number floats. A plausible violation such as serializing floats as integers would fail the `0.5` round trip.\n\nI found no gap and no acknowledgments apply.",
+  "rationale": "The reviewed tests adequately check `requirements.sdk.graph.agent-harness.OptionValue`.\n\n**Nested arrays and maps, and scalar types kept through serialization.**\n- `config.rs#mod[tests]/fn[all_backends_preserve_nested_settings_and_credentials]` deserializes three backend configs. Their options include a nested map holding a bool and an array `[\"x\",2,0.5]`, plus `maxTokens: 1024`, a nested `reasoning.effort` string, and a `temperature` of 0.5.\n- It asserts that `serde_json::to_value` equals the original JSON. That check covers string, bool, integer and float types and the nesting of arrays and maps.\n- It also round-trips through a JSON string and asserts the copy is equal. This exercises the `Serialize`, `Deserialize` and `PartialEq` impls.\n\n**Integer and float typing.**\n- `config.rs#mod[tests]/fn[option_defaults_and_credential_resolution_are_deterministic]` asserts that JSON `1` deserializes to `OptionValue::Integer(1)`.\n- The same test asserts that JSON `1.0` deserializes to `OptionValue::Float(1.0)`.\n\n**Floats must be finite when building a backend request.**\n- The same test asserts that `OptionValue::validate()` fails on a nested `Float(INFINITY)` inside a map.\n- It also asserts that `AgentConfig::Ollama(..).options_json()` fails on a nested `Float(NAN)` inside an array.\n- Together these cover both infinity and NaN, in map nesting and in array nesting, through both the validator and the request-building path.\n\n**Enum shape, `#[non_exhaustive]` and trait impls.**\n- I read the implementation only to check how the enum is defined. It uses `#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]`, `#[serde(untagged)]` and `#[non_exhaustive]`.\n- The trait impls are derived, so they have no conditionals or transformations of their own. `PartialEq`, `Serialize` and `Deserialize` are also exercised by the round-trip assertions.\n- `#[non_exhaustive]` is a compile-time attribute. The `public_api.rs#fn[public_exports_match_the_appendix]` test covers the export inventory. The fallback-arm obligation falls on downstream callers, so it needs no behavioral test.\n\n**Minor observation, not a gap.** The serialization round-trip uses the float 0.5, not an integral float such as 1.0. A float with an integral value is only tested in the deserialization direction. The derived untagged serialization makes a regression there implausible, and the text names no such boundary.",
   "references": "5a45c4279e097dc3755d1d65665d25d09aeb6e4f5084c861ebb98a2913199692",
   "inputs": [
     {
@@ -64,6 +64,16 @@
       "file": "crates/trust-but-verify/src/agent/config.rs",
       "item": "impl[OptionValue]",
       "hash": "c8e9e2a02cc67e48500beff2121d34a375effa4fe0d8540dcba8229896cb514d"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/public_api.rs",
+      "item": "fn[check_declaration]",
+      "hash": "c2641df4291284653f239a9ce3be3002eda283fd0c19492a3f29f81a2bc61829"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/config.rs",
+      "item": "impl[AgentConfig]/fn[options_json]",
+      "hash": "b6fab53d386c3dd8880da1c557a1a97c9501f78567ffa7c9113112900738770c"
     }
   ],
   "format_version": 1,
@@ -185,6 +195,40 @@
         {
           "scheme": "habeas-input-v1",
           "value": "03515ce3e6d7ea1881285f8e3792fe1c42af9c7ede20d8711b8cee276cf08079"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/public_api.rs"
+            },
+            "selector": "fn[check_declaration]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "1a4ac7dcf98a2bfdcc8e62b828699053c877a0a8af9ca1d708d6b94dae2cc7e4"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/config.rs"
+            },
+            "selector": "impl[AgentConfig]/fn[options_json]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "bb9ac504b703729ca3ae7558771338a2e4e0c17891923f0a4c91e4f2c97e0e8c"
         }
       ]
     }

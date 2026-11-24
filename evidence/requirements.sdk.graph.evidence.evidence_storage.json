@@ -1,7 +1,7 @@
 {
   "requirement": "{cite}`requirements.sdk.domain`\n\n`trust_but_verify::domain::Domain` provides evidence persistence for the\n{term}`requirements.sdk.application_domain`:\n\n```rust,ignore\nuse std::future::Future;\n\n// Defined in trust_but_verify::domain.\npub trait Domain: Clone + Send + Sync {\n    // ...\n\n    /// Ok(None) means absent; Err means loading failed.\n    fn load_evidence(\n        &self,\n        source: &Self::NodeId,\n        criterion: &CriterionPath,\n    ) -> impl Future<Output = Result<\n        Option<Record<Self::NodeId, Self::EdgeLabel>>,\n        Self::Error,\n    >> + Send;\n\n    /// Atomically replace only this source/criterion pair's complete record.\n    fn store_evidence(\n        &self,\n        source: &Self::NodeId,\n        criterion: &CriterionPath,\n        record: &Record<Self::NodeId, Self::EdgeLabel>,\n    ) -> impl Future<Output = Result<(), Self::Error>> + Send;\n\n    // ...\n}\n```\n\nThe validator passes the source identity and criterion path to both methods. The\nkey preserves both parts: source paths `[\"a\"]` and `[\"a\", \"b\"]` with criteria\n`[\"b\", \"c\"]` and `[\"c\"]` identify different records, even though flattening each\npair would produce the same segments.\n\nDifferent criteria of a source have independent records. A version change\ninvalidates the same criterion's record rather than creating another key.\n\nSuccessful loads observe either an old or new complete record, or absence\nbefore the first save. Successful competing saves leave one complete record;\nits version, dependencies, and output all belong to that save. No ordering\nbetween competing saves is guaranteed.",
   "determination": true,
-  "rationale": "I found no test-adequacy gap for `requirements.sdk.graph.evidence.evidence_storage`. Each obligation maps to at least one test with assertions:\n\n- **Absent versus failed load.**\n  - `crates/trust-but-verify/tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` asserts that `load_evidence` returns `Ok(None)` before the first save and a record after it.\n  - `crates/trust-but-verify/tests/storage.rs#fn[consumer_delegates_evidence_storage_using_only_the_requested_nodes_path]` asserts `Ok(None)` for an unsaved node. It also asserts that a corrupt record returns `Err(FileStorageError::Json(_))`, so an error is not reported as absence.\n  - `src/sdk.rs#mod[tests]/fn[domain_storage_round_trips_each_review_kind_and_preserves_records_on_errors]` asserts `None` for unsaved nodes and for a different criterion.\n\n- **Store replaces only this source/criterion pair's complete record.**\n  - The same `src/sdk.rs` test round-trips version, dependencies and output for each review kind.\n  - It checks that a failed store, whether rejected or an I/O failure, leaves the existing file bytes unchanged. The `src/authoring/sdk.rs#mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]` test does the same.\n  - The filesystem boundary test checks that the record's directory holds only `record.json` after a store, so no stray temporary file is left.\n\n- **Key preserves both parts.** `crates/trust-but-verify/tests/storage.rs#fn[source_and_criterion_boundaries_preserve_independent_records]` stores `[\"a\"]` with `[\"b\",\"c\"]` and `[\"a\",\"b\"]` with `[\"c\"]`. It asserts that they map to different paths and that each loads its own value. It also covers empty, empty-string and escape-sensitive segments.\n\n- **Validator passes source and criterion to both methods.**\n  - The contracts test round-trips through `Validator::load_evidence` and `Validator::store_evidence`, using the Application domain keyed by node and criterion.\n  - `wildcard_revision_does_not_supply_other_criteria_or_nodes` loads with a different source node and gets `None`.\n\n- **Different criteria are independent.** The contracts test saves the `behavior`, `structure` and `text` criteria for one source. It checks that `behavior` is unchanged afterwards and that `text` is absent until saved.\n\n- **Version change invalidates the same key.** `concurrent_same_criterion_executions_keep_complete_independent_records` and `concurrent_refreshes_execute_independently_and_store_complete_records` use differing revisions for one criterion. Both assert that exactly one record remains.\n\n- **Concurrent loads and saves.**\n  - `storage.rs#fn[concurrent_readers_only_observe_complete_records_from_competing_writes]` has two writers and a reader running together. Every observed record is either the initial one or a complete A or B record, with matching version, dependencies and output.\n  - The two contracts tests assert that competing saves leave one record whose version, dependencies and output all come from the same save. They do not assert which save wins, which matches the \"no ordering guaranteed\" clause.\n\nThe trait signature obligation is exercised by the compiled `Domain` implementations in the tests. Nothing here needs an exemption.",
+  "rationale": "The reviewed tests adequately cover every obligation in `requirements.sdk.graph.evidence.evidence_storage`. I found no gap.\n\n**Absence versus failure (`Ok(None)` versus `Err`)**\n- `tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` asserts that `load_evidence` returns `None` before the first save. It also asserts `None` after `verify` without a save, and again for an unsaved criterion.\n- `tests/storage.rs#fn[consumer_delegates_evidence_storage_using_only_the_requested_nodes_path]` asserts `None` for an absent node. After corrupting the stored file, it asserts that loading returns `Err(FileStorageError::Json(_))`.\n- `src/sdk.rs#mod[tests]/fn[domain_storage_round_trips_each_review_kind_and_preserves_records_on_errors]` and the `ReviewGraph` test in `src/authoring/sdk.rs#mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]` check `None` before storing and a round trip afterwards. They also check that failed stores leave the existing bytes unchanged.\n\n**The validator passes the source identity and the criterion path**\n- The contracts tests save through `Validator::store_evidence` and then read back with `domain.load_evidence(&Node(1), &path(&[\"behavior\"]))`. They also look records up by criterion in `state.records`. A validator that passed the wrong source or criterion would fail these checks.\n\n**The key preserves both parts**\n- `tests/storage.rs#fn[source_and_criterion_boundaries_preserve_independent_records]` checks the exact pairs the requirement names, `[\"a\"]`/`[\"b\",\"c\"]` versus `[\"a\",\"b\"]`/`[\"c\"]`. It asserts distinct record paths, stores a different record under each pair, and loads each back correctly.\n- It also covers empty segments, segments containing separators, and control characters.\n\n**Different criteria of a source have independent records**\n- In `criteria_keep_typed_answers_and_persist_only_when_requested`, the `behavior`, `structure` and `text` criteria are stored for the same source. Saving the others leaves `behavior` unchanged, and each record holds its own output.\n- The `src/sdk.rs` test loads a record under a different criterion and gets `None`.\n\n**A version change replaces the same record**\n- `concurrent_refreshes_execute_independently_and_store_complete_records` and `concurrent_same_criterion_executions_keep_complete_independent_records` use different revisions for the same source and criterion. Both assert that only one record remains.\n- `refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace` also asserts `records.len()==1` after a revision change, with the replacement output, dependencies and version. This test is not marked with `evidence_storage`. That is at most a marking matter, because the marked concurrent tests already cover the obligation.\n\n**Atomic complete-record loads and saves**\n- `tests/storage.rs#fn[concurrent_readers_only_observe_complete_records_from_competing_writes]` has two writers racing while a reader loops. Every observed record is either the initial one or one of the writers' complete records. Output, version and dependencies must all come from the same writer. The test also asserts that only one directory entry remains.\n- The two contracts concurrency tests assert that after competing saves the single stored record's version, dependencies and output all match one save. Neither test assumes which save wins.\n\nThe test `Application` domain in `crates/trust-but-verify/tests/contracts.rs` is a plain in-memory stand-in. It is keyed on both the source and the criterion, so it does not weaken these checks.",
   "references": "cabd19b94e0b05d3eb6613a2ecbe3d5ee4cdb74e4c0bfa0b21d36ed1787b0440",
   "inputs": [
     {
@@ -163,18 +163,18 @@
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "impl[Application/Domain]/fn[load_evidence]",
-      "hash": "eae88b9e5bf5aba5d315ea83252df3108659e13e70915d9a25fa17b4e5a975e8"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "impl[Application/Domain]/fn[store_evidence]",
       "hash": "3d0f9f79d5ac5e9540dc8d8439ce006c5592529469851c77bee51cfd4cda7cfa"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[wildcard_revision_does_not_supply_other_criteria_or_nodes]",
-      "hash": "9e7e2872d2b1bb908df524e788d03b0109323059d34c5a55741f3edab46535fe"
+      "item": "impl[Application/Domain]/fn[load_evidence]",
+      "hash": "eae88b9e5bf5aba5d315ea83252df3108659e13e70915d9a25fa17b4e5a975e8"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "fn[refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace]",
+      "hash": "3a483ee72a2a831f2ef810099f9f914eb2598b4d5cbb810e8bf3ff73eb111e42"
     }
   ],
   "format_version": 1,
@@ -380,23 +380,6 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/tests/contracts.rs"
             },
-            "selector": "impl[Application/Domain]/fn[load_evidence]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "35a8a34c8dc07fc43db8554b44ab1a54f2e3a8a532fafb99d1ed79902e166cba"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
             "selector": "impl[Application/Domain]/fn[store_evidence]"
           }
         },
@@ -414,12 +397,29 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/tests/contracts.rs"
             },
-            "selector": "fn[wildcard_revision_does_not_supply_other_criteria_or_nodes]"
+            "selector": "impl[Application/Domain]/fn[load_evidence]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "e1d127ee7a96760fa1084f21af94f747bd46188fbb52d865e200237ac599ae13"
+          "value": "35a8a34c8dc07fc43db8554b44ab1a54f2e3a8a532fafb99d1ed79902e166cba"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/contracts.rs"
+            },
+            "selector": "fn[refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "d1d9f6766c59c01947274ea659f32a421ad5a49cfc73929167f49b82d5901453"
         }
       ]
     }

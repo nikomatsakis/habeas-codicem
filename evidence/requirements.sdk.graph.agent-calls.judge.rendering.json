@@ -1,7 +1,7 @@
 {
   "requirement": "The SDK presents node inputs using the returned value's `NodeContents::format`\nunder {cite}`requirements.sdk.graph.node_content.format`.\nIts text and fingerprint describe the same retained observation.\n\n```rust,ignore\nlet contents = domain.node_content(&node_id)?;\nlet text = contents.format();\n```\n\nLoading and fallible preparation occur in `Domain::node_content` under\n{cite}`requirements.sdk.graph.node_content`. For inputs queued on an ask\nbuilder, these failures return `ValidationError::Graph`. During a `read_node`\ntool call, they are returned to the agent as a tool error, so it can continue\nand recover.",
   "determination": true,
-  "rationale": "The tests cover every obligation in `judge.rendering`. I judged them against the requirement text and did not review the implementation.\n\n**1. Inputs are presented through `NodeContents::format`.**\n- `default_tool_accepts_scalar_results_and_keeps_the_exact_prefix` sets the `Memory` domain's formatter to produce `formatted input: source`. It asserts that the first user message sent to the agent contains that text.\n- `explicit_insertions_preserve_order_repetition_and_selection_snapshots` checks the rendered inputs delivered to the agent for each queued node. It asserts their order and repetition.\n- `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer` asserts that the domain's node contents reach the agent, in order.\n- `validator_agent_executions_isolate_conversations_and_dependency_traces` uses `distinct_pages` as the formatter. The `ParallelConversations` provider asserts that each conversation's history contains its own formatted node text (`ALPHA-CONTENTS` or `BETA-CONTENTS`) and not the other's. That covers `read_node` and paged delivery.\n\n**2. Text and fingerprint describe the same retained observation.**\n- In `default_tool_accepts_scalar_results_and_keeps_the_exact_prefix`, the recorded `Dependency::Node` fingerprint value is `source`, which matches the formatted `source` text. `graph.reads` is exactly `[1]`, so there was one read.\n- In `identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot`, the node contents are changed after the snapshot is taken. The test asserts that `snapshot.content.format()` still returns `before`. It asserts that `fingerprint()` still equals `snapshot.fingerprint`. It also asserts that only one read occurred.\n- `domain_formats_supplied_contents_without_resolving_a_replacement` covers the \"formatting uses the retained value without further resource reads\" clause of `node_content.format`. It formats supplied contents for a file that does not exist. The test would fail if `format` tried to re-read the resource.\n- The `Memory` test domain fills in the formatted string inside `node_content`. `format` therefore cannot fail or re-read.\n\n**3. Failures during loading or preparation.**\n- Ask-builder path: `queued_reads_selection_and_rendering_fail_before_agent_invocation` covers three cases.\n  - A read failure yields `ValidationError::Graph(\"read\")`.\n  - An edge-listing failure yields `ValidationError::Graph(\"edges\")`.\n  - A preparation failure (`fail_prepare`) yields `ValidationError::Graph(\"render\")`.\n  - In each case it asserts that no dependency is recorded and the agent is not invoked.\n- Tool path: `node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents` makes the formatter or preparation fail during a `read_node` call. It asserts that the agent receives a tool result with `is_error` set, the tool name `read_node`, and the failure message. It then asserts that the agent continues and submits successfully, and that no dependency is recorded.\n\n**Other references.**\n- `runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls` and `authoring_keeps_the_prepared_subject_snapshot_and_concrete_version` carry `{test}` references to this requirement. They show the same rendered inputs flowing through the validator and authoring paths.\n- I found no unmarked relevant tests, no untested clauses, and no ambiguity. There are no `{fixme}` acknowledgments to assess.",
+  "rationale": "The reviewed tests cover each obligation in `requirements.sdk.graph.agent-calls.judge.rendering`.\n\n**1. Inputs are presented through `NodeContents::format`.**\n- `fn[default_tool_accepts_scalar_results_and_keeps_the_exact_prefix]` in `agent/tests.rs` gives the test domain a formatter that returns \"formatted input: …\". It asserts that the user message sent to the agent contains that formatted text. This covers inputs queued on the ask builder.\n- `fn[validator_agent_executions_isolate_conversations_and_dependency_traces]` uses `distinct_pages` as the formatter. Its `ParallelConversations` provider asserts that each conversation's history contains its own formatted contents and none of the other conversation's. This covers contents delivered through the `read_node` and `get_next_page` tool calls.\n- `fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]` checks that two nodes' contents reach the agent in the queued order.\n- `fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]` in `validation_tests.rs` checks the same for repeated and ordered insertions.\n- The `src/sdk.rs` test `fn[domain_formats_supplied_contents_without_resolving_a_replacement]` checks that the Habeas domain's `format` uses the supplied contents.\n\n**2. Text and fingerprint describe the same retained observation.**\n- `fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]` in `tests/contracts.rs` reads a snapshot, then changes the underlying node. It asserts that `format()` still returns \"before\", that `fingerprint()` equals the snapshot fingerprint, and that only one read occurred. So formatting uses the retained value without further resource reads.\n- The default-tool test asserts that the recorded dependency fingerprint is \"source\" while the presented text is derived from the same content.\n- The Habeas-side authoring test in `src/authoring/sdk.rs` keeps the prepared snapshot's text and fingerprint after the source changes.\n\n**3. Failures of `Domain::node_content` for queued inputs return `ValidationError::Graph`.**\n`fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]` covers a read failure (`fail_read`), an edge-selection failure (`fail_edges`) and a preparation or rendering failure (`fail_prepare`). Each case asserts `ValidationError::Graph(..)`. After the preparation failure it also asserts that no dependency was recorded and that the agent was not invoked.\n\n**4. During a `read_node` call, failures go back to the agent as a tool error and the agent can recover.**\n`fn[node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents]` makes the formatter inside `node_content` fail, which is preparation under `node_content`. It then runs `read_node` followed by `submit_result`. It asserts that the second request carries one `ToolResult` with `is_error`, the name `read_node` and the error text. It also asserts that the ask succeeds and that no dependency is recorded.\n\nThe obligations are covered by the success paths, the failure paths for both delivery routes (queued input and tool call), and the same-observation property. I found no unmarked relevant test and no weak assertion.",
   "references": "1e63703df239a97dcb7d98a48a06537041390ff2bc046286fa95aec157935334",
   "inputs": [
     {
@@ -203,6 +203,11 @@
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "impl[ParallelConversations/CompletionProvider]",
+      "hash": "c79cbfa2f3f1229b78d495a4f6c1dd533a3cf4faad118cb79ce21370738b2f36"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "impl[Memory/Domain]/fn[node_content]",
       "hash": "fa846ed496bfbbf139d6226555032c70dc773fba2c5f494680f06576f7c13c10"
     },
@@ -210,21 +215,6 @@
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[distinct_pages]",
       "hash": "71b30a6c494353acecdeadc53d2f250a6e34cb8a697572bfa3cde2d13c5970cc"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "impl[ParallelConversations/CompletionProvider]/fn[complete]",
-      "hash": "d35255a4fa408c338beaa85030f54382241b8638b22553c9ea14cba47078af16"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "impl[Memory]/fn[new]",
-      "hash": "63dc6af710c79845fe88bcbe7cbd88c72a328c14118db166d1d646aab00d1aa0"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "impl[ParallelConversations/CompletionProvider]",
-      "hash": "c79cbfa2f3f1229b78d495a4f6c1dd533a3cf4faad118cb79ce21370738b2f36"
     }
   ],
   "format_version": 1,
@@ -508,6 +498,23 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
+            "selector": "impl[ParallelConversations/CompletionProvider]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "814f77dd2d975d42806bb3fc7c2b74c075ec0d8f7b3741087f1fc16766dda451"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
+            },
             "selector": "impl[Memory/Domain]/fn[node_content]"
           }
         },
@@ -531,57 +538,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "1a1384d6f8edf12cba153e6cc3e732699e7cb106e2b5e5ed3656e30135dd2a19"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "impl[ParallelConversations/CompletionProvider]/fn[complete]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "18255575fbeca93b9a6e13a1cc86a94b6f2146c2974198b077a2fc0fc4f841e9"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "impl[Memory]/fn[new]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "3225db61a954ea96c54a30c343e75b70c625c39fa7c5182943bfae553e414f92"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "impl[ParallelConversations/CompletionProvider]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "814f77dd2d975d42806bb3fc7c2b74c075ec0d8f7b3741087f1fc16766dda451"
         }
       ]
     }

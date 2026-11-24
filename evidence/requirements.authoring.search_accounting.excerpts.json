@@ -1,7 +1,7 @@
 {
   "requirement": "Every `ripgrep` or `ast_grep` excerpt, including matching and context text,\nMUST be clipped to\nthe source span of the outline item identified by their `file` and `item`,\nincluding that item's attached source under\n{cite}`requirements.references.outline_comments`.\nClipping MUST apply within a line shared by different items.",
   "determination": true,
-  "rationale": "I judge the tests adequate for `requirements.authoring.search_accounting.excerpts`. Two tests carry {test} references to it. I read the implementation (`src/authoring/tools.rs#impl[SearchNodes]/fn[entries]`) only to see which branches exist. I derived the expected behavior from the requirement text.\n\n**Obligations and the tests that check them**\n\n1. **Clip matching and context text to the item's span, for both `ripgrep` and `ast_grep`.**\n   - `src/authoring/tools.rs#mod[tests]/fn[search_excerpts_stop_at_byte_boundaries_including_attached_comments_and_attributes]` runs both tools over a file with neighbouring items `fn before`, `fn target`, `fn after` and `fn last`.\n   - `ripgrep` runs with `context: 99`, so context would reach the neighbours if it were unclipped. The test asserts that `unwanted_before`, `unwanted_after`, `unwanted_last` and `fn last` appear nowhere in the serialized result. It also asserts the exact set and order of matched items: `fn[target]`, `fn[left]`, `fn[right]`.\n   - `ast_grep` runs with a rule that matches `needle()` and block comments containing `needle`. The test makes the same clipping assertions on its output.\n\n2. **Include the item's attached source under `requirements.references.outline_comments`.**\n   - The same test checks that the `target` excerpt contains the doc comment (`needle docs`) and the `#[inline]` attribute.\n   - A separate `ripgrep` query for `inline` with `context: 0` returns exactly `fn[target]` and `fn[right]`. That confirms the attribute text counts as part of those items.\n   - For the same-line comment `/* needle attached */`, the test asserts it appears in `fn[left]`'s excerpt and not in `fn[right]`'s. This matches the same-line comment rule, which attaches such a comment to the innermost node containing that line. I did not reassess the cited requirement's own behavior.\n\n3. **Clip within a line shared by different items.**\n   - The `left`/`right` line holds `fn left`, a comment, `#[inline]`, `fn right` and `fn last` on one physical line.\n   - The test asserts that `fn[left]`'s lines do not contain `fn right`, and that `fn[right]`'s lines contain neither `fn left` nor `needle attached`. It also asserts that nothing contains `fn last`, and that `fn[right]` includes `#[inline] fn right`.\n   - This is checked for both tools.\n\n4. **Byte boundaries and redaction.** The source includes the multibyte `café`. A `ripgrep` query for `café` with `context: 0` returns only `fn[target]`. The token `ghp_…` is asserted absent from the output, and `[REDACTED:` is asserted present, so clipping and redaction work together.\n\n5. **Exact match ranges.** `fn[exact_match_ranges_preserve_regex_anchors_and_skip_unmatched_or_binary_sources]` runs four patterns with `context: 10`: `^fn exact`, `needle\\(\\); \\}$`, `(?i)EXACT` and `^fn exact.*$`. For each, it asserts that the only item is `fn[exact]` and that its `lines` are exactly the single matched line `fn exact() { needle(); }`. The neighbouring `fn last() {}` is excluded even with large context. Anchors and match ranges therefore stay within the item. Unparseable and binary files add nothing.\n\n**Residual considerations**\n\n- The tests use Rust sources only. The clipping code in `entries` has no per-language branch, so I treated other languages as needing no separate test.\n- The elision-line logic is formatting, not clipping, and the requirement does not govern it.\n- The tests cover the branches that clip at the start and end of an item, within a shared line, and across attached comments and attributes.\n\nI found no plausible clipping violation, such as unclipped context, leaked shared-line text or missing attached comments, that these assertions would accept.",
+  "rationale": "The two marked tests in `src/authoring/tools.rs` cover the obligations in `requirements.authoring.search_accounting.excerpts`. I judged this from the supplied test source only and did not read the implementation.\n\n**Obligations derived from the text**\n1. Every `ripgrep` and `ast_grep` excerpt, including matching and context text, is clipped to the span of the item named by `file` and `item`.\n2. The span includes the item's attached source: comments and attributes, under `requirements.references.outline_comments`.\n3. Clipping applies within a line that several items share.\n\n**Coverage in `search_excerpts_stop_at_byte_boundaries_including_attached_comments_and_attributes`**\n- **Both tools:** the test runs `ripgrep` with `context: 99` and `ast_grep` with a Rust rule, and checks the same invariants for each.\n- **Own-line neighbours and context:** the source puts `fn before` and `fn after` on their own lines around `fn target`, and a `fn last` after the shared line. With context 99, any leaked context line would show up. The test asserts that `unwanted_before`, `unwanted_after`, `unwanted_last` and `fn last` never appear anywhere in the result.\n- **Shared line:** `fn left() {…} /* needle attached */ #[inline] fn right() {…} fn last() {…}` puts three items on one line. The test asserts these results:\n  - There are exactly three matches, with items `fn[target]`, `fn[left]` and `fn[right]`.\n  - The `fn[left]` excerpt does not contain `fn right`.\n  - The `fn[right]` excerpt does not contain `fn left`.\n  - The `fn[right]` excerpt does not contain `needle attached`.\n  - The `fn[left]` excerpt does contain `needle attached`. The comment follows other source on its line, so it belongs to the innermost item containing that line.\n  - The `fn[right]` excerpt contains `#[inline] fn right`, which is its attached attribute.\n  - `fn last` never appears, so clipping holds on the right edge of the shared line as well as the left.\n- **Attached source on the target:** for `ripgrep`, the `fn[target]` excerpt must contain `needle docs` (the doc comment) and `#[inline]`. It must also contain `café`, which exercises multi-byte text at the clipping boundaries. A separate query for `inline` with `context: 0` confirms the attribute lines are attributed to `src/lib.rs#fn[target]` and `src/lib.rs#fn[right]`.\n- **Redaction alongside clipping:** the token is absent and `[REDACTED:` is present.\n- **Narrow query:** a query for `café` with `context: 0` yields one match, in `fn[target]`.\n\n**Coverage in `exact_match_ranges_preserve_regex_anchors_and_skip_unmatched_or_binary_sources`**\n- With `context: 10` and anchored or case-insensitive patterns, the test asserts that the excerpt is exactly `fn exact() { needle(); }` with `matched: true`.\n- Neither the following line `fn last() {}` nor any other text leaks into the excerpt. The assertion is an exact equality on the lines array.\n- Broken and binary sources produce no excerpts.\n\n**Gaps considered and rejected**\n- Languages other than Rust are not tested, but the requirement states the clipping rule generically. The Rust test exercises both a comment and an attribute as attached source.\n- `ast_grep` has no context parameter, and its matched lines are checked on the shared-line case.\n\nI found no unresolved ambiguity and no acknowledged gaps (the acknowledgments list is empty).",
   "references": "f3168551c676afa3cea9682625b111288eacc2dccebfadffb8a39ef96e63ac0f",
   "inputs": [
     {
@@ -53,11 +53,6 @@
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[exact_match_ranges_preserve_regex_anchors_and_skip_unmatched_or_binary_sources]",
       "hash": "68feb971fd4dd7857db9633adac71f0362ee81cbab0cf114a17de4411962bfdd"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "impl[SearchNodes]/fn[entries]",
-      "hash": "1e9d959ea8a7ef4d637e5522a6600fd6be0a55cccc1e5fc3d1554ae84276341a"
     }
   ],
   "format_version": 1,
@@ -139,23 +134,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "374c1176ef3f13d7e4eae8e3a3bfcb3091f24c66923f8e43af0cc71132ed6670"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/tools.rs"
-            },
-            "selector": "impl[SearchNodes]/fn[entries]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "17c7d7311ca3a3bbd9a7d64bc07daffa2d2d94b32962ae949b9290ead21ae0bc"
         }
       ]
     }

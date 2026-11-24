@@ -1,7 +1,7 @@
 {
   "requirement": "Compare the saved version with the current criterion using\n`criterion.version().is_compatible_with(saved.version())` on a `Fingerprinted`,\nor `criterion.version().is_compatible_with(record.version.as_ref())` on a `Record`.\nA known saved version must match exactly. `None` passes the version check.\nFor example, a saved `v*` matches only a requested `v*`.\nThe wildcard applies only to the version of the selected source and criterion.\nReusing the answer still requires decoding its output and checking its dependencies.",
   "determination": true,
-  "rationale": "The reviewed tests adequately check `requirements.sdk.graph.evidence.checking_records.version_match`.\n\n**Obligations and the tests that cover them**\n- **Both comparison forms.**\n  - The `Record` form is tested in `validation_tests.rs#fn[wildcard_versions_still_check_inputs_and_errors]`, which calls `Record::is_current` and `CriterionVersion::is_compatible_with(record.version.as_ref())`.\n  - The `Fingerprinted` form is tested in `validation_tests.rs#fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]`, which calls `review().version().is_compatible_with(cached.version())` on loaded evidence.\n- **A known saved version must match exactly.**\n  - The table in `wildcard_versions_still_check_inputs_and_errors` covers v41 against v42, the prefix pair v42 against v420, the case pair V42 against v42, and the equal pair v42 against v42. Only the equal pair passes.\n  - `caller_reuses_negative_answers_and_compares_revisions_explicitly` asserts that a saved v1 is incompatible with a requested v2.\n  - `refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace` has a \"revision\" cause where an incompatible revision causes re-execution and a replacement record.\n- **`None` passes.**\n  - `wildcard_versions_still_check_inputs_and_errors` asserts that a record with version `None` is current.\n  - `caller_reuses_negative_answers_and_compares_revisions_explicitly` asserts that a legacy `None` version is compatible with v2.\n  - `refresh_reuses_current_positive_negative_and_legacy_answers_without_saving` covers both `None` (stored `\"*\"`) and exact versions. It does so for positive and negative answers, and asserts that the answer is reused without re-execution or a new write.\n- **A saved `v*` matches only a requested `v*`.** The table has `(\"v*\",\"v42\",false)` and `(\"v*\",\"v*\",true)`. The `Record` assertions also reject a saved `v*` against a requested v42.\n- **The wildcard applies only to the selected source and criterion.** `contracts.rs#fn[wildcard_revision_does_not_supply_other_criteria_or_nodes]` saves a record with version `None`. It then shows the record is reused for the same node and criterion under a new revision. A different criterion path and a different source node both return `None`, and only one execution happens.\n- **Reuse still requires checking dependencies and decoding.**\n  - Dependencies are checked under a `None` version in `wildcard_versions_still_check_inputs_and_errors`. A changed fingerprint makes `is_current` false, and a read failure surfaces as `Err(\"read\")`.\n  - Dependencies are also checked in the refresh test through its \"contents\" and \"successors\" causes.\n  - Decoding under a wildcard is exercised in `refresh_reuses_current_positive_negative_and_legacy_answers_without_saving`. It asserts that the typed `reused.output()` equals the saved output.\n  - Separate tests in `contracts.rs` and `storage.rs` cover decode failures. `refresh_propagates_load_decode_check_execution_and_save_errors` sets a bad output on a compatible record (\"decode\") and on an incompatible one (\"stale decode\") and expects `ValidationError::Output`. That test carries no `version_match` {test} marking. Decoding in `load_evidence` happens before the version comparison, so the version result cannot bypass it. I therefore treat the missing marking as a minor point and not a gap.\n\nI found no plausible requirement-violating behavior that these tests would accept. Examples I considered are prefix or case-insensitive matching, a wildcard that matches any version, a wildcard that leaks to other criteria or nodes, and a wildcard that skips dependency checks. The assertions would reject each of them.",
+  "rationale": "The reviewed tests adequately cover `version_match`. I did not read the implementation.\n\n**Obligations and coverage**\n\n- **Known saved version must match exactly (`Record` form).**\n  - `validation_tests.rs#fn[wildcard_versions_still_check_inputs_and_errors]` calls `record.is_current` with saved `v*` against requested `v42` and expects false.\n  - The same test expects true for saved `v42` against requested `v42`.\n  - Its table of `CriterionVersion::new(requested).is_compatible_with(record.version.as_ref())` cases adds `v41`/`v42` (false), `v42`/`v420` (false), `V42`/`v42` (false) and `\"\"`/`v42` (false).\n- **`None` passes the version check.**\n  - The same test accepts a `None`-version record with matching dependencies against requested `v42`.\n  - The table covers `*` decoded via `from_recorded` as `None` passing against `anything`, and an assertion that `from_recorded(\"*\")` is `None`.\n- **Example: saved `v*` matches only requested `v*`.** The table has `v*`/`v42` as false and `v*`/`v*` as true. `is_current` also rejects saved `v*` against `v42`.\n- **`Fingerprinted` form.**\n  - `caller_reuses_negative_answers_and_compares_revisions_explicitly` asserts `review().version().is_compatible_with(cached.version())` for a matching version.\n  - The same test asserts `!v2.version().is_compatible_with(old.version())` for a mismatch.\n  - It asserts compatibility with a legacy `None` version, via `CriterionVersion::new(\"v2\").is_compatible_with(legacy.version())`.\n  - `contracts.rs#fn[wildcard_revision_does_not_supply_other_criteria_or_nodes]` checks `future.version().is_compatible_with(loaded.version())` for a `None` version.\n- **The wildcard applies only to the selected source and criterion.** In `wildcard_revision_does_not_supply_other_criteria_or_nodes`, a `None`-version record is not loaded for a different criterion path (`Review::new(&[\"new\"], false)`) or a different source node (`Node(2)`). Both loads return `None`, and `executions` stays at 1.\n- **Reuse still checks dependencies.**\n  - `wildcard_versions_still_check_inputs_and_errors` shows that a `None` version with changed node contents is not current.\n  - The same test shows that a read failure still surfaces as `Err(\"read\")` for a `None` version.\n  - `refresh_reuses_current_positive_negative_and_legacy_answers_without_saving` uses `*` and `v1` revisions for positive and negative answers. It asserts the dependencies are re-read (`reads == [2, 2]`) and that the answer is reused with no new execution.\n  - `refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace` covers the incompatible-revision, changed-contents and changed-successors causes. In each, the old answer is replaced.\n- **Reuse still decodes the output.** The wildcard-reuse tests decode and assert the saved answer (`reused.output() == saved.output()`, `!loaded.output()`). The decode-failure tests use compatible and stale versions: `typed_loading_reports_decode_errors_even_for_stale_evidence` and `refresh_propagates_load_decode_check_execution_and_save_errors`. No test pairs a wildcard version with an undecodable output. Decoding does not depend on the version, and the wildcard paths do decode, so I do not treat this as a gap.\n\nNo unacknowledged gap found.",
   "references": "38a484343e097cee6bf63af0c1934603296b41c85f1d4d89bd311861ed1a56ee",
   "inputs": [
     {
@@ -47,11 +47,6 @@
       "hash": "3a483ee72a2a831f2ef810099f9f914eb2598b4d5cbb810e8bf3ff73eb111e42"
     },
     {
-      "file": "crates/trust-but-verify/src/graph/runtime.rs",
-      "item": "impl[Validator<D>]#1/fn[load_evidence]",
-      "hash": "c6e9fc8608d2173d33783dfffdc357091e75ebd07a769401f91d77291b34d1e5"
-    },
-    {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[typed_loading_reports_decode_errors_even_for_stale_evidence]",
       "hash": "4cf5e036a22700e170cae6eba1ee79a7d3caee688cdf39cc918b4a568064328d"
@@ -60,16 +55,6 @@
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[refresh_propagates_load_decode_check_execution_and_save_errors]",
       "hash": "7a76effe6e5aee96d30a1d488105785d0bc3d59d572f2ef141e9c405129d4cff"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/storage.rs",
-      "item": "fn[malformed_records_are_storage_errors_and_bad_outputs_are_output_errors]",
-      "hash": "b79219c20cb618e7f8d8053459c9c17c266067fb44cbe1422f1abc177d01ae59"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "impl[CriterionVersion]/fn[is_compatible_with]",
-      "hash": "123ed6b2b5a2d367912c76429c4a01e6e8f0b21727498a55f40a915e734db689"
     }
   ],
   "format_version": 1,
@@ -200,23 +185,6 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph/runtime.rs"
-            },
-            "selector": "impl[Validator<D>]#1/fn[load_evidence]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "ccd370fcc0200b2764854b2018433ab86d6a34f746fdd19fb86444332bc7e647"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
               "location": "crates/trust-but-verify/tests/contracts.rs"
             },
             "selector": "fn[typed_loading_reports_decode_errors_even_for_stale_evidence]"
@@ -242,40 +210,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "f4bb2a4c6a299badf772c4ce94834b176aac1c0163e82a8c3c34e694db38cdaa"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/storage.rs"
-            },
-            "selector": "fn[malformed_records_are_storage_errors_and_bad_outputs_are_output_errors]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "2fb6518bd1e97bd96e35dd5486b869985f8819a4b5148656774b792a74df0aae"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
-            },
-            "selector": "impl[CriterionVersion]/fn[is_compatible_with]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "7d5cd2f43dc606a8dd0f5b96e39e71d5b867ad8f7acce7ec5668f92aaae5b963"
         }
       ]
     }

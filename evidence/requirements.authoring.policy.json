@@ -1,7 +1,7 @@
 {
   "requirement": "Every `habeas author` form MUST assess its subjects under an assessment policy,\n`confirm` or `once`. The policy MUST come from `--policy <name>` when given,\notherwise from the selected configuration's `policy`, and otherwise MUST be\n`once` for OpenAI and `confirm` for other backends. Under `confirm`, each subject MUST be assessed as\n{cite}`requirements.authoring.confirmation` specifies. Under `once`, each subject\nMUST receive a single assessment (including model escalation under\n{cite}`requirements.authoring.adaptive`), whose result is recorded; it uses fewer tokens\nand less time, such as with a slow local model. An unknown policy name MUST be\nrejected as invalid configuration or arguments. The completion report MUST name\nthe policy used, and each usage record MUST identify it.",
   "determination": true,
-  "rationale": "The reviewed tests cover every obligation in `requirements.authoring.policy`. I found no gap.\n\n**Policy selection and precedence**\n- `tests/authoring_batch.rs#fn[policy_comes_from_the_flag_then_the_configuration_then_defaults_to_confirm]` runs four cases against an ollama (non-OpenAI) fixture:\n  - no flag and no configured policy gives `confirm`, with 2 conversations;\n  - `--policy once` with no configured policy gives `once`, with 1 conversation;\n  - `--policy once` overriding a configured `confirm` gives `once`;\n  - a configured `once` with no flag gives `once`.\n- Each case asserts the number of model conversations and the policy named in the report.\n- `tests/configuration.rs#fn[authoring_policy_defaults_to_confirm_and_round_trips]` checks `effective_policy` for an ollama backend. It covers the default, configured values and `--policy` overriding in both directions. It also checks serialization and that invalid values are rejected.\n- `tests/configuration.rs#fn[openai_policy_defaults_to_once_without_changing_explicit_policy]` covers the OpenAI default of `once` and the case where an explicit `confirm` is kept.\n- `tests/authoring_cli.rs#fn[adaptive_routes_fresh_assessments_and_records_each_model]` shows the OpenAI default end to end. With no policy configured it makes a single mini request and logs `policy` as `once`.\n\n**Every `author` form and the report**\n- A single subject, `--stdout` and `--all` are each exercised. The completion report names the policy in each form (`; policy X`, and the batch summary `6 authored; …; policy once`).\n- `confirm_with_all_runs_a_second_assessment_for_each_batch_subject` checks that `--all --policy confirm` runs two paired conversations per subject, with one usage record each.\n\n**Behavior under each policy**\n- Under `once`, there is exactly one conversation and one recorded result. This includes escalation: in the adaptive tests, mini false, FIXME or a failed submission leads to one Sol assessment. `adaptive_sol_failure_is_final_and_confirm_uses_sol_verification` checks the final results.\n- Under `confirm`, the second-conversation and verification mechanics are the job of `requirements.authoring.confirmation`. Here the tests check that the policy takes effect: an agreeing first result is recorded, and a disagreement note appears in the rationale.\n\n**Usage records**\n- The policy test asserts `run[\"policy\"] == expected` on every usage record per case.\n- The adaptive tests assert the same on every log, including the adaptive parent and the attempt records.\n\n**Unknown policy**\n- An unknown `--policy twice` fails with `unknown assessment policy \"twice\"` on stderr.\n- An unknown configured policy fails for both the single-subject and `--all` forms. The error names the config path and `policy`.\n- The test asserts that the server saw no requests, so the rejection happens before any model call.\n\nObligations delegated to `requirements.authoring.confirmation` and `requirements.authoring.adaptive` are not reassessed here.",
+  "rationale": "The reviewed tests cover each obligation of `requirements.authoring.policy`.\n\n**Precedence of the policy source.**\n- `tests/authoring_batch.rs#fn[policy_comes_from_the_flag_then_the_configuration_then_defaults_to_confirm]` runs four cases through the CLI against an Ollama backend. With no flag and no configured policy, the policy is `confirm` and there are 2 conversations. With `--policy once` and no configured policy, it is `once` with 1 conversation. With `--policy once` over a configured `confirm`, it is `once`. With a configured `once` and no flag, it is `once`.\n- `tests/configuration.rs#fn[authoring_policy_defaults_to_confirm_and_round_trips]` checks `effective_policy` for no flag and no configuration (`confirm`), for configuration alone, and for a flag overriding either configured value.\n\n**Backend-dependent default.**\n- `tests/configuration.rs#fn[openai_policy_defaults_to_once_without_changing_explicit_policy]` shows OpenAI resolves to `once` by default. An explicit configured `confirm` stays `confirm`, and the flag overrides in both directions.\n- `tests/authoring_cli.rs#fn[adaptive_routes_fresh_assessments_and_records_each_model]` confirms end to end that an OpenAI profile with no policy runs as `once`. Every usage log has `policy` equal to `once`.\n\n**`confirm` behaviour.**\n- The tests do not re-test the cited `confirmation` rules. They do check that `confirm` produces the second conversation and a second usage record: the single-subject case, `tests/authoring_batch.rs#fn[confirm_with_all_runs_a_second_assessment_for_each_batch_subject]` for `--all`, and the confirm cases in `adaptive_routes_fresh_assessments_and_records_each_model`.\n- `tests/authoring_cli.rs#fn[adaptive_sol_failure_is_final_and_confirm_uses_sol_verification]` covers disagreement. It verifies a recorded rationale containing \"assessments disagreed\".\n\n**`once` behaviour.**\n- A single conversation is asserted in the precedence test.\n- A single assessment with adaptive escalation is covered in `adaptive_routes_fresh_assessments_and_records_each_model`. Its cases are mini true, mini false, mini FIXME, mini failure, and an existing FIXME going straight to Sol.\n- Sol's failure is final under `once` in `adaptive_sol_failure_is_final_and_confirm_uses_sol_verification`, where the evidence file stays unchanged.\n- The recorded result is checked through the evidence determination.\n\n**Unknown policy name.**\n- `--policy twice` fails with the message `unknown assessment policy \"twice\"`.\n- A configuration `policy = 'twice'` fails for both the single-subject and `--all` forms. The error names the config path and `policy`.\n- The test asserts no model request was made.\n- `authoring_policy_defaults_to_confirm_and_round_trips` also rejects `'twice'`, `'Confirm'` and `true` at configuration parse time.\n\n**Report and usage records.**\n- The completion report names the policy in the per-subject stdout line (`; policy {expected}`), in the `--stdout` stderr line, and in the batch summary (`...; policy once`).\n- Every usage record's `policy` field is asserted in the precedence test, in `adaptive_routes_fresh_assessments_and_records_each_model`, and in the `assert_policy` helper of `adaptive_sol_failure_is_final_and_confirm_uses_sol_verification`.\n\n**Other forms.**\n- The tests do not run `sites:<req>` or citation-review subjects with a policy flag. I checked `src/authoring/batch.rs#fn[run_batch]`, which resolves `effective_policy`, records `outcome.policy` and passes the policy to each assessment. It is shared by `--all` and the `sites:` form, which `src/main.rs#fn[main]` also routes through the batch path. The policy decision therefore has no separate branch for those forms, and the `--all` and single-subject tests exercise it.\n\nI found no requirement-violating behaviour that these tests would accept.",
   "references": "1da02f5acf60460b7e898b40238a4b632041d2466cb461f9e267af31c8e15a9b",
   "inputs": [
     {
@@ -113,11 +113,69 @@
       "file": "tests/configuration.rs",
       "item": "fn[openai_policy_defaults_to_once_without_changing_explicit_policy]",
       "hash": "16ef5273fd7ac8b14751573449e1cdcbf29b12688671930807e8afa077f8f701"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "fn[run_batch]",
+      "hash": "ce50ef9f8304d777297b5250818e7817669ee5101b5e67410e8ea83ede7718cf"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[site_reviews_are_authored_by_requirement_and_orphans_deleted_by_all]",
+      "hash": "25b0fbf2ceaea0f1446e87d0c8b49c119d1a37b8ab8170ef401e7af5343a5bd6"
+    },
+    {
+      "file": "src/main.rs",
+      "item": "enum[Command]",
+      "hash": "dcbcac1eb2c8b6df019543abba986bcd61771631e5823aae82af787b337380a1"
+    },
+    {
+      "file": "src/main.rs",
+      "item": "fn[main]",
+      "hash": "c8bb0bd2ba7bc0594725702c8ca176ff5a854077c1b930ca7de7018541ad534a"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[configured_record]",
+      "hash": "add8153b5c92c9322a5ec2ec989ceae49f1726eb80c3273601628b77e93bc182"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[assess_subject]",
+      "hash": "4c90a67c81ce3e3d0b24242eae4d3d3672714fac051a08e4d5d5f7417cadfd54"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[followup_log]",
+      "hash": "c9d18028d450c37323b297bef599d54bc770282adbb75f879be02d01213fa075"
     }
   ],
   "format_version": 1,
-  "review_version": "*",
+  "review_version": "habeas-review-v1",
   "dependencies": [
+    {
+      "Node": [
+        {
+          "ReferenceSet": "requirements.authoring.policy"
+        },
+        {
+          "scheme": "habeas-reference-set-v1",
+          "value": "1da02f5acf60460b7e898b40238a4b632041d2466cb461f9e267af31c8e15a9b"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.authoring.policy"
+        },
+        "Mandatory",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "b3d70d0e4f0960415c0b2481fbd1b393b3b5f1015503be04556daf7839e59228"
+        }
+      ]
+    },
     {
       "Node": [
         {
@@ -254,13 +312,121 @@
       ]
     },
     {
-      "OutgoingEdges": [
+      "Node": [
         {
-          "Requirement": "requirements.authoring.policy"
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/batch.rs"
+            },
+            "selector": "fn[run_batch]"
+          }
         },
         {
-          "scheme": "habeas-reference-set-v1",
-          "value": "1da02f5acf60460b7e898b40238a4b632041d2466cb461f9e267af31c8e15a9b"
+          "scheme": "habeas-input-v1",
+          "value": "e932fc471de6f76c5d88c8a0d1998f1bb89ef39b6c91a4d9cf2f275e60a64ada"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/authoring_batch.rs"
+            },
+            "selector": "fn[site_reviews_are_authored_by_requirement_and_orphans_deleted_by_all]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "5ffc7168b45bd7cf099b3a63a0a28fc8c9246aadb716f266bea7f8f4f04f7c46"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/main.rs"
+            },
+            "selector": "enum[Command]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "9e8c1a4555c2547658563fd8721af8ce4212dec34c39f8cb1e5ca67feafe9e8b"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/main.rs"
+            },
+            "selector": "fn[main]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "d3d4734531fbf21ef4c8f15f3d13e993e67a15d68cbe497f5c5e35c079a8bb09"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/mod.rs"
+            },
+            "selector": "fn[configured_record]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "b4ef5b0bf35dcd4f8e971042cfc81463e6d4c80ea85b9aedf407de7275110d2f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/mod.rs"
+            },
+            "selector": "fn[assess_subject]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "56cef2ae44b0da331278e883015cc7b1c58c12bb7b838d8c2417a14bfe668e42"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/mod.rs"
+            },
+            "selector": "fn[followup_log]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "f47ec8a62684a0b24ae44ab7e4fa9388ce562f90bfc3b2b7d51a9c0222cdaf27"
         }
       ]
     }

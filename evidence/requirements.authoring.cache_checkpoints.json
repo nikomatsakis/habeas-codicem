@@ -1,7 +1,7 @@
 {
   "requirement": "For backends that accept explicit cache checkpoints, when the backend and model\nsupport prompt caching, every provider request MUST place one cache checkpoint\nafter the system prompt of {cite}`requirements.authoring.prompt_parts` and\nanother at the end of its last message, so each request reuses the tool\ndefinitions and system prompt that earlier assessments of its kind sent, and\nthe conversation its own earlier requests sent. Cache checkpoints MUST NOT\nchange the content of a request.\n\nFor OpenAI, which caches matching prompt prefixes automatically, the harness\nMUST keep the system prompt and tool definitions unchanged across requests in\none conversation and replay prior conversation content in its original order.\nIt MUST NOT insert checkpoint blocks.",
   "determination": true,
-  "rationale": "The tests adequately cover `requirements.authoring.cache_checkpoints`.\n\n**Explicit-checkpoint backends (Bedrock).** The implementation only requests checkpoints for Bedrock Claude and Nova models. In `RigProvider::connect`, Ollama and OpenAI get `caches: false`.\n- **Checkpoint placement.** `tests/authoring_cli.rs#fn[claude_requests_carry_cache_checkpoints_and_record_cache_usage]` runs a two-request Bedrock Claude conversation, and for each request body it checks that:\n  - the system array is the prompt text followed by exactly one `cachePoint`, which covers \"after the system prompt\";\n  - the last message's final content block is a `cachePoint`, which covers \"end of its last message\";\n  - the body contains exactly two `cachePoint` strings, so checkpoints do not accumulate over the longer second request.\n- **Request after a reasoning turn.** The test also checks that the second request has three messages and contains `reasoningContent`, and that it still ends in a checkpoint. `providers.rs#mod[tests]/fn[cache_checkpoints_are_requested_for_caching_models]` repeats this at unit level with a `Reasoning` assistant message.\n- **Model support.** The unit test asserts `bedrock_caches` is true for Claude (plain id and inference-profile ARN) and Nova. It asserts false for Llama and the fixture model. The integration test's run with `fixture-uncached-model` asserts no `cachePoint` appears.\n- **No content change.** The unit test compares the serialized request before and after `place_cache_checkpoints` and finds only `options.cache` differs. The integration test strips cache points from each cached body with `without_cache_points` and asserts equality with the uncached model's body.\n- **Prompt reuse.** The system prompt of `requirements.authoring.prompt_parts` is cited context, and the test also carries a `{test}` reference to it. Reuse across requests follows from the placement checks above.\n\n**OpenAI.** `tests/authoring_cli.rs#fn[openai_responses_replays_tool_calls_and_records_usage]` checks, over two requests:\n- `instructions` are non-empty and equal across requests, and `tools` are equal across requests.\n- The second request's `input` begins with exactly the first request's `input`, followed by the `function_call` and `function_call_output` in order.\n- A recursive `assert_no_checkpoints` helper rejects `cachePoint`, `cache_control`, and block types `cache_point` or `cache_checkpoint` anywhere in the body.\n\nI found no uncovered obligation and no gap.",
+  "rationale": "The tests adequately cover `requirements.authoring.cache_checkpoints`. I did not read the `bedrock_run` and `without_cache_points` helpers; I took them to do what their names and use in the test suggest.\n\n**Explicit-checkpoint backends.** Bedrock is the only backend that gets checkpoints. `RigProvider::connect` sets `caches` from `bedrock_caches` for Bedrock and to false for Ollama and OpenAI.\n\n- `tests/authoring_cli.rs#fn[claude_requests_carry_cache_checkpoints_and_record_cache_usage]` runs a full two-request Claude-on-Bedrock conversation against a fixture server. For every request body it asserts the following.\n  - The `system` array has exactly two entries: the system text, which starts with \"# Task\", then the `cachePoint` block.\n  - The last message's content ends with the `cachePoint` block.\n  - The body contains exactly two `cachePoint` occurrences, so there is one after the system prompt, one at the end of the last message, and no others.\n- That test also covers the second request, which has three messages and follows a reasoning turn. It still ends in a checkpoint, so \"every provider request\" and the growing conversation are both exercised.\n- Checkpoints must not change content. The same test runs an uncached fixture model (`fixture-uncached-model`) and asserts that the cached bodies, once `without_cache_points` strips the checkpoints, equal the uncached bodies request by request.\n- The \"when the backend and model support prompt caching\" condition is covered in two places.\n  - The test above asserts the uncached model's request has no `cachePoint`.\n  - `providers.rs#mod[tests]/fn[cache_checkpoints_are_requested_for_caching_models]` asserts `bedrock_caches` is true for Claude (plain and inference-profile ARN) and Nova, and false for Llama and an unknown model.\n- That unit test also checks that `place_cache_checkpoints` only sets `options.cache`, by comparing the serialized request with an expected one. It also checks that the option is set after a reasoning turn.\n\n**OpenAI.** `tests/authoring_cli.rs#fn[openai_responses_replays_tool_calls_and_records_usage]` runs two requests.\n\n- A recursive `assert_no_checkpoints` check on every request body rejects `cachePoint` and `cache_control` keys and `cache_point` or `cache_checkpoint` block types. This covers \"MUST NOT insert checkpoint blocks\".\n- `instructions` are non-empty and identical across the two requests, and `tools` are identical. This covers keeping the system prompt and tool definitions unchanged.\n- The second request's `input` starts with the first request's `input`, unchanged and in order. After that prefix come the `function_call` and `function_call_output` items for call `read`. This covers replaying prior content in its original order.\n\n**Gaps.** I found none. Nova is tested only at the `bedrock_caches` family-detection level, not end to end. It goes through the same code path as Claude, so that is not a distinct obligation. The citation of `prompt_parts` is context only, and the system-prompt structure it requires is also exercised here by the system-array assertions.",
   "references": "7dc3ab7e522b944f3792a8b6608bbdfae3ec03a370fa84b40c6559a5d8b701f6",
   "inputs": [
     {
@@ -60,6 +60,16 @@
     },
     {
       "file": "crates/trust-but-verify/src/agent/providers.rs",
+      "item": "impl[RigProvider]/fn[connect]",
+      "hash": "4aceeee346dc8ed3d743eb309f00fc0263d4d19929ee2c73cd27fdb6735205c9"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
+      "item": "impl[RigProvider/CompletionProvider]/fn[complete]",
+      "hash": "5ef22d9aeefb3a96a508f39f4a00cbc4d49201508ab909e7079551bcffac0476"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
       "item": "fn[bedrock_caches]",
       "hash": "c316c3bccc7a2cc2f13634677639ec3cd79776825f5a843115d9098a97948485"
     },
@@ -77,16 +87,6 @@
       "file": "tests/authoring_cli.rs",
       "item": "fn[without_cache_points]",
       "hash": "b0e3d7fe938ab29f5d6db894480f7fa86aff7baebbfc8da9e77fd6d41498b576"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/providers.rs",
-      "item": "impl[RigProvider]/fn[connect]",
-      "hash": "4aceeee346dc8ed3d743eb309f00fc0263d4d19929ee2c73cd27fdb6735205c9"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/providers.rs",
-      "item": "impl[RigProvider/CompletionProvider]/fn[complete]",
-      "hash": "5ef22d9aeefb3a96a508f39f4a00cbc4d49201508ab909e7079551bcffac0476"
     }
   ],
   "format_version": 1,
@@ -196,6 +196,40 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/providers.rs"
             },
+            "selector": "impl[RigProvider]/fn[connect]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "15aecbe6e1f7394587f8a501b58cf28adc8ce3bff549cfcbe08b6215d04adfa6"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/providers.rs"
+            },
+            "selector": "impl[RigProvider/CompletionProvider]/fn[complete]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "74fd673b60ac93434ae7c9d333ed1fb30a6882aae55e15416eae86e4f118f309"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/providers.rs"
+            },
             "selector": "fn[bedrock_caches]"
           }
         },
@@ -253,40 +287,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "2d8fa664e68292f91d23b870819cdf7dc0c493efb694e26ce87e51f60074a53a"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/providers.rs"
-            },
-            "selector": "impl[RigProvider]/fn[connect]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "15aecbe6e1f7394587f8a501b58cf28adc8ce3bff549cfcbe08b6215d04adfa6"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/providers.rs"
-            },
-            "selector": "impl[RigProvider/CompletionProvider]/fn[complete]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "74fd673b60ac93434ae7c9d333ed1fb30a6882aae55e15416eae86e4f118f309"
         }
       ]
     }

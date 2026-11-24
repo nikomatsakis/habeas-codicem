@@ -1,7 +1,7 @@
 {
   "requirement": "TBV automatically redacts recognized credentials in source excerpts delivered\nby its inspection tools and in node text supplied to its agent requests.\nThe built-in rules replace recognized secret regions with redaction markers\nwhile preserving line breaks. SDK-supplied outline languages use the same redacted\nregions, so changing only a recognized credential does not change its\nstructural fingerprint.\n\nLoaded source snapshots retain the original text for selection and spans;\nredaction applies when preparing model-visible text and structural hashes.\nFilesystem evidence storage preserves the supplied record. Applications supply\ntheir own answer values and remain responsible for what those answers contain.\nHabeas additionally recognizes explicit credentials in its configuration files\nunder {cite}`requirements.authoring.credentials`.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation in `requirements.sdk.sources.redaction`.\n\n**Inspection-tool excerpts.** The delivering tools are `read_source`, `search_text` and `search_structure`. I read them in `project_sources.rs#impl[Session<'_, D>/ToolSession<D>]/fn[dispatch]`. `list_sources` and `outline_source` return no source text.\n- `fixed_source_reads_redact_delivery_and_propagate_preparation_errors` writes a GitHub token into source text. It asserts that the returned JSON omits the token and contains `[REDACTED:GitHub Token]`. It also asserts that the line count is preserved and that the dependency fingerprint comes from the raw content.\n- `search_excerpts_redact_credentials_before_serialization_and_paging` runs both `search_text` and `search_structure`. It uses a token and a multi-line RSA private key. It asserts the exact redacted excerpt, with line count equal to the raw source and surrounding code kept. It also asserts that no key body line appears in the output, that the dependency fingerprint matches the raw snapshot, and that the file on disk is unchanged.\n\n**Node text in agent requests.** `queued_contents_and_graph_read_tools_redact_credentials_before_delivery` exercises `contents_of_current_node` and the `read_node` tool. In the text I received, the `secret` literal appears as the marker itself. The test would be self-contradictory in that form, because it asserts that the marker is absent and also present. I took that to be an artifact of how the source was displayed to me and that the real literal is a token. With that reading, the test inspects every request's chat history for the token's absence and the marker's presence. It also asserts that the recorded dependency fingerprint and the stored graph contents keep the original text.\n\n**Marker replacement and line breaks.**\n- `private_keys_are_redacted_from_header_through_body_keeping_lines` covers a private key block. It checks the exact output, the line count, and the key embedded in Rust source.\n- `tokens_in_code_are_redacted_without_adjacent_code` covers tokens in code.\n- `regions_extend_both_ways_keep_crlf_and_scan_past_a_mebibyte` covers CRLF handling, region extension, and scanning past 1 MiB.\n- `slices_concatenate_to_the_redacted_whole` covers slice consistency.\n- `heuristic_findings_alone_are_not_redacted` and `configuration_keys_do_not_add_sdk_specific_secret_rules` cover the \"recognized credentials\" boundary. Heuristic-only findings and an `api_key = 'plain-key'` line are left alone, and a real token is redacted.\n\n**Outline languages share the redacted regions, and fingerprints ignore credential values.**\n- `hashes_do_not_depend_on_credential_values` shows that structural hashes are equal when only the credential differs. It covers Rust code and doc comments, plain text, and `habeas.toml`. It also asserts that a change outside the redacted region still changes the hash, and that a non-habeas `.toml` file is not treated as credentials.\n- `redaction_never_changes_an_outline` covers YAML, Rust, TOML, Markdown and text. It checks that the outline structure is unchanged and the line count preserved.\n- `formatted_contents_redact_credentials_while_retaining_raw_text_and_spans` shows that equal fingerprints result when only the token differs, for an unknown-extension file.\n\n**Original text retained.** The same `outline_content.rs` test asserts that `text()` returns the raw source. It also asserts that `select(...).text()` still contains the token, while `format()` does not.\n\n**Filesystem evidence storage.** `storage_preserves_completed_answers_containing_credential_shaped_text` stores and loads a record containing a token. It asserts that the loaded output equals the original and that the token is present in the stored file.\n\n**Excluded from this assessment.** The configuration-file credential recognition clause is a `{cite}` of `requirements.authoring.credentials`, which has its own review. The clause that applications supply their own answers imposes no testable behavior beyond the storage test above.\n\nI found no untested obligation or weak assertion, and no marking gap.",
+  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.sources.redaction`.\n\n**Obligations and the tests that cover them**\n\n1. **Inspection-tool excerpts are redacted.** Delivery sites are `read_source`, `search_text` and `search_structure` in `ProjectSources`'s `dispatch`, and `read_node` in the graph session's `dispatch`.\n   - `fixed_source_reads_redact_delivery_and_propagate_preparation_errors` reads a file holding a GitHub token. It asserts the token is absent from the returned text, the marker `[REDACTED:GitHub Token]` is present, and the line count is unchanged. It also asserts the dependency fingerprint comes from the raw content.\n   - `search_excerpts_redact_credentials_before_serialization_and_paging` runs both `search_text` and `search_structure`. It uses a token plus a multi-line RSA key and asserts the excerpt equals the exact expected redacted text. It also checks that no key body line appears anywhere in the serialized result, which covers redaction before serialization and paging. The recorded dependency fingerprint is the raw-snapshot one, and the file on disk is unchanged.\n\n2. **Node text supplied to agent requests is redacted.** `queued_contents_and_graph_read_tools_redact_credentials_before_delivery` runs `contents_of_current_node`, which queues the node text, and a `read_node` tool call. It inspects every request's `chat_history` for the marker and for absence of the secret. The `habeas` read of this test returned its text with the token already replaced by the marker, so the comparison strings shown there are an artifact of redacting the tool output. The test's structure shows its intent. It also asserts that the recorded dependency fingerprint and the stored graph contents are the original text.\n\n3. **Built-in rules replace recognized secret regions with markers and preserve line breaks.**\n   - `tokens_in_code_are_redacted_without_adjacent_code` checks that surrounding code is untouched.\n   - `private_keys_are_redacted_from_header_through_body_keeping_lines` checks line counts for a plain key and for a key inside Rust source.\n   - `regions_extend_both_ways_keep_crlf_and_scan_past_a_mebibyte` covers CRLF preservation, adjacent-region extension in both directions, and a large input.\n   - `slices_concatenate_to_the_redacted_whole` checks that slices are consistent with the redacted whole.\n   - `heuristic_findings_alone_are_not_redacted` and `configuration_keys_do_not_add_sdk_specific_secret_rules` check that unrecognized text is left alone.\n\n4. **Outline languages use the redacted regions, so changing only a credential does not change the structural fingerprint.**\n   - `hashes_do_not_depend_on_credential_values` covers Rust and plain-text sources. It also asserts that changing code outside a redacted region does change the hash.\n   - `formatted_contents_redact_credentials_while_retaining_raw_text_and_spans` asserts equal fingerprints for two different tokens.\n   - `redaction_never_changes_an_outline` covers YAML, Rust, TOML, Markdown and text.\n\n5. **Snapshots retain the original text for selection and spans; redaction applies only to model-visible text and hashes.** `formatted_contents_redact_credentials_while_retaining_raw_text_and_spans` asserts `text()` equals the raw source and that a selected node's `text()` still contains the token while its `format()` does not. The tool tests above also check that dependency fingerprints and on-disk files stay raw.\n\n6. **Filesystem evidence storage preserves the supplied record.** `storage_preserves_completed_answers_containing_credential_shaped_text` stores an answer containing a token-shaped string. It asserts the loaded output is equal and that the stored bytes still contain the token.\n\n7. **Applications are responsible for their own answer values.** This is a statement of scope, not behavior to test. The storage test above covers it.\n\n8. **Habeas configuration-file credentials.** These fall under the cited `requirements.authoring.credentials` and `requirements.authoring.redaction`, which are not reassessed here.\n\n**Assessment**\nThe tests assert exact outputs and absence of secrets, rather than only executing the code. The main modes are each covered: the two search tools, read_source, read_node, queued node text, outlines in several languages, and storage. I found no unacknowledged gap, and no `{fixme}` references were needed.",
   "references": "d513971f2220dd90e1734a6679dacdaa7888450fce9d80ce0a3925c4a9cbc812",
   "inputs": [
     {
@@ -128,6 +128,16 @@
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]",
       "hash": "0d117dd7f483f9aba792b5e3c85526e5100723aa336e3c988d0c1e5fd6e67356"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]",
+      "hash": "bd24d1ce9391cb04161ad3588a77ef2cf2f7247e4f0d3d7277c99dacf5b130fc"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tools.rs",
+      "item": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[dispatch]",
+      "hash": "104fd5a20dd3f9fbd585ffe05fd0d12053dbba1c62a990fbacc215d18a0523df"
     }
   ],
   "format_version": 1,
@@ -413,6 +423,40 @@
         {
           "scheme": "habeas-input-v1",
           "value": "1b3a1bffb4286cd02d1333d2287cbe9e4cdf70352f4cd7a5d0ac37ad34c90ab0"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "f873a363ac5ac5f29546bb5369f8d3f70ece9db078d8ee20ca48dc13db6a9bcd"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tools.rs"
+            },
+            "selector": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[dispatch]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "e56a8eff0659f17e18210e758d1639b52748b9f7a7df5aa0cb91adc8137142b6"
         }
       ]
     }

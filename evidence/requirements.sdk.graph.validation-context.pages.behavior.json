@@ -1,7 +1,7 @@
 {
   "requirement": "Each page has the same result fields as the originating tool. Text reads return\nsuccessive portions of text. Listings, outlines, and searches return successive\narrays of whole entries in their original order. Only a page with a successor\nincludes `next`.\n\nReusing a UUID returns the same page from the original snapshot, including the\nsame successor UUID if more remains. A malformed UUID, an unknown UUID, or a UUID\nfrom another conversation returns a tool error under\n{cite}`requirements.sdk.graph.agent-harness.tool_agent.isolation`.",
   "determination": true,
-  "rationale": "I judge the marked tests adequate for `requirements.sdk.graph.validation-context.pages.behavior`. I did not request any implementation source. Each obligation maps to tests as follows.\n\n**Same result fields as the originating tool**\n- `search_pages_return_every_original_match_in_order` asserts `complete`, `search_id` (parsed as a UUID) and `matches` on every page. Each entry is compared exactly with `{path, line, excerpt, tag}`, and `instructions` appears only on the first page.\n- `outline_continuations_keep_the_file_and_complete_ordered_items` asserts that `path` is `code.rs` on every continuation page.\n- The read tests assert that `node` stays equal across pages: `fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies` and `source_read_pages_retain_text_and_dependencies_without_another_read` for source reads, and the graph read test below for `read_node`.\n- `listing_continuations_return_complete_paths_from_the_original_listing` checks the `files` field on each page.\n\n**Text reads return successive portions**\n- `fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies` uses 20,000 multi-byte `é` characters. It concatenates the page texts and asserts equality with the original.\n- `source_read_pages_retain_text_and_dependencies_without_another_read` does the same for line-array text.\n- `graph_read_pages_retain_the_prepared_snapshot_after_contents_change` does the same for `read_node`, and the contents change between pages.\n\n**Listings, outlines and searches return whole entries in original order**\n- The listing test uses 200 long, sorted file names and asserts that the concatenated pages equal the expected vector exactly.\n- The outline test uses 400 items plus the root. It asserts the exact concatenated item list and that there is more than one page.\n- The search test asserts every one of 350 matches in order, with `count` correct, and that there is more than one page.\n\n**Only a page with a successor includes `next`**\n- The search test asserts that the final page has no `next` and that earlier pages do.\n- The graph read test asserts `next` is present exactly on the first of two pages.\n- The loops in the listing and outline tests end only when `next` is absent. A stray `next` on the last page would make the following `get_next_page` call fail.\n\n**Reusing a UUID returns the same page from the original snapshot**\n- The search test changes the file after the first delivery and then re-fetches the same `next`. It asserts the identical text, including the same successor.\n- The read test in `fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies` changes the domain text. It fetches each page twice and asserts identical text and dependencies.\n- The listing test adds a file after the first page. The outline test is the one place that does not mutate the source mid-paging. It does not re-fetch a UUID, and the other tests already cover reuse and snapshot retention for the shared paging behaviour.\n\n**Tool errors for bad UUIDs**\n- A malformed UUID (`\"invalid\"`) and an unknown UUID (`Uuid::nil()` on a fresh session) are both asserted to be errors in `fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies`.\n- A UUID from another conversation is rejected in three places. The source-tool `session` and `peer` swap in the same test covers it for source tools. The search test has `peer.dispatch(\"get_next_page\", &next)` erroring. For graph tools, `graph_page_ids_from_a_populated_peer_conversation_are_rejected` asserts an error result containing \"unknown page\".\n\n`source_discovery_and_its_pages_do_not_register_reads` and `source_tools_forward_arguments_and_present_discovery_and_read_results` add further paging coverage, including that a single large structural-search entry is not split.\n\nI found no requirement-violating behaviour that these tests would accept, so there is no gap.",
+  "rationale": "The reviewed tests adequately check `requirements.sdk.graph.validation-context.pages.behavior`.\n\nI looked at one implementation question: whether the paging code is shared across tool kinds. It is. `crates/trust-but-verify/src/agent/pages.rs` handles every kind in `Pages::prepare`, `Pages::search` and `Pages::get`, and the retained deliveries are keyed per conversation. Because of that, tests of one kind give real evidence for the others.\n\n**Obligations and the tests that check them**\n\n- **Same result fields as the originating tool.**\n  - Text reads: `fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies` checks that each continuation's `node` equals the first page's `node`. `source_read_pages_retain_text_and_dependencies_without_another_read` checks `node.selector`.\n  - Outlines: `outline_continuations_keep_the_file_and_complete_ordered_items` checks `path` on every page.\n  - Listings: `listing_continuations_return_complete_paths_from_the_original_listing` reads `files` on every page.\n  - Searches: `search_pages_return_every_original_match_in_order` checks `complete`, a UUID-valued `search_id`, and the exact entry objects (`path`, `line`, `excerpt`, `tag`).\n- **Text reads return successive portions.** The fixed-tools test pages a 20,000-character multibyte \"é\" text and asserts that the concatenated pages equal the original. That also covers character-boundary splits. `graph_read_pages_retain_the_prepared_snapshot_after_contents_change` and the source-read test do the same for graph reads and source reads.\n- **Listings, outlines and searches return successive arrays of whole entries in original order.**\n  - Listing: 200 long paths are paged, and the concatenation is asserted equal to the expected ordered list.\n  - Outline: 401 items, including the root item, are asserted equal to the expected ordered list.\n  - Search: 350 hits are asserted entry by entry, in order, with exact content.\n  - Each test asserts more than one page was produced.\n- **Only a page with a successor includes `next`.** The paging loops stop at the first page without `next`, and the page counts are asserted greater than one. The graph-read test asserts that `next` is present exactly on the first of two pages. The search test asserts that every page is non-empty, so no trailing empty page carries or lacks `next`.\n- **Reusing a UUID returns the same page, including the same successor UUID.**\n  - Reads: the fixed-tools test calls `get_next_page` twice per UUID and compares the full text, which includes `next`. It makes the second call after the domain text has been replaced.\n  - Searches: `search_obligations_follow_delivery_and_keep_the_original_snapshot` repeats the call after the file on disk is changed.\n  - Snapshot retention: the source-read, graph-read, search-pages and listing tests change the underlying data before paging, and the original data is still returned.\n- **Malformed, unknown, or other-conversation UUIDs return a tool error.**\n  - Malformed: the fixed-tools test passes `\"invalid\"`.\n  - Unknown: it passes the nil UUID.\n  - Other conversation: the fixed-tools test and the search test each swap a peer session's page UUID in both directions. `graph_page_ids_from_a_populated_peer_conversation_are_rejected` checks that a foreign UUID gives an error result containing \"unknown page\" in a populated graph conversation.\n\n**Residual observations (not gaps)**\n\n- UUID reuse and snapshot retention are asserted for read and search pages, but not separately for outline and listing pages. They go through the same `Pages::get` and `retained` map, so this is covered.\n- `search_structure` is not paged across multiple pages in a test. It goes through the same `Pages::search` path as `search_text`, which is tested thoroughly.\n\nNo unacknowledged gap was found.",
   "references": "e41fd2660d73a2f3ec6337bcfc9ca793377d9867c97fadde6ceb22184590ce76",
   "inputs": [
     {
@@ -40,7 +40,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]",
-      "hash": "d4e750a111045bd4fc3682571fad49220e1071b73576108758da126e2a69f80d"
+      "hash": "20ae5d094e7db53e60852ffc9efe136f3c1e652b90133644f791cfaf23f41ea2"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
@@ -91,6 +91,16 @@
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[source_tools_forward_arguments_and_present_discovery_and_read_results]",
       "hash": "4d23db061e025d47d10b644313820942fa2884f7da7ee95341803244b5c6682d"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tools.rs",
+      "item": "impl[SessionTools<'a,%20D>]/fn[dispatch]",
+      "hash": "599259285a925b1b08fcd2dcedef43f91712a214c422854f78e64ea4fce94d21"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/pages.rs",
+      "item": "",
+      "hash": "db48c4cfc7dc1265ae23292b4de81dfef3fac9435649e7d7470c4110e060b5a0"
     }
   ],
   "format_version": 1,
@@ -154,7 +164,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1edbd2d6dab5725d529a1a72d4ace2eac68d0d1639e01919129fddcbab8de052"
+          "value": "03c2a9dbec5f05a90c8a2055b99e5a91b24a5228f674c84657bc2c0ca7d3a0eb"
         }
       ]
     },
@@ -325,6 +335,40 @@
         {
           "scheme": "habeas-input-v1",
           "value": "70f5670e7ddb89c4e5069fcfeae868ff34cb50ae0b80a61f9f87477f61ce3d20"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tools.rs"
+            },
+            "selector": "impl[SessionTools<'a,%20D>]/fn[dispatch]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "2cede4f2ae79ad1808ced4d7fb2fc2c25972f6b8154a2dd70b1ba194167e0337"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/pages.rs"
+            },
+            "selector": ""
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "d8420b3898d4d4e37d1b84ee8afc4e020b4b16fbf1efaf216fe4086f919f2e21"
         }
       ]
     }
