@@ -337,7 +337,6 @@ fn ambiguous_items_are_errors_except_for_identical_plain_text_lines() {
     );
 }
 
-#[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.outlines.parser`
 // {test}`requirements.sdk.outlines.independent`
 #[test]
@@ -399,7 +398,6 @@ fn outline_only_languages_report_unsupported_structural_search() {
     );
 }
 
-#[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.outlines.defaults`
 // {test}`requirements.sdk.outlines.independent`
 // {test}`requirements.sdk.outlines.parser.supplied_source`
@@ -571,7 +569,6 @@ fn unicode_spans_use_bytes_and_whitespace_only_lines_create_no_items() {
     }
 }
 
-#[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.outlines.items`
 // {test}`requirements.sdk.outlines.selection`
 // {test}`requirements.sdk.sources.markdown.sections`
@@ -641,7 +638,6 @@ fn markdown_heading_levels_resolve_encoded_duplicates_and_anonymous_items() {
     );
 }
 
-#[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.sources.markdown.fingerprints`
 #[test]
 fn directive_prose_hashes_words_across_reflow_without_joining_them() {
@@ -664,7 +660,6 @@ fn directive_prose_hashes_words_across_reflow_without_joining_them() {
     assert_ne!(original.fingerprint(), joined.fingerprint());
 }
 
-#[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.sources.css.items`
 #[test]
 fn css_media_and_supports_preludes_collapse_whitespace() {
@@ -687,7 +682,6 @@ fn css_media_and_supports_preludes_collapse_whitespace() {
     );
 }
 
-#[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.sources.css.items`
 // {test}`requirements.sdk.outlines.selection`
 // {test}`requirements.sdk.sources.css.Css`
@@ -738,7 +732,6 @@ fn css_duplicate_names_are_numbered_after_normalization_within_each_parent() {
     );
 }
 
-#[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.sources.markdown.sections`
 // {test}`requirements.sdk.outlines.items`
 #[test]
@@ -776,7 +769,6 @@ fn multiline_setext_sections_keep_original_source_spans_and_skip_code() {
     assert_eq!(&source[item.span.clone()], selected.text());
 }
 
-#[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.sources.markdown.sections`
 // {test}`requirements.sdk.outlines.items`
 #[test]
@@ -808,7 +800,6 @@ fn setext_sections_inside_directives_lists_and_quotes_retain_container_spans() {
     }
 }
 
-#[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.outlines.language_provider.structural_search`
 #[test]
 fn bundled_structural_search_returns_matches_and_rejects_bad_rules_and_source() {
@@ -837,7 +828,6 @@ fn bundled_structural_search_returns_matches_and_rejects_bad_rules_and_source() 
     );
 }
 
-#[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.outlines.items`
 // {test}`requirements.sdk.outlines.selection`
 // {test}`requirements.sdk.outlines.errors`
@@ -912,7 +902,6 @@ fn rust_items_attach_documentation_and_preserve_structural_hashes() {
     assert!(OutlineContent::from_source("invalid.rs", "fn {".into()).is_err());
 }
 
-#[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.graph.structural-fingerprint`
 // {test}`requirements.sdk.graph.NodeContents`
 #[test]
@@ -935,7 +924,6 @@ fn structural_fingerprint_example_tracks_the_selected_function() {
     assert!(original.format().contains("fn check_token()"));
 }
 
-#[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.sources.rust.fingerprints`
 // {test}`requirements.sdk.sources.python.fingerprints`
 // {test}`requirements.sdk.sources.typescript.fingerprints`
@@ -1048,7 +1036,6 @@ fn bundled_fingerprints_exclude_comments_and_preserve_word_boundaries() {
     );
 }
 
-#[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.sources.typescript.items`
 // {test}`requirements.sdk.sources.typescript.TypeScript`
 // {test}`requirements.sdk.sources.typescript.Tsx`
@@ -1091,7 +1078,6 @@ fn typescript_and_tsx_share_signatures_abstract_classes_and_module_kinds() {
     assert_eq!(observed[0], observed[1]);
 }
 
-#[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.sources.toml.items`
 // {test}`requirements.sdk.sources.toml.Toml`
 #[test]
@@ -1120,7 +1106,6 @@ fn toml_preserves_written_dotted_literal_and_quoted_header_names() {
     );
 }
 
-#[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.sources.yaml.items`
 // {test}`requirements.sdk.sources.yaml.Yaml`
 #[test]
@@ -1132,7 +1117,6 @@ fn yaml_selection_ends_before_trailing_comment_tokens() {
     assert_eq!(root.outline().items[1].span, 0..10);
 }
 
-#[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.sources.python.items`
 // {test}`requirements.sdk.sources.python.Python`
 #[test]
@@ -1153,7 +1137,6 @@ fn python_selected_source_includes_its_decorators() {
     }
 }
 
-#[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.sources.markdown.sections`
 #[test]
 fn markdown_sections_include_setext_headings_and_anonymous_preamble() {
@@ -1225,7 +1208,6 @@ fn formatted_contents_redact_credentials_while_retaining_raw_text_and_spans() {
     assert!(!selected.format().contains(&token));
 }
 
-#[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.sources.python.items`
 #[test]
 fn python_nested_definitions_use_the_nearest_outline_ancestor() {

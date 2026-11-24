@@ -246,34 +246,31 @@ mod tests {
             .unwrap();
         let rest: Value = serde_json::from_str(&rest.text).unwrap();
         assert!(rest.get("instructions").is_none());
-        #[cfg(feature = "default-languages")]
-        {
-            let first = peer
-                .dispatch(
-                    "search_structure",
-                    &json!({"language":"rust","rule":{"rule":{"pattern":"absent()"}}}),
-                )
-                .await
-                .unwrap();
-            let page: Value = serde_json::from_str(&first.text).unwrap();
-            assert_eq!(page["matches"], json!([]));
-            assert_eq!(page["instructions"], instructions);
-            assert_eq!(
-                peer.outstanding_searches(),
-                [page["search_id"].as_str().unwrap()]
-            );
-            let closed = peer
-                .dispatch(
-                    "finish_search",
-                    &json!({"search_id": page["search_id"], "used": []}),
-                )
-                .await
-                .unwrap();
-            assert!(closed.dependencies.is_empty());
-            let later = peer.dispatch("search_text", &call("absent")).await.unwrap();
-            let page: Value = serde_json::from_str(&later.text).unwrap();
-            assert!(page.get("instructions").is_none());
-        }
+        let first = peer
+            .dispatch(
+                "search_structure",
+                &json!({"language":"rust","rule":{"rule":{"pattern":"absent()"}}}),
+            )
+            .await
+            .unwrap();
+        let page: Value = serde_json::from_str(&first.text).unwrap();
+        assert_eq!(page["matches"], json!([]));
+        assert_eq!(page["instructions"], instructions);
+        assert_eq!(
+            peer.outstanding_searches(),
+            [page["search_id"].as_str().unwrap()]
+        );
+        let closed = peer
+            .dispatch(
+                "finish_search",
+                &json!({"search_id": page["search_id"], "used": []}),
+            )
+            .await
+            .unwrap();
+        assert!(closed.dependencies.is_empty());
+        let later = peer.dispatch("search_text", &call("absent")).await.unwrap();
+        let page: Value = serde_json::from_str(&later.text).unwrap();
+        assert!(page.get("instructions").is_none());
         let finish = |page: &Value, used: Value| json!({"search_id":page["search_id"],"used":used});
         let closed = session
             .dispatch("finish_search", &finish(&empty, json!([])))
@@ -387,7 +384,6 @@ mod tests {
 
     // {test}`requirements.sdk.graph.search.search_structure.inputs`
     // {test}`requirements.sdk.graph.search.finish_search.inputs`
-    #[cfg(feature = "default-languages")]
     #[tokio::test]
     async fn structural_tags_select_only_the_original_enclosing_item() {
         let root = tempfile::tempdir().unwrap();
@@ -441,7 +437,6 @@ mod tests {
     // {test}`requirements.sdk.graph.validation-context.outline_source.behavior`
     // {test}`requirements.sdk.graph.validation-context.pages.mcp`
     // {test}`requirements.sdk.graph.validation-context.pages.behavior`
-    #[cfg(feature = "default-languages")]
     #[tokio::test]
     async fn outline_continuations_keep_the_file_and_complete_ordered_items() {
         let root = tempfile::tempdir().unwrap();
@@ -561,7 +556,6 @@ mod tests {
         std::fs::write(root.path().join("source.txt"), "disk text\n").unwrap();
         std::fs::write(root.path().join(".gitignore"), "ignored.txt\n").unwrap();
         std::fs::write(root.path().join("ignored.txt"), "secret").unwrap();
-        #[cfg(feature = "default-languages")]
         std::fs::write(
             root.path().join("code.rs"),
             "fn chosen() { call(); }\nimpl Thing { fn nested() {} }\n",
@@ -627,48 +621,45 @@ mod tests {
             serde_json::from_str::<Value>(&search.text).unwrap()["matches"],
             json!([{"path":"source.txt","line":1,"excerpt":"disk text","tag":"1"}])
         );
-        #[cfg(feature = "default-languages")]
-        {
-            let outlined = session
-                .dispatch("outline_source", &json!({"path":"code.rs"}))
-                .await
-                .unwrap();
-            assert!(outlined.dependencies.is_empty());
-            assert_eq!(
-                serde_json::from_str::<Value>(&outlined.text).unwrap(),
-                json!({"path":"code.rs","items":[
-                    {"selector":"","kind":""},
-                    {"selector":"fn[chosen]","kind":"fn"},
-                    {"selector":"impl[Thing]","kind":"impl"},
-                    {"selector":"impl[Thing]/fn[nested]","kind":"fn"}
-                ]})
-            );
-            let mut arguments =
-                json!({"prefix":"code.rs","language":"rust","rule":{"rule":{"pattern":"call()"}}});
-            let search = session
-                .dispatch("search_structure", &arguments)
-                .await
-                .unwrap();
-            assert!(search.dependencies.is_empty());
-            let page: Value = serde_json::from_str(&search.text).unwrap();
-            assert!(uuid::Uuid::parse_str(page["search_id"].as_str().unwrap()).is_ok());
-            assert_eq!(page["complete"], true);
-            assert_eq!(
-                page["matches"],
-                json!([{
-                    "node":{"path":"code.rs","selector":"fn[chosen]"},
-                    "excerpt":"call()","tag":"1"
-                }])
-            );
-            arguments["limit"] = json!(0);
-            let truncated = session
-                .dispatch("search_structure", &arguments)
-                .await
-                .unwrap();
-            let page: Value = serde_json::from_str(&truncated.text).unwrap();
-            assert_eq!(page["complete"], false);
-            assert_eq!(page["matches"], json!([]));
-        }
+        let outlined = session
+            .dispatch("outline_source", &json!({"path":"code.rs"}))
+            .await
+            .unwrap();
+        assert!(outlined.dependencies.is_empty());
+        assert_eq!(
+            serde_json::from_str::<Value>(&outlined.text).unwrap(),
+            json!({"path":"code.rs","items":[
+                {"selector":"","kind":""},
+                {"selector":"fn[chosen]","kind":"fn"},
+                {"selector":"impl[Thing]","kind":"impl"},
+                {"selector":"impl[Thing]/fn[nested]","kind":"fn"}
+            ]})
+        );
+        let mut arguments =
+            json!({"prefix":"code.rs","language":"rust","rule":{"rule":{"pattern":"call()"}}});
+        let search = session
+            .dispatch("search_structure", &arguments)
+            .await
+            .unwrap();
+        assert!(search.dependencies.is_empty());
+        let page: Value = serde_json::from_str(&search.text).unwrap();
+        assert!(uuid::Uuid::parse_str(page["search_id"].as_str().unwrap()).is_ok());
+        assert_eq!(page["complete"], true);
+        assert_eq!(
+            page["matches"],
+            json!([{
+                "node":{"path":"code.rs","selector":"fn[chosen]"},
+                "excerpt":"call()","tag":"1"
+            }])
+        );
+        arguments["limit"] = json!(0);
+        let truncated = session
+            .dispatch("search_structure", &arguments)
+            .await
+            .unwrap();
+        let page: Value = serde_json::from_str(&truncated.text).unwrap();
+        assert_eq!(page["complete"], false);
+        assert_eq!(page["matches"], json!([]));
         assert_eq!(domain.0.lock().unwrap().reads, 0);
         let read = session
             .dispatch("read_source", &json!({"path":"source.txt"}))
@@ -994,13 +985,11 @@ mod tests {
             domain: domain.clone(),
         };
         let mut session = SessionTools::new(tools.session());
-        let queries = [(
-            "search_text",
-            json!({"prefix":"code.rs","pattern":"fn chosen","context_lines":20}),
-        )];
-        #[cfg(feature = "default-languages")]
         let queries = [
-            queries[0].clone(),
+            (
+                "search_text",
+                json!({"prefix":"code.rs","pattern":"fn chosen","context_lines":20}),
+            ),
             (
                 "search_structure",
                 json!({"prefix":"code.rs","language":"rust","rule":{"rule":{"kind":"function_item"}}}),
@@ -1095,16 +1084,13 @@ mod tests {
                 "{args}"
             );
         }
-        #[cfg(feature = "default-languages")]
-        {
-            std::fs::write(root.path().join("invalid.rs"), "fn {").unwrap();
-            assert!(
-                session
-                    .dispatch("outline_source", &json!({"path":"invalid.rs"}))
-                    .await
-                    .is_err()
-            );
-        }
+        std::fs::write(root.path().join("invalid.rs"), "fn {").unwrap();
+        assert!(
+            session
+                .dispatch("outline_source", &json!({"path":"invalid.rs"}))
+                .await
+                .is_err()
+        );
         assert_eq!(domain.0.lock().unwrap().reads, 0);
     }
 }

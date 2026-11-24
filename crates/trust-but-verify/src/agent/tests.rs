@@ -1334,9 +1334,7 @@ async fn source_discovery_and_its_pages_do_not_register_reads() {
     assert_eq!(*calls.lock().unwrap(), 0);
 }
 
-#[cfg(feature = "default-languages")]
 struct CachedProvider;
-#[cfg(feature = "default-languages")]
 impl SourceProvider for CachedProvider {
     type Error = SourceError;
     async fn list(&self, _: &SourceScope) -> Result<Vec<ResourceId>, SourceError> {
@@ -1624,7 +1622,6 @@ async fn generic_conversations_can_use_default_telemetry_through_retry_and_conti
 // {test}`requirements.sdk.sources.provider_observations`
 // {test}`requirements.sdk.graph.validation-context.tracked_inspection`
 // {test}`requirements.sdk.sources.provider_results.parse_snapshot`
-#[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.graph.evidence.node_inputs`
 // {test}`requirements.sdk.graph.validation-context.read_source.behavior`
 // {test}`requirements.sdk.graph.validation-context.read_source.inputs`
@@ -2260,7 +2257,6 @@ async fn graph_page_ids_from_a_populated_peer_conversation_are_rejected() {
     assert_eq!(agent.provider.state.lock().unwrap().0, 5);
 }
 
-#[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.graph.validation-context.read_source.behavior`
 // {test}`requirements.sdk.graph.validation-context.read_source.inputs`
 // {test}`requirements.sdk.graph.validation-context.list_sources.behavior`
@@ -2494,7 +2490,6 @@ async fn source_tools_forward_arguments_and_present_discovery_and_read_results()
     );
 }
 
-#[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.graph.validation-context.outline_source.behavior`
 // {test}`requirements.sdk.sources.provider_results.parse_snapshot`
 #[tokio::test]
@@ -2543,7 +2538,6 @@ async fn source_outlines_present_every_top_level_and_nested_item() {
     );
 }
 
-#[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.graph.search.search_structure.behavior`
 // {test}`requirements.sdk.graph.search.search_structure.inputs`
 #[tokio::test]

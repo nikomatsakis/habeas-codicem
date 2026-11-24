@@ -27,7 +27,6 @@ pub struct QueryLanguage {
 impl QueryLanguage {
     // {impl}`requirements.references.distributed`
     /// The language named by an outline profile with a grammar.
-    #[cfg(feature = "default-languages")]
     pub fn named(name: &str) -> Result<Self, String> {
         crate::outline_engine::profile::profiles()
             .into_iter()
@@ -43,7 +42,6 @@ impl QueryLanguage {
 
     // {cite}`habeas:util`
     /// The names of the outline profiles with a grammar.
-    #[cfg(feature = "default-languages")]
     pub fn names() -> Vec<&'static str> {
         crate::outline_engine::profile::profiles()
             .into_iter()
@@ -132,7 +130,6 @@ pub struct StructuralRule {
 impl StructuralRule {
     /// Compiles a rule core: an object holding `rule` and optional `utils`
     /// and `constraints`, in the syntax of the pinned `ast-grep-config`.
-    #[cfg(feature = "default-languages")]
     // {cite}`habeas:util`
     pub fn compile(language: &str, rule: &Map<String, Value>) -> Result<Self, String> {
         Self::compile_language(QueryLanguage::named(language)?, rule)
@@ -234,7 +231,7 @@ pub fn innermost_node(outline: &LegacyOutline, _source: &str, range: &Range<usiz
     current
 }
 
-#[cfg(all(test, feature = "default-languages"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;

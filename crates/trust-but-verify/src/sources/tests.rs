@@ -13,14 +13,7 @@ fn id(location: &str) -> ResourceId {
     }
 }
 fn registry() -> Registry {
-    #[cfg(feature = "default-languages")]
-    {
-        crate::outline_engine::languages::registry()
-    }
-    #[cfg(not(feature = "default-languages"))]
-    {
-        Registry::new([])
-    }
+    crate::outline_engine::languages::registry()
 }
 struct Memory {
     events: Mutex<Vec<String>>,
@@ -78,31 +71,28 @@ async fn failed_provider_operations_never_become_successful_empty_results() {
                 .to_string(),
             "reading failed"
         );
-        #[cfg(feature = "default-languages")]
-        {
-            let query = StructuralQuery {
-                scope: SourceScope::default(),
-                language: "rust".into(),
-                rule: serde_json::json!({"rule":{"pattern":"call()"}})
-                    .as_object()
-                    .unwrap()
-                    .clone(),
-                limit: None,
-            };
-            let error = provider
-                .search_structure(&query, &registry())
-                .await
-                .err()
-                .unwrap();
-            assert_eq!(
-                error.to_string(),
-                if list_fails {
-                    "listing failed"
-                } else {
-                    "reading failed"
-                }
-            );
-        }
+        let query = StructuralQuery {
+            scope: SourceScope::default(),
+            language: "rust".into(),
+            rule: serde_json::json!({"rule":{"pattern":"call()"}})
+                .as_object()
+                .unwrap()
+                .clone(),
+            limit: None,
+        };
+        let error = provider
+            .search_structure(&query, &registry())
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(
+            error.to_string(),
+            if list_fails {
+                "listing failed"
+            } else {
+                "reading failed"
+            }
+        );
     }
 }
 impl SourceProvider for Memory {
@@ -335,13 +325,11 @@ async fn local_provider_scopes_paths_and_rejects_resources_outside_its_root() {
 }
 
 // {cite}`habeas:util`
-#[cfg(feature = "default-languages")]
 struct CachedParse {
     parses: AtomicUsize,
     wrong_resource: bool,
     scopes: Mutex<Vec<String>>,
 }
-#[cfg(feature = "default-languages")]
 impl SourceProvider for CachedParse {
     type Error = SourceError;
     async fn list(&self, scope: &SourceScope) -> Result<Vec<ResourceId>, SourceError> {
@@ -385,7 +373,6 @@ impl SourceProvider for CachedParse {
 }
 
 // {test}`requirements.sdk.outlines.language_provider`
-#[cfg(feature = "default-languages")]
 #[test]
 fn registered_grammars_match_their_profiles_and_parse_the_selected_language() {
     let languages = registry();
@@ -424,7 +411,6 @@ fn registered_grammars_match_their_profiles_and_parse_the_selected_language() {
 // {test}`requirements.sdk.sources.provider_results.search_completeness`
 // {test}`requirements.sdk.graph.search.StructuralMatch`
 // {test}`requirements.sdk.graph.search.StructuralMatches`
-#[cfg(feature = "default-languages")]
 #[tokio::test]
 async fn structural_search_uses_overridden_parses_their_snapshot_and_requested_scope() {
     let provider = CachedParse {
@@ -519,25 +505,22 @@ async fn successful_empty_listing_and_empty_resources_are_distinct_from_errors()
             .await
             .unwrap();
         assert!(result.complete && result.matches.is_empty());
-        #[cfg(feature = "default-languages")]
-        {
-            let result = provider
-                .search_structure(
-                    &StructuralQuery {
-                        scope: SourceScope::default(),
-                        language: "rust".into(),
-                        rule: serde_json::json!({"rule":{"kind":"function_item"}})
-                            .as_object()
-                            .unwrap()
-                            .clone(),
-                        limit: None,
-                    },
-                    &registry(),
-                )
-                .await
-                .unwrap();
-            assert!(result.complete && result.matches.is_empty());
-        }
+        let result = provider
+            .search_structure(
+                &StructuralQuery {
+                    scope: SourceScope::default(),
+                    language: "rust".into(),
+                    rule: serde_json::json!({"rule":{"kind":"function_item"}})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    limit: None,
+                },
+                &registry(),
+            )
+            .await
+            .unwrap();
+        assert!(result.complete && result.matches.is_empty());
     }
 }
 
@@ -546,7 +529,6 @@ async fn successful_empty_listing_and_empty_resources_are_distinct_from_errors()
 // {test}`requirements.sdk.sources.provider_results`
 // {test}`requirements.sdk.sources.provider_results.parse_snapshot`
 // {test}`requirements.sdk.sources.provider_results.search_completeness`
-#[cfg(feature = "default-languages")]
 #[tokio::test]
 async fn list_read_only_provider_supports_selected_language_parse_and_structural_search() {
     let provider = Primitives {

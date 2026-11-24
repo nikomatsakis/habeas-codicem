@@ -533,7 +533,6 @@ fn public_exports_match_the_appendix() {
 }
 
 // {test}`requirements.sdk.public_api`
-#[cfg(feature = "default-languages")]
 #[test]
 fn sdk_has_no_public_reexports() {
     let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");

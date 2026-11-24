@@ -355,69 +355,60 @@ async fn built_in_languages_and_structural_search_use_the_project_scope() {
             .unwrap()
             .clone(),
     );
-    #[cfg(feature = "default-languages")]
-    {
-        assert_eq!(query.limit, None);
-        assert_eq!(rust.fingerprint_scheme(), "rust-structural-v1");
-        let found = sources.search_structure(&query).await.unwrap();
-        assert!(found.complete);
-        assert_eq!(found.matches.len(), 1);
-        assert_eq!(found.matches[0].node.path, Path::new("visible.rs"));
-        assert_eq!(found.matches[0].node.selector, "fn[visible]");
-        assert_eq!(found.matches[0].excerpt, "call()");
-        for (limit, complete) in [(0, false), (1, true)] {
-            let bounded =
-                StructuralQuery::new(query.language.clone(), query.rule.clone()).limit(limit);
-            let result = sources.search_structure(&bounded).await.unwrap();
-            assert_eq!((result.matches.len(), result.complete), (limit, complete));
-        }
-        for prefix in ["hidden.rs", "skip", ".git"] {
-            let scoped = sources
-                .search_structure(
-                    &StructuralQuery::new(query.language.clone(), query.rule.clone())
-                        .scope(SourceScope::under(prefix)),
-                )
-                .await
-                .unwrap();
-            assert!(scoped.complete);
-            assert!(scoped.matches.is_empty(), "{prefix}");
-        }
-        let visible = sources
+    assert_eq!(query.limit, None);
+    assert_eq!(rust.fingerprint_scheme(), "rust-structural-v1");
+    let found = sources.search_structure(&query).await.unwrap();
+    assert!(found.complete);
+    assert_eq!(found.matches.len(), 1);
+    assert_eq!(found.matches[0].node.path, Path::new("visible.rs"));
+    assert_eq!(found.matches[0].node.selector, "fn[visible]");
+    assert_eq!(found.matches[0].excerpt, "call()");
+    for (limit, complete) in [(0, false), (1, true)] {
+        let bounded = StructuralQuery::new(query.language.clone(), query.rule.clone()).limit(limit);
+        let result = sources.search_structure(&bounded).await.unwrap();
+        assert_eq!((result.matches.len(), result.complete), (limit, complete));
+    }
+    for prefix in ["hidden.rs", "skip", ".git"] {
+        let scoped = sources
             .search_structure(
                 &StructuralQuery::new(query.language.clone(), query.rule.clone())
-                    .scope(SourceScope::under("visible.rs")),
+                    .scope(SourceScope::under(prefix)),
             )
             .await
             .unwrap();
-        assert_eq!(visible.matches[0].node.path, Path::new("visible.rs"));
-        fs::write(root.path().join("another.rs"), "fn other() { call(); }\n").unwrap();
-        fs::write(root.path().join("script.py"), "def script():\n    call()\n").unwrap();
-        let all_rust = sources.search_structure(&query).await.unwrap();
-        assert_eq!(all_rust.matches.len(), 2);
-        assert!(all_rust.complete);
-        let bounded = StructuralQuery::new(query.language.clone(), query.rule.clone()).limit(1);
-        let subset = sources.search_structure(&bounded).await.unwrap();
-        assert_eq!(subset.matches.len(), 1);
-        assert!(!subset.complete);
-        let python = StructuralQuery::new("python".into(), query.rule.clone());
-        let found = sources.search_structure(&python).await.unwrap();
-        assert_eq!(found.matches.len(), 1);
-        assert_eq!(found.matches[0].node.path, Path::new("script.py"));
-        assert!(
-            sources
-                .search_structure(
-                    &StructuralQuery::new(query.language.clone(), query.rule.clone())
-                        .scope(SourceScope::under(".."))
-                )
-                .await
-                .is_err()
-        );
+        assert!(scoped.complete);
+        assert!(scoped.matches.is_empty(), "{prefix}");
     }
-    #[cfg(not(feature = "default-languages"))]
-    {
-        assert_eq!(rust.fingerprint_scheme(), "plain-text-structural-v1");
-        assert!(sources.search_structure(&query).await.is_err());
-    }
+    let visible = sources
+        .search_structure(
+            &StructuralQuery::new(query.language.clone(), query.rule.clone())
+                .scope(SourceScope::under("visible.rs")),
+        )
+        .await
+        .unwrap();
+    assert_eq!(visible.matches[0].node.path, Path::new("visible.rs"));
+    fs::write(root.path().join("another.rs"), "fn other() { call(); }\n").unwrap();
+    fs::write(root.path().join("script.py"), "def script():\n    call()\n").unwrap();
+    let all_rust = sources.search_structure(&query).await.unwrap();
+    assert_eq!(all_rust.matches.len(), 2);
+    assert!(all_rust.complete);
+    let bounded = StructuralQuery::new(query.language.clone(), query.rule.clone()).limit(1);
+    let subset = sources.search_structure(&bounded).await.unwrap();
+    assert_eq!(subset.matches.len(), 1);
+    assert!(!subset.complete);
+    let python = StructuralQuery::new("python".into(), query.rule.clone());
+    let found = sources.search_structure(&python).await.unwrap();
+    assert_eq!(found.matches.len(), 1);
+    assert_eq!(found.matches[0].node.path, Path::new("script.py"));
+    assert!(
+        sources
+            .search_structure(
+                &StructuralQuery::new(query.language.clone(), query.rule.clone())
+                    .scope(SourceScope::under(".."))
+            )
+            .await
+            .is_err()
+    );
 }
 
 // {test}`requirements.sdk.sources.local_provider`

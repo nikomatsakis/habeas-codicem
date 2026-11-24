@@ -1,5 +1,3 @@
-#[cfg(not(feature = "default-languages"))]
-use crate::outline_engine::language::Registry;
 use crate::resource::ResourceId;
 use crate::source_engine::LocalSources;
 use crate::source_engine::SourceAnalysis;
@@ -261,10 +259,7 @@ impl Sources {
     // {impl}`requirements.sdk.sources.provider`
     /// Inspect the project directory with the SDK's built-in defaults.
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        #[cfg(feature = "default-languages")]
         let languages = crate::outline_engine::languages::registry();
-        #[cfg(not(feature = "default-languages"))]
-        let languages = Registry::new([]);
         Self {
             analysis: SourceAnalysis::new(LocalSources::new(root), languages),
         }

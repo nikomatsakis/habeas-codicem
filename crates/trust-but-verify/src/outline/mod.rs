@@ -17,11 +17,10 @@ use std::fmt;
 
 use tree_sitter::{Node, Parser, Tree};
 
-#[cfg(all(feature = "default-languages", test))]
+#[cfg(test)]
 use crate::outline::languages::rust::PROFILE as RUST_PROFILE;
 use crate::redaction::Redaction;
 use hash::Encoder;
-#[cfg(feature = "default-languages")]
 #[doc(hidden)]
 use profile::profile_for_path;
 pub(crate) use profile::{LanguageProvider, Profile};
@@ -125,7 +124,6 @@ impl std::error::Error for ResolveError {}
 /// original source.
 // {impl}`requirements.references.outlines`
 // {impl}`requirements.authoring.redaction`
-#[cfg(feature = "default-languages")]
 #[doc(hidden)]
 pub fn parse(path: &std::path::Path, source: &str) -> Result<LegacyOutline, OutlineError> {
     parse_redacted(profile_for_path(path), source, &Redaction::of_text(source))
@@ -995,9 +993,9 @@ impl LegacyOutline {
     }
 }
 
-#[cfg(all(test, feature = "default-languages"))]
+#[cfg(test)]
 mod markdown_tests;
-#[cfg(all(test, feature = "default-languages"))]
+#[cfg(test)]
 mod tests;
 
 /// Parse a resolved text snapshot using an explicitly selected provider. The

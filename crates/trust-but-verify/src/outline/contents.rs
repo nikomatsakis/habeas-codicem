@@ -176,16 +176,13 @@ impl OutlineContent {
     // {impl}`requirements.sdk.outlines.defaults`
     pub fn from_source(filename: impl AsRef<Path>, source: Arc<str>) -> Result<Self, OutlineError> {
         let filename = filename.as_ref();
-        #[cfg(feature = "default-languages")]
-        {
-            if let Some(profile) = languages::registry().for_path(filename) {
-                return Self::prepare(
-                    filename,
-                    source.clone(),
-                    Outline::from_legacy(&parse_provider(profile, &source)?),
-                    &format!("{}-structural-v1", profile.profile().name),
-                );
-            }
+        if let Some(profile) = languages::registry().for_path(filename) {
+            return Self::prepare(
+                filename,
+                source.clone(),
+                Outline::from_legacy(&parse_provider(profile, &source)?),
+                &format!("{}-structural-v1", profile.profile().name),
+            );
         }
         Self::from_source_with(&languages::PlainText, filename, source)
     }
