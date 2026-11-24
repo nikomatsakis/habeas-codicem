@@ -21,6 +21,52 @@ fn git(root: &Path, args: &[&str]) {
     );
 }
 
+// {test}`requirements.sdk.graph.search.TextQuery`
+// {test}`requirements.sdk.graph.search.TextMatch`
+// {test}`requirements.sdk.graph.search.TextMatches`
+// {test}`requirements.sdk.graph.search.search_text.behavior`
+// {test}`requirements.sdk.graph.search.source_scope`
+#[tokio::test]
+async fn scoped_text_results_keep_line_numbers_context_and_completeness() {
+    let root = tempfile::tempdir().unwrap();
+    let sources = Sources::new(root.path());
+    let scope = SourceScope::under("one.txt");
+    assert!(sources.list(&scope).await.is_err());
+    fs::write(root.path().join("one.txt"), "hit1\nmiddle\nhit2\n").unwrap();
+    fs::write(root.path().join("two.txt"), "hit3\n").unwrap();
+    let query = TextQuery::new("^hit[0-9]$".into());
+    assert_eq!(query.limit, None);
+    assert_eq!(query.context_lines, 0);
+    let all = sources.search_text(&query).await.unwrap();
+    assert!(all.complete);
+    assert_eq!(all.matches.len(), 3);
+    assert!(
+        all.matches
+            .iter()
+            .all(|hit| hit.excerpt.starts_with("hit") && hit.excerpt.len() == 4)
+    );
+    let scoped = query.scope(scope.clone()).context_lines(1).limit(2);
+    let found = sources.search_text(&scoped).await.unwrap();
+    assert!(found.complete);
+    let entries: Vec<_> = found
+        .matches
+        .iter()
+        .map(|hit| (hit.path.as_path(), hit.line, hit.excerpt.as_str()))
+        .collect();
+    assert_eq!(
+        entries,
+        [
+            (Path::new("one.txt"), 1, "hit1\nmiddle"),
+            (Path::new("one.txt"), 3, "middle\nhit2")
+        ]
+    );
+    let limited = sources.search_text(&scoped.limit(1)).await.unwrap();
+    assert_eq!(limited.matches.len(), 1);
+    assert!(!limited.complete);
+    fs::remove_file(root.path().join("one.txt")).unwrap();
+    assert!(sources.list(&scope).await.is_err(), "{scope:?}");
+}
+
 // {test}`requirements.sdk.sources.provider`
 // {test}`requirements.sdk.sources.provider_defaults`
 // {test}`requirements.sdk.sources.local_provider`
@@ -217,6 +263,9 @@ async fn empty_sources_errors_and_retained_snapshots_remain_distinct() {
 // {test}`requirements.sdk.sources.local_provider`
 // {test}`requirements.sdk.sources.source_addresses`
 // {test}`requirements.sdk.graph.search.search_structure.behavior`
+// {test}`requirements.sdk.graph.search.StructuralQuery`
+// {test}`requirements.sdk.graph.search.StructuralMatch`
+// {test}`requirements.sdk.graph.search.StructuralMatches`
 #[tokio::test]
 async fn built_in_languages_and_structural_search_use_the_project_scope() {
     let root = tempfile::tempdir().unwrap();
@@ -250,11 +299,20 @@ async fn built_in_languages_and_structural_search_use_the_project_scope() {
     );
     #[cfg(feature = "default-languages")]
     {
+        assert_eq!(query.limit, None);
         assert_eq!(rust.fingerprint_scheme(), "rust-structural-v1");
         let found = sources.search_structure(&query).await.unwrap();
         assert!(found.complete);
         assert_eq!(found.matches.len(), 1);
         assert_eq!(found.matches[0].node.path, Path::new("visible.rs"));
+        assert_eq!(found.matches[0].node.selector, "fn[visible]");
+        assert_eq!(found.matches[0].excerpt, "call()");
+        for (limit, complete) in [(0, false), (1, true)] {
+            let bounded =
+                StructuralQuery::new(query.language.clone(), query.rule.clone()).limit(limit);
+            let result = sources.search_structure(&bounded).await.unwrap();
+            assert_eq!((result.matches.len(), result.complete), (limit, complete));
+        }
         for prefix in ["hidden.rs", "skip", ".git"] {
             let scoped = sources
                 .search_structure(

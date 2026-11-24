@@ -173,6 +173,7 @@ mod tests {
     // {test}`requirements.sdk.graph.search.first_search.instructions.content`
     // {test}`requirements.sdk.graph.search.finish_search.behavior`
     // {test}`requirements.sdk.graph.search.finish_search.inputs`
+    // {test}`requirements.sdk.graph.search.search_text.inputs`
     #[tokio::test]
     async fn search_obligations_follow_delivery_and_keep_the_original_snapshot() {
         let root = tempfile::tempdir().unwrap();
@@ -201,7 +202,26 @@ mod tests {
             .unwrap();
         let empty: Value = serde_json::from_str(&empty.text).unwrap();
         let instructions = empty["instructions"].as_str().unwrap();
-        assert!(instructions.contains("finish_search") && instructions.contains("used:[]"));
+        for phrase in [
+            "Before submitting, close every delivered search page",
+            "finish_search",
+            "tags for excerpts you relied on without a separate source read",
+            "used:[] if none qualify, including an empty result",
+            "without reading more source",
+        ] {
+            assert!(instructions.contains(phrase), "{instructions}");
+        }
+        let mut fresh = SessionTools::new(tools.session());
+        let hits = fresh.dispatch("search_text", &call("hit")).await.unwrap();
+        let hits: Value = serde_json::from_str(&hits.text).unwrap();
+        assert!(!hits["matches"].as_array().unwrap().is_empty());
+        assert_eq!(hits["instructions"], instructions);
+        let rest = fresh
+            .dispatch("get_next_page", &json!({"uuid":hits["next"]}))
+            .await
+            .unwrap();
+        let rest: Value = serde_json::from_str(&rest.text).unwrap();
+        assert!(rest.get("instructions").is_none());
         #[cfg(feature = "default-languages")]
         {
             let first = peer
@@ -230,6 +250,11 @@ mod tests {
         );
         let result = session.dispatch("search_text", &call("hit")).await.unwrap();
         let first: Value = serde_json::from_str(&result.text).unwrap();
+        let matches = first["matches"].as_array().unwrap();
+        let tags: std::collections::BTreeSet<_> =
+            matches.iter().map(|m| m["tag"].as_str().unwrap()).collect();
+        assert!(matches.len() > 1);
+        assert_eq!(tags.len(), matches.len());
         assert!(first.get("instructions").is_none());
         assert!(result.dependencies.is_empty());
         let next = json!({"uuid":first["next"]});
@@ -328,6 +353,7 @@ mod tests {
     // {test}`requirements.sdk.graph.search.search_text.inputs`
     // {test}`requirements.sdk.graph.search.search_text.fn`
     // {test}`requirements.sdk.graph.search.search_structure.inputs`
+    // {test}`requirements.sdk.graph.search.search_structure.behavior`
     // {test}`requirements.sdk.graph.validation-context.pages.inputs`
     // {test}`requirements.sdk.graph.validation-context.pages.mcp`
     // {test}`requirements.sdk.graph.validation-context.pages.behavior`
@@ -422,21 +448,31 @@ mod tests {
                     {"selector":"impl[Thing]/fn[nested]","kind":"fn"}
                 ]})
             );
+            let mut arguments =
+                json!({"prefix":"code.rs","language":"rust","rule":{"rule":{"pattern":"call()"}}});
             let search = session
-                .dispatch(
-                    "search_structure",
-                    &json!({"prefix":"code.rs","language":"rust","rule":{"rule":{"pattern":"call()"}}}),
-                )
+                .dispatch("search_structure", &arguments)
                 .await
                 .unwrap();
             assert!(search.dependencies.is_empty());
+            let page: Value = serde_json::from_str(&search.text).unwrap();
+            assert!(uuid::Uuid::parse_str(page["search_id"].as_str().unwrap()).is_ok());
+            assert_eq!(page["complete"], true);
             assert_eq!(
-                serde_json::from_str::<Value>(&search.text).unwrap()["matches"],
+                page["matches"],
                 json!([{
                     "node":{"path":"code.rs","selector":"fn[chosen]"},
                     "excerpt":"call()","tag":"1"
                 }])
             );
+            arguments["limit"] = json!(0);
+            let truncated = session
+                .dispatch("search_structure", &arguments)
+                .await
+                .unwrap();
+            let page: Value = serde_json::from_str(&truncated.text).unwrap();
+            assert_eq!(page["complete"], false);
+            assert_eq!(page["matches"], json!([]));
         }
         assert_eq!(domain.0.lock().unwrap().reads, 0);
         let read = session
@@ -709,6 +745,7 @@ mod tests {
     }
 
     // {test}`requirements.sdk.sources.redaction`
+    // {test}`requirements.sdk.graph.search.search_structure.inputs`
     #[tokio::test]
     async fn search_excerpts_redact_credentials_before_serialization_and_paging() {
         let root = tempfile::tempdir().unwrap();
@@ -915,6 +952,8 @@ where
     // {impl}`requirements.sdk.graph.search.search_text.behavior`
     // {impl}`requirements.sdk.graph.search.search_structure.behavior`
     // {impl}`requirements.sdk.graph.search.search_text.inputs`
+    // {impl}`requirements.sdk.graph.search.search_text.mcp`
+    // {impl}`requirements.sdk.graph.search.search_structure.mcp`
     // {impl}`requirements.sdk.graph.search.search_structure.inputs`
     // {impl}`requirements.sdk.graph.validation-context.list_sources.behavior`
     // {impl}`requirements.sdk.graph.validation-context.list_sources.inputs`

@@ -155,10 +155,15 @@ mod tests {
 
     impl crate::domain::SourceNodes for TestDomain {
         fn source_node(&self, item: &crate::outline::OutlineId) -> Result<u32, String> {
-            assert_eq!(item.path, std::path::Path::new("visible/selected.txt"));
             assert!(item.selector.is_empty());
             self.1.lock().unwrap().push(item.clone());
-            Ok(7)
+            match item.path.to_str() {
+                Some("visible/selected.txt") => Ok(7),
+                Some("alpha.txt") => Ok(8),
+                Some("beta.txt") => Ok(9),
+                Some("unused.txt") => Ok(10),
+                _ => Err(format!("unknown source {}", item.path.display())),
+            }
         }
     }
 
@@ -520,6 +525,8 @@ mod tests {
     }
 
     // {test}`requirements.sdk.graph.search.finish_search.behavior`
+    // {test}`requirements.sdk.graph.search.finish_search.inputs`
+    // {test}`requirements.sdk.graph.search.search_text.inputs`
     // {test}`requirements.sdk.sources.provider.attachment`
     // {test}`requirements.sdk.sources.local_provider`
     // {test}`requirements.sdk.sources.source_nodes`
@@ -535,6 +542,9 @@ mod tests {
             time::{Duration, Instant},
         };
         let selected = tempfile::tempdir().unwrap();
+        for file in ["alpha.txt", "beta.txt", "unused.txt"] {
+            std::fs::write(selected.path().join(file), format!("excerpt {file}")).unwrap();
+        }
         std::fs::create_dir(selected.path().join("visible")).unwrap();
         std::fs::write(
             selected.path().join("visible/selected.txt"),
@@ -560,7 +570,8 @@ mod tests {
         let server = std::thread::spawn(move || {
             let mut requests = Vec::new();
             let deadline = Instant::now() + Duration::from_secs(15);
-            for turn in 0..14 {
+            let mut page = Value::Null;
+            for turn in 0..24 {
                 let (mut stream, _) = loop {
                     match listener.accept() {
                         Ok(stream) => break stream,
@@ -604,7 +615,7 @@ mod tests {
                     serde_json::from_slice::<Value>(&bytes[header_end..header_end + length])
                         .unwrap(),
                 );
-                let (name, arguments) = match turn % 7 {
+                let (name, arguments) = match turn % 12 {
                     0 => ("list_sources", serde_json::json!({"prefix":"visible"})),
                     1 => (
                         "read_source",
@@ -633,6 +644,45 @@ mod tests {
                         (
                             "finish_search",
                             serde_json::json!({"search_id":page["search_id"],"used":[]}),
+                        )
+                    }
+                    6 => ("search_text", serde_json::json!({"pattern":"^excerpt "})),
+                    step @ 7..=10 => {
+                        if step == 7 {
+                            let reply = requests[turn]["input"]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .rev()
+                                .find(|item| item["type"] == "function_call_output")
+                                .unwrap();
+                            page = serde_json::from_str(reply["output"].as_str().unwrap()).unwrap();
+                            assert_eq!(page["matches"].as_array().unwrap().len(), 3);
+                        }
+                        if step == 9 {
+                            assert!(
+                                requests[turn]["input"]
+                                    .to_string()
+                                    .contains("unknown search tag")
+                            );
+                        }
+                        let tag = |file: &str| {
+                            page["matches"]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .find(|hit| hit["path"] == file)
+                                .unwrap()["tag"]
+                                .clone()
+                        };
+                        let used = match step {
+                            8 => serde_json::json!([tag("unused.txt"), "invalid"]),
+                            9 => serde_json::json!([tag("beta.txt")]),
+                            _ => serde_json::json!([tag("alpha.txt")]),
+                        };
+                        (
+                            "finish_search",
+                            serde_json::json!({"search_id":page["search_id"], "used":used}),
                         )
                     }
                     _ => ("submit_result", serde_json::json!({"result":true})),
@@ -674,19 +724,41 @@ mod tests {
                 &[
                     crate::graph::Dependency::Node(1, Content.fingerprint()),
                     crate::graph::Dependency::Node(7, Content.fingerprint()),
+                    crate::graph::Dependency::Node(
+                        8,
+                        crate::outline::OutlineContent::from_source(
+                            "alpha.txt",
+                            "excerpt alpha.txt".into()
+                        )
+                        .unwrap()
+                        .fingerprint()
+                    ),
+                    crate::graph::Dependency::Node(
+                        9,
+                        crate::outline::OutlineContent::from_source(
+                            "beta.txt",
+                            "excerpt beta.txt".into()
+                        )
+                        .unwrap()
+                        .fingerprint()
+                    ),
                 ]
             );
             assert_eq!(
-                *domain.1.lock().unwrap(),
-                [crate::outline::OutlineId {
-                    path: "visible/selected.txt".into(),
-                    selector: String::new(),
-                }]
+                domain
+                    .1
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|id| id.path.starts_with("visible"))
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                [crate::outline::OutlineId::new("visible/selected.txt", String::new()).unwrap()]
             );
         }
         let requests = server.join().unwrap();
-        assert_eq!(requests.len(), 14);
-        for first in [0, 7] {
+        assert_eq!(requests.len(), 24);
+        for first in [0, 12] {
             let tools = requests[first]["tools"].as_array().unwrap();
             assert_eq!(
                 tools

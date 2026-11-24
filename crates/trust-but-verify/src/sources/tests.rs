@@ -131,6 +131,8 @@ impl SourceProvider for Memory {
 // {test}`requirements.sdk.sources.provider_defaults.composition`
 // {test}`requirements.sdk.sources.provider_results.parse_snapshot`
 // {test}`requirements.sdk.sources.provider_results`
+// {test}`requirements.sdk.graph.search.TextMatch`
+// {test}`requirements.sdk.graph.search.TextMatches`
 #[tokio::test]
 async fn defaults_use_provider_primitives_and_keep_one_parse_snapshot() {
     let memory = Memory {
@@ -162,6 +164,7 @@ async fn defaults_use_provider_primitives_and_keep_one_parse_snapshot() {
         .unwrap();
     assert!(result.complete);
     assert_eq!(result.matches.len(), 2);
+    assert_eq!(result.matches[0].path, std::path::Path::new("src/one.txt"));
     assert_eq!(result.matches[0].line, 2);
     assert_eq!(result.matches[0].excerpt, "version 2\nhit one\nhit two");
     assert_eq!(
@@ -173,6 +176,8 @@ async fn defaults_use_provider_primitives_and_keep_one_parse_snapshot() {
 // {test}`requirements.sdk.sources.provider_results.search_completeness`
 // {test}`requirements.sdk.sources.provider.errors`
 // {test}`requirements.sdk.sources.provider_results`
+// {test}`requirements.sdk.graph.search.SearchResults`
+// {test}`requirements.sdk.graph.search.TextMatches`
 #[tokio::test]
 async fn completeness_is_false_only_when_a_match_is_omitted_and_errors_propagate() {
     let memory = Memory {
@@ -417,6 +422,8 @@ fn registered_grammars_match_their_profiles_and_parse_the_selected_language() {
 // {test}`requirements.sdk.sources.provider_defaults.composition`
 // {test}`requirements.sdk.sources.provider_results`
 // {test}`requirements.sdk.sources.provider_results.search_completeness`
+// {test}`requirements.sdk.graph.search.StructuralMatch`
+// {test}`requirements.sdk.graph.search.StructuralMatches`
 #[cfg(feature = "default-languages")]
 #[tokio::test]
 async fn structural_search_uses_overridden_parses_their_snapshot_and_requested_scope() {

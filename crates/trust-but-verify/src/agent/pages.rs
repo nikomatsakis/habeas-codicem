@@ -69,6 +69,8 @@ impl<N: Clone, L: Clone> Pages<N, L> {
 
     // {impl}`requirements.sdk.graph.search.first_search.instructions`
     // {impl}`requirements.sdk.graph.search.first_search.instructions.content`
+    // {impl}`requirements.sdk.graph.search.search_text.mcp`
+    // {impl}`requirements.sdk.graph.search.search_structure.mcp`
     // {impl}`requirements.sdk.graph.search.finish_search.behavior`
     pub(super) fn search(
         &mut self,
@@ -130,6 +132,7 @@ impl<N: Clone, L: Clone> Pages<N, L> {
 
     // {impl}`requirements.sdk.graph.search.finish_search.behavior`
     // {impl}`requirements.sdk.graph.search.finish_search.inputs`
+    // {impl}`requirements.sdk.graph.search.finish_search.mcp`
     pub(super) fn finish_search(&mut self, args: &Value) -> io::Result<ToolDelivery<N, L>> {
         #[derive(serde::Deserialize)]
         #[serde(deny_unknown_fields)]
