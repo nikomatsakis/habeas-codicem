@@ -57,12 +57,6 @@ containment within the file. Outer attributes and outer documentation comments
 attach to the following item; inner documentation comments belong to their
 containing item or file root.
 
-The outline reports ordinary and documentation comments as `Comment`
-attachments and each attached outer attribute as an `Annotation` under
-{cite}`requirements.sdk.outlines.attachments`. For example, a function
-preceded by `/// Verify the token.` and `#[inline]` owns two attachments,
-in that order. Their spans include `///` and the full `#[inline]` respectively.
-
 Item selectors, percent encoding, anonymous identities, and duplicate-name
 suffixes follow {cite}`requirements.references.outline_selectors`.
 :::
@@ -75,6 +69,17 @@ mod auth {
     pub fn check_token() -> bool { true }
 }
 ```
+
+## Inspect attachments
+
+:::{req} attachments
+Rust reports line and block comments, including outer and inner documentation
+comments, as `Comment`. An outer attribute (`#[…]`) attached to an outline
+item is an `Annotation` on that item. These are the two kinds Rust reports.
+For example, a function preceded by `/// Verify the token.` and `#[inline]`
+owns a `Comment` followed by an `Annotation`. A file-level `//!` comment
+belongs to the file root.
+:::
 
 ## Fingerprint the contents
 

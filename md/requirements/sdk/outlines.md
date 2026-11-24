@@ -459,21 +459,45 @@ for item in &file.outline().items {
 
 ## Inspect attachments
 
+:::{definition} attachment
+:phrase: attachment
+
+An *attachment* is a source construct that an outline language associates
+with an outline item. A documentation comment on a Rust function and a
+decorator on a Python method are examples.
+:::
+
 :::{req} attachments
-An outline language assigns attachments to their owning items, which may
-include the file root. Each item lists its own attachments in source order.
+The outline language assigns each {term}`requirements.sdk.outlines.attachment`
+to one owning item, which may be the file root. Each item lists the
+attachments it owns.
+:::
+
+:::{req} attachments.order
+Each item's attachments appear in source order.
+:::
+
+:::{req} attachments.empty
 An item with no attachments has an empty list. A language may return empty
 lists for every item.
+:::
 
+:::{req} attachments.span
 Each attachment's `span` is a half-open byte range in the original file
 snapshot, even when the caller has selected a nested item. Slicing that
 snapshot at the span yields the complete source construct, including its
 delimiters. Repeated occurrences have their own spans.
+:::
 
+:::{req} attachments.comments
 The bundled languages report each recognized source comment as `Comment` on
 the item that owns it under {cite}`requirements.references.outline_comments`.
 Each comment in a run has its own span and the run's owner. Consumers interpret
-the comment text. Each language's fingerprint rules determine which attachments
+the comment text.
+:::
+
+:::{req} attachments.fingerprint
+Each language's fingerprint rules determine which attachments
 contribute to the owning item's structural hash.
 :::
 
@@ -481,7 +505,7 @@ contribute to the owning item's structural hash.
 :test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
 
 `kind` classifies the construct and `span` locates it under
-{cite}`requirements.sdk.outlines.attachments`. Language providers can
+{cite}`requirements.sdk.outlines.attachments.span`. Language providers can
 construct an attachment from these two fields.
 
 ```rust,ignore

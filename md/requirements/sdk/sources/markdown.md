@@ -116,6 +116,15 @@ section[Authentication]
   block@f                     ```text ... ```
 ```
 
+## Inspect attachments
+
+:::{req} attachments
+Markdown reports only `Comment` attachments. Each HTML comment block whose
+trimmed text starts with `<!--` and ends with `-->` is one attachment.
+An inline HTML comment within a paragraph remains paragraph text, and
+comment delimiters inside fenced code remain code.
+:::
+
 ## Fingerprint the contents
 
 :::{req} fingerprints

@@ -58,6 +58,14 @@ auth:
   expires: true
 ```
 
+## Inspect attachments
+
+:::{req} attachments
+YAML reports only `Comment` attachments. Each `#` comment is one attachment,
+including a comment following a mapping value. A `#` within quoted text or
+within the content of a block scalar belongs to the scalar.
+:::
+
 ## Fingerprint the contents
 
 :::{req} fingerprints

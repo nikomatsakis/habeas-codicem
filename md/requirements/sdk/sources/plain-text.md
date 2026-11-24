@@ -55,6 +55,14 @@ Reject expired tokens.
 A review can select “Reject expired tokens.” independently of “Tokens expire.”
 Adding an unrelated line preserves the existing lines' selectors.
 
+## Inspect attachments
+
+:::{req} attachments
+Plain text defines no attachments. The file root and each `line` item have
+empty attachment lists, including lines that begin with comment delimiters
+from another language.
+:::
+
 ## Fingerprint line contents
 
 :::{req} fingerprints
