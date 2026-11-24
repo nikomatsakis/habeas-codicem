@@ -449,6 +449,7 @@ fn rustdocs_mdbook_build_publishes_native_site_and_prefix_safe_links() {
     );
 }
 
+// {test}`requirements.index.rustdocs`
 // {test}`requirements.index.rustdocs.publication`
 #[test]
 fn rustdocs_workspace_build_generates_and_refreshes_the_import() {
@@ -456,19 +457,23 @@ fn rustdocs_workspace_build_generates_and_refreshes_the_import() {
     fs::create_dir(root.path().join("src")).unwrap();
     fs::write(
         root.path().join("Cargo.toml"),
-        "[package]\nname = 'trust-but-verify'\nversion = '0.1.0'\nedition = '2024'\n",
+        "[package]\nname = 'trust-but-verify'\nversion = '0.1.0'\nedition = '2024'\n\
+         [workspace]\nmembers = ['member']\ndefault-members = ['.']\nexclude = ['dependency']\n\
+         [dependencies]\ndependency = { path = 'dependency' }\n",
     )
     .unwrap();
+    for name in ["member", "dependency"] {
+        let package = root.path().join(name);
+        fs::create_dir_all(package.join("src")).unwrap();
+        fs::write(
+            package.join("Cargo.toml"),
+            format!("[package]\nname = '{name}'\nversion = '0.1.0'\nedition = '2024'\n"),
+        )
+        .unwrap();
+        fs::write(package.join("src/lib.rs"), "pub fn marker() {}").unwrap();
+    }
     let lib = root.path().join("src/lib.rs");
     fs::write(&lib, "pub fn first() {}\n").unwrap();
-    assert!(
-        Command::new("cargo")
-            .args(["generate-lockfile", "--offline"])
-            .current_dir(root.path())
-            .status()
-            .unwrap()
-            .success()
-    );
     let mut config = configuration();
     config
         .set("output.habeas.command", "habeas mdbook render")
@@ -477,11 +482,33 @@ fn rustdocs_workspace_build_generates_and_refreshes_the_import() {
         .set("preprocessor.habeas.rustdocs.build-workspace", true)
         .unwrap();
     config
+        .set("preprocessor.habeas.rustdocs.path", "custom/api")
+        .unwrap();
+    let error = habeas::rustdocs::preprocess(&mut book(), root.path(), &config).unwrap_err();
+    assert!(error.to_string().contains("path ending in doc"), "{error}");
+    config
         .set("preprocessor.habeas.rustdocs.path", "custom/doc")
         .unwrap();
+    let error = habeas::rustdocs::preprocess(&mut book(), root.path(), &config).unwrap_err();
+    assert!(error.to_string().contains("cargo doc failed"), "{error}");
+    assert!(!root.path().join("Cargo.lock").exists());
+    assert!(
+        Command::new("cargo")
+            .args(["generate-lockfile", "--offline"])
+            .current_dir(root.path())
+            .status()
+            .unwrap()
+            .success()
+    );
     let imported = root.path().join("md/rustdocs/trust_but_verify");
     habeas::rustdocs::preprocess(&mut book(), root.path(), &config).unwrap();
     assert!(imported.join("fn.first.html").is_file());
+    assert!(
+        root.path()
+            .join("md/rustdocs/member/fn.marker.html")
+            .is_file()
+    );
+    assert!(!root.path().join("md/rustdocs/dependency").exists());
     fs::write(&lib, "pub fn second() {}\n").unwrap();
     habeas::rustdocs::preprocess(&mut book(), root.path(), &config).unwrap();
     assert!(imported.join("fn.second.html").is_file());

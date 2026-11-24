@@ -11,6 +11,15 @@ use trust_but_verify::graph::validator::Validator;
 use trust_but_verify::graph::*;
 use trust_but_verify::request::ValidationContext;
 
+// {test}`requirements.sdk.graph.snapshot`
+#[test]
+fn callers_can_pair_content_with_its_fingerprint() {
+    let fingerprint = Fingerprint::new("example".into(), "value".into());
+    let snapshot = Snapshot::new(vec![1, 2], fingerprint.clone());
+    assert_eq!(snapshot.content, [1, 2]);
+    assert_eq!(snapshot.fingerprint, fingerprint);
+}
+
 // Opaque graph identities and contents deliberately do not implement Serde,
 // Hash, or Display. Only completed answers need serialization.
 #[derive(Clone, Debug, PartialEq, Eq)]

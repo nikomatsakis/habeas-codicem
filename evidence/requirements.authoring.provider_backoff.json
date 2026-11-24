@@ -1,7 +1,7 @@
 {
   "requirement": "When a provider reports a transient failure, the harness MUST wait and retry\nthe same completion request. Transient failures are throttling, reported\nthrough HTTP 429 or a Bedrock `ThrottlingException`; temporary unavailability,\nreported through HTTP 500, 502, 503, or 504 or a Bedrock\n`ServiceUnavailableException`, `InternalServerException`, or\n`ModelNotReadyException`; and a request with no response after ten minutes,\nwhich the harness MUST abandon. The retry MUST retain its prompt, history,\ntools, and pending inputs. It MUST NOT\nrestart the assessment or repeat already completed tool calls. A permanent\ninput/context-length error, authentication failure, or invalid request MUST\nremain an error; mentioning tokens in an error message alone MUST NOT trigger\nretries.\n\nThe backoff window MUST start at one second and double after each consecutive\ntransient failure, up to sixty seconds. Each delay MUST be randomly selected\nbetween half and all of that window to spread parallel retries. An available\nprovider `Retry-After` value, in seconds or HTTP-date form, MUST be honored as a\nminimum delay even when longer than the window. A successful response MUST reset\nbackoff for the next completion request, and interruption MUST cancel both the\nwait and further retries.\n\nEach attempt MUST be recorded under {cite}`requirements.authoring.usage_requests`.\nHidden SDK retries MUST remain disabled so the harness can account for attempts.\nTransient retries MUST NOT be reported as finished judgments or terminal\nassessment errors while recovery is still in progress. Pending inputs MUST be\nrecorded as evidence only after the request succeeds.\n{cite}`requirements.authoring.provider` {cite}`requirements.authoring.delivered_inputs`",
   "determination": true,
-  "rationale": "I judge the tests adequate. I did not request implementation source. The expected behavior below comes from the requirement text, and I mapped each obligation to the supplied tests.\n\n**Transient classification**\n- `providers.rs#mod[tests]/fn[retries_throttling_unavailability_and_timeouts_but_not_permanent_errors]` covers HTTP 429, 500, 502, 503 and 504. It also covers the Bedrock codes `ThrottlingException`, `ServiceUnavailableException`, `InternalServerException` and `ModelNotReadyException`, and a timed-out I/O error.\n- The same test asserts that 400, 403 and 501 stay permanent, that an error with no status and no code stays permanent, and that an error message mentioning \"Too many tokens\" with \"HTTP 429\" in its text is not retried.\n- `fn[transient_bedrock_codes_retry_whatever_their_http_status]` covers transient codes under non-transient statuses. It also checks that a permanent code does not override a transient status.\n- `fn[rig_failures_keep_their_provider_report_for_backoff]` checks classification of failures as they come out of Rig.\n- `sdk.rs#mod[tests]/fn[sdk_string_errors_preserve_habeas_provider_reports_and_error_kinds]` checks that a permanent provider report keeps its error kind and details.\n\n**Ten-minute abandonment**\n- `mod.rs#mod[tests]/fn[unanswered_requests_are_abandoned_and_retried]` uses a hanging provider. It asserts that about 600 seconds elapse, that there are two requests, and that the first is recorded as failed and the second as completed.\n\n**Retry content and no repeated work**\n- `fn[throttled_requests_retry_unchanged_and_record_every_attempt]` sends six identical requests across five throttles.\n- `fn[success_resets_backoff_and_retries_keep_history_without_repeating_tools]` asserts that the retried request equals the failed one, including history and tools. It also asserts that the tool read ran exactly once.\n- The `agent.rs` tests `fn[retries_and_cut_off_tools_preserve_inputs_and_submission_skips_other_reads]` and `fn[generic_conversations_can_use_default_telemetry_through_retry_and_continuation]` check that the first and second requests are identical after a throttle and that the later history extends the earlier one. The first test also checks that exactly three provider turns were used.\n\n**Backoff window and jitter**\n- `fn[jittered_backoff_grows_to_a_ceiling]` runs 100 consecutive failures. Each delay must fall in [window/2, window], with the window doubling from 1s and capped at 60s.\n- The delays measured between real requests in `fn[success_resets_backoff_and_retries_keep_history_without_repeating_tools]` confirm that the retry loop actually waits for the computed delay.\n\n**Retry-After**\n- `fn[retry_after_accepts_seconds_and_dates_without_shortening_provider_delay]` covers seconds, a future HTTP-date, a past HTTP-date (zero) and an invalid value.\n- It asserts that a 90s `Retry-After` yields exactly 90s. It also asserts that a smaller value cannot shorten a larger window (the lower bound is the larger of the provider value and the window floor).\n\n**Reset on success**\n- `fn[success_resets_backoff_and_retries_keep_history_without_repeating_tools]` makes the first failure double the window and then lets a tool turn succeed. The next failure's delay is still within 0.5–1s, so success reset the window.\n\n**Interruption**\n- `fn[cancelling_during_backoff_prevents_another_request]` cancels during the wait and then advances time by 120s. It asserts that only one request was made and that no inputs were recorded.\n\n**Usage recording of each attempt**\n- `fn[throttled_requests_retry_unchanged_and_record_every_attempt]` asserts `request_count` of 6. It asserts that five failed attempts have incomplete tokens and a failure object with status, code and `retried: true`, and that the final attempt completed.\n- The permanent-failure test asserts `retried: false`.\n\n**Hidden SDK retries**\n- `providers.rs#mod[tests]/fn[bedrock_sdk_retries_are_disabled]` asserts `max_attempts() == 1`.\n\n**No terminal error during recovery**\n- Six attempts end in a successful assessment, and no evidence file is produced on errors.\n- The permanent-failure test shows that a permanent error returns immediately with no wait and a single request.\n\n**Pending inputs recorded only after success**\n- Inputs show `submitted_in_request` 0 and `sent_in_request` 5 after the throttled retries.\n- No inputs are recorded when cancelled mid-backoff.\n- In the retried-tool scenario, the read input appears in the record after the retried request succeeds.\n\nI found no obligation without a test, and no assertion that contradicts the requirement. The cited requirements `usage_requests`, `provider` and `delivered_inputs` are context only.",
+  "rationale": "The reviewed tests cover each obligation of `requirements.authoring.provider_backoff`, and each assertion enforces the stated outcome.\n\n**Transient classification**\n- `providers.rs#mod[tests]/fn[retries_throttling_unavailability_and_timeouts_but_not_permanent_errors]` asserts a delay for HTTP 429, 500, 502, 503 and 504. It does the same for the Bedrock codes `ThrottlingException`, `ServiceUnavailableException`, `InternalServerException` and `ModelNotReadyException`, and for an `io::ErrorKind::TimedOut` error.\n- It asserts no retry for 400 `ValidationException`, 403 `AccessDeniedException`, 501, and an error with no status or code.\n- It also asserts no retry for an error that only mentions tokens (\"Too many tokens; HTTP 429\"). That covers the rule that mentioning tokens alone must not trigger retries.\n- `fn[transient_bedrock_codes_retry_whatever_their_http_status]` covers transient Bedrock codes paired with unrelated statuses. It also checks that a permanent code does not override a transient status.\n- `fn[rig_failures_keep_their_provider_report_for_backoff]` covers the path where the failure arrives wrapped by Rig.\n- `src/authoring/sdk.rs#mod[tests]/fn[sdk_string_errors_preserve_habeas_provider_reports_and_error_kinds]` covers permanent errors, here a 403 `AccessDeniedException`, staying errors on the Habeas path.\n- `src/authoring/mod.rs#mod[tests]/fn[permanent_provider_failure_returns_without_waiting_or_retrying]` covers the end-to-end permanent case. A 400 `ValidationException` with \"Too many tokens\" returns the error with no wait and only one request, and the failure is recorded with `retried` false.\n\n**Ten-minute abandon**\n- `fn[unanswered_requests_are_abandoned_and_retried]` uses a hanging provider with paused time. It asserts that the first request is abandoned at about 600 s and the retry succeeds. It also asserts two logged requests, the first `failed` and the second `completed`.\n\n**Retry keeps the same request and no repeated work**\n- `fn[throttled_requests_retry_unchanged_and_record_every_attempt]` has 5 failures and 6 identical requests. It checks the recorded inputs and references, and the 6-request usage log with each failed attempt carrying its status, code and `retried: true`.\n- It also checks that pending inputs have `submitted_in_request` 0 and `sent_in_request` 5.\n- `fn[success_resets_backoff_and_retries_keep_history_without_repeating_tools]` shows the tool ran once (`tool_calls.habeas` is 1). The retry after the tool turn resends the identical request, which differs from the earlier request. The input is recorded only after the retried request succeeds.\n- The two `agent/tests.rs` tests (`retries_and_cut_off_tools_preserve_inputs_and_submission_skips_other_reads` and `generic_conversations_can_use_default_telemetry_through_retry_and_continuation`) assert that the throttled request and its retry serialize identically and that later history extends the earlier history.\n\n**Backoff window and jitter**\n- `fn[jittered_backoff_grows_to_a_ceiling]` runs 100 consecutive failures and asserts each delay lies in [window/2, window]. The window starts at 1 s, doubles, and caps at 60 s.\n- Randomness is checked only as a range. That is a reasonable way to test a random selection, so I count it as adequate.\n\n**Retry-After**\n- `fn[retry_after_accepts_seconds_and_dates_without_shortening_provider_delay]` covers the seconds form, a future HTTP-date, a past date (zero), and an invalid value (none). It asserts an exact 90 s delay when Retry-After exceeds the window. At the 60 s cap, Retry-After values of 0, 5 and 45 never shorten the delay below the window floor.\n\n**Reset after success**\n- The success-reset test asserts that delays after the second throttle fall within the initial 0.5–1 s window, even though the first failure had doubled it.\n\n**Interruption**\n- `fn[cancelling_during_backoff_prevents_another_request]` drops the assessment during the wait. After advancing time by 120 s it asserts only one request was made, no inputs were recorded, and the log shows one failed request.\n\n**Usage recording and SDK retries**\n- The usage-log assertions in the authoring tests cover recording each attempt.\n- `fn[bedrock_sdk_retries_are_disabled]` asserts `max_attempts() == 1`. The implementation comment in `connect` says Ollama's Rig transport has no hidden retry layer, so there is nothing to disable there.\n\n**No premature terminal report**\n- The success tests end in `Ok` after throttling, and the cancel test shows no evidence or judgment is produced mid-recovery. The permanent-error tests show an error is returned only when no retry applies.\n\nI found no unacknowledged gap. `provider_backoff.limit` is a separate requirement and out of scope here.",
   "references": "4807ba486ec0a165a1469f4324a5d1e9d880173c5abf9810cf0568d1d4aa5912",
   "inputs": [
     {
@@ -89,9 +89,39 @@
       ]
     },
     {
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
+      "item": "mod[tests]/fn[retries_throttling_unavailability_and_timeouts_but_not_permanent_errors]",
+      "hash": "77a69a577b252190942b6fa32e4ffadff6c71b2d140278224546ef560f2faa29"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
+      "item": "mod[tests]/fn[transient_bedrock_codes_retry_whatever_their_http_status]",
+      "hash": "3103173dcf8073dc788f128c8b3ee0916888de667b3e51a4d5f6ef02919570c1"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
+      "item": "mod[tests]/fn[jittered_backoff_grows_to_a_ceiling]",
+      "hash": "b6ddc7864bffdd2c828cc983de2bd55154c224b274efd763482bd09616cfaf4e"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
+      "item": "mod[tests]/fn[retry_after_accepts_seconds_and_dates_without_shortening_provider_delay]",
+      "hash": "1ec68bf82cef1ea61424b69904b1cd070c7e737893140dc249410391884fed40"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
+      "item": "mod[tests]/fn[bedrock_sdk_retries_are_disabled]",
+      "hash": "843d31090f51e321289a9fc32bd4f4a4734f693ee195c896035374308fb2e66f"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
+      "item": "mod[tests]/fn[rig_failures_keep_their_provider_report_for_backoff]",
+      "hash": "22658c5f75ef471aeb85fde0e1bd3c534d087f262d44451d17ed4b48586e9ec2"
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[retries_and_cut_off_tools_preserve_inputs_and_submission_skips_other_reads]",
-      "hash": "0f18bd680c513ce3781a6a11fe9f4f919e32ff93d60fed99f4473995919e2547"
+      "hash": "4de7439aacb627f5578916eb59bc668c9386a154207c1254b172db31de4efca0"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -124,39 +154,29 @@
       "hash": "38575731249476c84c37337b2befc86fe84ffda02823bc3769b50c08e7776c30"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/providers.rs",
-      "item": "mod[tests]/fn[retries_throttling_unavailability_and_timeouts_but_not_permanent_errors]",
-      "hash": "77a69a577b252190942b6fa32e4ffadff6c71b2d140278224546ef560f2faa29"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/providers.rs",
-      "item": "mod[tests]/fn[transient_bedrock_codes_retry_whatever_their_http_status]",
-      "hash": "3103173dcf8073dc788f128c8b3ee0916888de667b3e51a4d5f6ef02919570c1"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/providers.rs",
-      "item": "mod[tests]/fn[jittered_backoff_grows_to_a_ceiling]",
-      "hash": "b6ddc7864bffdd2c828cc983de2bd55154c224b274efd763482bd09616cfaf4e"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/providers.rs",
-      "item": "mod[tests]/fn[retry_after_accepts_seconds_and_dates_without_shortening_provider_delay]",
-      "hash": "1ec68bf82cef1ea61424b69904b1cd070c7e737893140dc249410391884fed40"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/providers.rs",
-      "item": "mod[tests]/fn[bedrock_sdk_retries_are_disabled]",
-      "hash": "843d31090f51e321289a9fc32bd4f4a4734f693ee195c896035374308fb2e66f"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/providers.rs",
-      "item": "mod[tests]/fn[rig_failures_keep_their_provider_report_for_backoff]",
-      "hash": "22658c5f75ef471aeb85fde0e1bd3c534d087f262d44451d17ed4b48586e9ec2"
-    },
-    {
       "file": "src/authoring/sdk.rs",
       "item": "mod[tests]/fn[sdk_string_errors_preserve_habeas_provider_reports_and_error_kinds]",
       "hash": "f31defb8a13c5666c48e0a88b8a49a1db43c50ca46f135cd3fbe25c7169e71a9"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent.rs",
+      "item": "fn[converse]",
+      "hash": "75e462b4b2442c23025ee51e786f3befc47db80211d03e434f97f67f77754567"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[converse_observed]",
+      "hash": "0d9a02c8a40c85d914a1aa189d3d20efb80c29014e9726824b5263a5a4d4e817"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
+      "item": "impl[RigProvider]/fn[connect]",
+      "hash": "4aceeee346dc8ed3d743eb309f00fc0263d4d19929ee2c73cd27fdb6735205c9"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
+      "item": "fn[bedrock_sdk_loader]",
+      "hash": "00149b3270a8dd337fa000357dd3b4d553b3cc65fc102a921444757205b85be3"
     }
   ],
   "format_version": 1,
@@ -226,125 +246,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "48b8a5b11a5d038a550830c265de31179ebbb4b89b321b9b7edd12e832051f7e"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "fn[retries_and_cut_off_tools_preserve_inputs_and_submission_skips_other_reads]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "1b3dfe3a39ec3927eb5ec520c7b5a4e9749f2fa88a7e89c467112f2b42a30a9d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "fn[generic_conversations_can_use_default_telemetry_through_retry_and_continuation]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "e038164f3fa552bee12e748672c01a96401d1256c1233654d55f9c445e44cd1b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/mod.rs"
-            },
-            "selector": "mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "ba0231c64afb42b91077c96994a63a5b91ec4d53e78c3e02e452b93b16f47f8c"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/mod.rs"
-            },
-            "selector": "mod[tests]/fn[permanent_provider_failure_returns_without_waiting_or_retrying]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "f6785bd7dbcebada1b242135d75438de774f7bf04a9992b34c8cf8adb899b467"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/mod.rs"
-            },
-            "selector": "mod[tests]/fn[cancelling_during_backoff_prevents_another_request]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "b5fec7a310f149f7ca09f6688205e1cd3aa73194e1d36b07f0cce20ef0d3d070"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/mod.rs"
-            },
-            "selector": "mod[tests]/fn[unanswered_requests_are_abandoned_and_retried]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "05fec60cfa108b79f9cc8a1b30e77e8868ef1b998bfcd83982f7b91d8f72da69"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/mod.rs"
-            },
-            "selector": "mod[tests]/fn[success_resets_backoff_and_retries_keep_history_without_repeating_tools]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "c61e66c4f6cb9c593b44f2fe8d492ef4dbcd6e96826c0fb78b4d08728b0f40a2"
         }
       ]
     },
@@ -456,6 +357,125 @@
           "Source": {
             "resource": {
               "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
+            },
+            "selector": "fn[retries_and_cut_off_tools_preserve_inputs_and_submission_skips_other_reads]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "e99561b3355c259d6b9162797302786c5abec9df57728ee505e18c398cabcc67"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
+            },
+            "selector": "fn[generic_conversations_can_use_default_telemetry_through_retry_and_continuation]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "e038164f3fa552bee12e748672c01a96401d1256c1233654d55f9c445e44cd1b"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/mod.rs"
+            },
+            "selector": "mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "ba0231c64afb42b91077c96994a63a5b91ec4d53e78c3e02e452b93b16f47f8c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/mod.rs"
+            },
+            "selector": "mod[tests]/fn[permanent_provider_failure_returns_without_waiting_or_retrying]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "f6785bd7dbcebada1b242135d75438de774f7bf04a9992b34c8cf8adb899b467"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/mod.rs"
+            },
+            "selector": "mod[tests]/fn[cancelling_during_backoff_prevents_another_request]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "b5fec7a310f149f7ca09f6688205e1cd3aa73194e1d36b07f0cce20ef0d3d070"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/mod.rs"
+            },
+            "selector": "mod[tests]/fn[unanswered_requests_are_abandoned_and_retried]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "05fec60cfa108b79f9cc8a1b30e77e8868ef1b998bfcd83982f7b91d8f72da69"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/mod.rs"
+            },
+            "selector": "mod[tests]/fn[success_resets_backoff_and_retries_keep_history_without_repeating_tools]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "c61e66c4f6cb9c593b44f2fe8d492ef4dbcd6e96826c0fb78b4d08728b0f40a2"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
               "location": "src/authoring/sdk.rs"
             },
             "selector": "mod[tests]/fn[sdk_string_errors_preserve_habeas_provider_reports_and_error_kinds]"
@@ -464,6 +484,74 @@
         {
           "scheme": "habeas-input-v1",
           "value": "4ca527bf1f52a5820c165602e00c044b12eebca8914f56b90a3699946ffcfeb6"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent.rs"
+            },
+            "selector": "fn[converse]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "c53d34568baee1fb59d682964b7784559e61ffb18dbcf32a880e7d38b636db7f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/mod.rs"
+            },
+            "selector": "fn[converse_observed]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "e47b549d92c5333a4b469467b87b024652665ccdb9f6d6a26076261c22118efb"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/providers.rs"
+            },
+            "selector": "impl[RigProvider]/fn[connect]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "15aecbe6e1f7394587f8a501b58cf28adc8ce3bff549cfcbe08b6215d04adfa6"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/providers.rs"
+            },
+            "selector": "fn[bedrock_sdk_loader]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "a408a98a1e759bf39dd55059f278c05c1d7c72f40f4c63afdd7119d15f496b73"
         }
       ]
     }
