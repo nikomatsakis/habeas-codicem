@@ -287,7 +287,6 @@ impl<'de, N, L> Deserialize<'de> for Dependency<N, L> where N: Deserialize<'de>,
 impl<N: PartialEq, L: PartialEq> PartialEq for Dependency<N, L>;
 impl<N, L> Serialize for Dependency<N, L> where N: Serialize, L: Serialize;
 impl<N: Eq, L: Eq> Eq for Dependency<N, L>;
-impl<N, L> StructuralPartialEq for Dependency<N, L>;
 ```
 :::
 

@@ -209,7 +209,7 @@ impl RustdocSignatures {
             member_id: Regex::new(r#" id="(structfield|method|tymethod|associatedtype|associatedconstant)\.([^"]+)""#).unwrap(),
             tags: Regex::new(r"<[^>]+>").unwrap(),
             headers: Regex::new(r#"(?s)<h([34]) class="code-header">(.*?)</h[34]>"#).unwrap(),
-            error_path: Regex::new(r#"<a [^>]*title="struct (std::io::error|serde_json::error)::Error"[^>]*>Error</a>"#).unwrap(),
+            error_path: Regex::new(r#"<a [^>]*title="struct ((?:std|core)::io::error|serde_json::error)::Error"[^>]*>Error</a>"#).unwrap(),
         }
     }
 
@@ -217,10 +217,10 @@ impl RustdocSignatures {
         let qualified = self
             .error_path
             .replace_all(html, |c: &regex::Captures<'_>| {
-                if &c[1] == "std::io::error" {
-                    "std::io::Error"
-                } else {
+                if &c[1] == "serde_json::error" {
                     "serde_json::Error"
+                } else {
+                    "std::io::Error"
                 }
             });
         let qualified = qualified.replace(r#"<div class="where">"#, " ");
@@ -277,7 +277,7 @@ impl RustdocSignatures {
                 let first = headers.next().expect("rustdoc trait implementation header");
                 let mut signature = self.code(&first[2]).trim_end_matches(',').to_owned();
                 // Derived PartialEq adds this compiler marker alongside PartialEq.
-                if signature.starts_with("impl StructuralPartialEq for ") {
+                if signature.contains(" StructuralPartialEq for ") {
                     continue;
                 }
                 let associated: Vec<_> = headers
