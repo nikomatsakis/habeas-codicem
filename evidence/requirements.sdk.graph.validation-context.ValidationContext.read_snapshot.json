@@ -1,7 +1,7 @@
 {
   "requirement": "Read a node once and return both its contents and their fingerprint. Record the same fingerprint in the dependency list.\n\n```rust,ignore\nimpl<'d, D: Domain> ValidationContext<'d, D> {\n    pub fn read_snapshot(\n        &self,\n        node: &D::NodeId,\n    ) -> Result<Snapshot<D::NodeContent>, D::Error>;\n}\n```",
-  "determination": false,
-  "rationale": "**Obligations** from `requirements.sdk.graph.validation-context.ValidationContext.read_snapshot`:\n1. It reads the node once.\n2. It returns both the contents and their fingerprint.\n3. It records that same fingerprint in the dependency list.\n\n**Covered**\n- `snapshots_record_exact_reads_and_retain_distinct_versions` asserts that `read_snapshot(&1).unwrap().fingerprint == fp(\"before\")`. It also asserts the graph read log `[1,1,1,2]`, which shows `read_snapshot` costs exactly one graph read.\n- `direct_reads_return_complete_unicode_contents_and_snapshots` covers an empty string and a large multibyte string. It asserts `snapshot.content.format()` and `snapshot.fingerprint == fp(original)`. It asserts the read log `[1,1]`. It also asserts that the snapshot content is retained after the graph changes.\n\n**Gap: recording the fingerprint is never observed on its own.**\n- Both tests call `inspection.read(&1)` first, and only then `read_snapshot(&1)` on the same node with the same content.\n- `ValidationContext::record_read` in `crates/trust-but-verify/src/procedure.rs` deduplicates identical `Dependency::Node(node, fingerprint)` entries. This matches the final assertions, which expect `[before, after]` rather than three entries.\n- In the first test, the dependency list is read only after `read_snapshot` has been followed by a later `read`. Its `earlier` snapshot is taken before `read_snapshot` runs.\n- In the second test, `inspection.dependencies()` is `[Node(1, fp(original))]` after both calls. The earlier `read` already put that entry there.\n- An implementation whose `read_snapshot` returned the right content and fingerprint but did not record the dependency would pass every assertion. This assumes `read` records independently. It would still violate \"Record the same fingerprint in the dependency list.\"\n- A `read_snapshot` that recorded a fingerprint equal to what `read` had already recorded would also go unnoticed.\n- No test calls `read_snapshot` on a fresh context and asserts the resulting `dependencies()`. No test calls it on a changed node and asserts that the new entry appears with the returned fingerprint.\n\nThe `read_snapshot` error path is not exercised directly either. The only failure assertion goes through `read(&9)`, and the requirement text does not spell out error behaviour. The third listed test, `public_exports_match_the_appendix`, only checks the export inventory and adds nothing here.\n\nThe dependency-recording obligation is therefore not adequately tested.",
+  "determination": true,
+  "rationale": "**Obligations derived from `ValidationContext.read_snapshot`**\n1. It reads the node once.\n2. It returns both the node's contents and their fingerprint, in a `Snapshot`.\n3. It records that same fingerprint in the dependency list.\n\nThe text states no error-path behavior beyond the `Result` return type, so there is no failure case to test for this subject.\n\n**Test mapping**\n- `crates/trust-but-verify/tests/validation.rs#fn[direct_reads_return_complete_unicode_contents_and_snapshots]` is the main test. It runs over two inputs: an empty string and a large multi-byte Unicode string (more than 16k characters). In each case it calls `read_snapshot(&1)` first, on a fresh context, and then asserts three things:\n  - `snapshot.content.format()` equals the original content.\n  - `snapshot.fingerprint` equals `fp(original)`.\n  - `inspection.dependencies()` equals exactly `[Dependency::Node(1, fp(original))]`. This checks that the recorded fingerprint is the same one returned.\n- The same test calls `read(&1)` once after the snapshot and then asserts that the graph's read log is `[1, 1]`. Those two reads are one for the snapshot and one for `read`. A `read_snapshot` that read the node twice, for example once for contents and once for the fingerprint, would give three reads and fail. So \"read once\" is enforced.\n- The same test replaces the stored content with `\"replacement\"` and asserts that the earlier snapshot is unchanged. This confirms the returned content is the content that was read.\n- `crates/trust-but-verify/tests/validation.rs#fn[snapshots_record_exact_reads_and_retain_distinct_versions]` adds a second scenario. `read_snapshot` returns `fp(\"before\")` after a prior `read`. The read log is `[1,1,1,2]`, and the final dependency list is `[before, after]`. This is consistent with the snapshot's dependency matching the version read.\n- `crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]` only checks the export inventory. It is not a behavioral test of this requirement, and the assessment does not depend on it.\n\n**Gaps considered**\nI found no plausible violating implementation that these tests would accept. The two tests would catch an implementation that returns a wrong fingerprint, records a different fingerprint or none, or reads the node more than once. They would also catch one that returns truncated content, since the large Unicode input is covered. No `{fixme}` acknowledgments apply.",
   "references": "dbb875b39c239f3e613319a0133ba765eead1facfdc4c37a3584c437eb02ad8c",
   "inputs": [
     {
@@ -33,27 +33,12 @@
     {
       "file": "crates/trust-but-verify/tests/validation.rs",
       "item": "fn[direct_reads_return_complete_unicode_contents_and_snapshots]",
-      "hash": "df6f74f5f5b693922e4786a9103fc13ddbfa473ba1d44879230a984d15c59f95"
+      "hash": "5f0d957ee788f0a58c3f691b8a364a15620ff2ebc04fc9e1564b75f5839d9ad3"
     },
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[public_exports_match_the_appendix]",
       "hash": "4d6ce6161754fb9e88ad84ef64f9bb131b308298104915179b2c5d573ed2b087"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[ValidationContext<'d,%20D>]#2/fn[read]",
-      "hash": "cd7c42800fc0fbb9f6edd1e82969b1ba3fa53418a3bdeaabe53823808e8e954f"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[ValidationContext<'d,%20D>]#2/fn[read_snapshot]",
-      "hash": "9d83a55fbc94f8e721811d5cbf87d789c183235d0d5b3816967eef5acce7cbce"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[ValidationContext<'d,%20D>]#2/fn[record_read]",
-      "hash": "decc9fc2168f398781906a9ce38be3ffda02b723b45b951c6e809d4f37b3d781"
     }
   ],
   "format_version": 1,
@@ -123,7 +108,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f88be2472c1f759d90c32df606e1c77a2078b5dcdea5937c8e211b1de97e3763"
+          "value": "fc7842f91856e4c1b37916279ef3c18a2dc576ec1a70955081a69a8898771fc9"
         }
       ]
     },
@@ -141,57 +126,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "ae4819b6e5ac9cd22992cc4254e7868f438e101dbd53f1bd7d443a33ee96f61d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[read]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "eecc94d7baaf455d9c4768d5c61579fbf9b4203f55e3faea19160cd5ba5427b5"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[read_snapshot]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "a4f71a1ea5e94628997fd394102fa637893713426e51cc4fed338f7e1588742f"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[record_read]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "223f38b96401bcc0fc4d42866aff262bad6e91ca5ee4582c0a968df3bfffb920"
         }
       ]
     }

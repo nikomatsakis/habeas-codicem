@@ -1,7 +1,7 @@
 {
   "requirement": "`Sources::read` reads the bytes of one visible project-relative file. Its public\nRust signature is `pub async fn read(&self, path: impl AsRef<Path>) -> Result<SourceFile, SourceError>`.\n`SourceFile::bytes` is an `Arc<[u8]>`. An empty file yields an empty byte slice.\n`SourceFile::text()` borrows those bytes as `&str` when they are valid UTF-8 and\nreturns `SourceError` for invalid UTF-8. `SourceFile::language` is an\n`Option<LanguageId>`. The built-in filesystem reader leaves it `None`.\n\n```rust,ignore\n#[non_exhaustive]\npub struct SourceFile {\n    pub bytes: Arc<[u8]>,\n    pub language: Option<LanguageId>,\n}\n\nimpl SourceFile {\n    pub fn new(bytes: Arc<[u8]>) -> Self;\n    pub fn language(self, language: LanguageId) -> Self;\n    pub fn text(&self) -> Result<&str, SourceError>;\n}\n```\n\nTrait implementations\n\n```rust,ignore\nimpl Clone for SourceFile;\nimpl Debug for SourceFile;\n```",
   "determination": true,
-  "rationale": "The reviewed tests cover each testable obligation in `requirements.sdk.sources.read_file`.\n\n**Reading visible files**\n- `source_bytes_error_kinds_and_language_names_round_trip` reads a file with bytes `[0xff, 0xfe]`. It asserts that the bytes match exactly and that `language` is `None`, so the built-in reader leaves it unset.\n- `empty_sources_errors_and_retained_snapshots_remain_distinct` reads an empty file and asserts that `bytes.is_empty()`.\n- The same test reads `note.txt` after it changes on disk and asserts `text()` returns the new content, so `read` returns fresh bytes.\n- It also asserts that reads fail for a missing file, `../outside.txt`, an absolute path, and a `PathBuf` of `../note.txt`.\n- `gitignore_is_shared_by_all_operations_with_or_without_a_git_repository` covers visibility. Ignored files, including ones Git tracks, and files under an ignored directory fail to read. `.gitignore` itself reads fine, and `.git/config` fails when a repository exists. It runs with and without a Git repository.\n- `symlinks_cannot_reopen_ignored_files_or_leave_the_project` checks that a symlink to a visible file reads as `available`. It also checks that a symlink to an ignored file fails and that a path through an outside symlink fails.\n\n**Signature and `AsRef<Path>`**\n- The tests call `read` with a `&str` literal, `&file(..)` and a `&PathBuf`, so the generic `impl AsRef<Path>` parameter is exercised.\n- The `async` form and the `Result<SourceFile, SourceError>` return are used throughout.\n\n**`SourceFile` behavior**\n- `text()` returns `Err(SourceError::Invalid(message))` with a non-empty message for invalid UTF-8.\n- `text()` returns `\"hello\"` for valid UTF-8, and the test checks `file.text().unwrap().as_ptr() == file.bytes.as_ptr()`. That confirms the `&str` borrows the bytes instead of copying them.\n- `SourceFile::new(...).language(name)` sets `language` to `Some(name)`, which exercises the constructor and the builder.\n\n**Type shape and trait implementations**\n- `Clone` and `Debug` are not tested directly. The struct is declared with `#[derive(Clone, Debug)]` and `#[non_exhaustive]` in `crates/trust-but-verify/src/sources/public.rs#struct[SourceFile]`, so there is no conditional or custom logic to test.\n- `#[non_exhaustive]` and the public field types are checked by the public-API inventory test `public_exports_match_the_appendix`, and by the tests' use of the `bytes` and `language` fields.\n\nI found no gap.",
+  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.sources.read_file`.\n\n**Reading bytes**\n- `source_bytes_error_kinds_and_language_names_round_trip` reads a binary file through `Sources::read`. It asserts that `bytes` equals `[0xff, 0xfe]` and that `language` is `None`, which is the built-in reader's required default.\n- `empty_sources_errors_and_retained_snapshots_remain_distinct` reads an empty file and asserts the bytes are empty. The same test reads `note.txt` after it changes on disk and gets the new text, so `read` returns current bytes.\n\n**`text()`**\n- Invalid UTF-8 returns `SourceError::Invalid` with a non-empty message (`source_bytes_error_kinds_and_language_names_round_trip`).\n- Valid UTF-8 returns the expected `&str`. The test also asserts `file.text().unwrap().as_ptr() == file.bytes.as_ptr()`, so the text is borrowed from the bytes and not copied.\n- `symlinks_cannot_reopen_ignored_files_or_leave_the_project` also checks `text()` on valid content.\n\n**Constructors and the `language` field**\n- `SourceFile::new` is called and `language` is asserted to be `None`.\n- The `language(...)` builder is called and `Some(name)` is asserted.\n\n**Visible project-relative files only**\n- `gitignore_is_shared_by_all_operations_with_or_without_a_git_repository` runs with and without a Git repository.\n  - It reads `.gitignore` (a visible dotfile) and gets `Ok`.\n  - Reads of ignored files fail: `ignored.txt`, `src/ignored.txt`, and `skip/rescue.txt` (which sits under an ignored directory). `.git/config` also fails when a repository exists.\n- `empty_sources_errors_and_retained_snapshots_remain_distinct` asserts errors for a missing file, a `..` path, an absolute path, and a `PathBuf` parent path.\n- `symlinks_cannot_reopen_ignored_files_or_leave_the_project` asserts that a symlink to an ignored file and a symlink to a path outside the project both fail. A symlink to a visible in-project file reads successfully.\n\n**Signature, `#[non_exhaustive]`, field types and trait impls (`Clone`, `Debug`)**\n- No test calls `clone()` or formats `Debug` on a `SourceFile`.\n- `public_exports_match_the_appendix` in `public_api.rs` compares rustdoc output against the specified declarations. Its `check_declaration` helper asserts equality on trait implementations through `trait_impls`, and its other helpers extract fields and methods.\n- The implementation source shows `#[derive(Clone, Debug)]` and `#[non_exhaustive]` on the struct, with the `Arc<[u8]>` and `Option<LanguageId>` fields.\n- The derives have no conditionals or transformations, and the public-API test guards their presence, so this is not a gap.\n- The `read` call sites in the tests compile only against the `impl AsRef<Path>` signature, since they pass `&str`, `&PathBuf` and a `file(...)` helper result.\n\nI found no obligation that the tests leave unchecked and no acknowledged gaps.",
   "references": "51e9ec67b8e4c3965e25ffa5cc6f4dd79042dfca44a68f770f84e41247ae017b",
   "inputs": [
     {
@@ -45,7 +45,7 @@
     {
       "file": "crates/trust-but-verify/tests/source_defaults.rs",
       "item": "fn[source_bytes_error_kinds_and_language_names_round_trip]",
-      "hash": "15462708f279323bb999f65673afe567bb7b5209b207500b412f1ec65573e70f"
+      "hash": "1514f2e17db1577a69ce4cfa0c5c032f9ffdaa4010fef7ad0b9079e1552f4305"
     },
     {
       "file": "crates/trust-but-verify/tests/source_defaults.rs",
@@ -68,11 +68,6 @@
       "hash": "4d6ce6161754fb9e88ad84ef64f9bb131b308298104915179b2c5d573ed2b087"
     },
     {
-      "file": "crates/trust-but-verify/src/sources/public.rs",
-      "item": "struct[SourceFile]",
-      "hash": "b8081f46be9b6e0d5b715bd7264fe932dd3f135db66be081789784b9d000252b"
-    },
-    {
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "impl[RustdocSignatures]/fn[trait_impls]",
       "hash": "c93c5dc40fba1431d9f568699f921e47dd1308acf53cc341a94dbd820a84d8e4"
@@ -81,6 +76,11 @@
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[check_declaration]",
       "hash": "c2641df4291284653f239a9ce3be3002eda283fd0c19492a3f29f81a2bc61829"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/public.rs",
+      "item": "struct[SourceFile]",
+      "hash": "b8081f46be9b6e0d5b715bd7264fe932dd3f135db66be081789784b9d000252b"
     }
   ],
   "format_version": 1,
@@ -133,7 +133,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "0105e9da8e3e73797d1802e9d8ae26389f1eea80682f4cd2377af95b3631f8bf"
+          "value": "84eb82df3f380ed7c0bb59206adbdaf17ef5ba5c31e3a7bd4700f2a3deb1b755"
         }
       ]
     },
@@ -211,23 +211,6 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/sources/public.rs"
-            },
-            "selector": "struct[SourceFile]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "c66c0507ecdde8988f78895af276c5480c5e523f1c180dfbc75ae362b129ef89"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
               "location": "crates/trust-but-verify/tests/public_api.rs"
             },
             "selector": "impl[RustdocSignatures]/fn[trait_impls]"
@@ -253,6 +236,23 @@
         {
           "scheme": "habeas-input-v1",
           "value": "1a4ac7dcf98a2bfdcc8e62b828699053c877a0a8af9ca1d708d6b94dae2cc7e4"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/public.rs"
+            },
+            "selector": "struct[SourceFile]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "c66c0507ecdde8988f78895af276c5480c5e523f1c180dfbc75ae362b129ef89"
         }
       ]
     }

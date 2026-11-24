@@ -1,8 +1,8 @@
 {
   "requirement": "Each `AgentConfig` variant carries the corresponding settings from\n`trust_but_verify::agent`. Serde uses the `backend` field to select `bedrock`,\n`openai`, or `ollama` and reads the settings from the same object.\n\nChoose [`BedrockConfig`](#habeas-req-requirements.sdk.graph.agent-harness.BedrockConfig),\n[`OpenAiConfig`](#habeas-req-requirements.sdk.graph.agent-harness.OpenAiConfig), or\n[`OllamaConfig`](#habeas-req-requirements.sdk.graph.agent-harness.OllamaConfig) for the selected backend.\nWith settings omitted, OpenAI uses `gpt-6.1-sol`, `https://api.openai.com/v1`,\nand `OPENAI_API_KEY`. Ollama defaults to `http://localhost:11434`.\n\nAll three backend constructors start with an empty `options` map. Calling\n`option(key, value)` inserts one inference setting. Calling it again with the\nsame key replaces its value and preserves the other settings. An `OptionValue` is\na `String`, `Boolean`, `Integer(i64)`, `Float(f64)`, `Array`, or `Map`. Arrays hold\noption values and maps associate strings with option values. These serialize as\nthe corresponding untagged values. Backend calls reject nonfinite floats,\nincluding those nested in an array or map.\n\n`BedrockCredentials` contains `access_key_id` and `secret_access_key`, both\n`SecretString`, and an optional `session_token` of the same type. Construct a\n`SecretString` from `String` or `&str`. `expose_secret()` borrows its value.\nSerialization preserves the string, while `Debug` prints `<redacted>`.",
-  "determination": false,
-  "rationale": "## Verdict\nThe marked tests cover most of `requirements.sdk.graph.agent-harness.agent_config.settings`. One stated default has no test: the OpenAI default credential variable `OPENAI_API_KEY`.\n\n## Obligations and coverage\n\n- **Serde `backend` field selects the variant and the settings share one object.**\n  - `crates/trust-but-verify/src/agent/config.rs#mod[tests]/fn[all_backends_preserve_nested_settings_and_credentials]` deserializes `bedrock`, `openai` and `ollama` objects into `AgentConfig`.\n  - It asserts the serialized value equals the input, and that a JSON string round trip is equal.\n  - `fn[configuration_debug_hides_credentials]` asserts that an unknown field is rejected.\n- **Constructors start with an empty `options` map.** `fn[backend_builders_set_only_the_requested_fields]` asserts that the serialized new configs contain only the model, with no `options` key, for all three backends.\n- **`option(key, value)` inserts one setting, and the same key replaces its value while other settings are preserved.** This is tested on `BedrockConfig` only, by setting `a` to 1, `b` to true, then `a` to 2, and asserting `{\"a\":2,\"b\":true}`. The OpenAI and Ollama `option` methods have the same one-line body, so this is not treated as a gap.\n- **`OptionValue` variants and untagged serialization.**\n  - The round-trip test covers integer, float, string, boolean, array and nested map values.\n  - `fn[option_defaults_and_credential_resolution_are_deterministic]` asserts that `json!(1)` deserializes to `Integer(1)` and `json!(1.0)` to `Float(1.0)`.\n- **Backend calls reject nonfinite floats, including nested ones.** In the same test, `OptionValue::Map` containing `INFINITY` fails `validate()`. An Ollama `options_json()` call with an array containing `NaN` returns an error.\n- **OpenAI defaults when settings are omitted.** `OpenAiConfig::default()` resolves to model `gpt-6.1-sol` and endpoint `https://api.openai.com/v1`. Both are asserted.\n- **Ollama default endpoint.** `OllamaConfig::new(..).resolved_endpoint()` is asserted to be `http://localhost:11434`.\n- **`BedrockCredentials`.**\n  - Required fields and the optional `session_token` are asserted by JSON comparison.\n  - Round-trip equality is asserted.\n  - A configuration with a token is asserted to differ from one without.\n- **`SecretString`.**\n  - It is built from `&str` and `String`.\n  - `expose_secret()` is asserted to return the value.\n  - `Debug` is asserted to print `<redacted>`.\n  - Serialization preserves the string.\n\n## Gap\nThe requirement says that with settings omitted, OpenAI uses `OPENAI_API_KEY`. In `impl[OpenAiConfig]#2/fn[resolved_api_key]`, this default is the `unwrap_or(\"OPENAI_API_KEY\")` branch taken when `api_key_env` is `None`.\n\nThe tests never check this branch:\n- The OpenAI resolution assertions all set `api_key_env` to `TBV_TEST_ABSENT_BACKEND_KEY` or set `api_key`.\n- The `credential(...)` assertions use a caller-supplied name, `MISSING`, `EMPTY` or `PRESENT`, and never the OpenAI default.\n- `resolved_api_key` reads `std::env::var_os` directly, so no existing test covers this branch.\n\nAn implementation that defaulted to another variable, such as `OPENAI_KEY`, or to none, would pass every marked test.\n\nThe testing exemption for environment variables does not apply. The project already has a subprocess-with-controlled-environment pattern in `crates/trust-but-verify/src/agent/providers.rs#mod[tests]/fn[explicit_bedrock_credentials_reach_the_sdk_without_the_default_chain]`. That pattern could be used here. The default is also a conditional choice, not a pass-through.\n\n## Conclusion\nAll other obligations have tests with relevant assertions. The missing test for the default `OPENAI_API_KEY` is an unacknowledged gap, and there are no `{fixme}` acknowledgments.",
-  "references": "94ad8e7a9604b5de5e9ca9279e50fc31b0e5b865b4248ab467d70e614ac6ce05",
+  "determination": true,
+  "rationale": "The reviewed tests in `crates/trust-but-verify/src/agent/config.rs` cover each obligation of `agent_config.settings`. I found one weak spot, covered below, and I do not count it as a gap.\n\n- **Backend selection and flattened settings.** `mod[tests]/fn[all_backends_preserve_nested_settings_and_credentials]` deserializes `{\"backend\": ...}` objects for bedrock, openai and ollama. Each carries its settings in the same object. The test asserts that the serialized form equals the input and that a second round trip gives an equal config. `fn[openai_inference_options_only_fill_missing_defaults]` also checks that `{\"backend\":\"openai\"}` equals `AgentConfig::OpenAi(OpenAiConfig::new())`. `fn[configuration_debug_hides_credentials]` checks that an unknown field is rejected.\n- **Defaults.**\n  - `fn[option_defaults_and_credential_resolution_are_deterministic]` asserts the OpenAI model `gpt-6.1-sol` and the OpenAI endpoint `https://api.openai.com/v1`. It also asserts the Ollama endpoint `http://localhost:11434`.\n  - `fn[openai_uses_the_default_credential_variable]` runs a child process with `OPENAI_API_KEY` set. It shows that `OpenAiConfig::new().resolved_api_key()` reads that variable.\n- **Empty options at construction.** `fn[backend_builders_set_only_the_requested_fields]` serializes freshly built `BedrockConfig`, `OpenAiConfig` and `OllamaConfig` values. The output has no `options` key for any of them.\n- **`option(key, value)` insert and replace.** In the same test, the Bedrock chain sets `a`=1, then `b`=true, then `a`=2. The result is `{\"a\":2,\"b\":true}`, so replacement works and the other setting is kept. The OpenAI and Ollama builders insert an option and the test checks it. `fn[openai_inference_options_only_fill_missing_defaults]` also sets two OpenAI options and checks that both are kept.\n- **`OptionValue` variants and untagged serialization.** The nested round trip in `fn[all_backends_preserve_nested_settings_and_credentials]` covers integer, float, boolean, string, array and map values. `fn[option_defaults_and_credential_resolution_are_deterministic]` checks that `1` deserializes to `Integer(1)` and `1.0` to `Float(1.0)`.\n- **Nonfinite floats.** The same test checks that `OptionValue::validate` rejects infinity nested in a map. It also checks that `options_json` rejects NaN nested in an array inside an `OllamaConfig`. `AgentConfig::options_json` calls `validate` for every backend, so this is shared code.\n- **Credentials and `SecretString`.** `fn[backend_builders_set_only_the_requested_fields]` checks `BedrockCredentials` with and without `session_token`, in both serialization and deserialization. `fn[configuration_debug_hides_credentials]` checks construction from `String` and `&str`, `expose_secret()`, `Debug` printing `<redacted>`, and serialization preserving the string.\n\n**Weak spot, not counted as a gap.** Same-key replacement is exercised only on `BedrockConfig::option`. The OpenAI and Ollama `option` methods are separate, identical one-line `BTreeMap::insert` calls. The requirement states the same behavior for all three, so I treat the Bedrock test as representative. A weaker, more conservative reading would want replacement checked on each backend.\n\nThere is no `{fixme}` acknowledgment and none is needed.",
+  "references": "4a098765131aef2ad4857b65ea6b5430398817f4b743d95fabfa12157e2c04a4",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.agent-harness.agent_config.settings",
@@ -38,6 +38,16 @@
     },
     {
       "file": "crates/trust-but-verify/src/agent/config.rs",
+      "item": "mod[tests]/fn[openai_inference_options_only_fill_missing_defaults]",
+      "hash": "03dd6ef77d4db94af94f6f03aa0df59b9bb88fbd778d4cd90998b42423748f94"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/config.rs",
+      "item": "mod[tests]/fn[openai_uses_the_default_credential_variable]",
+      "hash": "5878c6164b8726d94aec2afc9bbb5040cf7002c5ac817936e0fb041c9483ff88"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/config.rs",
       "item": "mod[tests]/fn[backend_builders_set_only_the_requested_fields]",
       "hash": "1094580863798ec21d3cbff7873f8d17be033a3b027e232259eff6f061803633"
     },
@@ -58,16 +68,6 @@
     },
     {
       "file": "crates/trust-but-verify/src/agent/config.rs",
-      "item": "impl[OpenAiConfig]#2/fn[resolved_api_key]",
-      "hash": "43f42d4d5287019add933486f552da99a65d00dc2f47b97588ad92b10048e7b4"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/providers.rs",
-      "item": "mod[tests]/fn[explicit_bedrock_credentials_reach_the_sdk_without_the_default_chain]",
-      "hash": "25fa64064f0f5a186557090a1a591a9968a1bbe71b6d23b328408db0f240dd98"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/config.rs",
       "item": "impl[BedrockConfig]/fn[option]",
       "hash": "0ce0f042b647e27714df2d41da2906d21ff80014eadf647dafe8d1320c5a1f3e"
     },
@@ -80,6 +80,16 @@
       "file": "crates/trust-but-verify/src/agent/config.rs",
       "item": "impl[OllamaConfig]#1/fn[option]",
       "hash": "0ce0f042b647e27714df2d41da2906d21ff80014eadf647dafe8d1320c5a1f3e"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/config.rs",
+      "item": "impl[AgentConfig]/fn[options_json]",
+      "hash": "b6fab53d386c3dd8880da1c557a1a97c9501f78567ffa7c9113112900738770c"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/config.rs",
+      "item": "impl[OptionValue]/fn[validate]",
+      "hash": "c4d8657a0632ecf6e2514f5b2de4dd916d1dffe4c12beafd956c415fc4a7305e"
     }
   ],
   "format_version": 1,
@@ -92,7 +102,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "94ad8e7a9604b5de5e9ca9279e50fc31b0e5b865b4248ab467d70e614ac6ce05"
+          "value": "4a098765131aef2ad4857b65ea6b5430398817f4b743d95fabfa12157e2c04a4"
         }
       ]
     },
@@ -104,7 +114,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "0105629549c75d2536264f9376424b9aca0f68edc1c1a8ae4589679223630540"
+          "value": "d9aacdbfe07c41badd01255b7b561a5521a80e8e3302b2b620e5effe57630135"
         }
       ]
     },
@@ -116,6 +126,40 @@
         {
           "scheme": "habeas-input-v1",
           "value": "0bd5dd72dfc2477abb5b6862d13f0ce2b1153128ee9575e84af3e4c422942862"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/config.rs"
+            },
+            "selector": "mod[tests]/fn[openai_inference_options_only_fill_missing_defaults]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "9b06687e0cfa13f371446c8c84bc7e7d06232bdf3fc25824211ae094a167e0dd"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/config.rs"
+            },
+            "selector": "mod[tests]/fn[openai_uses_the_default_credential_variable]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "026bd397447211b954170bd7064658c49a01bee96e061861ba7a4df0047cdee0"
         }
       ]
     },
@@ -195,40 +239,6 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/config.rs"
             },
-            "selector": "impl[OpenAiConfig]#2/fn[resolved_api_key]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "ff59afaa82e72f750db66e6b3e41977be112ca0ae1bf2b45deb01b4687933297"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/providers.rs"
-            },
-            "selector": "mod[tests]/fn[explicit_bedrock_credentials_reach_the_sdk_without_the_default_chain]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "f480baf6193facb57ba09e8ae6c59b940c7c2edb4c79d6f05036b2f4159206fe"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/config.rs"
-            },
             "selector": "impl[BedrockConfig]/fn[option]"
           }
         },
@@ -269,6 +279,40 @@
         {
           "scheme": "habeas-input-v1",
           "value": "ce8e41b134dde911227b74bb5d0013ec9f0832691ed0fa5a941bebbe3ef7ebeb"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/config.rs"
+            },
+            "selector": "impl[AgentConfig]/fn[options_json]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "bb9ac504b703729ca3ae7558771338a2e4e0c17891923f0a4c91e4f2c97e0e8c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/config.rs"
+            },
+            "selector": "impl[OptionValue]/fn[validate]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "6b19d69b92d88a9c07cfcd7084dab6ed07423aa580e13c5c92a06ecfe3b25365"
         }
       ]
     }
