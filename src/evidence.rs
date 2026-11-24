@@ -2058,7 +2058,7 @@ impl ReferenceContexts {
 }
 
 // {impl}`requirements.references.reference_contexts`
-fn file_references(file: &Path, content: &str, in_book: bool) -> Vec<SourceReference> {
+pub(crate) fn file_references(file: &Path, content: &str, in_book: bool) -> Vec<SourceReference> {
     let markdown = crate::outline::is_markdown_path(file);
     let mut references = Vec::new();
     let roles = reference_roles(content, markdown);

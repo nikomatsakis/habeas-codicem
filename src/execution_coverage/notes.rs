@@ -43,21 +43,13 @@ pub(super) struct DocumentedItem {
 // {impl}`requirements.test-coverage.index.file_map.notes.render_only`
 pub(super) fn pages(root: &Path, files: &BTreeSet<String>, index: &Path) -> Vec<DocumentedFile> {
     let outlines = OutlineCache::default();
-    let mut diagnostics = Vec::new();
-    let references = crate::evidence::collect_references(root, &mut diagnostics);
-    // Only coverage annotations are needed; unrelated citation reviews do not
-    // participate in this documentation view.
-    let references: Vec<_> = references
-        .into_iter()
-        .filter(|reference| reference.name == "habeas:coverage")
-        .collect();
-    let items = citation_items(root, &BTreeMap::new(), &references, &outlines);
+    let md_root = crate::evidence::book_source_dir(root, &mut Vec::new());
     files
         .iter()
         .map(|file| {
             let path = path(index, file);
             let mut entries = Vec::new();
-            let mut failures = diagnostics.clone();
+            let mut failures = Vec::new();
             let mut content = format!(
                 "# Coverage explanations\n\n[Back to coverage index]({})\n\nFile: <code>{}</code>.\n\n**Current workspace source notes**, read at book-render time. Explanations describe current source; reviews show last recorded assessments.\n\n",
                 crate::chapter_href(&path, index, None), escaped(file),
@@ -65,33 +57,36 @@ pub(super) fn pages(root: &Path, files: &BTreeSet<String>, index: &Path) -> Vec<
             match outlines.parse(root, file).as_ref() {
                 Err(error) => { diagnostic(&mut content, error); failures.push(error.clone()); },
                 Ok(parsed) => {
-                    for error in &diagnostics {
-                            diagnostic(&mut content, error);
+                    let absolute = root.join(file);
+                    let references: Vec<_> = crate::evidence::file_references(
+                        &absolute, &parsed.source, absolute.starts_with(&md_root),
+                    )
+                    .into_iter()
+                    .filter(|reference| reference.name == "habeas:coverage")
+                    .collect();
+                    let items = citation_items(root, &BTreeMap::new(), &references, &outlines);
+                    for item in items.values() {
+                        let Ok(node) = parsed.resolve(file, &item.item) else {
+                            diagnostic(&mut content, "Cannot resolve the cited source item.");
+                            failures.push(format!("{file}: cannot resolve {}", item.item));
+                            continue;
+                        };
+                        if !(item.item.is_empty() || matches!(parsed.outline.nodes[node].kind, "fn" | "def" | "function" | "method"))
+                            || !item.citations.iter().any(|cite| cite.name == "habeas:coverage")
+                        {
+                            continue;
                         }
-                        let mut count = 0;
-                        for item in items.values().filter(|item| item.file == *file) {
-                            let Ok(node) = parsed.resolve(file, &item.item) else {
-                                diagnostic(&mut content, "Cannot resolve the cited source item.");
-                                failures.push(format!("{file}: cannot resolve {}", item.item));
-                                continue;
-                            };
-                            if !(item.item.is_empty() || matches!(parsed.outline.nodes[node].kind, "fn" | "def" | "function" | "method"))
-                                || !item.citations.iter().any(|cite| cite.name == "habeas:coverage")
-                            {
-                                continue;
-                            }
-                            count += 1;
-                            let mut explanation = String::new();
-                            entry(&mut explanation, root, parsed, node, item);
-                            content.push_str(&format!("<a id=\"coverage-note-{}\"></a>\n\n", count));
-                            content.push_str(&explanation);
-                            let mut html = String::new();
-                            pulldown_cmark::html::push_html(&mut html, pulldown_cmark::Parser::new(&explanation));
-                            entries.push(DocumentedItem { selector: item.item.clone(), line: parsed.outline.nodes[node].line_start, html });
-                        }
-                    if count == 0 && diagnostics.is_empty() {
-                            content.push_str("No coverage explanations are present on this file's root or explicitly declared functions and methods.\n");
-                        }
+                        let mut explanation = String::new();
+                        entry(&mut explanation, root, parsed, node, item);
+                        content.push_str(&format!("<a id=\"coverage-note-{}\"></a>\n\n", entries.len() + 1));
+                        content.push_str(&explanation);
+                        let mut html = String::new();
+                        pulldown_cmark::html::push_html(&mut html, pulldown_cmark::Parser::new(&explanation));
+                        entries.push(DocumentedItem { selector: item.item.clone(), line: parsed.outline.nodes[node].line_start, html });
+                    }
+                    if entries.is_empty() && failures.is_empty() {
+                        content.push_str("No coverage explanations are present on this file's root or explicitly declared functions and methods.\n");
+                    }
                 },
             }
             let mut chapter = Chapter::new(&format!("File notes: {file}"), content, path, vec![]);
@@ -433,18 +428,37 @@ mod tests {
         let unreadable = render(temp.path());
         assert!(unreadable.contains("Coverage notes unavailable"));
         assert!(!unreadable.contains("No coverage explanations are present"));
+        fs::write(temp.path().join("healthy.rs"), "fn healthy() {}\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let unreadable = temp.path().join("unreadable.rs");
+            fs::write(&unreadable, "fn unreadable() {}").unwrap();
+            fs::set_permissions(unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+        }
         let chapters = pages(
             temp.path(),
-            &BTreeSet::from(["code.rs".into(), "missing.rs".into()]),
+            &BTreeSet::from(["code.rs".into(), "missing.rs".into(), "healthy.rs".into()]),
             Path::new("coverage.md"),
         );
-        assert_eq!(chapters.len(), 2); // one failure does not abort other chapters
-        assert!(chapters.iter().all(|chapter| {
-            chapter
-                .chapter
-                .content
-                .contains("Coverage notes unavailable")
-        }));
+        assert_eq!(chapters.len(), 3);
+        for chapter in chapters {
+            let healthy = chapter.file == "healthy.rs";
+            assert_eq!(
+                chapter
+                    .chapter
+                    .content
+                    .contains("Coverage notes unavailable"),
+                !healthy
+            );
+            assert_eq!(
+                chapter
+                    .chapter
+                    .content
+                    .contains("No coverage explanations are present"),
+                healthy
+            );
+        }
     }
 
     // {test}`requirements.test-coverage.index.file_map.notes.availability`

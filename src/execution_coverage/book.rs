@@ -245,6 +245,10 @@ pub(super) fn load_saved(project: &Path, target: Option<PathBuf>) -> SavedCovera
     let mut records = Vec::new();
     let loaded = (|| -> io::Result<_> {
         let root = workspace_root(project)?;
+        let mut errors = Vec::new();
+        crate::evidence::discovered_files(&root, &mut errors);
+        invalid_store = !errors.is_empty();
+        diagnostics.extend(errors);
         let target = target
             .map(Ok)
             .unwrap_or_else(|| target_directory(project))?;
@@ -260,12 +264,6 @@ pub(super) fn load_saved(project: &Path, target: Option<PathBuf>) -> SavedCovera
         }
         Ok((root, target, storage, snapshot)) => {
             let active_configuration = snapshot.configuration;
-            let mut errors = Vec::new();
-            let _ = crate::evidence::discovered_files(&root, &mut errors);
-            if !errors.is_empty() {
-                invalid_store = true;
-            }
-            diagnostics.extend(errors);
             let runs: BTreeMap<_, _> = snapshot
                 .runs
                 .into_iter()
@@ -1212,8 +1210,16 @@ mod tests {
         record(temp.path(), "one", 1, "a", &[(1, 1)]);
         let storage = temp.path().join("target/habeas/coverage");
         fs::set_permissions(&storage, fs::Permissions::from_mode(0o000)).unwrap();
+        git2::Repository::init(temp.path()).unwrap();
+        fs::write(temp.path().join(".git/index"), "not an index").unwrap();
         let selected = saved_coverage(temp.path());
         fs::set_permissions(storage, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            selected
+                .diagnostics
+                .iter()
+                .any(|error| error.contains("cannot discover reference sources"))
+        );
         assert!(
             selected
                 .diagnostics
