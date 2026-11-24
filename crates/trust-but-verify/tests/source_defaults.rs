@@ -9,6 +9,14 @@ fn file(location: &str) -> PathBuf {
 }
 
 // {test}`requirements.sdk.sources.SourceError`
+#[test]
+fn invalid_source_errors_display_the_diagnostic() {
+    use trust_but_verify::sources::SourceError;
+    let error = SourceError::Invalid("unsupported source language".into());
+    assert_eq!(error.to_string(), "unsupported source language");
+}
+
+// {test}`requirements.sdk.sources.SourceError`
 // {test}`requirements.sdk.sources.read_file`
 // {test}`requirements.sdk.sources.language_id`
 // {test}`requirements.sdk.public_api`

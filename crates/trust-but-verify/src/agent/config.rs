@@ -341,6 +341,12 @@ mod tests {
     // {test}`requirements.sdk.graph.agent-harness.agent_config.settings`
     #[test]
     fn openai_inference_options_only_fill_missing_defaults() {
+        let minimal: AgentConfig = serde_json::from_value(json!({"backend":"openai"})).unwrap();
+        assert_eq!(minimal, AgentConfig::OpenAi(OpenAiConfig::new()));
+        assert_eq!(
+            minimal.options_json().unwrap(),
+            json!({"max_output_tokens":16384,"reasoning":{"effort":"low"}})
+        );
         for (reasoning, expected) in [
             (
                 json!({"summary":"auto"}),

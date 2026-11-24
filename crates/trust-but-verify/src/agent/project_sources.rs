@@ -362,6 +362,9 @@ mod tests {
         let mut pages = 0;
         loop {
             let page: Value = serde_json::from_str(&delivery.text).unwrap();
+            assert_eq!(page["complete"], true);
+            assert!(uuid::Uuid::parse_str(page["search_id"].as_str().unwrap()).is_ok());
+            assert_eq!(page.get("instructions").is_some(), pages == 0);
             let matches = page["matches"].as_array().unwrap();
             assert!(!matches.is_empty());
             for (index, entry) in matches.iter().enumerate() {
@@ -765,6 +768,17 @@ mod tests {
             domain: domain.clone(),
         };
         let mut session = SessionTools::new(tools.session());
+        let tool = session
+            .extra
+            .definitions()
+            .unwrap()
+            .into_iter()
+            .find(|tool| tool.name == "read_source")
+            .unwrap();
+        assert_eq!(tool.parameters["required"], json!(["path"]));
+        for field in ["path", "selector"] {
+            assert_eq!(tool.parameters["properties"][field]["type"], "string");
+        }
         for args in [
             json!({"path":"source.txt"}),
             json!({"path":"source.txt","selector":""}),

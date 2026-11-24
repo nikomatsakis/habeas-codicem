@@ -865,6 +865,7 @@ fn toml_and_yaml_profiles_name_keys() {
 }
 
 // {test}`requirements.references.outline_selectors`
+// {test}`requirements.sdk.outlines.selector_syntax`
 #[test]
 fn anonymous_container_selectors_use_identity_hashes_and_survive_descendant_edits() {
     let before = outline("a.yml", "items:\n  - f: 1\n");
