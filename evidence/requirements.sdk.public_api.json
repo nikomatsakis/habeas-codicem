@@ -1,7 +1,7 @@
 {
   "requirement": "Each public SDK item has one defining module path. The SDK exposes no public\nre-exports. The chapter that introduces each supported type or free function owns its declaration.\nThe [public API inventory](sdk/public-api.md) links each item to that requirement,\nwhich describes its purpose\nand declares its public Rust interface, including fields, enum variants, trait\nmembers, and inherent methods. A change to that interface requires a change to\nthe owning requirement. Every supported struct with public fields is\n`#[non_exhaustive]`. Its constructor accepts the values needed to create it.\nAdditional fields have consuming builder methods that accept a concrete value.\nOptional fields start as `None`. Backend inference options start empty and can\nbe added one key at a time.\n\nThe SDK’s public modules follow the interfaces introduced in these chapters.\n\n- `domain`: application data and the `Domain`, `NodeContents`, and `SourceNodes` traits.\n- `graph`: criterion definitions, graph observations, and evidence; `graph::validator`\n  runs criteria.\n- `request`: `ValidationContext`, typed `Ask` builders, context values, and request phases.\n- `agent`: configuration for the supplied agents.\n- `sources`: project inspection, search queries, and their results.\n- `outline`: selectable source contents and language rules; `outline::languages`\n  supplies bundled languages, and `outline::selector` defines selector syntax.\n- `storage`: filesystem evidence storage.\n\nSource access, search engines, redaction, provider transports, agent-result paging,\nand conversation machinery are implementation details of those interfaces.",
   "determination": true,
-  "rationale": "The reviewed tests adequately check `requirements.sdk.public_api`. I found no gap. Here is how each obligation maps to a test.\n\n**One defining path, no re-exports**\n- `tests/public_api.rs#fn[sdk_has_no_public_reexports]` parses every `.rs` file under `src` with tree-sitter. It fails on any `use_declaration` with a plain `pub` visibility modifier.\n- `fn[public_exports_match_the_appendix]` generates rustdoc for this source tree. `documented_exports` walks the module item tables. It asserts that the set of (path, kind) pairs equals the set in the inventory, with no missing or unexpected entries. It also asserts no duplicate export entries and that every non-module item has an inventory declaration. Items that rustdoc publishes beyond the inventory, such as source access or conversation internals, therefore fail the test. This covers the \"implementation details\" sentence and the module layout.\n\n**Interface declared in the owning requirement, and a change requires a requirement change**\n- For each exported non-module item, `check_declaration` reads the owning chapter's requirement. It requires a description and a `rust,ignore` declaration. It compares trait implementations and indexed members (fields, methods, associated types and consts) with rustdoc. It then compares normalized signature parts, covering fields, enum variants, trait members and inherent methods. It reports differences in both directions. Child method requirements are merged in.\n- `fn[member_order_is_free_but_field_and_method_types_are_committed]` checks the comparison logic itself. Reordering methods is accepted. Changing a field type, a return type or a receiver mutability makes the comparison fail. A one-element tuple type is also distinguished from a parenthesized type.\n\n**Every public-field struct is `#[non_exhaustive]`**\n- `check_declaration` asserts that the published declaration contains `#[non_exhaustive]` whenever it is a struct and the page has `structfield.` members.\n\n**Constructors, consuming builders, `None` defaults, empty options**\n- The constructor and builder signatures are pinned to the requirements by the declaration comparison. The builders take concrete values.\n- `agent/config.rs#mod[tests]/fn[backend_builders_set_only_the_requested_fields]` checks the backend configs. The new configs serialize to only the required fields. Optional fields are absent, which corresponds to `None`. `options` starts empty. Options are added one key at a time, and a repeated key overwrites the earlier value. The `BedrockCredentials` builder is consuming, and the `session_token` builder changes the value.\n- `tests/source_defaults.rs#fn[source_bytes_error_kinds_and_language_names_round_trip]` checks that `SourceFile::new` has `language == None`. It also checks that the consuming `.language(..)` builder sets it.\n- `fn[scoped_text_results_keep_line_numbers_context_and_completeness]` checks the `TextQuery::new` defaults: `limit == None` and `context_lines == 0`. It also checks the builder methods `limit`, `scope` and `context_lines`.\n- `fn[built_in_languages_and_structural_search_use_the_project_scope]` checks that `StructuralQuery::new` has `limit == None`. It also checks the `limit` and `scope` builders.\n- `Segment` (`ordinal` is `None` from `new`, and the builder sets it) is covered by `outline/selector.rs` tests under its own requirement. I did not count it as a gap here.\n\nBehavior beyond what the declarations pin is the concern of each owning chapter's requirement and tests. This subject needs only the convention checked, and it is. A mutation that dropped `#[non_exhaustive]`, added a re-export or an unlisted public item, or changed a signature would be caught.",
+  "rationale": "**Verdict:** the reviewed tests adequately check `requirements.sdk.public_api`. I found no unacknowledged gap.\n\n**Obligations and the tests that cover them**\n\n1. **One defining module path and no public re-exports.**\n   - `tests/public_api.rs#fn[sdk_has_no_public_reexports]` parses every `.rs` file under `src` with tree-sitter. It fails on any `use_declaration` with a plain `pub` visibility modifier.\n   - `public_exports_match_the_appendix` also checks the rustdoc output. It walks rustdoc's published item tables and compares the `(path, kind)` pairs with the inventory in `md/requirements/sdk/public-api.md`. It asserts there are no missing or unexpected entries and no duplicates. An item reachable by a second module path would show up as unexpected.\n\n2. **The owning chapter declares each item, and the declared interface is the actual one.**\n   - `public_exports_match_the_appendix` calls `documented_exports`, which calls `check_declaration` for every non-module item.\n   - `specified_exports` checks that each declaration link points at a narrative chapter and that the requirement anchor matches that chapter's namespace.\n   - `check_declaration` reads the owning `req` block and requires a description and a Rust listing.\n   - It compares trait implementations, the indexed member names, and the normalized declaration plus inherent method signatures against rustdoc's output. That covers fields, variants, trait members and inherent methods, and it fails on any drift in either direction. This enforces \"a change requires a change to the owning requirement\".\n   - `member_order_is_free_but_field_and_method_types_are_committed` tests the comparison helper itself. Reordering methods is accepted. Changing a field type, a return type, or `&mut self` to `&self` is rejected.\n\n3. **Every struct with public fields is `#[non_exhaustive]`.** `check_declaration` asserts that the rustdoc declaration contains `#[non_exhaustive]` for any struct page that has public struct fields.\n\n4. **Constructor, consuming builders and concrete values.** The signature comparison pins the constructor parameters and the `self`-by-value builder signatures with concrete (non-`Option`) parameter types. Behavioural tests back this up:\n   - `agent/config.rs#mod[tests]/fn[backend_builders_set_only_the_requested_fields]` exercises every builder on `BedrockConfig`, `OpenAiConfig`, `OllamaConfig` and `BedrockCredentials`. It asserts exactly which fields are set after each chain.\n   - `source_bytes_error_kinds_and_language_names_round_trip` covers `SourceFile::new` and its `language` builder.\n   - `scoped_text_results_keep_line_numbers_context_and_completeness` covers the `TextQuery` builders `scope`, `context_lines` and `limit`.\n   - `built_in_languages_and_structural_search_use_the_project_scope` covers the `StructuralQuery` builders `scope` and `limit`.\n\n5. **Optional fields start as `None`.**\n   - The config test serializes freshly built configs. `BedrockConfig::new` gives `{\"model\":…}` and `OpenAiConfig::new` gives `{}`. Optional fields are skipped when `None`, so this shows they start unset.\n   - `SourceFile` asserts `language == None`. `TextQuery` and `StructuralQuery` assert `limit == None`.\n   - `Segment::ordinal` is asserted `None` in `outline/selector.rs#mod[tests]/fn[parses_named_anonymous_and_ordinal_segments]`. That test is marked for the Segment requirement rather than this one, which is the owning-chapter arrangement. I do not count it as a gap.\n\n6. **Backend inference options start empty and are added one key at a time.** The config test shows `options` is absent when empty. It then adds `a`, `b`, and `a` again, and asserts the result is `{\"a\":2,\"b\":true}`. The same single-key `option` call is checked for the OpenAI and Ollama configs.\n\n7. **Module list.** The module list in the requirement text is enforced through the inventory and rustdoc comparison. A missing or extra public module fails `public_exports_match_the_appendix`.\n\n**Not assessed here.** Each owning requirement's own tests cover behaviour beyond the shape of the interface. This requirement only asks for that shape.\n\n**Gaps.** None found. No `{fixme}` acknowledgments exist or are needed.",
   "references": "1f6a63bba43a7144abcfe7cd798bf312674830f0f1259db427607f5c6160a0cb",
   "inputs": [
     {
@@ -123,7 +123,7 @@
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "impl[RustdocSignatures]",
-      "hash": "4cc076f46887ae56f3c867313dd02d7605b9c32331c9f639f689b728d378c74f"
+      "hash": "84638892d315f1cad4f0eda61553d5019efe26c24faf136f1ea38b3153b5cd49"
     },
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
@@ -134,6 +134,11 @@
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[documented_exports]",
       "hash": "5d323fdd5a60c5174478925e8daea1735e46e0606243a204860b330fa3cf4de1"
+    },
+    {
+      "file": "md/requirements/sdk/public-api.md",
+      "item": "section[Public%20API%20inventory]",
+      "hash": "76e0f5babf0ee32c932b50a3f2b6a14b5ed07e42711c73e6fc91b27ecfbe5e26"
     },
     {
       "file": "crates/trust-but-verify/src/agent/config.rs",
@@ -162,6 +167,11 @@
     },
     {
       "file": "crates/trust-but-verify/src/sources/public.rs",
+      "item": "struct[SourceFile]",
+      "hash": "b8081f46be9b6e0d5b715bd7264fe932dd3f135db66be081789784b9d000252b"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/public.rs",
       "item": "struct[TextQuery]",
       "hash": "c0aeace89975a62bd121c3fea7d719e5563a897c1d1e3b698795960bbfbcae98"
     },
@@ -172,8 +182,13 @@
     },
     {
       "file": "crates/trust-but-verify/src/outline/selector.rs",
-      "item": "impl[Segment]",
-      "hash": "ff97d0cd6156b486fb668fb7496d075ffe0c1f5f1910994438bae138c778ae58"
+      "item": "struct[Segment]",
+      "hash": "96bb051f3e3c83b96e896113511728fc53849d2988905f8e8b02aa24581783bc"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "struct[Record]",
+      "hash": "08724af1a8b82cd548a99c54665d6edd5e9a071a918d811ab24dc4f18c80012e"
     },
     {
       "file": "crates/trust-but-verify/src/outline/selector.rs",
@@ -181,9 +196,99 @@
       "hash": "04010caca162ae2ce9e3e304263534c861e0c7717b7862ce8fe301d54020c7ff"
     },
     {
-      "file": "md/requirements/sdk/public-api.md",
-      "item": "section[Public%20API%20inventory]",
-      "hash": "76e0f5babf0ee32c932b50a3f2b6a14b5ed07e42711c73e6fc91b27ecfbe5e26"
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "impl[Record<N,%20L>]",
+      "hash": "015d279a9f56f1a13f118e180767baf817c6f10d78e30181be9b0706b1dd2553"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "impl[Record<N,%20L>]/fn[new]",
+      "hash": "f2d753db66bf3416373611462fd7eda4d875896fc42008b0c3aa9566f0f8e741"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/config.rs",
+      "item": "enum[OptionValue]",
+      "hash": "2245be38eb7310756e22ebee29030d2b16cd53de7c2de00b925e40013294d808"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "struct[Fingerprint]",
+      "hash": "8525a648cc94de4b3c90595605e8b74c889473404e79c3ae0f5fd6b81252d9bf"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "struct[Snapshot]",
+      "hash": "e9d6631a26d4e1c45d47715b2e5ec32b86afcc492f9d438ef6ed9bcced605789"
+    },
+    {
+      "file": "crates/trust-but-verify/src/outline/contents.rs",
+      "item": "struct[OutlineId]",
+      "hash": "8686222f488cca5088826e3694cb4914094abc7bbd8615dd3db67781eb239265"
+    },
+    {
+      "file": "crates/trust-but-verify/src/outline/contents.rs",
+      "item": "struct[Outline]",
+      "hash": "10a34dc1ebfc0da3701de66c80f019390e6ab1d86b6b30158061aae99cfb6dba"
+    },
+    {
+      "file": "crates/trust-but-verify/src/outline/contents.rs",
+      "item": "struct[OutlineItem]",
+      "hash": "2737500afc987516d2786e23eb8884bb09f26f263a487f428099a5ebd962e67f"
+    },
+    {
+      "file": "crates/trust-but-verify/src/outline/contents.rs",
+      "item": "struct[OutlineError]",
+      "hash": "b53b4004679b4e43266bb1842d7bcdae6fb16a6467d44a1985c837a1822ab59f"
+    },
+    {
+      "file": "crates/trust-but-verify/src/outline/selector.rs",
+      "item": "struct[SelectorError]",
+      "hash": "f1a9163585f7dfeca60e3cdb1ef85bce90990da3346d6ba11a764c676040c3f8"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/public.rs",
+      "item": "struct[TextMatch]",
+      "hash": "7f00661f683c6f01b8db9f1865e7bedf35375d626145e31660194d13069fe22d"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/public.rs",
+      "item": "struct[StructuralMatch]",
+      "hash": "ec9878a1a9cdc8e43119bc990be4ff86c0e070bf496c1c5f7e777a5551d6c01d"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/public.rs",
+      "item": "struct[SearchResults]",
+      "hash": "7c19ddf66382492f481af4d8fda08ef5ba5de732430a7d3cd488009841d9bba2"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/config.rs",
+      "item": "impl[BedrockCredentials]/fn[session_token]",
+      "hash": "3cfaca28ce1d4a9a9b4c1c3b6c0b5071d38fc84265a97f11dfa5d04f86e35204"
+    },
+    {
+      "file": "crates/trust-but-verify/src/outline/selector.rs",
+      "item": "impl[Segment]/fn[ordinal]",
+      "hash": "e5d3ba4a332a3b4869cce2e307ab0e3b5664e30de312ee001276cb560b5cb467"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/public.rs",
+      "item": "impl[SourceFile]/fn[language]",
+      "hash": "b39391c59934bd889d2a8bd2f24510b69682859e4f29e81c25d3d9c337a32513"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/public.rs",
+      "item": "impl[TextQuery]/fn[scope]",
+      "hash": "6674772f6514dc261421fcd7bfcf71fa19479b00da34089bc3059bc7eb0368fa"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/public.rs",
+      "item": "impl[TextQuery]/fn[limit]",
+      "hash": "bd47496321a587d4e034f7a95ead12a80312a983ed38dfba7a73f5a361be2a0d"
+    },
+    {
+      "file": "crates/trust-but-verify/src/outline/selector.rs",
+      "item": "impl[Segment]/fn[new]",
+      "hash": "23c55eef11c69527b11338bdb0fa3c4317503da14faf629979ee1dbff3a572f3"
     }
   ],
   "format_version": 1,
@@ -508,7 +613,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "fb5bd6aa2dcb4ef1b1136127690cd0ff54bc2f973d322c924519067632825415"
+          "value": "a83168812986ee81f04b367fb19ff3697a70434c893de4c9a8572ee6980e6dfe"
         }
       ]
     },
@@ -543,6 +648,23 @@
         {
           "scheme": "habeas-input-v1",
           "value": "09876d9259ccc78f920a5c1f948cc13b385aeb3d41759e1b7b86caf58d3da77f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "md/requirements/sdk/public-api.md"
+            },
+            "selector": "section[Public%20API%20inventory]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "2e91bdeb5983409c920292c6155a638f87938b2214ccc69d04941abb850cbb51"
         }
       ]
     },
@@ -639,6 +761,23 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/sources/public.rs"
             },
+            "selector": "struct[SourceFile]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "c66c0507ecdde8988f78895af276c5480c5e523f1c180dfbc75ae362b129ef89"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/public.rs"
+            },
             "selector": "struct[TextQuery]"
           }
         },
@@ -673,12 +812,29 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/outline/selector.rs"
             },
-            "selector": "impl[Segment]"
+            "selector": "struct[Segment]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "a91af364079b5a83c8f967d3666af0ddc15ab8f421097dd5295b35705205c6d6"
+          "value": "498289d05f6d73ee635db11278f6db426ea5a12723e8d305634e7258e22003df"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "struct[Record]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "1141a41e9617fbbab2ce8bc55d7d0fa85e4818f52bce5ccab8fd19c958c4795e"
         }
       ]
     },
@@ -705,14 +861,320 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "md/requirements/sdk/public-api.md"
+              "location": "crates/trust-but-verify/src/graph.rs"
             },
-            "selector": "section[Public%20API%20inventory]"
+            "selector": "impl[Record<N,%20L>]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "2e91bdeb5983409c920292c6155a638f87938b2214ccc69d04941abb850cbb51"
+          "value": "5d50dcdf062a145e9e9931199bba2c445c08e09522853d7759f9dd804cf9ccc8"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "impl[Record<N,%20L>]/fn[new]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "3622a4d32fee1389eb1759728bfa52c698ffdf67005d9ae85678896df02f5426"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/config.rs"
+            },
+            "selector": "enum[OptionValue]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "d92817ddeb6c3580a9daa5bd6337ab1a72e1105dc860ffd84b09390556d8d2a0"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "struct[Fingerprint]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "b463f9ba93b1e8fbfc18cf06616a419d482e20d87c9c75248e996bc6d6cd510f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "struct[Snapshot]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "40803e1c36b2472a3774d4db6044eff6b093f524dced72dc9e41388dce72ab81"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/outline/contents.rs"
+            },
+            "selector": "struct[OutlineId]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "7c6bcea49d0c8257ed436967753978a27ed2cc01751694432bbb2f7c3b592595"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/outline/contents.rs"
+            },
+            "selector": "struct[Outline]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "2b115588da5cc1beee3a881646c9ffbc5cf368774b2907ecd6519947a6ea0cf7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/outline/contents.rs"
+            },
+            "selector": "struct[OutlineItem]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "f382b6a2b9219a7a6e4609fc3d6de4000e618165461c89f082eb994fadbd618e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/outline/contents.rs"
+            },
+            "selector": "struct[OutlineError]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "2066ced7c1c4d6e9af7e52af5d5b5a3fa0e31d9a437fd7b17b5cca50da3360c8"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/outline/selector.rs"
+            },
+            "selector": "struct[SelectorError]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "a1a0ed93b7556a0b4732df99c34378a2d168a11043ea896a4272333e5dd2f3bf"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/public.rs"
+            },
+            "selector": "struct[TextMatch]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "d7ae4cd2d60c6ccb672d5eaef00857dc8f0790001819a5bec6215adca88f4d8a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/public.rs"
+            },
+            "selector": "struct[StructuralMatch]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "a5d3d55c794e543d528e6426dddbbc78df85c8144428f75b7058d9c38ac3ea5b"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/public.rs"
+            },
+            "selector": "struct[SearchResults]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "eebf2bf79188c714b8d1a02b896a42daf6bfea3455ba5f838bf8ccb4da437ff7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/config.rs"
+            },
+            "selector": "impl[BedrockCredentials]/fn[session_token]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "9fce820d7e40abb838280f7627ae7939db4cbf6c612b4e5b4a6288e13ff37f2b"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/outline/selector.rs"
+            },
+            "selector": "impl[Segment]/fn[ordinal]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "a85403ee58441bf1c99387d91715eec66984cdc70b6645b70344aafe2a5bafea"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/public.rs"
+            },
+            "selector": "impl[SourceFile]/fn[language]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "9e550f5998439a2db655cf1e4e9be2d516d1617910a7aa65c76b5d2bf6be3d09"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/public.rs"
+            },
+            "selector": "impl[TextQuery]/fn[scope]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "b67b6d20bdb37bf911338771eaa895f10a092f6dbd2258872100c5f8772da7eb"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/public.rs"
+            },
+            "selector": "impl[TextQuery]/fn[limit]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "58f0e3672d711f03d00c3291cdbfcec6c9ea8b47f12d881768bf6c2d1c7d5e0d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/outline/selector.rs"
+            },
+            "selector": "impl[Segment]/fn[new]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "459cab12b63987643e575dc5fe9beb93566f01b577e657324e4c1dc3048f1932"
         }
       ]
     }
