@@ -178,7 +178,7 @@ pub(crate) fn untested_tests(
                 && !tested[*index]
                 && item.attachments.iter().any(|attachment| {
                     attachment.kind == AttachmentKind::Annotation
-                        && TEST_ATTRIBUTE.is_match(&source[attachment.span.clone()])
+                        && TEST_ATTRIBUTE.is_match(&source[attachment.span])
                 })
         })
         .map(|(index, _)| index)

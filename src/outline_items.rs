@@ -47,13 +47,13 @@ impl OutlineItems {
             }
             parents.push(parent);
             ancestors.push(index);
-            spans.push(item.span.clone());
+            spans.push(item.span.start..item.span.end);
             for attachment in &item.attachments {
                 if attachment.kind == AttachmentKind::Comment {
                     let span = &attachment.span;
                     comments.push(Comment {
                         owner: index,
-                        span: span.clone(),
+                        span: span.start..span.end,
                         lines: line(span.start)..=line(span.end.saturating_sub(1).max(span.start)),
                     });
                 }

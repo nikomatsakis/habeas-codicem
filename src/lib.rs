@@ -466,7 +466,7 @@ fn omit_fenced_citation_paragraphs(
         if node.kind != "block" {
             continue;
         }
-        let source = &content[node.span.clone()];
+        let source = &content[node.span];
         let opening = source.lines().next().unwrap_or_default();
         let Some((suffix, length)) = colon_fence(opening) else {
             continue;
@@ -480,7 +480,7 @@ fn omit_fenced_citation_paragraphs(
             && (!name.starts_with(char::is_whitespace)
                 || !valid_name(&full_requirement_name(namespace, name.trim())))
         {
-            literal_definitions.push(node.span.clone());
+            literal_definitions.push(node.span.start..node.span.end);
             continue;
         }
         let body_start =

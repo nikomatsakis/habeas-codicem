@@ -65,14 +65,18 @@ macro_rules! language {
                 &self,
                 source: &str,
                 rule: &serde_json::Map<String, serde_json::Value>,
-            ) -> Result<Vec<std::ops::Range<usize>>, super::OutlineError> {
+            ) -> Result<Vec<super::Span>, super::OutlineError> {
                 if $profile.language.is_some() {
                     if let Some(error) = super::parse_with(&$profile, source)?.diagnostic {
                         return Err(error);
                     }
                     let compiled = crate::structural::StructuralRule::compile($profile.name, rule)
                         .map_err(|message| super::OutlineError { line: 1, message })?;
-                    return Ok(compiled.matches(source));
+                    return Ok(compiled
+                        .matches(source)
+                        .into_iter()
+                        .map(super::Span::from_range)
+                        .collect());
                 }
                 Err(super::unsupported_search(self.name()))
             }

@@ -57,6 +57,40 @@ impl OutlineId {
     }
 }
 
+/// UTF-8 byte boundaries in the original file snapshot, with an exclusive end.
+// {impl}`requirements.sdk.outlines.Span`
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+}
+
+impl Span {
+    pub fn new(start: usize, end: usize) -> Self {
+        Self { start, end }
+    }
+
+    pub(crate) fn from_range(range: Range<usize>) -> Self {
+        Self {
+            start: range.start,
+            end: range.end,
+        }
+    }
+
+    fn range(self) -> Range<usize> {
+        self.start..self.end
+    }
+}
+
+// {impl}`requirements.sdk.outlines.Span`
+impl std::ops::Index<Span> for str {
+    type Output = str;
+    fn index(&self, span: Span) -> &str {
+        &self[span.range()]
+    }
+}
+
 /// Selectable items in a single source snapshot, in source preorder.
 // {impl}`requirements.sdk.outlines.items`
 #[derive(Clone, Debug)]
@@ -86,19 +120,14 @@ impl Outline {
 pub struct OutlineItem {
     pub selector: String,
     pub kind: String,
-    pub span: Range<usize>,
+    pub span: Span,
     pub structural_hash: String,
     pub attachments: Vec<OutlineAttachment>,
 }
 
 impl OutlineItem {
     // {impl}`requirements.sdk.outlines.attachments.empty`
-    pub fn new(
-        selector: String,
-        kind: String,
-        span: Range<usize>,
-        structural_hash: String,
-    ) -> Self {
+    pub fn new(selector: String, kind: String, span: Span, structural_hash: String) -> Self {
         Self {
             selector,
             kind,
@@ -121,11 +150,11 @@ impl OutlineItem {
 #[non_exhaustive]
 pub struct OutlineAttachment {
     pub kind: AttachmentKind,
-    pub span: Range<usize>,
+    pub span: Span,
 }
 
 impl OutlineAttachment {
-    pub fn new(kind: AttachmentKind, span: Range<usize>) -> Self {
+    pub fn new(kind: AttachmentKind, span: Span) -> Self {
         Self { kind, span }
     }
 }
@@ -162,7 +191,7 @@ pub trait OutlineLang: Clone + Send + Sync {
         &self,
         _source: &str,
         _rule: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<Vec<Range<usize>>, OutlineError> {
+    ) -> Result<Vec<Span>, OutlineError> {
         Err(unsupported_search(self.name()))
     }
 }
@@ -326,7 +355,7 @@ impl OutlineContent {
 
     /// Selected source text, including attached source.
     pub fn text(&self) -> &str {
-        &self.snapshot.source[self.item().span.clone()]
+        &self.snapshot.source[self.item().span]
     }
 
     /// Outline of the whole retained file, including when an item is selected.
@@ -364,7 +393,7 @@ impl NodeContents for OutlineContent {
     fn format(&self) -> String {
         self.snapshot
             .redaction
-            .slice(&self.snapshot.source, self.item().span.clone())
+            .slice(&self.snapshot.source, self.item().span.range())
             .into_owned()
     }
 }
@@ -381,7 +410,10 @@ impl Outline {
                 OutlineItem::new(
                     node.selector,
                     node.kind.to_owned(),
-                    node.source_start..node.byte_end,
+                    Span {
+                        start: node.source_start,
+                        end: node.byte_end,
+                    },
                     node.structural_hash,
                 )
             })
@@ -389,13 +421,16 @@ impl Outline {
         for comment in outline.comments {
             items[comment.owner].attachments.push(OutlineAttachment {
                 kind: AttachmentKind::Comment,
-                span: comment.byte_start..comment.byte_end,
+                span: Span {
+                    start: comment.byte_start,
+                    end: comment.byte_end,
+                },
             });
         }
         for (owner, span) in outline.annotations {
             items[owner].attachments.push(OutlineAttachment {
                 kind: AttachmentKind::Annotation,
-                span,
+                span: Span::from_range(span),
             });
         }
         for item in &mut items {
@@ -414,20 +449,20 @@ fn validate_outline(outline: &Outline, source: &str) -> Result<(), OutlineError>
     if outline
         .items
         .first()
-        .is_none_or(|root| !root.selector.is_empty() || root.span != (0..source.len()))
+        .is_none_or(|root| !root.selector.is_empty() || root.span.range() != (0..source.len()))
     {
         return Err(selection_error(
             "outline must begin with its complete file root",
         ));
     }
     for item in &outline.items {
-        if source.get(item.span.clone()).is_none() {
+        if source.get(item.span.range()).is_none() {
             return Err(selection_error("outline item has an invalid source span"));
         }
         if item
             .attachments
             .iter()
-            .any(|attachment| source.get(attachment.span.clone()).is_none())
+            .any(|attachment| source.get(attachment.span.range()).is_none())
         {
             return Err(selection_error("attachment has an invalid source span"));
         }

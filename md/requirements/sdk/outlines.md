@@ -385,10 +385,44 @@ impl OutlineContent {
 }
 ```
 
-Each span uses byte offsets into the supplied source snapshot, with an exclusive
-end and boundaries valid for slicing that text. It includes the item's attached
-source under the language's rules. The root has an empty selector and span
-`0..source.len()`.
+The item's span includes its attached source under the language's rules. The
+root has an empty selector and covers the entire source snapshot.
+:::
+
+:::{req} Span
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+`trust_but_verify::outline::Span` locates text by byte offsets from the start
+of the original source snapshot, including when a caller selects a nested item.
+`start` is inclusive and `end` is exclusive. A valid span satisfies
+`start <= end <= source.len()` and both offsets are UTF-8 character boundaries.
+For `source: &str`, `&source[span]` yields the same slice as
+`&source[span.start..span.end]`, with the same bounds and boundary checks.
+
+```rust,ignore
+#[non_exhaustive]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+}
+
+impl Span {
+    pub fn new(start: usize, end: usize) -> Self;
+}
+```
+
+Trait implementations
+
+```rust,ignore
+impl Clone for Span;
+impl Copy for Span;
+impl Eq for Span;
+impl PartialEq for Span;
+impl Debug for Span;
+impl Index<Span> for str {
+    type Output = str;
+}
+```
 :::
 
 :::{req} Outline
@@ -421,7 +455,8 @@ impl Debug for Outline;
 :::{req} OutlineItem
 :test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
 
-`selector` addresses the item and `kind` describes it. `span` is a half-open byte range in the retained source. `structural_hash` identifies the item’s outline-relevant contents.
+`selector` addresses the item and `kind` describes it. `span` locates the whole item under {cite}`requirements.sdk.outlines.Span`.
+`structural_hash` identifies the item’s outline-relevant contents.
 `attachments` lists the source constructs assigned to this item under
 {cite}`requirements.sdk.outlines.attachments`. `OutlineItem::new` initializes
 the list to empty. `with_attachments` sets it to the supplied list.
@@ -431,7 +466,7 @@ the list to empty. `with_attachments` sets it to the supplied list.
 pub struct OutlineItem {
     pub selector: String,
     pub kind: String,
-    pub span: Range<usize>,
+    pub span: Span,
     pub structural_hash: String,
     pub attachments: Vec<OutlineAttachment>,
 }
@@ -440,7 +475,7 @@ impl OutlineItem {
     pub fn new(
         selector: String,
         kind: String,
-        span: Range<usize>,
+        span: Span,
         structural_hash: String,
     ) -> Self;
     pub fn with_attachments(self, attachments: Vec<OutlineAttachment>) -> Self;
@@ -517,11 +552,11 @@ construct an attachment from these two fields.
 #[non_exhaustive]
 pub struct OutlineAttachment {
     pub kind: AttachmentKind,
-    pub span: Range<usize>,
+    pub span: Span,
 }
 
 impl OutlineAttachment {
-    pub fn new(kind: AttachmentKind, span: Range<usize>) -> Self;
+    pub fn new(kind: AttachmentKind, span: Span) -> Self;
 }
 ```
 
@@ -595,7 +630,7 @@ pub trait OutlineLang:
         &self,
         _source: &str,
         _rule: &Map<String, Value>,
-    ) -> Result<Vec<Range<usize>>, OutlineError> { ... }
+    ) -> Result<Vec<Span>, OutlineError> { ... }
 }
 ```
 :::
@@ -727,7 +762,7 @@ pub trait OutlineLang: Clone + Send + Sync {
         &self,
         source: &str,
         rule: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<Vec<std::ops::Range<usize>>, OutlineError>;
+    ) -> Result<Vec<Span>, OutlineError>;
 
     // ...
 }

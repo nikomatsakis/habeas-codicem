@@ -176,6 +176,10 @@ documented TBV public API.
       - `outline()`
       - `fingerprint_scheme()`
       - `search_structure()`
+    - `struct Span` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.Span) · [Inspect selectable items](outlines.md#inspect-selectable-items)
+      - `start`
+      - `end`
+      - `new()`
     - `mod languages` — [Language-specific rules](outlines.md#language-specific-rules)
       - `struct Css` — [Declaration](sources/css.md#habeas-req-requirements.sdk.sources.css.Css) · [CSS outlines](sources/css.md)
       - `struct Markdown` — [Declaration](sources/markdown.md#habeas-req-requirements.sdk.sources.markdown.Markdown) · [Markdown outlines](sources/markdown.md)

@@ -1,4 +1,4 @@
-use std::{ops::Range, sync::Arc};
+use std::sync::Arc;
 use trust_but_verify::domain::NodeContents;
 use trust_but_verify::outline::Outline;
 use trust_but_verify::outline::OutlineContent;
@@ -6,7 +6,19 @@ use trust_but_verify::outline::OutlineError;
 use trust_but_verify::outline::OutlineId;
 use trust_but_verify::outline::OutlineItem;
 use trust_but_verify::outline::OutlineLang;
+use trust_but_verify::outline::Span;
 use trust_but_verify::outline::languages;
+
+// {test}`requirements.sdk.outlines.Span`
+#[test]
+fn span_indexes_str_at_utf8_byte_boundaries() {
+    let source = "aé🦀";
+    assert_eq!(&source[Span::new(1, 3)], "é");
+    assert_eq!(&source[Span::new(7, 7)], "");
+    for span in [Span::new(2, 3), Span::new(0, 8), Span::new(3, 1)] {
+        assert!(std::panic::catch_unwind(|| &source[span]).is_err());
+    }
+}
 
 // {test}`requirements.sdk.outlines.address_identity`
 #[test]
@@ -59,7 +71,7 @@ fn unknown_extensions_keep_nonblank_lines_and_content_selectors() {
         OutlineContent::from_source("missing.unclaimed", "alpha\n\nbeta\nalpha\n".into()).unwrap();
     assert_eq!(first.id().selector, "");
     assert_eq!(first.outline().items.len(), 4);
-    assert_eq!(first.outline().items[0].span, 0..18);
+    assert_eq!(first.outline().items[0].span, Span::new(0, 18));
     let alpha = &first.outline().items[1];
     assert_eq!(alpha.kind, "line");
     assert_eq!(alpha.selector, first.outline().items[3].selector);
@@ -67,7 +79,7 @@ fn unknown_extensions_keep_nonblank_lines_and_content_selectors() {
     assert_eq!(
         first.outline().items[1..]
             .iter()
-            .map(|item| &first.text()[item.span.clone()])
+            .map(|item| &first.text()[item.span])
             .collect::<Vec<_>>(),
         ["alpha", "beta", "alpha"]
     );
@@ -93,7 +105,7 @@ fn unknown_extensions_keep_nonblank_lines_and_content_selectors() {
     let empty = OutlineContent::from_source("missing", Arc::from("")).unwrap();
     assert_eq!(empty.outline().items.len(), 1);
     assert_eq!(empty.text(), "");
-    assert_eq!(empty.outline().items[0].span, 0..0);
+    assert_eq!(empty.outline().items[0].span, Span::new(0, 0));
 }
 
 // {test}`requirements.sdk.outlines.parser`
@@ -147,7 +159,7 @@ fn missing_file_and_invalid_selections_are_errors() {
 #[derive(Clone)]
 struct CustomLanguage {
     configuration: Arc<String>,
-    span: Range<usize>,
+    span: Span,
 }
 
 impl OutlineLang for CustomLanguage {
@@ -167,13 +179,13 @@ impl OutlineLang for CustomLanguage {
             OutlineItem::new(
                 String::new(),
                 String::new(),
-                0..source.len(),
+                Span::new(0, source.len()),
                 source.to_owned(),
             ),
             OutlineItem::new(
                 "part[selected]".into(),
                 "part".into(),
-                self.span.clone(),
+                self.span,
                 "selected-digest".into(),
             ),
         ]))
@@ -194,7 +206,7 @@ fn explicit_languages_share_configuration_and_retain_their_scheme() {
     let scheme = Arc::new("custom-v2".to_owned());
     let language = CustomLanguage {
         configuration: scheme.clone(),
-        span: 2..7,
+        span: Span::new(2, 7),
     };
     let cloned = language.clone();
     assert!(Arc::ptr_eq(&language.configuration, &cloned.configuration));
@@ -209,7 +221,7 @@ fn explicit_languages_share_configuration_and_retain_their_scheme() {
     for root in [&loaded, &supplied] {
         assert_eq!(root.id().selector, "");
         assert_eq!(root.text(), "a hello z");
-        assert_eq!(root.outline().items[0].span, 0..9);
+        assert_eq!(root.outline().items[0].span, Span::new(0, 9));
         assert_eq!(root.fingerprint().value, "a hello z");
         assert_eq!(root.fingerprint().scheme, "custom-v2");
     }
@@ -227,7 +239,7 @@ fn explicit_languages_share_configuration_and_retain_their_scheme() {
     assert_ne!(supplied.fingerprint(), selected.fingerprint());
     let newer_language = CustomLanguage {
         configuration: Arc::new("custom-v3".into()),
-        span: 2..7,
+        span: Span::new(2, 7),
     };
     let newer =
         OutlineContent::from_source_with(&newer_language, "misleading.rs", "a hello z".into())
@@ -243,7 +255,7 @@ fn explicit_languages_share_configuration_and_retain_their_scheme() {
 fn explicit_language_errors_and_invalid_spans_are_not_plain_text_successes() {
     let language = CustomLanguage {
         configuration: Arc::new("custom-v1".into()),
-        span: 0..1,
+        span: Span::new(0, 1),
     };
     assert!(
         OutlineContent::from_source_with(&language, "file.txt", "fail".into())
@@ -252,12 +264,12 @@ fn explicit_language_errors_and_invalid_spans_are_not_plain_text_successes() {
             .contains("custom parse failure")
     );
     let invalid = CustomLanguage {
-        span: 0..99,
+        span: Span::new(0, 99),
         ..language
     };
     assert!(OutlineContent::from_source_with(&invalid, "file.txt", "short".into()).is_err());
     let middle_of_utf8 = CustomLanguage {
-        span: 1..2,
+        span: Span::new(1, 2),
         ..invalid
     };
     assert!(OutlineContent::from_source_with(&middle_of_utf8, "file.txt", "é".into()).is_err());
@@ -286,10 +298,10 @@ fn ambiguous_items_are_errors_except_for_identical_plain_text_lines() {
             let mut items = vec![OutlineItem::new(
                 String::new(),
                 String::new(),
-                0..source.len(),
+                Span::new(0, source.len()),
                 "root".into(),
             )];
-            for (index, span) in [0..4, 5..9].into_iter().enumerate() {
+            for (index, span) in [Span::new(0, 4), Span::new(5, 9)].into_iter().enumerate() {
                 items.push(OutlineItem::new(
                     format!("{}[same]", self.kind),
                     self.kind.into(),
@@ -378,7 +390,7 @@ fn file_constructors_infer_the_language_and_return_addressed_contents() {
 fn outline_only_languages_report_unsupported_structural_search() {
     let language = CustomLanguage {
         configuration: Arc::new("custom-v1".into()),
-        span: 0..1,
+        span: Span::new(0, 1),
     };
     let rule = serde_json::json!({"rule": {"regex": "."}});
     let rule = rule.as_object().unwrap();
@@ -454,7 +466,7 @@ fn bundled_languages_claim_extensions_and_supply_the_same_public_outline() {
         assert_eq!(inferred.fingerprint(), explicit.fingerprint());
         assert_eq!(inferred.fingerprint_scheme(), language.fingerprint_scheme());
         assert_eq!(inferred.outline().items[0].selector, "");
-        assert_eq!(inferred.outline().items[0].span, 0..source.len());
+        assert_eq!(inferred.outline().items[0].span, Span::new(0, source.len()));
         assert!(inferred.select(expected_selector).is_ok());
         for extension in expected_extensions {
             let filename = format!("not-present.{}", extension.to_uppercase());
@@ -463,7 +475,7 @@ fn bundled_languages_claim_extensions_and_supply_the_same_public_outline() {
             assert!(selected.select(expected_selector).is_ok());
         }
         for item in &inferred.outline().items {
-            assert!(source.get(item.span.clone()).is_some());
+            assert!(source.get(item.span.start..item.span.end).is_some());
         }
         let rule = serde_json::json!({"rule": {"regex": "."}});
         let ranges = language
@@ -473,7 +485,7 @@ fn bundled_languages_claim_extensions_and_supply_the_same_public_outline() {
         assert!(
             ranges
                 .iter()
-                .all(|range| source.get(range.clone()).is_some())
+                .all(|range| source.get(range.start..range.end).is_some())
         );
     }
     check(
@@ -548,6 +560,7 @@ fn bundled_languages_claim_extensions_and_supply_the_same_public_outline() {
 // {test}`requirements.sdk.outlines.items`
 // {test}`requirements.sdk.outlines.selection`
 // {test}`requirements.sdk.sources.plain-text.items`
+// {test}`requirements.sdk.outlines.Span`
 #[test]
 fn unicode_spans_use_bytes_and_whitespace_only_lines_create_no_items() {
     let source = "é\n \t\n🦀\n";
@@ -557,14 +570,18 @@ fn unicode_spans_use_bytes_and_whitespace_only_lines_create_no_items() {
             .outline()
             .items
             .iter()
-            .map(|item| item.span.clone())
+            .map(|item| item.span)
             .collect::<Vec<_>>(),
-        [0..source.len(), 0..2, 6..10]
+        [
+            Span::new(0, source.len()),
+            Span::new(0, 2),
+            Span::new(6, 10)
+        ]
     );
     assert_eq!(contents.outline().items[0].selector, "");
     for (item, text) in contents.outline().items[1..].iter().zip(["é", "🦀"]) {
         assert_eq!(item.kind, "line");
-        assert_eq!(&source[item.span.clone()], text);
+        assert_eq!(&source[item.span], text);
         assert_eq!(contents.select(&item.selector).unwrap().text(), text);
     }
 }
@@ -627,14 +644,14 @@ fn markdown_heading_levels_resolve_encoded_duplicates_and_anonymous_items() {
     );
     let selected = contents.select(&block.selector).unwrap();
     assert_eq!(selected.text().trim_end(), ":::{note}\ninside\n:::");
-    assert_eq!(selected.text(), &source[block.span.clone()]);
-    assert_eq!(contents.outline().items[0].span, 0..source.len());
+    assert_eq!(selected.text(), &source[block.span]);
+    assert_eq!(contents.outline().items[0].span, Span::new(0, source.len()));
     assert!(
         contents
             .outline()
             .items
             .iter()
-            .all(|item| source.get(item.span.clone()).is_some())
+            .all(|item| source.get(item.span.start..item.span.end).is_some())
     );
 }
 
@@ -766,7 +783,7 @@ fn multiline_setext_sections_keep_original_source_spans_and_skip_code() {
         .find(|item| item.selector == selected.id().selector)
         .unwrap();
     assert_eq!(item.span.start, source.find("Títle").unwrap());
-    assert_eq!(&source[item.span.clone()], selected.text());
+    assert_eq!(&source[item.span], selected.text());
 }
 
 // {test}`requirements.sdk.sources.markdown.sections`
@@ -796,7 +813,7 @@ fn setext_sections_inside_directives_lists_and_quotes_retain_container_spans() {
         let selected = contents.select(&item.selector).unwrap();
         assert!(selected.text().contains(underline), "{source:?}");
         assert!(selected.text().contains("body"), "{source:?}");
-        assert_eq!(selected.text(), &source[item.span.clone()]);
+        assert_eq!(selected.text(), &source[item.span]);
     }
 }
 
@@ -811,7 +828,7 @@ fn bundled_structural_search_returns_matches_and_rejects_bad_rules_and_source() 
     assert_eq!(
         ranges
             .iter()
-            .map(|range| &source[range.clone()])
+            .map(|range| &source[*range])
             .collect::<Vec<_>>(),
         ["fn first() {}", "fn second() {}"]
     );
@@ -864,7 +881,7 @@ fn rust_items_attach_documentation_and_preserve_structural_hashes() {
             "fn[last]"
         ]
     );
-    assert_eq!(contents.outline().items[0].span, 0..source.len());
+    assert_eq!(contents.outline().items[0].span, Span::new(0, source.len()));
     assert_eq!(
         contents
             .outline()
@@ -876,14 +893,14 @@ fn rust_items_attach_documentation_and_preserve_structural_hashes() {
     );
     for item in &contents.outline().items {
         let selected = contents.select(&item.selector).unwrap();
-        assert_eq!(selected.text(), &source[item.span.clone()]);
+        assert_eq!(selected.text(), &source[item.span]);
         assert_eq!(selected.structural_hash(), item.structural_hash);
     }
     let function = contents.select("mod[auth]/fn[check]").unwrap();
     assert!(function.text().starts_with("/// Check tokens."));
     assert!(function.text().contains("#[inline]"));
     assert!(std::ptr::eq(function.outline(), contents.outline()));
-    let span = contents.outline().items[2].span.clone();
+    let span = contents.outline().items[2].span;
     assert_eq!(&source[span.clone()], function.text());
     assert_eq!(span.start, source.find("/// Check tokens.").unwrap());
     assert!(source[..span.end].ends_with("fn check() { allow(); }"));
@@ -920,7 +937,7 @@ fn recovered_outlines_keep_the_diagnostic_and_intact_items() {
         .iter()
         .flat_map(|item| &item.attachments)
         .filter(|attachment| attachment.kind == AttachmentKind::Comment)
-        .map(|attachment| &source[attachment.span.clone()])
+        .map(|attachment| &source[attachment.span])
         .collect();
     assert_eq!(comments, ["// intact comment"]);
     assert_eq!(
@@ -1142,7 +1159,7 @@ fn yaml_selection_ends_before_trailing_comment_tokens() {
         .unwrap();
     let selected = root.select("pair[key]").unwrap();
     assert_eq!(selected.text(), "key: value");
-    assert_eq!(root.outline().items[1].span, 0..10);
+    assert_eq!(root.outline().items[1].span, Span::new(0, 10));
     let nested = "a:\n  b: 1\n# before next\nd: 2\n";
     let root = OutlineContent::from_source("nested.yml", nested.into()).unwrap();
     assert_eq!(root.select("pair[a]").unwrap().text(), "a:\n  b: 1");
@@ -1298,7 +1315,7 @@ fn rust_attachments_keep_the_owner_kind_and_original_bytes() {
         items[index]
             .attachments
             .iter()
-            .map(|a| (a.kind.clone(), source[a.span.clone()].trim_end()))
+            .map(|a| (a.kind.clone(), source[a.span].trim_end()))
             .collect::<Vec<_>>()
     };
     assert_eq!(records(0), [(Comment, "//! file docs")]);
@@ -1407,7 +1424,7 @@ fn bundled_languages_classify_only_their_attachment_syntax() {
         assert_eq!(
             found
                 .iter()
-                .map(|a| (a.kind.clone(), source[a.span.clone()].trim_end()))
+                .map(|a| (a.kind.clone(), source[a.span].trim_end()))
                 .collect::<Vec<_>>(),
             expected,
             "{path}"
@@ -1420,7 +1437,7 @@ fn bundled_languages_classify_only_their_attachment_syntax() {
                 .find(|item| item.selector == "class[C]")
                 .unwrap();
             assert_eq!(
-                source[class.attachments[0].span.clone()].trim_end(),
+                source[class.attachments[0].span].trim_end(),
                 "@pkg.decorate(\n  1\n)"
             );
         }
@@ -1451,7 +1468,7 @@ fn custom_attachment_spans_are_checked_against_the_original_snapshot() {
     use trust_but_verify::outline::{AttachmentKind, OutlineAttachment};
     #[derive(Clone)]
     struct Custom {
-        span: Range<usize>,
+        span: Span,
     }
     impl OutlineLang for Custom {
         fn name(&self) -> &str {
@@ -1464,21 +1481,24 @@ fn custom_attachment_spans_are_checked_against_the_original_snapshot() {
             "custom-v1"
         }
         fn outline(&self, source: &str) -> Result<Outline, OutlineError> {
-            let marker =
-                OutlineAttachment::new(AttachmentKind::Other("marker".into()), self.span.clone());
-            let item =
-                OutlineItem::new(String::new(), String::new(), 0..source.len(), "root".into())
-                    .with_attachments(vec![marker]);
+            let marker = OutlineAttachment::new(AttachmentKind::Other("marker".into()), self.span);
+            let item = OutlineItem::new(
+                String::new(),
+                String::new(),
+                Span::new(0, source.len()),
+                "root".into(),
+            )
+            .with_attachments(vec![marker]);
             Ok(Outline::new(vec![item]))
         }
     }
     let load = |span| OutlineContent::from_source_with(&Custom { span }, "one.custom", "é".into());
-    let snapshot = load(0..2).unwrap();
+    let snapshot = load(Span::new(0, 2)).unwrap();
     let attachment = &snapshot.outline().items[0].attachments[0];
     assert_eq!(attachment.kind, AttachmentKind::Other("marker".into()));
-    assert_eq!(&snapshot.text()[attachment.span.clone()], "é");
-    assert!(load(1..2).is_err());
-    assert!(load(0..3).is_err());
+    assert_eq!(&snapshot.text()[attachment.span], "é");
+    assert!(load(Span::new(1, 2)).is_err());
+    assert!(load(Span::new(0, 3)).is_err());
 }
 
 // {test}`requirements.sdk.outlines.Outline`
@@ -1486,13 +1506,21 @@ fn custom_attachment_spans_are_checked_against_the_original_snapshot() {
 #[test]
 fn outline_constructors_preserve_fields_and_replace_attachments() {
     use trust_but_verify::outline::{AttachmentKind, OutlineAttachment};
-    let item = OutlineItem::new("fn[f]".into(), "fn".into(), 2..12, "digest".into());
+    let item = OutlineItem::new(
+        "fn[f]".into(),
+        "fn".into(),
+        Span::new(2, 12),
+        "digest".into(),
+    );
     assert!(item.attachments.is_empty());
     let item = item
-        .with_attachments(vec![OutlineAttachment::new(AttachmentKind::Comment, 2..4)])
+        .with_attachments(vec![OutlineAttachment::new(
+            AttachmentKind::Comment,
+            Span::new(2, 4),
+        )])
         .with_attachments(vec![OutlineAttachment::new(
             AttachmentKind::Annotation,
-            4..6,
+            Span::new(4, 6),
         )]);
     let outline = Outline::new(vec![item.clone()]);
     assert!(outline.diagnostic.is_none());
@@ -1505,14 +1533,14 @@ fn outline_constructors_preserve_fields_and_replace_attachments() {
         (
             &*item.selector,
             &*item.kind,
-            item.span.clone(),
+            item.span,
             &*item.structural_hash
         ),
-        ("fn[f]", "fn", 2..12, "digest")
+        ("fn[f]", "fn", Span::new(2, 12), "digest")
     );
     let [attachment] = item.attachments.as_slice() else {
         panic!("{item:?}")
     };
     assert_eq!(attachment.kind, AttachmentKind::Annotation);
-    assert_eq!(attachment.span, 4..6);
+    assert_eq!(attachment.span, Span::new(4, 6));
 }
