@@ -1,7 +1,7 @@
 {
   "requirement": "Finishing a verification includes every successful tracked node read in its\n`Fingerprinted`, whether ordinary code or a model tool requested it. Each observation\ncontains the node identity and the fingerprint of the contents actually supplied.\n\nA failed read returns an error without inventing a successful observation.\nRepeating an identical observation adds no information. Reading the same\nidentity with two different fingerprints preserves both observations.",
   "determination": true,
-  "rationale": "Obligations in `requirements.sdk.graph.evidence.node_inputs`, and the marked tests that cover each:\n\n1. **Finishing includes every successful tracked read, whether ordinary code or a model tool requested it.**\n   - `graph/validation_tests.rs#fn[snapshots_record_exact_reads_and_retain_distinct_versions]` reads directly with `read` and `read_snapshot`. It asserts that `finish` returns a record whose `dependencies` equal the observed list.\n   - `graph/validation_tests.rs#fn[later_lighter_agent_calls_preserve_the_contexts_existing_trace]` mixes direct reads with reads made through `ask().contents_of_current_node()`. It asserts the retained order and that `finish` returns the same list.\n   - `agent/tests.rs#fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]` has the `read_node` tool read node 2. It asserts a `Dependency::Node(Node(2), fingerprint)` entry and that `record.dependencies == observations`.\n   - `graph/validation_tests.rs#fn[concurrent_single_node_validations_keep_separate_traces]` and `tests/contracts.rs#fn[changing_one_criteria_input_does_not_invalidate_another]` check this through `verify`, `store_evidence` and `load_evidence`. The stored dependencies equal the node reads.\n\n2. **Each observation holds the node identity and the fingerprint of the contents actually supplied.**\n   - `direct_reads_return_complete_unicode_contents_and_snapshots` checks fingerprints for empty and large multi-byte contents. It also checks that the observation is unchanged after the node is replaced.\n   - `graph_read_pages_retain_the_prepared_snapshot_after_contents_change` has the node change after the read and while paging. It asserts the fingerprint value equals the original contents.\n   - `cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input` asserts the exact delivered selection as the recorded value, not the current graph contents.\n\n3. **A failed read returns an error and adds no observation.**\n   - Direct path: `snapshots_record_exact_reads_and_retain_distinct_versions` asserts `read(&2).is_err()` and that node 2 is absent from the dependencies. `direct_reads_return_complete_unicode_contents_and_snapshots` asserts `read(&9)` returns `\"missing\"` and that the dependencies stay empty.\n   - Tool path: in `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery`, a `read_node` call whose result is never delivered leaves `dependencies()` empty. The source-read test asserts that a missing selector adds no input, and the unmarked `node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents` also checks the error case.\n\n4. **Identical observations add no information, and different fingerprints for one identity are both preserved.**\n   - `snapshots_record_exact_reads_and_retain_distinct_versions` reads node 1 as \"before\" twice, once with `read` and once with `read_snapshot`. It then reads \"after\". The dependencies are exactly `[Node(1, before), Node(1, after)]`, so duplicates are collapsed and both distinct versions are kept in order.\n   - `earlier` is still `[Node(1, before)]` after the later reads, so a list returned earlier is unchanged by later reads.\n\nI found no scenario in the requirement that a violating implementation could get past these assertions. The tests are marked with `requirements.sdk.graph.evidence.node_inputs`.",
+  "rationale": "The marked tests cover every obligation of `requirements.sdk.graph.evidence.node_inputs`. I found no adequacy gap.\n\n**Obligations and the tests that check them**\n\n1. **Finishing includes every successful tracked node read, whether code or a model tool requested it.**\n   - Ordinary code: `graph/validation_tests.rs#fn[snapshots_record_exact_reads_and_retain_distinct_versions]` asserts that `finish` returns a record whose `dependencies` equal the observed reads.\n   - Ordinary code: `graph/validation_tests.rs#fn[later_lighter_agent_calls_preserve_the_contexts_existing_trace]` asserts that direct reads and agent reads end up in `finish(...).dependencies` in order.\n   - Concurrent runs: `graph/validation_tests.rs#fn[concurrent_single_node_validations_keep_separate_traces]` asserts the stored records' dependencies for three concurrent validations.\n   - Model tool: `agent/tests.rs#fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]` has a `read_node` tool read produce a `Dependency::Node` that appears in the `finish` record.\n   - Model tool: the source-tool test `agent/tests.rs#fn[cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input]` produces a `Dependency::Node` in the same way.\n   - Stored evidence: `tests/contracts.rs#fn[changing_one_criteria_input_does_not_invalidate_another]` asserts that the stored evidence's `dependencies` equal the single `Dependency::Node` for the node the criterion read, with its fingerprint.\n\n2. **Each observation holds the node identity and the fingerprint of the contents actually supplied.**\n   - `graph/validation_tests.rs#fn[direct_reads_return_complete_unicode_contents_and_snapshots]` checks empty and large multi-byte contents. It asserts that the fingerprint equals `fp(original)` even after the backing contents are replaced.\n   - `agent/tests.rs#fn[graph_read_pages_retain_the_prepared_snapshot_after_contents_change]` changes the contents mid-conversation. It asserts that the recorded fingerprint value is the original, and that the paged text delivered to the model reassembles to the original.\n   - The 18,000-character page test asserts the exact fingerprint value.\n   - The source-tool test asserts the exact scheme and value of the selected content, not the different current source.\n\n3. **A failed read returns an error and invents no observation.**\n   - Ordinary code: `read(&2)` and `failed.read(&9)` both return errors, and the failing context's `dependencies()` stays empty.\n   - Model tool: `agent/tests.rs#fn[cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input]` includes a failing `read_source` with selector `fn[missing]`. It asserts that the trace is exactly one `Dependency::Node`.\n   - The test `node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents` also covers a failing `read_node` that records nothing. It lacks a `{test}` reference to `node_inputs`, but its scenario is also covered by the marked tests above.\n   - Delivery failure: `agent/tests.rs#fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]` has a tool read followed by a provider failure and asserts empty dependencies. That matches the delivery semantics of `read_node.inputs`, which records a tool read only when the provider responds successfully.\n\n4. **Identical repeated observations add no information.** In `snapshots_record_exact_reads_and_retain_distinct_versions`, the same node is read twice with the identical fingerprint, once with `read` and once with `read_snapshot`. The backing graph shows three reads of node 1 plus one of node 2. The trace holds a single `before` entry.\n\n5. **The same identity with two different fingerprints keeps both.** The same test changes the node from `before` to `after` and asserts `[Node(1, before), Node(1, after)]`. It also asserts that an earlier copy of the trace is unchanged, and that the finished record keeps both entries.\n\n**Result:** the assertions check exact vectors, fingerprints and ordering, not just execution. The tests cover both the ordinary-code and the model-tool modes. The unmarked formatter-failure test does not leave a gap.",
   "references": "d7e90a275e8a892fa9068c374ac7038e3a4052c816af709249c347b741d7d53b",
   "inputs": [
     {
@@ -24,7 +24,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]",
-      "hash": "5c9258a37cadb9155c0b087f8c8783a91e13d006342b98110f6f8ca03be52ba2"
+      "hash": "498cecc4bd7050068780173bb72c04fea2cdef72fccbc0e391520546949e86de"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -34,7 +34,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[graph_read_pages_retain_the_prepared_snapshot_after_contents_change]",
-      "hash": "a7d54e9019477a4f744b57a495ff107597f0e75c3033942fd41587db28a6ad71"
+      "hash": "066f5b9034c3f74c9c0b89be248e752d169fba0ed16269075d7edf9428de1fde"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
@@ -64,27 +64,17 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents]",
-      "hash": "f4bc7c66ea52782cefc6022f293fedc4fc96cea7d556bdb06bc06cf2fa227941"
+      "hash": "6135f22e245b94991aabe1d9d4bda5815cf40792f8e0f13bbf8acdcc6f00d859"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "impl[Script/CompletionProvider]",
-      "hash": "9ea0681b6735ecfccdc6e48a5fad5d2b51f4bb16ef354dcd6b62e6e48d60a26b"
+      "item": "impl[Memory/Domain]/fn[node_content]",
+      "hash": "fa846ed496bfbbf139d6226555032c70dc773fba2c5f494680f06576f7c13c10"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/tools.rs",
-      "item": "impl[ToolAgent<P,%20T>/Agent<D>]/fn[run]",
-      "hash": "879c341bc75b6c461057076497f9acc8d606f8f9f99a6200871d409da3ee219d"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tools.rs",
-      "item": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[dispatch]",
-      "hash": "104fd5a20dd3f9fbd585ffe05fd0d12053dbba1c62a990fbacc215d18a0523df"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tools.rs",
-      "item": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[delivered]",
-      "hash": "c5fc2757743fbf411ad3c510ec80c2bbb1e1a1dc1fde6f2ccfaa234fd476a8ef"
+      "file": "md/requirements/sdk/graph/validation-context.md",
+      "item": "section[Validation%20context]/section[Reading%20the%20contents%20of%20a%20graph%20node]/block@a9af01adc84d",
+      "hash": "31a49cf62dcf63518fdcb24974dd4366eab6bc205b0230682f94fe84e1e527d8"
     }
   ],
   "format_version": 1,
@@ -137,7 +127,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "4bebe757f3807a5c6a75fc5ce00714a20c9984ce82d26d7b6fadecd03c3b87f9"
+          "value": "fb22cdece2bc30197abd5fb4384dab4d846eeafba7b775cc4a9a7284b51e5d49"
         }
       ]
     },
@@ -171,7 +161,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "8689077035362e104821ce08f2bec4723ed42ffdff77e0e529ed2ce9c8cf5974"
+          "value": "73200c04bed3a08680cf37ed3b8a122ac26874c53e7ca43409216d6f1d06f061"
         }
       ]
     },
@@ -273,7 +263,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "d4351cbc0ad2caf4dca87b22a4e502d212954e30e65ca0d63aa6b7158ba15e4d"
+          "value": "923673a90cad46cec5c4acec59d78d0c7ff799140fe9e99fed5f71000c665d37"
         }
       ]
     },
@@ -285,12 +275,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
-            "selector": "impl[Script/CompletionProvider]"
+            "selector": "impl[Memory/Domain]/fn[node_content]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "6c728100c67a932e09eb0209d35e97b1ea195374ecdde9acc5795a45def52096"
+          "value": "ac6099149e75425339105c45bb0547b0455771aacd182fe2bf295ef681416234"
         }
       ]
     },
@@ -300,48 +290,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tools.rs"
+              "location": "md/requirements/sdk/graph/validation-context.md"
             },
-            "selector": "impl[ToolAgent<P,%20T>/Agent<D>]/fn[run]"
+            "selector": "section[Validation%20context]/section[Reading%20the%20contents%20of%20a%20graph%20node]/block@a9af01adc84d"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "370fa655c64e0ca82f185536e602af3ef45d11abe0579d6b786dbe03e3ff2fa4"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tools.rs"
-            },
-            "selector": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[dispatch]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "e56a8eff0659f17e18210e758d1639b52748b9f7a7df5aa0cb91adc8137142b6"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tools.rs"
-            },
-            "selector": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[delivered]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "e00b41a7cc3cdd5814748017129c708affd2eee04dcb4a0a7a00ca31931ce82e"
+          "value": "7ba072f75d070e115b604272ccf3d901c1c6de867022d1d6544cf05f7d945044"
         }
       ]
     }

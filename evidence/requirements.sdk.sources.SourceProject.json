@@ -1,8 +1,8 @@
 {
-  "requirement": "`SourceProject` supplies the project files and domain mapping for a single agent request.\n\n```rust,ignore\npub struct SourceProject<D: Domain> { /* private fields */ }\n\nimpl<D: SourceNodes> SourceProject<D> {\n    pub fn new(domain: D, sources: Sources) -> Self;\n}\n```",
+  "requirement": "`SourceProject` supplies the project files and domain mapping for a single agent request.\n\n```rust,ignore\npub struct SourceProject<D: Domain> { /* private fields */ }\n\nimpl<D: Domain> SourceProject<D> {\n    pub fn new(domain: D, sources: Sources) -> Self;\n    pub async fn search_text(&self, query: &TextQuery,) -> Result<SearchResults<SearchHit<D::NodeId>>, SourceError>;\n    pub async fn search_structure(&self, query: &StructuralQuery,) -> Result<SearchResults<SearchHit<D::NodeId>>, SourceError>;\n}\n```",
   "determination": true,
-  "rationale": "The requirement `requirements.sdk.sources.SourceProject` has two testable obligations. `SourceProject::new(domain, sources)` must supply the project files, and it must supply the domain mapping, for a single agent request.\n\nThe only marked test is `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]`. It builds a `TestDomain` whose `project_sources` calls `SourceProject::new(self.clone(), Sources::new(dir))`. A mock OpenAI server then drives a real agent through the resulting tools. The test covers both obligations:\n\n- **Project files:**\n  - `list_sources` with prefix `visible` returns exactly `[\"visible/selected.txt\"]`. This excludes the gitignored file and the sibling `visible-old`.\n  - `read_source` of the ignored file reports it as excluded.\n  - `search_text` over the supplied directory returns three matches: `alpha.txt`, `beta.txt` and `unused.txt`.\n  - Dependencies are recorded for the files whose tags are passed to `finish_search`.\n- **Domain mapping:**\n  - `read_source` on `visible/selected.txt` returns a node whose path is `visible/selected.txt` and whose text is the domain's \"a source snapshot\". It does not return the \"selected disk contents\" from disk.\n  - The domain's mapping calls are recorded and asserted to be exactly `OutlineId(\"visible/selected.txt\")`.\n  - The node dependencies for `alpha.txt` and `beta.txt` match the expected fingerprints.\n- **Single agent request:** the test runs `validation::verify` twice. After each run it clears the domain's recorded state, and it checks the tool list and tool outputs for each run (request offsets 0 and 15). This shows each execution gets its own project and mapping.\n\nI read the implementation, `sources/public.rs#impl[SourceProject<D>]`, to confirm that the constructor stores both the `Sources` and the domain's `source_node` function. It does, and the test exercises both. There are no conditionals in the constructor that the test would miss. The `{fixme}` acknowledgments list is empty, and I found no gaps.",
-  "references": "26c2077ee364b0332f8b16743c083383449eb2c45452e73a28561513a8104617",
+  "rationale": "The requirement `requirements.sdk.sources.SourceProject` states only that the type supplies project files and the domain mapping for one agent request. It gives a public surface of `new`, `search_text` and `search_structure`. It specifies no error cases or boundary behavior beyond that. The implementation is `struct[SourceProject]` in `sources/public.rs`, plus `impl[SourceProject<D>]` there and in `sources/hits.rs`. I read the `impl` blocks only to confirm the surface and what the tests exercise.\n\nMapping obligations to tests:\n- **`new(domain, sources)`**: `search_groups_exact_occurrences_and_records_the_selected_declaration` builds the project with `ProjectSources::new(project(\"\"), Sources::new(root.path()))`. Its later assertions would fail if the domain or sources were not stored. `configured_agent_uses_domain_source_tools_in_independent_executions` reaches the project through the domain's `project_sources` path.\n- **`search_text`**:\n  - `search_groups_exact_occurrences_and_records_the_selected_declaration` calls `search_text(&TextQuery::new(\"hit\"))` on a real directory.\n  - It asserts exact node ids (`code.rs#const[A]` and `code.rs#const[B]`), spans (including the multibyte `é` offset), and the matched text.\n  - It then drives the agent tool and checks the domain-mapped nodes `n0` and `n1`.\n  - It reads a node and finishes the search, asserting the recorded dependency.\n- **`search_structure`**: `structural_tags_select_only_the_original_enclosing_item` calls `search_structure` with a Rust rule on a file with two functions. It asserts node ids `code.rs#fn[one]` and `code.rs#fn[two]`, spans, and text. It also checks the `limit` behavior (`complete == false`). Further assertions cover the dependency fingerprint of the selected item and the domain `reads` count.\n- **Project files**: the project's source listing is exercised in all three tests. The configured-agent test adds `.gitignore` filtering and a path-prefix check (`visible` against `visible-old`). It also checks that tools return the domain's mapped node content (`a source snapshot`) rather than disk contents, across two independent executions.\n- **Domain mapping**: the `n0`/`n1` ids come from `domain.source_node`. The assertions on `Dependency::Node` with domain-supplied fingerprints show the mapping is applied.\n\nAll three tests carry `{test}` references to the subject. I found no obligation in the text, and no named boundary or failure case, that lacks a test with assertions.",
+  "references": "61d817e0045de305ffb7314d4e7fc908903dc4a8a5f601aee33454564d2e45e0",
   "inputs": [
     {
       "requirements": "requirements.sdk.sources.SourceProject",
@@ -17,8 +17,10 @@
         "```rust,ignore",
         "pub struct SourceProject<D: Domain> { /* private fields */ }",
         "",
-        "impl<D: SourceNodes> SourceProject<D> {",
+        "impl<D: Domain> SourceProject<D> {",
         "    pub fn new(domain: D, sources: Sources) -> Self;",
+        "    pub async fn search_text(&self, query: &TextQuery,) -> Result<SearchResults<SearchHit<D::NodeId>>, SourceError>;",
+        "    pub async fn search_structure(&self, query: &StructuralQuery,) -> Result<SearchResults<SearchHit<D::NodeId>>, SourceError>;",
         "}",
         "```",
         ":::"
@@ -27,22 +29,32 @@
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]",
-      "hash": "dfdd8a5c7b1b09bd1f0aa14ffe22d1ffa6fbf20d3405b081be4920b12fd0be84"
+      "hash": "3935a069f4aabaece83dabc80e9611f38dee96e623e3ec8b08da353628c63959"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]",
+      "hash": "da52e5d29445d81df850442cffb8ee43ae843ea49b40bff56c1870b83581efef"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "mod[tests]/fn[search_groups_exact_occurrences_and_records_the_selected_declaration]",
+      "hash": "b6b3b6ec55facc5c6d6c143fc92ec6447a2b2a17e88d99ed3b72537be581f780"
     },
     {
       "file": "crates/trust-but-verify/src/sources/public.rs",
       "item": "impl[SourceProject<D>]",
-      "hash": "521be1d434db2598d2084bebeeb2f00c39cca79086dd12f30c68a1aac8327211"
+      "hash": "c22f214481aaa0d58a6562bfbac47b1b1cf185e527a60fd05a0245b8d8c734a6"
     },
     {
-      "file": "crates/trust-but-verify/src/sources/public.rs",
-      "item": "struct[SourceProject]",
-      "hash": "44d5eda2e911e991d1d86d4d33edf4492c71da80a2145cc9e61ce975c0b0ce6c"
+      "file": "crates/trust-but-verify/src/sources/hits.rs",
+      "item": "impl[SourceProject<D>]",
+      "hash": "0c1c8715f3b46dc4eac4a3d6e89917f8db8142601844279d5b10857eea0e55e9"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/configured.rs",
-      "item": "mod[tests]/impl[TestDomain/Domain]/fn[project_sources]",
-      "hash": "7c258e0e1b2d8e6a71975a799934b35180109e09fa2f2bb957b71f9818f2fc74"
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "use@023d674cb663",
+      "hash": "023d674cb663b91fc1d30118fcac2f1c4716762e80c9e08f45a6d8d1b3d1a586"
     }
   ],
   "format_version": 1,
@@ -55,7 +67,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "26c2077ee364b0332f8b16743c083383449eb2c45452e73a28561513a8104617"
+          "value": "61d817e0045de305ffb7314d4e7fc908903dc4a8a5f601aee33454564d2e45e0"
         }
       ]
     },
@@ -67,7 +79,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "2e32f754729228cef377e04a8489beb62e3f5fcbbbaff92b4b73393ccaf573dd"
+          "value": "e5bb5b88a8d263f7a6598d6a7a8093d403dfe7ce521f435faa34f85131adb236"
         }
       ]
     },
@@ -78,7 +90,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "5b71fa9988410cfbaa698b06b4b4218d6722bac56f78f481bd7ce0c89aa440e6"
+          "value": "263bafeb06dd9aa2362c33ff9597c828c8c79a2f432773e90c98381eaf6235d9"
         }
       ]
     },
@@ -95,7 +107,41 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "7de09034f4b578217d5910b3a50d3adc4b8a14bb5caf4e126925822af51898e4"
+          "value": "05e4b55913ed5198b780e5ae08fe7592cf79b6501711712dac65ba2a55caf7be"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "65764f2329ebafcd7cb42ec1b1263a2bb3ffcb018e1c69474a1a7b051df4b852"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "mod[tests]/fn[search_groups_exact_occurrences_and_records_the_selected_declaration]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "e84c1773151e437814b4e8855d9b8b08b457a3e16a2a541f1b66563fea9e1100"
         }
       ]
     },
@@ -112,7 +158,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f5518495cbd5fb925f17a91b372d428094a112cc705c563c3e676831f3e003a2"
+          "value": "ed9022010f02ad833d0d2d96cc034d30b9819b6ef41ac71bc43ddd3b563bcfac"
         }
       ]
     },
@@ -122,14 +168,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/sources/public.rs"
+              "location": "crates/trust-but-verify/src/sources/hits.rs"
             },
-            "selector": "struct[SourceProject]"
+            "selector": "impl[SourceProject<D>]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9f0206ddf212ddb6194e2addecfe69f88c78c5320ec3ddb5fa25c82873d085a1"
+          "value": "7abd127915b115c16373819cbc13b3bd63a79b090ae97d594abd4b83702d3e23"
         }
       ]
     },
@@ -139,14 +185,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/configured.rs"
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
             },
-            "selector": "mod[tests]/impl[TestDomain/Domain]/fn[project_sources]"
+            "selector": "use@023d674cb663"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "edfed7c6a641f69fb1791934a260ff72e3b9a5f212299820609738dd3a32860a"
+          "value": "34044f9cbb52cab455634554eedbc93c0b9c3362230b8fd96ad4aa357200685f"
         }
       ]
     }

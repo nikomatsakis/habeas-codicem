@@ -1,8 +1,8 @@
 {
   "requirement": "The agent accounts for each delivered `search_text` result under\n{cite}`requirements.sdk.graph.search.finish_search.inputs`. Evidence can depend\non selected excerpts. The set of matching identities is untracked.",
   "determination": true,
-  "rationale": "The tests adequately check `requirements.sdk.graph.search.search_text.inputs`.\n\n**Obligations derived from the text**\n1. Each delivered `search_text` result must be accounted for through `finish_search`, as `finish_search.inputs` defines it.\n2. Evidence can depend on the excerpts the agent selects. Each selected tag maps to its match's node and the snapshot fingerprint taken when the excerpt was delivered.\n3. The set of matching identities is untracked. `search_text` itself adds no dependency, and unselected excerpts add none.\n\n**Coverage by obligation**\n- **Accounting for each delivered result.**\n  - `crates/trust-but-verify/src/agent/project_sources.rs#mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]` checks that `outstanding_searches()` lists the delivered `search_id`. It stays listed when a different search is finished, and the list is empty once all searches are finished.\n  - The same test covers follow-up pages. A page from `get_next_page` carries its own `search_id`, so two searches are outstanding until both are finished.\n  - `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` covers this end to end. After two `search_text` calls, a prose reply is rejected with \"Call finish_search for every open search_id\", and the message names both distinct ids. Each search is then closed, and the test runs twice as independent executions.\n- **Selected excerpts become dependencies.**\n  - In `fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]`, the file is rewritten after the search and before the selected tag is finished. The resulting dependency is exactly `Dependency::Node(\"source-node\", expected)`, where `expected` is the fingerprint of the original content.\n  - Selecting the same tag twice gives the same dependency. An invalid call (tags `\"1\"` and `\"unknown\"`) is an error, and the later valid selections still work.\n  - In `fn[configured_agent_uses_domain_source_tools_in_independent_executions]`, the final dependencies include nodes 8 (alpha, fingerprint of `excerpt alpha.txt`) and 9 (beta). The tag-to-node mapping is therefore checked per file.\n  - That test also has a failed call that mixed `unused` with `\"invalid\"`, plus an earlier selection. The dependencies from the earlier selection survive, and the failed call leaves recorded inputs intact.\n- **Match set and unselected excerpts add nothing.**\n  - `fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]` asserts that `result.dependencies` is empty for a multi-match search.\n  - It asserts that finishing with `used: []` adds no dependency, for both an empty result and a peer session.\n  - In `fn[configured_agent_uses_domain_source_tools_in_independent_executions]`, `unused.txt` was a match but is never selected, and it is absent from the final dependency list.\n  - The other marked tests assert empty dependencies on `search_text` deliveries: `fn[fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies]` in `project_sources.rs`, and `fn[source_discovery_and_its_pages_do_not_register_reads]`, `fn[source_tools_forward_arguments_and_present_discovery_and_read_results]` and `fn[source_reads_track_optional_dependencies_and_empty_searches_remain_discovery]` in `crates/trust-but-verify/src/agent/tests.rs`. The last of these also checks that the observation callback is never invoked by a search.\n\n**Gaps**\nNone found. The tests in `agent/tests.rs` use a tool factory without `finish_search`. They only support the \"search adds no dependency\" point, and the other tests above carry the accounting obligation. The cited `finish_search.inputs` behaviours are exercised in the `search_text` context as the subject requires. No `{fixme}` acknowledgments apply.",
-  "references": "ca86e703f678013389c95c6a2ff0183d8d4a54d2f1c838899e7efea40b71a1ce",
+  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.graph.search.search_text.inputs`. The obligations are:\n- Each delivered `search_text` result must be accounted for under `finish_search.inputs`.\n- Selected excerpts may become evidence dependencies.\n- The set of matching identities is untracked.\n\nI derived the expected behavior from the requirement text and did not request any implementation source.\n\n**Accounting for each delivered result**\n- `crates/trust-but-verify/src/agent/project_sources.rs#mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]` checks that an empty `search_text` result has a `search_id` and counts as outstanding.\n  - It also checks that a capped result (`limit:1`) and a `search_structure` result count as outstanding.\n  - Only the open search ids appear in `outstanding_searches()`, and closing the capped search with `used:[]` leaves the other id outstanding.\n  - Delivered later pages (`get_next_page`) get a fresh `search_id`. Both the first and second pages must be finished, and `outstanding_searches()` is empty at the end.\n- `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` runs the end-to-end agent loop.\n  - A submit attempt with two open `search_text` searches is rejected with \"Call finish_search for every open search_id\", and both ids appear in the retry text.\n  - The two search ids are asserted to differ.\n  - It runs twice, so each execution is independent.\n\n**Selected excerpts become dependencies**\n- In the project_sources test, finishing a page with a selected tag returns exactly `Dependency::Node(expected_id, expected fingerprint)`. The file is rewritten after the search, and the dependency still carries the original snapshot fingerprint.\n- The same test checks the following behaviors:\n  - Repeating the selection is idempotent. The loop runs twice and returns the same single dependency.\n  - A call with an unknown tag (`\"1\"`, `\"unknown\"`) is rejected, and the outstanding searches are unchanged.\n  - Finishing with `used:[]` adds no dependency.\n- The configured end-to-end test checks the final dependency list for the agent run.\n  - It includes nodes for the selected alpha and beta excerpts.\n  - It excludes the unselected `unused.txt` excerpt, except for the separate `read_node` dependency (`Node(10)`).\n  - It also covers the invalid-call case: a call with a valid tag plus `\"invalid\"` is rejected.\n  - Selecting the beta tag again after that failure succeeds.\n\n**Match set untracked**\n- `search_obligations_follow_delivery_and_keep_the_original_snapshot` asserts `result.dependencies.is_empty()` when a multi-match `search_text` result is delivered.\n- It also asserts empty dependencies for empty results and for closing with `used:[]`.\n- `tests.rs#fn[source_discovery_and_its_pages_do_not_register_reads]` and `source_tools_forward_arguments_and_present_discovery_and_read_results` assert that `search_text` results and their pages carry no dependencies. They also assert that the observation callback is never invoked.\n- `source_reads_track_optional_dependencies_and_empty_searches_remain_discovery` shows an empty search leaves the final record with no dependencies.\n- `source_tools_keep_search_discovery_separate_from_delivered_source_reads` shows that only the later `read_source` produces a dependency.\n\nAll of these tests carry `{test}` references to the subject, so there is no marking gap. I found no plausible requirement-violating behavior that these assertions would accept.",
+  "references": "cd1e7852badd17786194b1844953002275a3c53f13f622123eef0f7938129d4d",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.search.search_text.inputs",
@@ -35,17 +35,12 @@
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]",
-      "hash": "dfdd8a5c7b1b09bd1f0aa14ffe22d1ffa6fbf20d3405b081be4920b12fd0be84"
+      "hash": "3935a069f4aabaece83dabc80e9611f38dee96e623e3ec8b08da353628c63959"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]",
-      "hash": "fcd492230081605d3c3f00fcec9057e7ae75e2c125f5356613b37cf4fbc140aa"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
-      "item": "mod[tests]/fn[fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies]",
-      "hash": "fe9a500299cd9033e41b2ec2e066c7fea8b7019cabb22e37f014081fdbb81749"
+      "hash": "0bcb3f51a6973a65b57173ee36a348d6a405e101d80502b687125b612c1651c0"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -78,7 +73,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "ca86e703f678013389c95c6a2ff0183d8d4a54d2f1c838899e7efea40b71a1ce"
+          "value": "cd1e7852badd17786194b1844953002275a3c53f13f622123eef0f7938129d4d"
         }
       ]
     },
@@ -90,7 +85,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "f767cc3b4c28ac5db7a3fff28bc707f63b82572ce71557a6c8fef08216bc2951"
+          "value": "b7fc11c84d84657cc0b6d9783881533d433e5bb01212a8f9f9b6a9610e9663e3"
         }
       ]
     },
@@ -129,7 +124,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "7de09034f4b578217d5910b3a50d3adc4b8a14bb5caf4e126925822af51898e4"
+          "value": "05e4b55913ed5198b780e5ae08fe7592cf79b6501711712dac65ba2a55caf7be"
         }
       ]
     },
@@ -146,24 +141,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "df28dea3064ff665e1ac5c4dee39960f549838f9440ceded3706aa46ac103871"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
-            },
-            "selector": "mod[tests]/fn[fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "f7e56da9aa994eb75dec23d69893527b1e631f3dcfae5d0ecaea460ec2716039"
+          "value": "865f7a926c0258b23980e8e614e0f3ad57374b0b097acb4b09b2234d57cd66b4"
         }
       ]
     },

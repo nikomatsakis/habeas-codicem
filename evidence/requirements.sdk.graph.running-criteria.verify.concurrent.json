@@ -1,7 +1,7 @@
 {
   "requirement": "Concurrent `verify` calls on the same domain keep separate dependency\nrecords and agent conversations, even for the same source node and criterion.",
   "determination": true,
-  "rationale": "The two marked tests cover both obligations: separate dependency records and separate agent conversations. They do so for the same source node and the same criterion.\n\n**Obligations derived from the text**\n1. Concurrent `verify` calls on one domain keep separate dependency records.\n2. Concurrent `verify` calls on one domain keep separate agent conversations.\n3. Both hold even when the source node and the criterion are identical.\n\n**Agent conversations and dependency traces:** `crates/trust-but-verify/src/agent/tests.rs#fn[agent_executions_isolate_conversations_and_dependency_traces]`\n- The test runs two `verify_with_agent` calls concurrently with `futures::join!` on one `Memory` graph and one `ToolAgent`.\n  - Both calls use `Question` criteria. `Question::criterion_path` is the constant `[\"question\"]`, so alpha and beta share the same criterion path and the same source node, `Node(1)`.\n- The `ParallelConversations` provider holds both calls at a `Barrier(2)`, so the conversations really overlap.\n  - Each call must have its own system message and chat history.\n  - The history length must be `2 + 2*turn`.\n  - The history must not contain the other conversation's page contents.\n  - On later turns the last page must belong to the current conversation, even though both calls reuse the tool-call ID `same-call-id`.\n- The test asserts that each call gets its own output (`alpha` and `beta`) and makes exactly 3 provider calls.\n- After storing each result, it loads the records and asserts the dependency lists.\n  - Alpha's record holds only `Node(1)`.\n  - Beta's record holds `OutgoingEdges` plus `Node(2)`, with no leakage in either direction.\n- It also shows that the stored records stay separate until stored. The alpha question loads back `\"beta\"` because beta's store overwrote the shared slot.\n  - That confirms the criterion and node are the same, so the isolation comes from the executions and not from distinct storage keys.\n\n**Dependency records without an agent:** `crates/trust-but-verify/tests/contracts.rs#fn[concurrent_same_criterion_executions_keep_complete_independent_records]`\n- Two `validation::verify` calls run concurrently on one domain with the same criterion path, `[\"behavior\"]`. They read different nodes, and a barrier forces them to overlap.\n- The test asserts each result's output.\n- It asserts that no records exist before `store_evidence`.\n- After storing, it checks that the saved record's version and dependency list are consistent with one execution and do not mix the other's data. The output is `first` with `first-revision` and the dependency on `Node(2)`, or `second` with `second-revision` and the dependency on `Node(3)`.\n- It asserts `executions == 2`, `writes == 2`, and one record.\n  - The one-record assertion matches same-criterion records sharing a key.\n\n**Conclusion:** The agent-conversation case and the dependency-record case are each tested concurrently, with the same node and criterion, and with assertions that would fail if state were shared or mixed. I found no untested clause and no marking gap. Both tests carry the `{test}` reference to the subject.",
+  "rationale": "**Obligations.** `requirements.sdk.graph.running-criteria.verify.concurrent` has two parts. Concurrent `verify` calls on one domain must keep (a) separate dependency records and (b) separate agent conversations. Both must hold even when the source node and criterion are the same.\n\n**Agent conversations and dependency records.** `crates/trust-but-verify/src/agent/tests.rs#fn[agent_executions_isolate_conversations_and_dependency_traces]` covers both parts.\n- It runs two `verify_with_agent` calls under `futures::join!` against one `Memory` graph. Both use the test `Question`, whose source node is `Node(1)` and whose `criterion_path` is always `[\"question\"]`. They differ only in the context string (`alpha` or `beta`) and in whether they read the current node or its successors. This is the \"same source node and criterion\" case.\n- The `ParallelConversations` provider holds both calls at a `Barrier` of 2, so the conversations really interleave. A 2-second timeout fails the test if the calls serialize.\n- On every turn the provider asserts:\n  - the history length is `2 + 2*turn`;\n  - the first message is the call's own system prompt;\n  - the history contains this call's page contents and never the other's;\n  - the last delivered page belongs to this call, although both use the same tool call ID.\n- The test asserts a call count of 3 for each conversation. It asserts the outputs `alpha` and `beta`.\n- After `store_evidence`, the saved dependencies are asserted exactly. Alpha has only `Node(1)` with its fingerprint. Beta has `OutgoingEdges(Node(1), Label, …)` plus `Node(2)`. A leak of dependency traces between executions would fail these equality assertions.\n- The final `load_evidence` shows the later store overwrote the earlier one, which fits a shared key.\n\n**Dependency records, same criterion, concurrent.** `crates/trust-but-verify/tests/contracts.rs#fn[concurrent_same_criterion_executions_keep_complete_independent_records]` joins two `validation::verify` calls on one `Application` domain, with the same node 1 and the same `behavior` criterion. They read different nodes (2 and 3) and run under a barrier with a 5-second timeout, so they must overlap.\n- It asserts that no records are stored before `store_evidence`.\n- After storing, the saved record must match one execution completely: its output, its version (`first-revision` or `second-revision`) and its dependency list (`Node(2)` with \"first input\", or `Node(3)` with \"second input\"). A mixed record fails.\n- It asserts that the domain ran 2 executions and 2 writes and holds one record.\n\n**Gaps.** Both tests carry `{test}` references to the subject. Every clause is exercised and asserted: separate dependency records, separate conversations, and the same-node/same-criterion condition. I found no gap.",
   "references": "a3e904046faacd0e29b7a681bc3151d22aa775c6614cef3470f5c0caaba96651",
   "inputs": [
     {
@@ -30,12 +30,17 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "impl[ParallelConversations/CompletionProvider]",
-      "hash": "c79cbfa2f3f1229b78d495a4f6c1dd533a3cf4faad118cb79ce21370738b2f36"
+      "hash": "8abaa1479a758567d6ba4803620fb0e887652a53232587b8aa71a5ba7e501575"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "struct[Question]",
       "hash": "35e06302b085fcd8997745325322bbd449f619aa13141a5d746fecf3fadb2ccf"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "impl[Question/Criterion<Memory>]",
+      "hash": "1509e1be34254a10f4345b78252f623313b2d98ecdc78418b63a033d823e91e9"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -48,9 +53,9 @@
       "hash": "1bdc6269de579c6be8df018df323ddb04cde0b13d9464d994d5316e08bde0013"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "impl[Question/Criterion<Memory>]",
-      "hash": "1509e1be34254a10f4345b78252f623313b2d98ecdc78418b63a033d823e91e9"
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "struct[Review]",
+      "hash": "f446c3b083932a8584c9e149398756f344f85189baccc05253e635e24644c7d4"
     }
   ],
   "format_version": 1,
@@ -137,7 +142,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "814f77dd2d975d42806bb3fc7c2b74c075ec0d8f7b3741087f1fc16766dda451"
+          "value": "005039d9331bcece755a83a8d8faecfd0354a3c7f5e89aea7c973bb96de75d69"
         }
       ]
     },
@@ -155,6 +160,23 @@
         {
           "scheme": "habeas-input-v1",
           "value": "3b7b2b250ca9c4dfa40b6b7a5ba0d3b42199f809a297e643bce28fb9e372a2ec"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
+            },
+            "selector": "impl[Question/Criterion<Memory>]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "875d78c14515ef5a67826a4fb06aa1bb2b4b5fc39383828a515671cfe0d70aa8"
         }
       ]
     },
@@ -198,14 +220,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
+              "location": "crates/trust-but-verify/tests/contracts.rs"
             },
-            "selector": "impl[Question/Criterion<Memory>]"
+            "selector": "struct[Review]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "875d78c14515ef5a67826a4fb06aa1bb2b4b5fc39383828a515671cfe0d70aa8"
+          "value": "e3287dd47cc2350d178fc1b8a59049eec4730ab8531a44938f7b100a6cc60501"
         }
       ]
     }
