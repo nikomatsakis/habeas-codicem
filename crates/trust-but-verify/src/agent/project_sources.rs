@@ -398,10 +398,11 @@ mod tests {
     // {test}`requirements.sdk.graph.validation-context.pages.behavior`
     // {test}`requirements.sdk.graph.search.search_text.mcp`
     #[tokio::test]
+    // {test}`requirements.sdk.graph.search.group_hits`
     async fn search_pages_return_every_original_match_in_order() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("source.txt");
-        let lines: Vec<_> = (1..=350).map(|i| format!("hit {i}")).collect();
+        let lines: Vec<_> = (1..=350).map(|i| format!("hit {i} hit")).collect();
         std::fs::write(&path, lines.join("\n")).unwrap();
         let tools = ProjectSources {
             sources: Sources::new(root.path()).into(),
@@ -469,6 +470,8 @@ mod tests {
     #[tokio::test]
     // {test}`requirements.sdk.sources.SourceProject`
     // {test}`requirements.sdk.graph.search.search_structure.behavior`
+    // {test}`requirements.sdk.graph.search.agent_search_accounting`
+    // {test}`requirements.sdk.graph.search.enclosing_item`
     async fn structural_tags_select_only_the_original_enclosing_item() {
         let root = tempfile::tempdir().unwrap();
         let code = root.path().join("code.rs");
@@ -492,6 +495,16 @@ mod tests {
                 ("code.rs#fn[two]", 27..33, "call()")
             ]
         );
+        assert!(session.outstanding_searches().is_empty());
+        std::fs::write(&code, "fn replaced() {}").unwrap();
+        let mut limited = args.clone();
+        limited["limit"] = json!(1);
+        let limited = session
+            .dispatch("search_structure", &limited)
+            .await
+            .unwrap();
+        let limited: Value = serde_json::from_str(&limited.text).unwrap();
+        assert_eq!(limited["complete"], false);
         let search = session.dispatch("search_structure", &args).await.unwrap();
         assert!(search.dependencies.is_empty());
         let page: Value = serde_json::from_str(&search.text).unwrap();
@@ -501,6 +514,15 @@ mod tests {
         for (hit, entry) in hits.matches.iter().zip(matches) {
             assert_eq!(entry["excerpt"], hit.text);
         }
+        let context = ValidationContext::new(&domain, String::new());
+        let read = session.read_node(&context, &matches[1]).unwrap();
+        assert_eq!(
+            read.dependencies,
+            [Dependency::Node(
+                hits.matches[1].node.clone(),
+                Content(String::new()).fingerprint()
+            )]
+        );
         let tag = &matches.iter().find(|m| m["node"] == "n1").unwrap()["tag"];
         let expected = crate::outline::OutlineContent::from_path(domain.cache(), &code)
             .unwrap()
@@ -527,7 +549,7 @@ mod tests {
                 [Dependency::Node("code.rs#fn[two]".into(), expected.clone())]
             );
         }
-        assert_eq!(domain.0.lock().unwrap().reads, 0);
+        assert_eq!(domain.0.lock().unwrap().reads, 1);
     }
 
     // {test}`requirements.sdk.graph.validation-context.outline_source.mcp`
@@ -646,6 +668,7 @@ mod tests {
     // {test}`requirements.sdk.graph.search.omissions`
     // {test}`requirements.sdk.graph.search.windows`
     #[tokio::test]
+    // {test}`requirements.sdk.graph.search.agent_search_accounting`
     async fn search_groups_exact_occurrences_and_records_the_selected_declaration() {
         let root = tempfile::tempdir().unwrap();
         let code = "const A: &str = \"éhit\"; const B: &str = \"hit hit\";";
@@ -682,6 +705,23 @@ mod tests {
                 {"tag":"2", "node":"n1", "excerpt":"const B: &str = \"hit hit\";"}
             ])
         );
+        let context = ValidationContext::new(project.domain.as_ref(), String::new());
+        let read = session.read_node(&context, &page["matches"][1]).unwrap();
+        assert_eq!(
+            read.dependencies,
+            [Dependency::Node(
+                results.matches[1].node.clone(),
+                Content(String::new()).fingerprint()
+            )]
+        );
+        let unused = session
+            .dispatch(
+                "finish_search",
+                &json!({"search_id":page["search_id"], "used":[]}),
+            )
+            .await
+            .unwrap();
+        assert!(unused.dependencies.is_empty());
         let finished = session
             .dispatch(
                 "finish_search",
@@ -732,6 +772,7 @@ mod tests {
                     json!([{"tag":"1", "node":"n0", "excerpt":expected}])
                 );
                 let node = pages.node(&page["matches"][0]).unwrap();
+                assert_eq!(node, "fragment.rs#");
                 assert_eq!(project.domain.node_content(&node).unwrap().format(), source);
             }
         }
@@ -760,6 +801,19 @@ mod tests {
             let page: Value = serde_json::from_str(&result.text).unwrap();
             assert_eq!(page["matches"][0]["excerpt"], expected);
         }
+    }
+
+    // {test}`requirements.sdk.graph.search.windows`
+    #[test]
+    fn touching_windows_keep_the_contiguous_source() {
+        use crate::outline::{OutlineContent, Span};
+        let item =
+            OutlineContent::from_source(project("").cache(), "code.rs", "  hit    hit  ".into())
+                .unwrap();
+        assert_eq!(
+            excerpt(&item, &[Span::new(2, 5), Span::new(9, 12)], 2),
+            item.text()
+        );
     }
 
     // {test}`requirements.sdk.graph.search.domain_node`
@@ -810,12 +864,15 @@ mod tests {
     // {test}`requirements.sdk.graph.search.enclosing_item`
     // {test}`requirements.sdk.graph.search.omissions`
     #[tokio::test]
+    // {test}`requirements.sdk.graph.search.agent_search`
     async fn separated_hit_windows_preserve_the_function_declaration() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("runner.rs");
         let code = "impl Runner {\n    fn run() {\n        setup();\n        hit(); hit();\n        cleanup();\n        hit();\n        finish();\n    }\n}";
         std::fs::write(&path, code).unwrap();
-        let project = ProjectSources::new(project(""), Sources::new(root.path()));
+        let full = &code[code.find("fn run").unwrap()..code.rfind("\n}").unwrap()];
+        let project = ProjectSources::new(project(full), Sources::new(root.path()));
+        let context = ValidationContext::new(project.domain.as_ref(), String::new());
         let mut session = SessionTools::new(project.session());
         for (window, expected) in [
             (4, "fn run() {...    hit(); hit();\n...    hit();\n...}"),
@@ -832,6 +889,14 @@ mod tests {
             assert_eq!(
                 page["matches"],
                 json!([{"tag":"1", "node":"n0", "excerpt":expected}])
+            );
+            let read = session.read_node(&context, &page["matches"][0]).unwrap();
+            let read: Value = serde_json::from_str(&read.text).unwrap();
+            assert_eq!(read["text"], full);
+            assert!(read["text"].as_str().unwrap().contains("cleanup();"));
+            assert_eq!(
+                project.domain.0.lock().unwrap().read_nodes.last().unwrap(),
+                "runner.rs#impl[Runner]/fn[run]"
             );
             std::fs::write(&path, "fn changed() {}").unwrap();
         }

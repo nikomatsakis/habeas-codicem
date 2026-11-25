@@ -46,6 +46,27 @@ impl<'a, D: Domain> SessionTools<'a, D> {
         self.pages.outstanding()
     }
 
+    // {impl}`requirements.sdk.graph.validation-context.read_node.behavior`
+    // {impl}`requirements.sdk.graph.validation-context.read_node.inputs`
+    pub(super) fn read_node(
+        &mut self,
+        inspection: &ValidationContext<'_, D>,
+        arguments: &Value,
+    ) -> io::Result<ToolDelivery<D::NodeId, D::EdgeLabel>>
+    where
+        D::Error: std::fmt::Display,
+    {
+        let node = self.pages.node(arguments)?;
+        let snapshot = inspection
+            .prepare_read(&node)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        let text = crate::redaction::redact_text(&snapshot.content.format()).into_owned();
+        let observation = Dependency::Node(node, snapshot.fingerprint);
+        Ok(self
+            .pages
+            .prepare(json!({}), "text", Value::String(text), vec![observation]))
+    }
+
     pub(super) async fn dispatch(
         &mut self,
         name: &str,
@@ -246,19 +267,7 @@ where
     async fn dispatch(&mut self, name: &str, arguments: &Value) -> io::Result<String> {
         match name {
             "read_node" => {
-                let node = self.tools.pages.node(arguments)?;
-                let snapshot = self
-                    .inspection
-                    .prepare_read(&node)
-                    .map_err(|error| io::Error::other(error.to_string()))?;
-                let text = crate::redaction::redact_text(&snapshot.content.format()).into_owned();
-                let observation = Dependency::Node(node, snapshot.fingerprint);
-                let delivery = self.tools.pages.prepare(
-                    json!({}),
-                    "text",
-                    Value::String(text),
-                    vec![observation],
-                );
+                let delivery = self.tools.read_node(self.inspection, arguments)?;
                 self.pending.extend(delivery.dependencies);
                 Ok(delivery.text)
             }

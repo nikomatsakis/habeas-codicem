@@ -368,6 +368,7 @@ mod tests {
                 assert!(!saved.contains(private), "{saved}");
             }
         }
+        assert!(domain.1.lock().unwrap().is_empty());
         let requests = server.join().unwrap();
         assert_eq!(requests.len(), 4);
         for (index, request) in requests.into_iter().enumerate() {
@@ -729,7 +730,7 @@ mod tests {
                         };
                         let used = match step {
                             11 => serde_json::json!([tag("unused.txt"), "invalid"]),
-                            12 => serde_json::json!([tag("beta.txt")]),
+                            12 | 13 => serde_json::json!([tag("beta.txt")]),
                             _ => serde_json::json!([tag("alpha.txt")]),
                         };
                         (

@@ -374,6 +374,7 @@ impl CompletionProvider for ParallelConversations {
 // {test}`requirements.sdk.graph.validation-context.read_node.inputs`
 // {test}`requirements.sdk.graph.validation-context.ValidationContext`
 #[tokio::test]
+// {test}`requirements.sdk.graph.validation-context.node_reference`
 async fn concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads() {
     use std::future::IntoFuture;
     let mut graph = Memory::new("source".into());
@@ -563,6 +564,7 @@ async fn agent_executions_isolate_conversations_and_dependency_traces() {
 // {test}`requirements.sdk.graph.validation-context.outgoing_edges.mcp`
 // {test}`requirements.sdk.graph.validation-context.ValidationContext`
 #[tokio::test]
+// {test}`requirements.sdk.graph.validation-context.node_reference`
 async fn agent_edge_tools_record_selections_without_validating_targets() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     #[derive(Clone)]
@@ -864,6 +866,7 @@ async fn typed_submission_references_resolve_and_invalid_results_are_agent_error
 // {test}`requirements.sdk.graph.validation-context.pages.inputs`
 // {test}`requirements.sdk.graph.agent-harness.fixed_tools`
 #[tokio::test]
+// {test}`requirements.sdk.graph.validation-context.node_reference`
 async fn graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery() {
     let graph = Memory::new("x".repeat(18_000));
     let agent = ToolAgent::new(Script::new(vec![
