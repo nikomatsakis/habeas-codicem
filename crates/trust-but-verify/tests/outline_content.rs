@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use trust_but_verify::domain::NodeContents;
+use trust_but_verify::domain::ValidationCache;
 use trust_but_verify::outline::Outline;
 use trust_but_verify::outline::OutlineContent;
 use trust_but_verify::outline::OutlineError;
@@ -72,14 +73,28 @@ fn outline_errors_preserve_diagnostic_and_line() {
 // {test}`requirements.sdk.sources.plain-text.fingerprints`
 // {test}`requirements.sdk.sources.plain-text.PlainText`
 // {test}`requirements.sdk.outlines.HASH_DIGITS`
+// {test}`requirements.sdk.outlines.defaults`
+// {test}`requirements.sdk.outlines.Outline`
 #[test]
 fn unknown_extensions_keep_nonblank_lines_and_content_selectors() {
     use trust_but_verify::outline::selector::HASH_DIGITS;
     assert_eq!(HASH_DIGITS, 12);
-    let first =
-        OutlineContent::from_source("missing.unclaimed", "alpha\n\nbeta\nalpha\n".into()).unwrap();
+    let first = OutlineContent::from_source(
+        &ValidationCache::new(),
+        "missing.unclaimed",
+        "alpha\n\nbeta\nalpha\n".into(),
+    )
+    .unwrap();
     assert_eq!(first.id().selector, "");
     assert_eq!(first.outline().items.len(), 4);
+    for filename in ["missing.unclaimed", "README"] {
+        let content =
+            OutlineContent::from_source(&ValidationCache::new(), filename, first.text().into())
+                .unwrap();
+        let outline = content.outline();
+        assert_eq!(outline.items.len(), 4);
+        assert!(outline.items[1..].iter().all(|item| item.kind == "line"));
+    }
     assert_eq!(first.outline().items[0].span, Span::new(0, 18));
     let alpha = &first.outline().items[1];
     assert_eq!(alpha.kind, "line");
@@ -100,18 +115,30 @@ fn unknown_extensions_keep_nonblank_lines_and_content_selectors() {
         assert_eq!(prefix, &item.structural_hash[..12]);
     }
     assert_eq!(first.select(&alpha.selector).unwrap().text(), "alpha");
-    let reflow =
-        OutlineContent::from_source("missing.unclaimed", "\n alpha \n beta\nalpha\n".into())
-            .unwrap();
+    let reflow = OutlineContent::from_source(
+        &ValidationCache::new(),
+        "missing.unclaimed",
+        "\n alpha \n beta\nalpha\n".into(),
+    )
+    .unwrap();
     assert_eq!(first.fingerprint(), reflow.fingerprint());
     assert_eq!(alpha.selector, reflow.outline().items[1].selector);
-    let reordered =
-        OutlineContent::from_source("missing.unclaimed", "beta\nalpha\nalpha\n".into()).unwrap();
+    let reordered = OutlineContent::from_source(
+        &ValidationCache::new(),
+        "missing.unclaimed",
+        "beta\nalpha\nalpha\n".into(),
+    )
+    .unwrap();
     assert_ne!(first.fingerprint(), reordered.fingerprint());
-    let joined =
-        OutlineContent::from_source("missing.unclaimed", "alpha beta\nalpha\n".into()).unwrap();
+    let joined = OutlineContent::from_source(
+        &ValidationCache::new(),
+        "missing.unclaimed",
+        "alpha beta\nalpha\n".into(),
+    )
+    .unwrap();
     assert_ne!(first.fingerprint(), joined.fingerprint());
-    let empty = OutlineContent::from_source("missing", Arc::from("")).unwrap();
+    let empty =
+        OutlineContent::from_source(&ValidationCache::new(), "missing", Arc::from("")).unwrap();
     assert_eq!(empty.outline().items.len(), 1);
     assert_eq!(empty.text(), "");
     assert_eq!(empty.outline().items[0].span, Span::new(0, 0));
@@ -129,9 +156,9 @@ fn selected_contents_outlive_handles_and_later_file_edits() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("notes.unknown");
     std::fs::write(&path, "first\nsecond\n").unwrap();
-    let file = OutlineContent::from_path(&path).unwrap();
+    let file = OutlineContent::from_path(&ValidationCache::new(), &path).unwrap();
     let id = OutlineId::new(path.clone(), file.outline().items[2].selector.clone()).unwrap();
-    let selected = OutlineContent::from_id(&id).unwrap();
+    let selected = OutlineContent::from_id(&ValidationCache::new(), &id).unwrap();
     let selected_again = file.select(&id.selector).unwrap();
     assert_eq!(selected.id(), &id);
     assert_eq!(selected_again.id(), &id);
@@ -146,7 +173,7 @@ fn selected_contents_outlive_handles_and_later_file_edits() {
     assert_eq!(selected.fingerprint(), original);
     assert_eq!(selected_again.text(), "second");
     assert_eq!(selected.format(), "second");
-    assert!(OutlineContent::from_id(&id).is_err());
+    assert!(OutlineContent::from_id(&ValidationCache::new(), &id).is_err());
     let retained_root = selected.select("").unwrap();
     assert_eq!(retained_root.id(), &OutlineId::root(path));
     assert_eq!(retained_root.text(), "first\nsecond\n");
@@ -158,11 +185,14 @@ fn selected_contents_outlive_handles_and_later_file_edits() {
 #[test]
 fn missing_file_and_invalid_selections_are_errors() {
     let directory = tempfile::tempdir().unwrap();
-    assert!(OutlineContent::from_path(directory.path().join("missing")).is_err());
-    let file = OutlineContent::from_source("empty", "".into()).unwrap();
+    assert!(
+        OutlineContent::from_path(&ValidationCache::new(), directory.path().join("missing"))
+            .is_err()
+    );
+    let file = OutlineContent::from_source(&ValidationCache::new(), "empty", "".into()).unwrap();
     assert!(file.select("fn[").is_err());
     assert!(file.select("fn[absent]").is_err());
-    assert!(OutlineContent::from_path(directory.path()).is_err());
+    assert!(OutlineContent::from_path(&ValidationCache::new(), directory.path()).is_err());
 }
 
 #[derive(Clone)]
@@ -222,12 +252,17 @@ fn explicit_languages_share_configuration_and_retain_their_scheme() {
     assert!(Arc::ptr_eq(&language.configuration, &cloned.configuration));
     assert_eq!(language.name(), "custom");
     assert_eq!(language.extensions(), &["custom"]);
-    let supplied =
-        OutlineContent::from_source_with(&language, "misleading.rs", "a hello z".into()).unwrap();
+    let supplied = OutlineContent::from_source_with(
+        &ValidationCache::new(),
+        &language,
+        "misleading.rs",
+        "a hello z".into(),
+    )
+    .unwrap();
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("misleading.rs");
     std::fs::write(&path, "a hello z").unwrap();
-    let loaded = OutlineContent::from_path_with(&cloned, &path).unwrap();
+    let loaded = OutlineContent::from_path_with(&ValidationCache::new(), &cloned, &path).unwrap();
     for root in [&loaded, &supplied] {
         assert_eq!(root.id().selector, "");
         assert_eq!(root.text(), "a hello z");
@@ -251,11 +286,15 @@ fn explicit_languages_share_configuration_and_retain_their_scheme() {
         configuration: Arc::new("custom-v3".into()),
         span: Span::new(2, 7),
     };
-    let newer =
-        OutlineContent::from_source_with(&newer_language, "misleading.rs", "a hello z".into())
-            .unwrap()
-            .select("part[selected]")
-            .unwrap();
+    let newer = OutlineContent::from_source_with(
+        &ValidationCache::new(),
+        &newer_language,
+        "misleading.rs",
+        "a hello z".into(),
+    )
+    .unwrap()
+    .select("part[selected]")
+    .unwrap();
     assert_eq!(newer.structural_hash(), selected.structural_hash());
     assert_ne!(newer.fingerprint(), selected.fingerprint());
 }
@@ -268,21 +307,42 @@ fn explicit_language_errors_and_invalid_spans_are_not_plain_text_successes() {
         span: Span::new(0, 1),
     };
     assert!(
-        OutlineContent::from_source_with(&language, "file.txt", "fail".into())
-            .unwrap_err()
-            .message
-            .contains("custom parse failure")
+        OutlineContent::from_source_with(
+            &ValidationCache::new(),
+            &language,
+            "file.txt",
+            "fail".into()
+        )
+        .unwrap_err()
+        .message
+        .contains("custom parse failure")
     );
     let invalid = CustomLanguage {
         span: Span::new(0, 99),
         ..language
     };
-    assert!(OutlineContent::from_source_with(&invalid, "file.txt", "short".into()).is_err());
+    assert!(
+        OutlineContent::from_source_with(
+            &ValidationCache::new(),
+            &invalid,
+            "file.txt",
+            "short".into()
+        )
+        .is_err()
+    );
     let middle_of_utf8 = CustomLanguage {
         span: Span::new(1, 2),
         ..invalid
     };
-    assert!(OutlineContent::from_source_with(&middle_of_utf8, "file.txt", "é".into()).is_err());
+    assert!(
+        OutlineContent::from_source_with(
+            &ValidationCache::new(),
+            &middle_of_utf8,
+            "file.txt",
+            "é".into()
+        )
+        .is_err()
+    );
 }
 
 // {test}`requirements.sdk.outlines.errors`
@@ -341,14 +401,20 @@ fn ambiguous_items_are_errors_except_for_identical_plain_text_lines() {
     ] {
         assert_eq!(language.name(), "duplicates");
         assert!(language.extensions().is_empty());
-        let contents =
-            OutlineContent::from_source_with(&language, "file", "same\nsame".into()).unwrap();
+        let contents = OutlineContent::from_source_with(
+            &ValidationCache::new(),
+            &language,
+            "file",
+            "same\nsame".into(),
+        )
+        .unwrap();
         let error = contents
             .select(&format!("{}[same]", language.kind))
             .unwrap_err();
         assert!(error.message.contains("ambiguous"), "{error}");
     }
-    let identical = OutlineContent::from_source("plain", "same\nsame".into()).unwrap();
+    let identical =
+        OutlineContent::from_source(&ValidationCache::new(), "plain", "same\nsame".into()).unwrap();
     assert_eq!(
         identical.outline().items[1].selector,
         identical.outline().items[2].selector
@@ -370,8 +436,9 @@ fn file_constructors_infer_the_language_and_return_addressed_contents() {
     let path = directory.path().join("AUTH.RS");
     let source = "fn check_token() { allow(); }\n";
     std::fs::write(&path, source).unwrap();
-    let root = OutlineContent::from_path(&path).unwrap();
-    let supplied = OutlineContent::from_source(&path, source.into()).unwrap();
+    let root = OutlineContent::from_path(&ValidationCache::new(), &path).unwrap();
+    let supplied =
+        OutlineContent::from_source(&ValidationCache::new(), &path, source.into()).unwrap();
     assert_eq!(root.id().selector, "");
     assert_eq!(root.text(), source);
     assert_eq!(root.fingerprint(), supplied.fingerprint());
@@ -385,7 +452,7 @@ fn file_constructors_infer_the_language_and_return_addressed_contents() {
         ["", "fn[check_token]"]
     );
     let id = OutlineId::new(&path, "fn[check_token]".into()).unwrap();
-    let selected = OutlineContent::from_id(&id).unwrap();
+    let selected = OutlineContent::from_id(&ValidationCache::new(), &id).unwrap();
     assert_eq!(selected.id(), &id);
     assert_eq!(selected.text(), "fn check_token() { allow(); }");
     assert_eq!(
@@ -452,6 +519,8 @@ fn outline_only_languages_report_unsupported_structural_search() {
 // {test}`requirements.sdk.sources.plain-text.PlainText`
 // {test}`requirements.sdk.sources.css.Css`
 // {test}`requirements.sdk.sources.markdown.Markdown`
+// {test}`requirements.sdk.outlines.Outline`
+// {test}`requirements.sdk.outlines.defaults`
 #[test]
 fn bundled_languages_claim_extensions_and_supply_the_same_public_outline() {
     fn check<L: OutlineLang + Default + Copy>(
@@ -473,9 +542,30 @@ fn bundled_languages_claim_extensions_and_supply_the_same_public_outline() {
         let cloned = Clone::clone(&language);
         assert_eq!(cloned.extensions(), language.extensions());
         assert_eq!(L::default().fingerprint_scheme(), expected_scheme);
-        let inferred = OutlineContent::from_source(filename, source.into()).unwrap();
-        let explicit =
-            OutlineContent::from_source_with(&language, filename, source.into()).unwrap();
+        let inferred =
+            OutlineContent::from_source(&ValidationCache::new(), filename, source.into()).unwrap();
+        let explicit = OutlineContent::from_source_with(
+            &ValidationCache::new(),
+            &language,
+            filename,
+            source.into(),
+        )
+        .unwrap();
+        let raw = language.outline(source).unwrap();
+        assert_eq!(raw.items[0].span, Span::new(0, source.len()));
+        assert_eq!(
+            raw.items
+                .iter()
+                .map(|item| &item.selector)
+                .collect::<Vec<_>>(),
+            explicit
+                .outline()
+                .items
+                .iter()
+                .map(|item| &item.selector)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(raw.diagnostic, explicit.outline().diagnostic);
         assert_eq!(inferred.fingerprint(), explicit.fingerprint());
         assert_eq!(inferred.fingerprint_scheme(), language.fingerprint_scheme());
         assert_eq!(inferred.outline().items[0].selector, "");
@@ -483,7 +573,9 @@ fn bundled_languages_claim_extensions_and_supply_the_same_public_outline() {
         assert!(inferred.select(expected_selector).is_ok());
         for extension in expected_extensions {
             let filename = format!("not-present.{}", extension.to_uppercase());
-            let selected = OutlineContent::from_source(filename, source.into()).unwrap();
+            let selected =
+                OutlineContent::from_source(&ValidationCache::new(), filename, source.into())
+                    .unwrap();
             assert_eq!(selected.fingerprint(), inferred.fingerprint());
             assert!(selected.select(expected_selector).is_ok());
         }
@@ -577,7 +669,9 @@ fn bundled_languages_claim_extensions_and_supply_the_same_public_outline() {
 #[test]
 fn unicode_spans_use_bytes_and_whitespace_only_lines_create_no_items() {
     let source = "é\n \t\n🦀\n";
-    let contents = OutlineContent::from_source("unicode.unknown", source.into()).unwrap();
+    let contents =
+        OutlineContent::from_source(&ValidationCache::new(), "unicode.unknown", source.into())
+            .unwrap();
     assert_eq!(
         contents
             .outline()
@@ -606,7 +700,8 @@ fn unicode_spans_use_bytes_and_whitespace_only_lines_create_no_items() {
 #[test]
 fn markdown_heading_levels_resolve_encoded_duplicates_and_anonymous_items() {
     let source = "préface\n\n# Main / [x] # @ % end\n### Deep\nnested\n\n## Same\nfirst\n\n## Same\nsecond\n\n# End\nLevel two\n---------\n:::{note}\ninside\n:::\n\n## Peer\nlast\n";
-    let contents = OutlineContent::from_source("headings.md", source.into()).unwrap();
+    let contents =
+        OutlineContent::from_source(&ValidationCache::new(), "headings.md", source.into()).unwrap();
     let sections = contents
         .outline()
         .items
@@ -672,7 +767,8 @@ fn markdown_heading_levels_resolve_encoded_duplicates_and_anonymous_items() {
 #[test]
 fn directive_prose_hashes_words_across_reflow_without_joining_them() {
     fn directive(source: &str) -> OutlineContent {
-        let contents = OutlineContent::from_source("note.md", source.into()).unwrap();
+        let contents =
+            OutlineContent::from_source(&ValidationCache::new(), "note.md", source.into()).unwrap();
         let selector = contents
             .outline()
             .items
@@ -693,8 +789,10 @@ fn directive_prose_hashes_words_across_reflow_without_joining_them() {
 // {test}`requirements.sdk.sources.css.items`
 #[test]
 fn css_media_and_supports_preludes_collapse_whitespace() {
-    let source = "@media  \t(max-width:\n  600px) { a { color: red; } }\n@supports  (display:  grid) { b { display: grid; } }\n";
-    let contents = OutlineContent::from_source("preludes.css", source.into()).unwrap();
+    let source = "@media  \t(max-width:\n  600px) { a { color: red; } }\n@supports  (display:  grid) { @media print { b { display: grid; } } }\n";
+    let contents =
+        OutlineContent::from_source(&ValidationCache::new(), "preludes.css", source.into())
+            .unwrap();
     assert_eq!(
         contents
             .outline()
@@ -707,7 +805,8 @@ fn css_media_and_supports_preludes_collapse_whitespace() {
             ("media", "media[(max-width:%20600px)]"),
             ("rule", "media[(max-width:%20600px)]/rule[a]"),
             ("supports", "supports[(display:%20grid)]"),
-            ("rule", "supports[(display:%20grid)]/rule[b]"),
+            ("media", "supports[(display:%20grid)]/media[print]"),
+            ("rule", "supports[(display:%20grid)]/media[print]/rule[b]"),
         ]
     );
 }
@@ -718,7 +817,9 @@ fn css_media_and_supports_preludes_collapse_whitespace() {
 #[test]
 fn css_duplicate_names_are_numbered_after_normalization_within_each_parent() {
     let source = "a  b { color: red; }\na b { color: blue; }\n@media  print { a { color: red; } }\n@media print { a { color: blue; } }\n@keyframes spin { from { opacity: 0; } }\n@keyframes spin { to { opacity: 1; } }\n";
-    let contents = OutlineContent::from_source("duplicates.css", source.into()).unwrap();
+    let contents =
+        OutlineContent::from_source(&ValidationCache::new(), "duplicates.css", source.into())
+            .unwrap();
     assert_eq!(
         contents
             .outline()
@@ -767,7 +868,8 @@ fn css_duplicate_names_are_numbered_after_normalization_within_each_parent() {
 #[test]
 fn multiline_setext_sections_keep_original_source_spans_and_skip_code() {
     let source = "# Parent\nTítle\ntwo\n---\nbody\n\n```text\nliteral\n===\n```\n\n# Last\n";
-    let contents = OutlineContent::from_source("setext.md", source.into()).unwrap();
+    let contents =
+        OutlineContent::from_source(&ValidationCache::new(), "setext.md", source.into()).unwrap();
     let sections = contents
         .outline()
         .items
@@ -814,7 +916,9 @@ fn setext_sections_inside_directives_lists_and_quotes_retain_container_spans() {
         ("# Root\n\n- Résumé\n  two\n  ---\n  body\n", "  ---", false),
     ];
     for (source, underline, in_block) in cases {
-        let contents = OutlineContent::from_source("containers.md", source.into()).unwrap();
+        let contents =
+            OutlineContent::from_source(&ValidationCache::new(), "containers.md", source.into())
+                .unwrap();
         let item = contents
             .outline()
             .items
@@ -873,6 +977,7 @@ fn bundled_structural_search_returns_matches_and_rejects_bad_rules_and_source() 
 #[test]
 fn rust_items_attach_documentation_and_preserve_structural_hashes() {
     let qualified = OutlineContent::from_source(
+        &ValidationCache::new(),
         "qualified.rs",
         "impl core::fmt::Display for Thing {}".into(),
     )
@@ -882,7 +987,8 @@ fn rust_items_attach_documentation_and_preserve_structural_hashes() {
         "impl[Thing/core::fmt::Display]"
     );
     let source = "mod auth {\n    /// Check tokens.\n    #[inline]\n    fn check() { allow(); }\n    struct Token;\n}\nfn last() {}\n";
-    let contents = OutlineContent::from_source("auth.rs", source.into()).unwrap();
+    let contents =
+        OutlineContent::from_source(&ValidationCache::new(), "auth.rs", source.into()).unwrap();
     let selectors = contents
         .outline()
         .items
@@ -923,6 +1029,7 @@ fn rust_items_attach_documentation_and_preserve_structural_hashes() {
     assert_eq!(span.start, source.find("/// Check tokens.").unwrap());
     assert!(source[..span.end].ends_with("fn check() { allow(); }"));
     let formatted = OutlineContent::from_source(
+        &ValidationCache::new(),
         "auth.rs",
         "mod auth { /// Check\n/// tokens.\n#[inline]\nfn check(){ allow(); } }".into(),
     )
@@ -930,10 +1037,14 @@ fn rust_items_attach_documentation_and_preserve_structural_hashes() {
     .select("mod[auth]/fn[check]")
     .unwrap();
     assert_eq!(function.fingerprint(), formatted.fingerprint());
-    let changed = OutlineContent::from_source("auth.rs", source.replace("allow", "deny").into())
-        .unwrap()
-        .select("mod[auth]/fn[check]")
-        .unwrap();
+    let changed = OutlineContent::from_source(
+        &ValidationCache::new(),
+        "auth.rs",
+        source.replace("allow", "deny").into(),
+    )
+    .unwrap()
+    .select("mod[auth]/fn[check]")
+    .unwrap();
     assert_ne!(function.fingerprint(), changed.fingerprint());
     assert!(function.outline().diagnostic.is_none());
 }
@@ -944,7 +1055,8 @@ fn rust_items_attach_documentation_and_preserve_structural_hashes() {
 fn recovered_outlines_keep_the_diagnostic_and_intact_items() {
     use trust_but_verify::outline::AttachmentKind;
     let source = "// intact comment\nfn intact() {}\nfn broken( {\n";
-    let root = OutlineContent::from_source("broken.rs", source.into()).unwrap();
+    let root =
+        OutlineContent::from_source(&ValidationCache::new(), "broken.rs", source.into()).unwrap();
     let intact = root.select("fn[intact]").unwrap();
     let error = intact.outline().diagnostic.as_ref().unwrap();
     assert_eq!(error.line, 3);
@@ -968,19 +1080,30 @@ fn recovered_outlines_keep_the_diagnostic_and_intact_items() {
 // {test}`requirements.sdk.graph.NodeContents`
 #[test]
 fn structural_fingerprint_example_tracks_the_selected_function() {
-    let original = OutlineContent::from_source("auth.rs", "fn check_token() { allow(); }".into())
-        .unwrap()
-        .select("fn[check_token]")
-        .unwrap();
-    let reformatted =
-        OutlineContent::from_source("auth.rs", "fn check_token()\n{\n    allow();\n}\n".into())
-            .unwrap()
-            .select("fn[check_token]")
-            .unwrap();
-    let changed = OutlineContent::from_source("auth.rs", "fn check_token() { deny(); }".into())
-        .unwrap()
-        .select("fn[check_token]")
-        .unwrap();
+    let original = OutlineContent::from_source(
+        &ValidationCache::new(),
+        "auth.rs",
+        "fn check_token() { allow(); }".into(),
+    )
+    .unwrap()
+    .select("fn[check_token]")
+    .unwrap();
+    let reformatted = OutlineContent::from_source(
+        &ValidationCache::new(),
+        "auth.rs",
+        "fn check_token()\n{\n    allow();\n}\n".into(),
+    )
+    .unwrap()
+    .select("fn[check_token]")
+    .unwrap();
+    let changed = OutlineContent::from_source(
+        &ValidationCache::new(),
+        "auth.rs",
+        "fn check_token() { deny(); }".into(),
+    )
+    .unwrap()
+    .select("fn[check_token]")
+    .unwrap();
     assert_eq!(original.fingerprint(), reformatted.fingerprint());
     assert_ne!(original.fingerprint(), changed.fingerprint());
     assert!(original.format().contains("fn check_token()"));
@@ -997,7 +1120,7 @@ fn structural_fingerprint_example_tracks_the_selected_function() {
 #[test]
 fn bundled_fingerprints_exclude_comments_and_preserve_word_boundaries() {
     fn fingerprint(path: &str, text: &str, selector: &str) -> trust_but_verify::graph::Fingerprint {
-        OutlineContent::from_source(path, text.into())
+        OutlineContent::from_source(&ValidationCache::new(), path, text.into())
             .unwrap()
             .select(selector)
             .unwrap()
@@ -1107,7 +1230,8 @@ fn typescript_and_tsx_share_signatures_abstract_classes_and_module_kinds() {
     let source = "function* generated() { yield 1; }\ndeclare function signed(x: number): void;\nabstract class Abstract { abstract run(): void; }\ndeclare module \"remote\" { export interface Thing {} }\nnamespace Outer { export class Inner { call() {} } }\n";
     let mut observed = Vec::new();
     for path in ["api.ts", "api.tsx"] {
-        let root = OutlineContent::from_source(path, source.into()).unwrap();
+        let root =
+            OutlineContent::from_source(&ValidationCache::new(), path, source.into()).unwrap();
         let selectors = root
             .outline()
             .items
@@ -1146,7 +1270,8 @@ fn typescript_and_tsx_share_signatures_abstract_classes_and_module_kinds() {
 #[test]
 fn toml_preserves_written_dotted_literal_and_quoted_header_names() {
     let source = "a.b = 1\n'lit key' = 2\nkey_7-2 = 3\n[\"space #/@[]\"]\nvalue = 4\n[[items.parts]]\n\"nested/key\" = { 'deep key' = 5 }\n";
-    let root = OutlineContent::from_source("config.toml", source.into()).unwrap();
+    let root =
+        OutlineContent::from_source(&ValidationCache::new(), "config.toml", source.into()).unwrap();
     let selectors = root
         .outline()
         .items
@@ -1173,13 +1298,18 @@ fn toml_preserves_written_dotted_literal_and_quoted_header_names() {
 // {test}`requirements.sdk.sources.yaml.Yaml`
 #[test]
 fn yaml_selection_ends_before_trailing_comment_tokens() {
-    let root = OutlineContent::from_source("config.yaml", "key: value # trailing comment\n".into())
-        .unwrap();
+    let root = OutlineContent::from_source(
+        &ValidationCache::new(),
+        "config.yaml",
+        "key: value # trailing comment\n".into(),
+    )
+    .unwrap();
     let selected = root.select("pair[key]").unwrap();
     assert_eq!(selected.text(), "key: value");
     assert_eq!(root.outline().items[1].span, Span::new(0, 10));
     let nested = "a:\n  b: 1\n# before next\nd: 2\n";
-    let root = OutlineContent::from_source("nested.yml", nested.into()).unwrap();
+    let root =
+        OutlineContent::from_source(&ValidationCache::new(), "nested.yml", nested.into()).unwrap();
     assert_eq!(root.select("pair[a]").unwrap().text(), "a:\n  b: 1");
     assert_eq!(
         root.select("pair[a]/pair[b]").unwrap().text().trim_start(),
@@ -1192,12 +1322,14 @@ fn yaml_selection_ends_before_trailing_comment_tokens() {
 #[test]
 fn python_selected_source_includes_its_decorators() {
     let source = "@cache\ndef checked():\n    pass\n";
-    let root = OutlineContent::from_source("decorated.py", source.into()).unwrap();
+    let root = OutlineContent::from_source(&ValidationCache::new(), "decorated.py", source.into())
+        .unwrap();
     let selected = root.select("def[checked]").unwrap();
     assert!(selected.text().starts_with("@cache\ndef checked():"));
     assert_eq!(root.outline().items[1].span.start, 0);
     let classes = "@first\nclass Checked: pass\n@second\nclass Checked: pass\n";
-    let root = OutlineContent::from_source("decorated.py", classes.into()).unwrap();
+    let root = OutlineContent::from_source(&ValidationCache::new(), "decorated.py", classes.into())
+        .unwrap();
     for (selector, decorator) in [
         ("class[Checked]#1", "@first"),
         ("class[Checked]#2", "@second"),
@@ -1211,7 +1343,8 @@ fn python_selected_source_includes_its_decorators() {
 #[test]
 fn markdown_sections_include_setext_headings_and_anonymous_preamble() {
     let source = "intro\n\nHeading   words\n===\n\nparagraph\n\n## Nested\nleaf\n";
-    let root = OutlineContent::from_source("guide.md", source.into()).unwrap();
+    let root =
+        OutlineContent::from_source(&ValidationCache::new(), "guide.md", source.into()).unwrap();
     let sections = root
         .outline()
         .items
@@ -1240,7 +1373,8 @@ fn markdown_sections_include_setext_headings_and_anonymous_preamble() {
 #[test]
 fn plain_line_fingerprints_use_sha256_words_without_losing_boundaries() {
     fn line(text: &str) -> trust_but_verify::graph::Fingerprint {
-        let root = OutlineContent::from_source("note.txt", text.into()).unwrap();
+        let root =
+            OutlineContent::from_source(&ValidationCache::new(), "note.txt", text.into()).unwrap();
         root.select(&root.outline().items[1].selector)
             .unwrap()
             .fingerprint()
@@ -1262,14 +1396,22 @@ fn formatted_contents_redact_credentials_while_retaining_raw_text_and_spans() {
     let token = format!("gh{}_{}", "p", "16C7e42F292c6912E7710c838347Ae178B4a");
     let different = format!("gh{}_{}", "p", "C69C118783E8886B5119E0fe942B153973Ca");
     let source = format!("credential {token}\nvisible text\n");
-    let contents = OutlineContent::from_source("note.unknown", source.clone().into()).unwrap();
+    let contents = OutlineContent::from_source(
+        &ValidationCache::new(),
+        "note.unknown",
+        source.clone().into(),
+    )
+    .unwrap();
     assert_eq!(contents.text(), source);
     assert!(contents.format().contains("[REDACTED:GitHub Token]"));
     assert!(!contents.format().contains(&token));
     assert_eq!(contents.format().lines().count(), source.lines().count());
-    let changed =
-        OutlineContent::from_source("note.unknown", source.replace(&token, &different).into())
-            .unwrap();
+    let changed = OutlineContent::from_source(
+        &ValidationCache::new(),
+        "note.unknown",
+        source.replace(&token, &different).into(),
+    )
+    .unwrap();
     assert_eq!(contents.fingerprint(), changed.fingerprint());
     let selected = contents
         .select(&contents.outline().items[1].selector)
@@ -1282,7 +1424,8 @@ fn formatted_contents_redact_credentials_while_retaining_raw_text_and_spans() {
 #[test]
 fn python_nested_definitions_use_the_nearest_outline_ancestor() {
     let source = "class Outer:\n    class Inner:\n        @decorate\n        def method(self):\n            if True:\n                def local():\n                    pass\ndef factory():\n    class Product:\n        def run(self):\n            pass\nasync def async_outer():\n    async def async_inner():\n        pass\n";
-    let contents = OutlineContent::from_source("nested.py", source.into()).unwrap();
+    let contents =
+        OutlineContent::from_source(&ValidationCache::new(), "nested.py", source.into()).unwrap();
     assert_eq!(
         contents
             .outline()
@@ -1322,11 +1465,13 @@ fn python_nested_definitions_use_the_nearest_outline_ancestor() {
 // {test}`requirements.sdk.outlines.attachments.order`
 // {test}`requirements.sdk.outlines.attachments.comments`
 // {test}`requirements.sdk.sources.rust.attachments`
+// {test}`requirements.sdk.outlines.AttachmentKind`
 #[test]
 fn rust_attachments_keep_the_owner_kind_and_original_bytes() {
     use trust_but_verify::outline::AttachmentKind::{Annotation, Comment};
     let source = "//! file docs\nmod m {\n    /// café\n    /// café\n    #[inline]\n    fn f() {} // trailing\n}\n";
-    let snapshot = OutlineContent::from_source("example.rs", source.into()).unwrap();
+    let snapshot =
+        OutlineContent::from_source(&ValidationCache::new(), "example.rs", source.into()).unwrap();
     let selected = snapshot.select("mod[m]/fn[f]").unwrap();
     let items = &selected.outline().items;
     let records = |index: usize| {
@@ -1431,7 +1576,8 @@ fn bundled_languages_classify_only_their_attachment_syntax() {
         ),
         ("test.txt", "# just text\n", vec![]),
     ] {
-        let snapshot = OutlineContent::from_source(path, source.into()).unwrap();
+        let snapshot =
+            OutlineContent::from_source(&ValidationCache::new(), path, source.into()).unwrap();
         let mut found: Vec<_> = snapshot
             .outline()
             .items
@@ -1514,7 +1660,12 @@ fn custom_attachment_spans_are_checked_against_the_original_snapshot() {
         let language = Custom { span };
         assert_eq!(language.name(), "custom");
         assert_eq!(language.extensions(), &["custom"]);
-        OutlineContent::from_source_with(&language, "one.custom", "é".into())
+        OutlineContent::from_source_with(
+            &ValidationCache::new(),
+            &language,
+            "one.custom",
+            "é".into(),
+        )
     };
     let snapshot = load(Span::new(0, 2)).unwrap();
     let attachment = &snapshot.outline().items[0].attachments[0];
@@ -1578,7 +1729,8 @@ fn outline_constructors_preserve_fields_and_replace_attachments() {
 #[test]
 fn rust_name_spans_highlight_spelling_in_the_original_source() {
     let source = "use x;\nimpl<T> Trait for Wrapper<T> {\n #[test]\n fn café() {}\n}\nimpl Wrapper<u8> {}\nunsafe extern {}\nextern \"C\" {}\n";
-    let contents = OutlineContent::from_source("names.rs", source.into()).unwrap();
+    let contents =
+        OutlineContent::from_source(&ValidationCache::new(), "names.rs", source.into()).unwrap();
     let named: Vec<_> = contents
         .outline()
         .items
@@ -1633,7 +1785,8 @@ fn language_name_spans_retain_original_bytes_when_selectors_are_normalized() {
         ),
         ("a.txt", "plain\n", vec![None]),
     ] {
-        let root = OutlineContent::from_source(path, source.into()).unwrap();
+        let root =
+            OutlineContent::from_source(&ValidationCache::new(), path, source.into()).unwrap();
         let items = &root.outline().items;
         assert_eq!(items[0].name_span, None);
         assert_eq!(

@@ -1,6 +1,6 @@
 use crate::domain::Domain;
 use crate::domain::NodeContents;
-use crate::graph::validator::Validator;
+use crate::graph as validation;
 use crate::graph::*;
 use crate::request::Agent;
 use crate::request::AgentRequest;
@@ -49,6 +49,7 @@ struct State {
 
 #[derive(Clone, Default)]
 struct Memory {
+    cache: crate::domain::ValidationCache,
     state: Arc<Mutex<State>>,
     read_in_callback: bool,
     edges_in_callback: bool,
@@ -75,6 +76,9 @@ impl NodeContents for Content {
 }
 
 impl Domain for Memory {
+    fn cache(&self) -> &crate::domain::ValidationCache {
+        &self.cache
+    }
     type NodeId = u8;
     type EdgeLabel = u8;
 
@@ -207,7 +211,7 @@ impl Memory {
 }
 
 // {test}`requirements.sdk.graph.evidence.checking_records`
-// {test}`requirements.sdk.graph.validators.validate_node`
+// {test}`requirements.sdk.graph.running-criteria.validate_node`
 #[tokio::test]
 async fn historical_freshness_reads_do_not_enter_the_replacement_trace() {
     let graph = Memory {
@@ -232,15 +236,17 @@ async fn historical_freshness_reads_do_not_enter_the_replacement_trace() {
             ),
         );
     }
-    let validator = Validator::new(graph.clone());
     let review = || Review {
         node: 1,
         revision: "v1",
     };
-    let old = validator.load_evidence(&review()).await.unwrap().unwrap();
-    assert!(!validator.check_inputs(&old).unwrap());
-    let value = validator.verify(review()).await.unwrap();
-    validator.store_evidence(&value).await.unwrap();
+    let old = validation::load_evidence(&graph, &review())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!validation::check_inputs(&graph, &old).unwrap());
+    let value = validation::verify(&graph, review()).await.unwrap();
+    validation::store_evidence(&graph, &value).await.unwrap();
     let state = graph.state.lock().unwrap();
     assert_eq!(state.reads, vec![2, 1]);
     assert_eq!(
@@ -252,13 +258,13 @@ async fn historical_freshness_reads_do_not_enter_the_replacement_trace() {
 // {test}`requirements.sdk.graph.agent-calls.model_capability`
 // {test}`requirements.sdk.graph.agent-calls.procedures`
 // {test}`requirements.sdk.graph.evidence.store_evidence`
-// {test}`requirements.sdk.graph.validators.validate_node.errors`
+// {test}`requirements.sdk.graph.running-criteria.validate_node.errors`
 // {test}`requirements.sdk.graph.agent-harness.with_agent`
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
 // {test}`requirements.sdk.graph.criteria.execute`
 // {test}`requirements.sdk.graph.agent-calls.Ask`
-// {test}`requirements.sdk.graph.validators.validator.new`
-// {test}`requirements.sdk.graph.validators.ValidationError`
+
+// {test}`requirements.sdk.graph.running-criteria.ValidationError`
 #[tokio::test]
 async fn runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls() {
     let graph = Memory {
@@ -271,14 +277,15 @@ async fn runner_does_not_store_a_missing_agent_error_and_supports_intermediate_c
         .unwrap()
         .contents
         .insert(1, "root".into());
-    let validator = Validator::new(graph.clone());
     assert!(matches!(
-        validator
-            .verify(Review {
+        validation::verify(
+            &graph,
+            Review {
                 node: 1,
                 revision: "v1"
-            })
-            .await,
+            }
+        )
+        .await,
         Err(ValidationError::NoAgentConfigured)
     ));
     {
@@ -287,16 +294,19 @@ async fn runner_does_not_store_a_missing_agent_error_and_supports_intermediate_c
         assert!(state.reads.is_empty());
     }
     let agent = Arc::new(MockAgent::default());
-    let validator = validator.with_agent_adapter(agent.clone());
-    let value = validator
-        .verify(Review {
+
+    let value = crate::agent_runtime::verify_with_agent(
+        &graph,
+        agent.as_ref(),
+        Review {
             node: 1,
             revision: "v1",
-        })
-        .await
-        .unwrap();
+        },
+    )
+    .await
+    .unwrap();
     assert!(value.output().result);
-    validator.store_evidence(&value).await.unwrap();
+    validation::store_evidence(&graph, &value).await.unwrap();
     let state = graph.state.lock().unwrap();
     assert_eq!(
         state.records[&1].dependencies,
@@ -713,7 +723,7 @@ fn labeled_selections_track_only_target_membership_without_reading_contents() {
     );
 }
 
-// {test}`requirements.sdk.graph.validators.validate_node`
+// {test}`requirements.sdk.graph.running-criteria.validate_node`
 // {test}`requirements.sdk.graph.evidence.check_node`
 // {test}`requirements.sdk.graph.agent-calls.procedures`
 // {test}`requirements.sdk.graph.criteria.criterion_trait`
@@ -722,24 +732,26 @@ fn labeled_selections_track_only_target_membership_without_reading_contents() {
 // {test}`requirements.sdk.graph.evidence.inputs`
 // {test}`requirements.sdk.graph.criteria.criterion_trait.version`
 // {test}`requirements.sdk.graph.evidence.checking_records.version_match`
-// {test}`requirements.sdk.graph.validators.validator.store_evidence`
-// {test}`requirements.sdk.graph.validators.validator.load_evidence`
+// {test}`requirements.sdk.graph.running-criteria.store_evidence`
+// {test}`requirements.sdk.graph.running-criteria.load_evidence`
 #[tokio::test]
 async fn caller_reuses_negative_answers_and_compares_revisions_explicitly() {
     let graph = Memory::default();
-    let validator = Validator::new(graph.clone());
     let review = || Review {
         node: 9,
         revision: "v1",
     };
-    let value = validator.verify(review()).await.unwrap();
+    let value = validation::verify(&graph, review()).await.unwrap();
     assert!(!value.output().result);
     assert!(graph.state.lock().unwrap().records.is_empty());
-    validator.store_evidence(&value).await.unwrap();
-    let cached = validator.load_evidence(&review()).await.unwrap().unwrap();
+    validation::store_evidence(&graph, &value).await.unwrap();
+    let cached = validation::load_evidence(&graph, &review())
+        .await
+        .unwrap()
+        .unwrap();
     assert!(!cached.output().result);
     assert!(review().version().is_compatible_with(cached.version()));
-    assert!(validator.check_inputs(&cached).unwrap());
+    assert!(validation::check_inputs(&graph, &cached).unwrap());
     {
         let state = graph.state.lock().unwrap();
         assert_eq!(state.started, vec![9]);
@@ -748,25 +760,32 @@ async fn caller_reuses_negative_answers_and_compares_revisions_explicitly() {
         assert!(state.records[&9].dependencies.is_empty());
     }
     assert!(
-        validator
-            .load_evidence(&Review {
+        validation::load_evidence(
+            &graph,
+            &Review {
                 node: 8,
                 revision: "v1"
-            })
-            .await
-            .unwrap()
-            .is_none()
+            }
+        )
+        .await
+        .unwrap()
+        .is_none()
     );
     let v2 = Review {
         node: 9,
         revision: "v2",
     };
-    let old = validator.load_evidence(&v2).await.unwrap().unwrap();
+    let old = validation::load_evidence(&graph, &v2)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(old.version().unwrap().as_str(), "v1");
-    assert!(validator.check_inputs(&old).unwrap());
+    assert!(validation::check_inputs(&graph, &old).unwrap());
     assert!(!v2.version().is_compatible_with(old.version()));
-    let replacement = validator.verify(v2).await.unwrap();
-    validator.store_evidence(&replacement).await.unwrap();
+    let replacement = validation::verify(&graph, v2).await.unwrap();
+    validation::store_evidence(&graph, &replacement)
+        .await
+        .unwrap();
     assert_eq!(
         graph.state.lock().unwrap().records[&9]
             .version
@@ -783,21 +802,23 @@ async fn caller_reuses_negative_answers_and_compares_revisions_explicitly() {
         .get_mut(&9)
         .unwrap()
         .version = None;
-    let legacy = validator
-        .load_evidence(&Review {
+    let legacy = validation::load_evidence(
+        &graph,
+        &Review {
             node: 9,
             revision: "v2",
-        })
-        .await
-        .unwrap()
-        .unwrap();
+        },
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert!(CriterionVersion::new("v2").is_compatible_with(legacy.version()));
     assert!(!legacy.output().result);
-    assert!(validator.check_inputs(&legacy).unwrap());
+    assert!(validation::check_inputs(&graph, &legacy).unwrap());
 }
 
 // {test}`requirements.sdk.graph.evidence.store_evidence`
-// {test}`requirements.sdk.graph.validators.validate_node.errors`
+// {test}`requirements.sdk.graph.running-criteria.validate_node.errors`
 // {test}`requirements.sdk.graph.evidence.check_node`
 // {test}`requirements.sdk.graph.evidence.procedure_identity`
 // {test}`requirements.sdk.graph.evidence.record.output`
@@ -805,27 +826,30 @@ async fn caller_reuses_negative_answers_and_compares_revisions_explicitly() {
 #[tokio::test]
 async fn resolution_storage_and_callback_errors_are_not_judgments() {
     let graph = Memory::default();
-    let validator = Validator::new(graph.clone());
     graph.state.lock().unwrap().fail_load = true;
     assert!(matches!(
-        validator
-            .load_evidence(&Review {
+        validation::load_evidence(
+            &graph,
+            &Review {
                 node: 1,
                 revision: "v1"
-            })
-            .await,
+            }
+        )
+        .await,
         Err(ValidationError::Graph("load"))
     ));
-    let value = validator
-        .verify(Review {
+    let value = validation::verify(
+        &graph,
+        Review {
             node: 1,
             revision: "v1",
-        })
-        .await
-        .unwrap();
+        },
+    )
+    .await
+    .unwrap();
     graph.state.lock().unwrap().fail_store = true;
     assert!(matches!(
-        validator.store_evidence(&value).await,
+        validation::store_evidence(&graph, &value).await,
         Err(ValidationError::Graph("store"))
     ));
     assert!(graph.state.lock().unwrap().records.is_empty());
@@ -833,14 +857,15 @@ async fn resolution_storage_and_callback_errors_are_not_judgments() {
         read_in_callback: true,
         ..Memory::default()
     };
-    let validator = Validator::new(graph.clone());
     assert!(matches!(
-        validator
-            .verify(Review {
+        validation::verify(
+            &graph,
+            Review {
                 node: 1,
                 revision: "v1"
-            })
-            .await,
+            }
+        )
+        .await,
         Err(ValidationError::Graph("missing"))
     ));
     assert!(graph.state.lock().unwrap().records.is_empty());
@@ -1345,11 +1370,11 @@ async fn later_lighter_agent_calls_preserve_the_contexts_existing_trace() {
 }
 
 // {test}`requirements.sdk.domain`
-// {test}`requirements.sdk.graph.validators.validate_node`
+// {test}`requirements.sdk.graph.running-criteria.validate_node`
 // {test}`requirements.sdk.graph.validation-context.root_inputs`
 // {test}`requirements.sdk.graph.evidence.node_inputs`
 // {test}`requirements.sdk.graph.validation-context.ValidationContext.new`
-// {test}`requirements.sdk.graph.validators.validator.verify`
+// {test}`requirements.sdk.graph.running-criteria.verify`
 // {test}`requirements.sdk.graph.validation-context.ValidationContext`
 #[tokio::test]
 async fn concurrent_single_node_validations_keep_separate_traces() {
@@ -1366,29 +1391,37 @@ async fn concurrent_single_node_validations_keep_separate_traces() {
             state.edges.insert(node, vec![(1, 99)]);
         }
     }
-    let validator = Validator::new(graph.clone());
     let (first, second, third) = futures::join!(
-        validator.verify(Review {
-            node: 1,
-            revision: "v1"
-        }),
-        validator.verify(Review {
-            node: 2,
-            revision: "v1"
-        }),
-        validator.verify(Review {
-            node: 3,
-            revision: "v1"
-        }),
+        validation::verify(
+            &graph,
+            Review {
+                node: 1,
+                revision: "v1"
+            }
+        ),
+        validation::verify(
+            &graph,
+            Review {
+                node: 2,
+                revision: "v1"
+            }
+        ),
+        validation::verify(
+            &graph,
+            Review {
+                node: 3,
+                revision: "v1"
+            }
+        ),
     );
     let (first, second, third) = (first.unwrap(), second.unwrap(), third.unwrap());
     assert!(first.output().result);
     assert!(second.output().result);
     assert!(third.output().result);
     let (a, b, c) = futures::join!(
-        validator.store_evidence(&first),
-        validator.store_evidence(&second),
-        validator.store_evidence(&third)
+        validation::store_evidence(&graph, &first),
+        validation::store_evidence(&graph, &second),
+        validation::store_evidence(&graph, &third)
     );
     a.unwrap();
     b.unwrap();
@@ -1412,7 +1445,8 @@ async fn concurrent_single_node_validations_keep_separate_traces() {
 
 // {test}`requirements.sdk.graph.agent-calls.judge.submission`
 // {test}`requirements.sdk.graph.criteria.execute`
-// {test}`requirements.sdk.graph.validators.ValidationError`
+// {test}`requirements.sdk.graph.running-criteria.ValidationError`
+// {test}`requirements.sdk.graph.agent-calls.Ask`
 #[tokio::test]
 async fn invalid_typed_submission_is_an_agent_error() {
     let graph = Memory {
@@ -1434,14 +1468,16 @@ async fn invalid_typed_submission_is_an_agent_error() {
         ctx.ask::<Answer>().await,
         Err(ValidationError::Agent(_))
     ));
-    let validator = Validator::new(graph.clone()).with_agent_adapter(Arc::new(agent));
     assert!(matches!(
-        validator
-            .verify(Review {
+        crate::agent_runtime::verify_with_agent(
+            &graph,
+            &agent,
+            Review {
                 node: 1,
                 revision: "v1"
-            })
-            .await,
+            }
+        )
+        .await,
         Err(ValidationError::Agent(_))
     ));
     let state = graph.state.lock().unwrap();
@@ -1451,7 +1487,7 @@ async fn invalid_typed_submission_is_an_agent_error() {
 
 // {test}`requirements.sdk.graph.criteria.execute`
 // {test}`requirements.sdk.graph.criteria.output_policy`
-// {test}`requirements.sdk.graph.validators.validate_node.errors`
+// {test}`requirements.sdk.graph.running-criteria.validate_node.errors`
 #[tokio::test]
 async fn criterion_decode_errors_are_execution_errors_and_false_is_a_completed_answer() {
     struct ParseAnswer;
@@ -1475,14 +1511,13 @@ async fn criterion_decode_errors_are_execution_errors_and_false_is_a_completed_a
         }
     }
     let graph = Memory::default();
-    let validator = Validator::new(graph.clone());
     graph
         .state
         .lock()
         .unwrap()
         .contents
         .insert(1, "not JSON".into());
-    let error = validator.verify(ParseAnswer).await.err().unwrap();
+    let error = validation::verify(&graph, ParseAnswer).await.err().unwrap();
     assert!(matches!(error, ValidationError::Output(error) if error.is_syntax()));
     assert!(graph.state.lock().unwrap().records.is_empty());
 
@@ -1492,10 +1527,10 @@ async fn criterion_decode_errors_are_execution_errors_and_false_is_a_completed_a
         .unwrap()
         .contents
         .insert(1, "false".into());
-    let answer = validator.verify(ParseAnswer).await.unwrap();
+    let answer = validation::verify(&graph, ParseAnswer).await.unwrap();
     assert!(!answer.output());
     assert_eq!(answer.dependencies(), &[Dependency::Node(1, fp("false"))]);
-    validator.store_evidence(&answer).await.unwrap();
+    validation::store_evidence(&graph, &answer).await.unwrap();
     assert_eq!(graph.state.lock().unwrap().records[&1].output, json!(false));
 }
 
@@ -1520,7 +1555,7 @@ fn prefix_hashes_match_known_utf8_sha256_without_normalization() {
 }
 
 // {test}`requirements.sdk.graph.criteria.execute`
-// {test}`requirements.sdk.graph.validators.ValidationError`
+// {test}`requirements.sdk.graph.running-criteria.ValidationError`
 #[test]
 fn agent_errors_expose_the_agreed_string_payload() {
     use std::error::Error;
@@ -1541,6 +1576,7 @@ fn agent_errors_expose_the_agreed_string_payload() {
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
 // {test}`requirements.sdk.graph.node_content`
+// {test}`requirements.sdk.graph.agent-calls.Ask`
 #[tokio::test]
 async fn queued_reads_selection_and_rendering_fail_before_agent_invocation() {
     let graph = Memory::default();
@@ -1656,8 +1692,14 @@ async fn enum_node_ids_distinguish_requirements_and_source_items_in_one_domain()
         Source { file: String, selector: String },
     }
     #[derive(Clone, Default)]
-    struct ReviewDomain(Arc<Mutex<Vec<(ReviewNodeId, CriterionPath, Record<ReviewNodeId>)>>>);
+    struct ReviewDomain(
+        Arc<Mutex<Vec<(ReviewNodeId, CriterionPath, Record<ReviewNodeId>)>>>,
+        crate::domain::ValidationCache,
+    );
     impl Domain for ReviewDomain {
+        fn cache(&self) -> &crate::domain::ValidationCache {
+            &self.1
+        }
         type Error = &'static str;
         type NodeId = ReviewNodeId;
         type NodeContent = Content;

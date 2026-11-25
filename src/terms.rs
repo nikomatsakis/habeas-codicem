@@ -126,7 +126,11 @@ fn direct_references(
                 {
                     // Selected evidence may be an incomplete Rust fragment. Keep the
                     // lexical fallback for fragments without a usable outline.
-                    let ranges = match crate::outline_items::for_file(Path::new(&file), &text) {
+                    let ranges = match crate::outline_items::for_file(
+                        &outlines.validation,
+                        Path::new(&file),
+                        &text,
+                    ) {
                         Ok(items) => items
                             .comments
                             .into_iter()
@@ -142,8 +146,11 @@ fn direct_references(
                 // {impl}`requirements.references.reference_contexts`
                 InputSelector::Outline { file, .. } => {
                     let markdown = crate::outline::is_markdown_path(Path::new(&file));
-                    let contexts =
-                        crate::evidence::ReferenceContexts::parse(Path::new(&file), &text);
+                    let contexts = crate::evidence::ReferenceContexts::parse(
+                        &outlines.validation,
+                        Path::new(&file),
+                        &text,
+                    );
                     for role in reference_roles(&text, markdown) {
                         if role.kind == ReferenceKind::Term && contexts.allows(role.start) {
                             pending.insert(role.name.to_owned());

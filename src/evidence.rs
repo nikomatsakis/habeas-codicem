@@ -287,7 +287,13 @@ pub(crate) fn inspect_repository_with_progress(
         total: None,
     });
     let files = discovered_files(&root, &mut errors);
-    let references = collect_references_with_progress(&root, &files, &mut errors, &mut progress);
+    let references = collect_references_with_progress(
+        &outlines.validation,
+        &root,
+        &files,
+        &mut errors,
+        &mut progress,
+    );
     discovery_errors.extend(errors[scanned..].iter().cloned());
     validate_committed_credentials(&root, &mut errors);
     // {impl}`requirements.references.distributed`
@@ -1432,11 +1438,17 @@ pub fn reference_set_digest_for(root: &Path, name: &str) -> io::Result<String> {
     // A discovery failure aborts, so this is not a validation site.
     let mut failures = Vec::new();
     let files = discovered_files(&root, &mut failures);
-    let references = collect_references_with_progress(&root, &files, &mut failures, &mut |_| {});
+    let outlines = OutlineCache::default();
+    let references = collect_references_with_progress(
+        &outlines.validation,
+        &root,
+        &files,
+        &mut failures,
+        &mut |_| {},
+    );
     if !failures.is_empty() {
         return Err(io::Error::other(failures.join("\n")));
     }
-    let outlines = OutlineCache::default();
     let sites = definition_sites(&root, name, definition, &files, &outlines)?;
     Ok(reference_set_digest(
         &root,
@@ -1890,7 +1902,7 @@ pub(crate) fn validate_fixme_entries(
 // {impl}`requirements.references.discovery`
 pub(crate) fn collect_references(root: &Path, errors: &mut Vec<String>) -> Vec<SourceReference> {
     let files = discovered_files(root, errors);
-    collect_references_with_progress(root, &files, errors, &mut |_| {})
+    collect_references_with_progress(&Default::default(), root, &files, errors, &mut |_| {})
 }
 
 /// The project files reference discovery considers under source-access
@@ -1948,12 +1960,13 @@ pub(crate) fn untracked_reference_files(root: &Path) -> io::Result<Vec<PathBuf>>
     let root = fs::canonicalize(root)?;
     let md_root = book_source_dir(&root, &mut Vec::new());
     let untracked = crate::authoring::access::load_discovery_sources(&root)?.untracked()?;
+    let cache = trust_but_verify::domain::ValidationCache::new();
     Ok(untracked
         .into_iter()
         .filter(|file| {
             fs::read_to_string(file).is_ok_and(|content| {
                 !content.contains('\0')
-                    && file_references(file, &content, file.starts_with(&md_root))
+                    && file_references(&cache, file, &content, file.starts_with(&md_root))
                         .iter()
                         .any(|reference| reference.kind != ReferenceKind::Term)
             })
@@ -1963,6 +1976,7 @@ pub(crate) fn untracked_reference_files(root: &Path) -> io::Result<Vec<PathBuf>>
 
 // {impl}`requirements.ci.errors`
 pub(crate) fn collect_references_with_progress(
+    cache: &trust_but_verify::domain::ValidationCache,
     root: &Path,
     files: &[PathBuf],
     errors: &mut Vec<String>,
@@ -1992,7 +2006,12 @@ pub(crate) fn collect_references_with_progress(
         if content.contains('\0') {
             continue;
         }
-        references.extend(file_references(file, &content, file.starts_with(&md_root)));
+        references.extend(file_references(
+            cache,
+            file,
+            &content,
+            file.starts_with(&md_root),
+        ));
     }
     progress(InspectionProgress {
         stage: "reference source files",
@@ -2016,14 +2035,18 @@ pub(crate) enum ReferenceContexts {
 }
 
 impl ReferenceContexts {
-    pub(crate) fn parse(file: &Path, content: &str) -> Self {
+    pub(crate) fn parse(
+        cache: &trust_but_verify::domain::ValidationCache,
+        file: &Path,
+        content: &str,
+    ) -> Self {
         let profile = crate::outline::profile_for_path(file);
         if profile.language.is_none() || profile.name == "markdown" {
             return Self::Text {
                 markdown: profile.name == "markdown",
             };
         }
-        match crate::outline_items::for_file(file, content) {
+        match crate::outline_items::for_file(cache, file, content) {
             Ok(items) => Self::Parsed {
                 items,
                 rust: profile.name == "rust",
@@ -2058,14 +2081,19 @@ impl ReferenceContexts {
 }
 
 // {impl}`requirements.references.reference_contexts`
-pub(crate) fn file_references(file: &Path, content: &str, in_book: bool) -> Vec<SourceReference> {
+pub(crate) fn file_references(
+    cache: &trust_but_verify::domain::ValidationCache,
+    file: &Path,
+    content: &str,
+    in_book: bool,
+) -> Vec<SourceReference> {
     let markdown = crate::outline::is_markdown_path(file);
     let mut references = Vec::new();
     let roles = reference_roles(content, markdown);
     if roles.is_empty() && !content.contains(":::") {
         return references;
     }
-    let contexts = ReferenceContexts::parse(file, content);
+    let contexts = ReferenceContexts::parse(cache, file, content);
     let declarations = if markdown {
         declaration_line_ranges(content)
     } else {
@@ -2178,7 +2206,7 @@ pub(crate) mod tests {
         // The role's brace is built at run time, so this source holds none.
         let role = |name: &str| format!("{{impl}}`{name}`");
         let names = |file: &str, content: String| {
-            super::file_references(Path::new(file), &content, false)
+            super::file_references(&Default::default(), Path::new(file), &content, false)
                 .into_iter()
                 .map(|reference| reference.name)
                 .collect::<Vec<_>>()

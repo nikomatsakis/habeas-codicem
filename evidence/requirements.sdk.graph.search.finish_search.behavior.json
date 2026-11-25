@@ -1,8 +1,8 @@
 {
   "requirement": "Each text or structural search page delivered to the agent opens a session-local\n`search_id` for accounting, even when there are no matches. Each match has a\nshort string `tag` unique within the page. The agent may fetch further pages\nwhile earlier pages are open. Replaying a page preserves its ID, tags, and\ncompletion state. Failed searches and undelivered pages create no obligation.\n\nBefore the harness accepts a submission, the agent MUST call `finish_search`\nfor every open page. `used` lists the tags of excerpts the agent relied on\ndirectly and may be empty. A valid call closes the page and returns its ID and\n`finished: true`. A later call for the same page can select additional tags.\nAn invalid call, including an unknown ID or tag, returns a correctable tool\nerror and preserves the page's completion state.",
   "determination": true,
-  "rationale": "I judge the two `{test}` items adequate for `finish_search.behavior`. I did not read the implementation. The checks below are mapped by obligation.\n\n**Obligations and the tests that check them**\n\n- **Every delivered page opens a `search_id`, including empty pages.**\n  - `search_obligations_follow_delivery_and_keep_the_original_snapshot` runs an empty `search_text` for \"absent\". It gets a `search_id`, and finishing it returns `{search_id, finished:true}`.\n  - The same test runs an empty `search_structure` on a peer session. `outstanding_searches()` then lists exactly that page's ID.\n  - `structural_tags_select_only_the_original_enclosing_item` covers a structural page with matches. It is marked for `finish_search.inputs`, not for this requirement. It does finish a structural page with `used:[]` and then with a tag.\n  - `supplied_agent_uses_attached_project_tools_in_both_configuration_orders` does the same end to end through the agent with two empty `search_text` calls. It checks that the two IDs differ.\n- **Match tags are short strings, unique within a page.** The project-sources test collects the tags of a multi-match `search_text` page into a set and asserts the set size equals the match count. `structural_tags_select_only_the_original_enclosing_item` also gets two structural matches and picks one by its tag.\n- **The agent may fetch further pages while earlier pages are open.** The test calls `get_next_page` while the first page is still unfinished. It then checks that two searches are outstanding, with different search IDs.\n- **Replaying a page preserves its ID, tags and completion state.**\n  - After the pages are finished, `get_next_page` is called again. Its text must equal the original delivery, and the outstanding set is empty afterwards. So replay does not reopen the page.\n  - The `hits` and `capped` pages assert `complete` true and false respectively.\n- **Failed and undelivered pages create no obligation.**\n  - The failed `search_text` with pattern `(` is followed by checks on `session.outstanding_searches()`. Only the two delivered pages are counted.\n  - On `fresh`, a page whose `next` was never delivered contributes only its own ID to `outstanding_searches()`. The `capped` page was finished beforehand.\n- **Submission is refused while any page is open.**\n  - In the agent test, `submit_result` is sent while two empty searches are open.\n  - The retry message must contain \"Call finish_search for every open search_id\" and both IDs.\n  - A later `submit_result` after all pages are closed is accepted.\n  - The final dependency list is asserted.\n- **`used` may be empty. A valid call closes the page and returns its ID and `finished:true`.** Both tests do this. The project-sources test asserts the exact JSON `{\"search_id\":…, \"finished\":true}`.\n- **A later call for the same page can select additional tags.**\n  - The agent test first calls `finish_search` with `used:[beta]`. A second call with `used:[alpha]` follows.\n  - The resulting dependencies include both alpha and beta and exclude the unused tag.\n  - The project-sources test repeats the same selection twice and gets the same dependency. The structural test also finishes with `[]` and then with a tag.\n- **An invalid call returns a correctable error and preserves state.**\n  - An unknown tag is exercised in both tests. In the agent test, `[\"unused\",\"invalid\"]` yields an \"unknown search tag\" output. The page can then be finished with other tags, and the unused tag is absent from the dependencies. In the project-sources test, `[\"1\",\"unknown\"]` errors and the outstanding count stays at 2.\n  - An unknown ID is exercised with a non-search UUID. The test also tries a different session's page. Both give errors.\n\n**Minor residual**\n\nNo test makes an invalid call against an already-closed page and then checks that it stays closed. The open-page case is tested. I do not treat this untested case as a gap: the text does not single out that combination.\n\nNo `{fixme}` acknowledgments apply, and none are needed.",
-  "references": "2015d3bda5eca4df6489a5e9ce0ffecfc132b699330cc86050e093469fe22f1b",
+  "rationale": "The two marked tests cover every obligation in `finish_search.behavior`. They are `project_sources.rs#mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]` and `configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]`. I found no gap.\n\n- **A delivered page opens a session-local `search_id`, even with no matches.**\n  - The empty `search_text` for \"absent\" and the empty `search_structure` on a peer session each give an id that `outstanding_searches()` reports.\n  - A separate peer session cannot finish or fetch another session's page. `finish_search` and `get_next_page` both fail there, so ids are session-local.\n- **Each match has a unique string `tag`.** A multi-match page is asserted to have a distinct tag per match.\n- **Further pages can be fetched while earlier pages are open.** `get_next_page` is called while the first page is still open. The test then checks that `outstanding_searches().len()` is 2.\n- **Replay preserves ID, tags and completion state.**\n  - After the second page is finished, a replay returns text equal to the first delivery. That covers the ID and tags.\n  - The replay leaves `outstanding_searches()` empty, so it does not reopen the page.\n  - The implementation (`pages.rs#impl[Pages<N, L>]/fn[get]`) only sets `delivered`. Replaying a page that is still open is not tested directly, but that code never touches `finished`.\n- **Failed searches and undelivered pages create no obligation.**\n  - The failed `search_text` with pattern \"(\" returns an error. The later count of 2 outstanding pages shows it left none.\n  - The undelivered `next` page cannot be finished before delivery. Finishing with it as the id returns an error.\n  - The earlier `fresh` session also reports only the delivered page as outstanding.\n- **The harness refuses submission while pages are open.** In the configured-agent test, the first `submit_result` attempt gets a retry message. The message says \"Call finish_search for every open search_id\" and names both open ids. The agent can submit only after finishing them.\n- **`used` may be empty, and a valid call closes the page.** `used: []` is accepted for an empty page. The response is asserted to equal exactly `{\"search_id\":…, \"finished\":true}`.\n- **A later call for the same page can select additional tags.** The configured-agent test finishes with `beta`, then with `alpha`. The resulting dependencies are `alpha` and `beta` but not the unused `unused.txt` tag.\n- **An invalid call returns a correctable error and preserves completion state.**\n  - An unknown id returns an error.\n  - Unknown tags `\"unknown\"` and `\"invalid\"` return an error with an \"unknown search tag\" message.\n  - The page stays open afterwards. The outstanding count remains 2, and the page can still be finished in later calls.\n  - A mixed call with `\"invalid\"` and the valid `unused.txt` tag records no dependency for the valid tag.\n\nA reviewer could note that structural pages with matches are not asserted for tag uniqueness in these marked tests. Other tests check structural tags. Tag generation and page registration are shared between text and structural search in `pages.rs#impl[Pages<N, L>]/fn[search]`. I do not treat this as a gap.",
+  "references": "aa1ea2f2795dfce7a5bccd09e3535cd0165fb022885973ab30f714b60c90cef7",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.search.finish_search.behavior",
@@ -28,18 +28,18 @@
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
-      "item": "mod[tests]/fn[supplied_agent_uses_attached_project_tools_in_both_configuration_orders]",
-      "hash": "e6ecd2d9b1420224c8370ee1ea1a9e103148a8a605d3a8648afdc02bcaf44e22"
+      "item": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]",
+      "hash": "dfdd8a5c7b1b09bd1f0aa14ffe22d1ffa6fbf20d3405b081be4920b12fd0be84"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]",
-      "hash": "20ae5d094e7db53e60852ffc9efe136f3c1e652b90133644f791cfaf23f41ea2"
+      "hash": "fcd492230081605d3c3f00fcec9057e7ae75e2c125f5356613b37cf4fbc140aa"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
-      "item": "mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]",
-      "hash": "85c054c420f5e672bd3a4bd69469a10bdd7a248b758ce5b12730c31bf199825e"
+      "file": "crates/trust-but-verify/src/agent/pages.rs",
+      "item": "",
+      "hash": "db48c4cfc7dc1265ae23292b4de81dfef3fac9435649e7d7470c4110e060b5a0"
     }
   ],
   "format_version": 1,
@@ -52,7 +52,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "2015d3bda5eca4df6489a5e9ce0ffecfc132b699330cc86050e093469fe22f1b"
+          "value": "aa1ea2f2795dfce7a5bccd09e3535cd0165fb022885973ab30f714b60c90cef7"
         }
       ]
     },
@@ -64,7 +64,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "5c32b6285f51d4512a62b32b0209537f80172798ab6b00a78331bb45390753d3"
+          "value": "a5689b60f89e9029640943bb42a32125f75f29a19f763f44c5a1b83b4b64572d"
         }
       ]
     },
@@ -87,12 +87,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/configured.rs"
             },
-            "selector": "mod[tests]/fn[supplied_agent_uses_attached_project_tools_in_both_configuration_orders]"
+            "selector": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "467913c7cc66e32119d121058d00ba59f2117e5869e13e10d57a1c60b6aeda9b"
+          "value": "7de09034f4b578217d5910b3a50d3adc4b8a14bb5caf4e126925822af51898e4"
         }
       ]
     },
@@ -109,7 +109,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "03c2a9dbec5f05a90c8a2055b99e5a91b24a5228f674c84657bc2c0ca7d3a0eb"
+          "value": "df28dea3064ff665e1ac5c4dee39960f549838f9440ceded3706aa46ac103871"
         }
       ]
     },
@@ -119,14 +119,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+              "location": "crates/trust-but-verify/src/agent/pages.rs"
             },
-            "selector": "mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]"
+            "selector": ""
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f0e65ad9841b7796a60eb1384d000b38f9849990fc0b0d874dd9c7a1c7764956"
+          "value": "d8420b3898d4d4e37d1b84ee8afc4e020b4b16fbf1efaf216fe4086f919f2e21"
         }
       ]
     }

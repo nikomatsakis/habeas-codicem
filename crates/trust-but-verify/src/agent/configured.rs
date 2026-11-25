@@ -9,28 +9,21 @@ use std::{io, sync::Arc};
 use tokio::sync::OnceCell;
 
 /// Backend state is initialized on the first awaited request.
-pub(crate) struct ConfiguredAgent<D: Domain> {
+pub(crate) struct ConfiguredAgent {
     config: AgentConfig,
     provider: OnceCell<Arc<RigProvider>>,
-    tools: Arc<dyn ToolFactory<D>>,
 }
 
-impl<D: Domain> ConfiguredAgent<D> {
-    #[cfg(test)]
+impl ConfiguredAgent {
     pub(crate) fn new(config: AgentConfig) -> Self {
-        Self::with_tools(config, Arc::new(super::NoTools))
-    }
-
-    pub(crate) fn with_tools(config: AgentConfig, tools: Arc<dyn ToolFactory<D>>) -> Self {
         Self {
             config,
             provider: OnceCell::new(),
-            tools,
         }
     }
 }
 
-impl<D> Agent<D> for ConfiguredAgent<D>
+impl<D> Agent<D> for ConfiguredAgent
 where
     D: Domain,
     D::EdgeLabel: serde::de::DeserializeOwned + schemars::JsonSchema + PartialEq,
@@ -51,10 +44,12 @@ where
                     RigProvider::connect(&self.config).await.map(Arc::new)
                 })
                 .await?;
-            ToolAgent::new(provider.clone())
-                .with_tools(self.tools.clone())
-                .run(request, inspection)
-                .await
+            let agent = ToolAgent::new(provider.clone());
+            if let Some(project) = inspection.graph().project_sources() {
+                agent.with_tools(project).run(request, inspection).await
+            } else {
+                agent.run(request, inspection).await
+            }
         })
     }
 }
@@ -87,19 +82,21 @@ mod tests {
     use super::*;
     use crate::agent::OpenAiConfig;
     use crate::domain::NodeContents;
+    use crate::graph as validation;
     use crate::graph::Criterion;
     use crate::graph::CriterionPath;
     use crate::graph::CriterionVersion;
     use crate::graph::Fingerprint;
     use crate::graph::NodePath;
     use crate::graph::Record;
-    use crate::graph::validator::Validator;
     use crate::request::ValidationContext;
 
     #[derive(Clone, Default)]
     struct TestDomain(
         Arc<std::sync::Mutex<Option<Record<u32, String>>>>,
         Arc<std::sync::Mutex<Vec<crate::outline::OutlineId>>>,
+        crate::domain::ValidationCache,
+        Option<std::path::PathBuf>,
     );
     struct Content;
 
@@ -117,6 +114,17 @@ mod tests {
     }
 
     impl Domain for TestDomain {
+        fn project_sources(&self) -> Option<crate::sources::SourceProject<Self>> {
+            self.3.clone().map(|sources| {
+                crate::sources::SourceProject::new(
+                    self.clone(),
+                    crate::sources::Sources::new(sources),
+                )
+            })
+        }
+        fn cache(&self) -> &crate::domain::ValidationCache {
+            &self.2
+        }
         type Error = String;
         type NodeId = u32;
         type NodeContent = Content;
@@ -202,8 +210,7 @@ mod tests {
     // {test}`requirements.sdk.graph.agent-harness.with_agent`
     // {test}`requirements.sdk.graph.agent-harness.tool_agent.provider_failure`
     // {test}`requirements.sdk.graph.criteria.deterministic_procedures`
-    // {test}`requirements.sdk.graph.validators.validator.with_agent`
-    // {test}`requirements.sdk.graph.validators.validator.new`
+    // {test}`requirements.sdk.validation-cache.with_agent`
     #[tokio::test]
     async fn configured_agents_initialize_only_when_asked_and_report_setup_errors() {
         // An explicitly empty credential fails before any request is sent.
@@ -211,13 +218,21 @@ mod tests {
             api_key_env: Some("TBV_TEST_NONEXISTENT_CREDENTIAL_59a680".into()),
             ..OpenAiConfig::default()
         });
-        let agent = ConfiguredAgent::<TestDomain>::new(config.clone());
+        let domain = TestDomain(
+            Default::default(),
+            Default::default(),
+            crate::domain::ValidationCache::with_agent(config),
+            None,
+        );
+        let agent = domain.cache().agent.as_ref().unwrap();
         assert!(agent.provider.get().is_none());
-        let validator = Validator::new(TestDomain::default()).with_agent(config);
-        let deterministic = validator.refresh_evidence(Question(false)).await.unwrap();
+        let deterministic = validation::refresh_evidence(&domain, Question(false))
+            .await
+            .unwrap();
         assert!(!deterministic.output());
+        assert!(agent.provider.get().is_none());
         assert_eq!(deterministic.dependencies().len(), 1);
-        let error = match validator.verify(Question(true)).await {
+        let error = match validation::verify(&domain, Question(true)).await {
             Ok(_) => panic!("missing credentials must fail the awaited ask"),
             Err(error) => error,
         };
@@ -231,16 +246,25 @@ mod tests {
 
     // {test}`requirements.sdk.graph.agent-harness.setup`
     // {test}`requirements.sdk.graph.agent-harness.with_agent`
+    // {test}`requirements.sdk.validation-cache.cache`
     #[tokio::test]
-    async fn bedrock_configuration_attaches_to_a_validator_without_being_persisted() {
+    async fn bedrock_configuration_attaches_to_a_cache_without_being_persisted() {
         let config = AgentConfig::Bedrock(
             super::super::BedrockConfig::new("us.anthropic.claude-sonnet-5-5".into())
                 .aws_profile("development".into())
                 .region("us-east-1".into()),
         );
-        let domain = TestDomain::default();
-        let validator = Validator::new(domain.clone()).with_agent(config);
-        let verified = validator.refresh_evidence(Question(false)).await.unwrap();
+        let mut domain = TestDomain::default();
+        domain.2 = crate::domain::ValidationCache::with_agent(config.clone());
+        let peer = domain.clone();
+        assert!(Arc::ptr_eq(
+            domain.cache().agent.as_ref().unwrap(),
+            peer.cache().agent.as_ref().unwrap()
+        ));
+        assert_eq!(peer.cache().agent.as_ref().unwrap().config, config);
+        let verified = validation::refresh_evidence(&domain, Question(false))
+            .await
+            .unwrap();
         assert!(!verified.output());
         let saved = serde_json::to_value(domain.0.lock().unwrap().as_ref().unwrap()).unwrap();
         assert!(saved.get("backend").is_none());
@@ -256,6 +280,7 @@ mod tests {
     // {test}`requirements.sdk.graph.agent-harness.submission.acceptance`
     // {test}`requirements.sdk.graph.agent-harness.fixed_tools`
     // {test}`requirements.sdk.graph.agent-harness.OpenAiConfig`
+    // {test}`requirements.sdk.sources.provider.attachment`
     #[tokio::test]
     async fn supplied_openai_backend_runs_independent_calls_against_a_local_transport() {
         use std::{
@@ -330,19 +355,18 @@ mod tests {
             }
             requests
         });
-        let domain = TestDomain::default();
-        let validator =
-            Validator::new(domain.clone()).with_agent(AgentConfig::OpenAi(OpenAiConfig {
-                model: Some("local-test".into()),
-                endpoint: Some(endpoint),
-                api_key: Some("local-transport-key".into()),
-                ..OpenAiConfig::default()
-            }));
+        let mut domain = TestDomain::default();
+        domain.2 = crate::domain::ValidationCache::with_agent(AgentConfig::OpenAi(OpenAiConfig {
+            model: Some("local-test".into()),
+            endpoint: Some(endpoint),
+            api_key: Some("local-transport-key".into()),
+            ..OpenAiConfig::default()
+        }));
         for _ in 0..2 {
-            let answer = validator.verify(Question(true)).await.unwrap();
+            let answer = validation::verify(&domain, Question(true)).await.unwrap();
             assert!(*answer.output());
             assert_eq!(answer.dependencies().len(), 1);
-            validator.store_evidence(&answer).await.unwrap();
+            validation::store_evidence(&domain, &answer).await.unwrap();
             let saved = serde_json::to_string(domain.0.lock().unwrap().as_ref().unwrap()).unwrap();
             for private in ["local-transport-key", "local-test", "backend", "api_key"] {
                 assert!(!saved.contains(private), "{saved}");
@@ -487,8 +511,13 @@ mod tests {
                 super::super::OptionValue::Integer(256),
             )]),
         });
-        let validator = Validator::new(TestDomain::default()).with_agent(config);
-        let answer = validator.verify(Question(true)).await.unwrap();
+        let domain = TestDomain(
+            Default::default(),
+            Default::default(),
+            crate::domain::ValidationCache::with_agent(config),
+            None,
+        );
+        let answer = validation::verify(&domain, Question(true)).await.unwrap();
         assert!(*answer.output());
         assert_eq!(answer.dependencies().len(), 1);
         let requests = server.join().unwrap();
@@ -538,9 +567,10 @@ mod tests {
     // {test}`requirements.sdk.graph.validation-context.read_source.behavior`
     // {test}`requirements.sdk.graph.validation-context.list_sources.behavior`
     // {test}`requirements.sdk.graph.validation-context.list_sources.mcp`
-    // {test}`requirements.sdk.graph.validators.validator.with_sources`
+    // {test}`requirements.sdk.sources.SourceProject`
+    // {test}`requirements.sdk.graph.running-criteria.evaluate_criterion`
     #[tokio::test]
-    async fn supplied_agent_uses_attached_project_tools_in_both_configuration_orders() {
+    async fn configured_agent_uses_domain_source_tools_in_independent_executions() {
         use std::{
             io::{Read, Write},
             net::TcpListener,
@@ -551,6 +581,12 @@ mod tests {
             std::fs::write(selected.path().join(file), format!("excerpt {file}")).unwrap();
         }
         std::fs::create_dir(selected.path().join("visible")).unwrap();
+        std::fs::create_dir(selected.path().join("visible-old")).unwrap();
+        std::fs::write(
+            selected.path().join("visible-old/outside.txt"),
+            "outside scope",
+        )
+        .unwrap();
         std::fs::write(
             selected.path().join("visible/selected.txt"),
             "selected disk contents",
@@ -562,13 +598,6 @@ mod tests {
         )
         .unwrap();
         std::fs::write(selected.path().join(".gitignore"), "visible/ignored.txt\n").unwrap();
-        let wrong = tempfile::tempdir().unwrap();
-        std::fs::create_dir(wrong.path().join("visible")).unwrap();
-        std::fs::write(
-            wrong.path().join("visible/wrong-project.txt"),
-            "wrong project",
-        )
-        .unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         listener.set_nonblocking(true).unwrap();
@@ -727,18 +756,15 @@ mod tests {
             api_key: Some("local-source-key".into()),
             ..Default::default()
         });
-        for agent_first in [true, false] {
-            let domain = TestDomain::default();
-            let base = Validator::new(domain.clone())
-                .with_sources(crate::sources::Sources::new(wrong.path()));
-            let validator = if agent_first {
-                base.with_agent(config.clone())
-                    .with_sources(crate::sources::Sources::new(selected.path()))
-            } else {
-                base.with_sources(crate::sources::Sources::new(selected.path()))
-                    .with_agent(config.clone())
-            };
-            let answer = validator.verify(Question(true)).await.unwrap();
+        let domain = TestDomain(
+            Default::default(),
+            Default::default(),
+            crate::domain::ValidationCache::with_agent(config),
+            Some(selected.path().to_owned()),
+        );
+        for _ in 0..2 {
+            domain.1.lock().unwrap().clear();
+            let answer = validation::verify(&domain, Question(true)).await.unwrap();
             assert!(*answer.output());
             assert_eq!(
                 answer.dependencies(),
@@ -748,6 +774,7 @@ mod tests {
                     crate::graph::Dependency::Node(
                         8,
                         crate::outline::OutlineContent::from_source(
+                            domain.cache(),
                             "alpha.txt",
                             "excerpt alpha.txt".into()
                         )
@@ -757,6 +784,7 @@ mod tests {
                     crate::graph::Dependency::Node(
                         9,
                         crate::outline::OutlineContent::from_source(
+                            domain.cache(),
                             "beta.txt",
                             "excerpt beta.txt".into()
                         )

@@ -296,7 +296,7 @@ impl Sources {
     ) -> Result<crate::outline::OutlineContent, SourceError> {
         let path = path.as_ref();
         let file = self.read(path).await?;
-        crate::outline::OutlineContent::from_source(path, Arc::from(file.text()?))
+        crate::outline::OutlineContent::parse_source(path, Arc::from(file.text()?))
             .map_err(|error| SourceError::Invalid(error.to_string()))
     }
 
@@ -313,5 +313,23 @@ impl Sources {
         query: &StructuralQuery,
     ) -> Result<StructuralMatches, SourceError> {
         self.analysis.search_structure(query).await
+    }
+}
+
+/// Project files and the domain mapping used by agent inspection tools.
+// {impl}`requirements.sdk.sources.SourceProject`
+pub struct SourceProject<D: crate::domain::Domain> {
+    pub(crate) sources: Sources,
+    pub(crate) domain: std::sync::Arc<D>,
+    pub(crate) source_node: fn(&D, &crate::outline::OutlineId) -> Result<D::NodeId, D::Error>,
+}
+
+impl<D: crate::domain::SourceNodes> SourceProject<D> {
+    pub fn new(domain: D, sources: Sources) -> Self {
+        Self {
+            sources,
+            domain: std::sync::Arc::new(domain),
+            source_node: D::source_node,
+        }
     }
 }

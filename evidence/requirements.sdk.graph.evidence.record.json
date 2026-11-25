@@ -1,7 +1,7 @@
 {
   "requirement": "Saving encodes the completed result using its Serde JSON representation and\npreserves the dependencies captured in `Fingerprinted`.\n`Record`, `Dependency`, and `Fingerprint` support\nSerde when their type parameters do. The graph's node\nidentities and edge labels need not implement Serde unless its storage backend\nrequires those bounds.\n\n```rust,ignore\n#[non_exhaustive]\npub struct Record<N, L = ()> {\n    pub version: Option<CriterionVersion>,\n    pub dependencies: Vec<Dependency<N, L>>,\n    pub output: Value,\n}\n\nimpl<N, L> Record<N, L> {\n    pub fn new(\n        version: Option<CriterionVersion>,\n        dependencies: Vec<Dependency<N, L>>,\n        output: Value,\n    ) -> Self;\n}\n```\n\nTrait implementations\n\n```rust,ignore\nimpl<N: Clone, L: Clone> Clone for Record<N, L>;\nimpl<N: Debug, L: Debug> Debug for Record<N, L>;\nimpl<'de, N, L> Deserialize<'de> for Record<N, L> where N: Deserialize<'de>, L: Deserialize<'de>;\nimpl<N, L> Serialize for Record<N, L> where N: Serialize, L: Serialize;\n```",
   "determination": true,
-  "rationale": "**Verdict:** the marked tests adequately cover `requirements.sdk.graph.evidence.record`. I found no gap.\n\n**Obligations and the tests that cover them**\n\n1. **Saving encodes the completed result as Serde JSON.**\n   - `tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` stores a record and then asserts the saved `Record.output` equals `json!({\"satisfied\":false,\"details\":[...]})`.\n   - The same test asserts the saved output is `json!(null)` for a unit-typed answer.\n   - It also asserts that `verify` alone writes nothing (`writes == 0`).\n\n2. **Saving preserves the dependencies captured in `Fingerprinted`.**\n   - `tests/contracts.rs#fn[input_checking_and_execution_keep_separate_observations]` saves a review that reads `Node(2)`. It asserts the stored `dependencies` equal `[Dependency::Node(Node(2), Fingerprint::new(\"text-v1\",\"after\"))]`.\n   - The first test also asserts that records saved without reads have empty dependencies.\n\n3. **`Record`, `Dependency` and `Fingerprint` support Serde when their type parameters do.**\n   - `tests/storage.rs#fn[records_round_trip_and_malformed_or_incompatible_data_is_an_error]` stores and loads a `Record<String, ()>`. It asserts `version`, `dependencies` and `output` are unchanged.\n   - Its `record` helper covers both `Dependency::Node` and `Dependency::OutgoingEdges`, each with a `Fingerprint`.\n   - The same test round-trips a `Record<String, String>` with a non-unit edge label (`\"tests/é\"`) and asserts the version, dependencies and output survive.\n   - It asserts that loading with an incompatible `N` (`u8`) or `L` (`u8`) gives `FileStorageError::Json`. That shows the Serde bounds are real.\n   - Malformed JSON is also reported as an error.\n\n4. **Node identities and edge labels need not implement Serde.**\n   - The contracts tests keep `Record<Node, _>` in the in-memory `Application` domain through `store_evidence` and `load_evidence`. They do this without any JSON encoding of `Node`.\n   - Storage tests use `String` identities and labels, which do implement Serde.\n   - The text says \"need not … unless its storage backend requires\", so it does not demand a separate negative test.\n\n5. **Shape of the type.**\n   - `Record::new` and the public fields are used by the integration tests, which sit outside the crate. `storage.rs#fn[records_round_trip_and_malformed_or_incompatible_data_is_an_error]` calls `Record::new` and reads `.version`, `.dependencies` and `.output`.\n   - `#[non_exhaustive]` is consistent with those tests, which only use `Record::new`.\n   - The `Clone` impl is exercised through `record.clone()` in the in-memory `store_evidence` and `load_evidence` helpers. The marked contracts tests reach those helpers.\n   - `Debug`, `Clone`, `Serialize` and `Deserialize` come from a single `#[derive]` on `struct[Record]` in `src/graph.rs`. That code has no conditional logic of its own, so it qualifies for the exemption. The tests cover it anyway.\n   - `tests/public_api.rs#fn[public_exports_match_the_appendix]` checks the exported inventory.\n\n**Marking.** `tests/storage.rs#fn[record_preserves_the_stored_version_encoding]` also tests the Serde representation of `Record`. It does not carry a `{test}` reference to this requirement. Other marked tests already cover the requirement, so I did not treat this as a gap.\n\n**Unmet obligations, acknowledgments:** none and none.",
+  "rationale": "The reviewed tests adequately cover `requirements.sdk.graph.evidence.record`.\n\n**Serde JSON encoding on save.**\n- `tests/storage.rs#fn[records_round_trip_and_malformed_or_incompatible_data_is_an_error]` stores `record(\"A\")` through `FileEvidenceStorage`, then loads it. It asserts that `version`, `dependencies` and `output` are equal after the round trip.\n- The `record` helper builds both `Dependency::Node` and `Dependency::OutgoingEdges` variants, each with a `Fingerprint`. The output is a nested JSON object carrying 8 KiB of padding.\n- `tests/storage.rs#fn[record_preserves_the_stored_version_encoding]` checks the serialized wire form of a `Record` against literal JSON. It covers deserializing from the wire value and serializing back to the same value. It is not marked `{test}` for this requirement.\n- `tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` asserts that the stored `Record.output` equals `json!({\"satisfied\":false,\"details\":[...]})` for a typed answer. It also asserts that a unit answer is stored as `json!(null)`.\n\n**Dependencies captured in `Fingerprinted` are preserved.**\n- `fn[input_checking_and_execution_keep_separate_observations]` saves a record with a read of `Node(2)`. It asserts that the stored record's `dependencies` equal `[Dependency::Node(Node(2), Fingerprint::new(\"text-v1\",\"after\"))]`.\n- The same test also checks that an empty dependency list stays empty. `fn[criteria_keep_typed_answers_and_persist_only_when_requested]` covers the empty case.\n- In `tests/storage.rs`, the `labeled` record round-trips an `OutgoingEdges` dependency with a `String` edge label (`\"tests/é\"`). Its fingerprint is preserved.\n\n**Serde support when type parameters support Serde.**\n- The storage test round-trips `Record<String, ()>` and `Record<String, String>`. Both exercise `Serialize` and `Deserialize` for `Record`, `Dependency` and `Fingerprint`.\n- Loading as `Record<u8, ()>` and `Record<String, u8>` yields `FileStorageError::Json`. This shows deserialization really depends on the type parameters.\n\n**Node identities and edge labels need not implement Serde.** The in-memory `Application` domain in the contracts tests stores `Record<Node, _>` values directly. No Serde is needed for that path, and the tests run on it.\n\n**`Record` shape and constructor.**\n- `Record::new(version, dependencies, output)` is used throughout. The storage and contracts tests read the public `version`, `dependencies` and `output` fields directly.\n- `#[non_exhaustive]` is a compile-time property with no runtime behavior to assert.\n\n**`Clone` and `Debug` impls.** These are plain derives that pass values through, with no conditional or transformation of their own. The tests have no dedicated assertion for them, and I do not count that as a gap.\n\nI found no requirement-violating behavior that these tests would accept. I found no `{fixme}` acknowledgments and none are needed.",
   "references": "71e550237a0c8c37368a1f1a32ef337c810410b869c0c13bd7abe12a850b1219",
   "inputs": [
     {
@@ -50,12 +50,12 @@
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[criteria_keep_typed_answers_and_persist_only_when_requested]",
-      "hash": "dc7c8956d3d5681384322fad29d3bd3c4276c59bf1bf06d8e742ff1bc993ca3c"
+      "hash": "a97c7ec9ce25ce55fd9b62ba41256e14b5ed7e44e547dccda13cd562e7a3360e"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[input_checking_and_execution_keep_separate_observations]",
-      "hash": "d0327f7a62e7d7c48025532340cb37752d8a9aff3c88ee38c1101860d5c6c165"
+      "hash": "f39fbd4bce6fce2292feec48bafe779a83ee3380e31ea0c684ec7c8147c4cc1c"
     },
     {
       "file": "crates/trust-but-verify/tests/storage.rs",
@@ -68,34 +68,9 @@
       "hash": "4d6ce6161754fb9e88ad84ef64f9bb131b308298104915179b2c5d573ed2b087"
     },
     {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "impl[Application/Domain]/fn[load_evidence]",
-      "hash": "eae88b9e5bf5aba5d315ea83252df3108659e13e70915d9a25fa17b4e5a975e8"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "impl[Application/Domain]/fn[store_evidence]",
-      "hash": "3d0f9f79d5ac5e9540dc8d8439ce006c5592529469851c77bee51cfd4cda7cfa"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[typed_loading_reports_decode_errors_even_for_stale_evidence]",
-      "hash": "4cf5e036a22700e170cae6eba1ee79a7d3caee688cdf39cc918b4a568064328d"
-    },
-    {
       "file": "crates/trust-but-verify/tests/storage.rs",
-      "item": "fn[record_preserves_the_stored_version_encoding]",
-      "hash": "bbcaf4e068ef7f668f834eaf1ff232e2dfef6e55c64a6222a471db4b078a9b93"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "enum[Dependency]",
-      "hash": "fe5519f4fbe4dbde50c868209706c52775c0c142e88c97d75bbebf4a296ed0c0"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "struct[Record]",
-      "hash": "08724af1a8b82cd548a99c54665d6edd5e9a071a918d811ab24dc4f18c80012e"
+      "item": "fn[criterion]",
+      "hash": "cc7ba646f8791ffecfaa8c1dd78e656f6ace8421d1b90b9a87e1b34c29c64c3f"
     },
     {
       "file": "crates/trust-but-verify/tests/storage.rs",
@@ -103,34 +78,24 @@
       "hash": "cc02916e1be078b0792dbaa96f257c2c9ee062fb80d51ccc01ac0daf00ce9bf8"
     },
     {
-      "file": "crates/trust-but-verify/tests/public_api.rs",
-      "item": "fn[specified_exports]",
-      "hash": "955dd314ec4233edf6ed9abbb939b7ce2bc5bdc5b0e4263fc093e36f6fb519d8"
+      "file": "crates/trust-but-verify/tests/storage.rs",
+      "item": "fn[record_preserves_the_stored_version_encoding]",
+      "hash": "bbcaf4e068ef7f668f834eaf1ff232e2dfef6e55c64a6222a471db4b078a9b93"
     },
     {
-      "file": "crates/trust-but-verify/tests/public_api.rs",
-      "item": "fn[signature_parts]",
-      "hash": "605c4c9d7efbe2d5b0b291876527d225a83f4c6cd59aaf0560c4084f1fea653c"
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "fn[dependency_resolution_failures_do_not_execute_or_replace_saved_answers]",
+      "hash": "589c4d5895001ee541e6a87f52d830b0f8e816cb01d27e8d9aa3fc0c624aa31f"
     },
     {
-      "file": "crates/trust-but-verify/tests/public_api.rs",
-      "item": "impl[RustdocSignatures]/fn[trait_impls]",
-      "hash": "ebfad3e82996cc9623a2e46280c4e4e3056bb114f9fa5bb9bb4e65413bf00080"
+      "file": "crates/trust-but-verify/tests/storage.rs",
+      "item": "fn[concurrent_readers_only_observe_complete_records_from_competing_writes]",
+      "hash": "104d8fdc65ee1e6a630e60fb25b6d67c3b0a92393f9add08216e39031345b700"
     },
     {
-      "file": "crates/trust-but-verify/tests/public_api.rs",
-      "item": "fn[check_declaration]",
-      "hash": "c2641df4291284653f239a9ce3be3002eda283fd0c19492a3f29f81a2bc61829"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "struct[Fingerprint]",
-      "hash": "8525a648cc94de4b3c90595605e8b74c889473404e79c3ae0f5fd6b81252d9bf"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[ValidationContext<'d,%20D>]#2/fn[finish]",
-      "hash": "315f3b4a20d05849bf0e7a3f3310e320dc123fb3b6a94abe25cbc2d0e6c8e2e4"
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "struct[Node]",
+      "hash": "6432ba1c03e5d58df823ea2106175d9c26356019b703ba3906c9d80ba040abd6"
     }
   ],
   "format_version": 1,
@@ -183,7 +148,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "72e659479e2c7eb4b34bc1f0ca83f43697b5b388463c7865ebe7c2a8e08c5abf"
+          "value": "a36441439e235779b2ca52efae16d2747d1c3a13177e8bd90ad01fd3037110d1"
         }
       ]
     },
@@ -200,7 +165,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1948a57f991d6eb12e63d293d0bb0802d4213392ce8c80af3fd048a8b238b244"
+          "value": "47a128d40015c2cbe15355cb0aa694f3a231b7bc91c1a6ff59d255a4f204c047"
         }
       ]
     },
@@ -244,99 +209,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "impl[Application/Domain]/fn[load_evidence]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "35a8a34c8dc07fc43db8554b44ab1a54f2e3a8a532fafb99d1ed79902e166cba"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "impl[Application/Domain]/fn[store_evidence]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "882b7b7520755929052e134202317e381a875376382e7a53442cb400a086ac92"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "fn[typed_loading_reports_decode_errors_even_for_stale_evidence]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "5bf5a3bcb3b7d60432495baaff8911b116cac69153182d2653caeec64d3171c5"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
               "location": "crates/trust-but-verify/tests/storage.rs"
             },
-            "selector": "fn[record_preserves_the_stored_version_encoding]"
+            "selector": "fn[criterion]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "7849e9e8ccac11567735f5f0754157632e1f113c3ef46119e74dd822eaf13739"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
-            },
-            "selector": "enum[Dependency]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "2ed379813e7e2b8dd027aabb3b2b0f1a1a41470b31add2c9a1a802de8e9a21d9"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
-            },
-            "selector": "struct[Record]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "1141a41e9617fbbab2ce8bc55d7d0fa85e4818f52bce5ccab8fd19c958c4795e"
+          "value": "25dadcc9c5ac912cdaf1d8fdc9cead352a237bb47aaf4dbd309e6a1e4722678a"
         }
       ]
     },
@@ -363,14 +243,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/public_api.rs"
+              "location": "crates/trust-but-verify/tests/storage.rs"
             },
-            "selector": "fn[specified_exports]"
+            "selector": "fn[record_preserves_the_stored_version_encoding]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "0f689d055bd20aacdff1ae188d081db37768ce21e9c3d542b0e985b7fd8cc340"
+          "value": "7849e9e8ccac11567735f5f0754157632e1f113c3ef46119e74dd822eaf13739"
         }
       ]
     },
@@ -380,14 +260,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/public_api.rs"
+              "location": "crates/trust-but-verify/tests/contracts.rs"
             },
-            "selector": "fn[signature_parts]"
+            "selector": "fn[dependency_resolution_failures_do_not_execute_or_replace_saved_answers]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "65b31e74e5766089c599f519c09fa2de699761cea569a9b4986ac4c0b4bcd984"
+          "value": "35aafa93d06cd9d1c224a1f7927e8cd487c156ad11b31ce289f14d362a679c85"
         }
       ]
     },
@@ -397,14 +277,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/public_api.rs"
+              "location": "crates/trust-but-verify/tests/storage.rs"
             },
-            "selector": "impl[RustdocSignatures]/fn[trait_impls]"
+            "selector": "fn[concurrent_readers_only_observe_complete_records_from_competing_writes]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "7954c02a7da347eee2f5a8d92d5afa279abdea98d807a48050453d5481906d0c"
+          "value": "d39cf297ed53dd01e3918cc4377086dad0a7e5e4c83a9482dd57fbb2f44b9a90"
         }
       ]
     },
@@ -414,48 +294,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/public_api.rs"
+              "location": "crates/trust-but-verify/tests/contracts.rs"
             },
-            "selector": "fn[check_declaration]"
+            "selector": "struct[Node]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1a4ac7dcf98a2bfdcc8e62b828699053c877a0a8af9ca1d708d6b94dae2cc7e4"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
-            },
-            "selector": "struct[Fingerprint]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "b463f9ba93b1e8fbfc18cf06616a419d482e20d87c9c75248e996bc6d6cd510f"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[finish]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "12b52f45b6b69b6148716591e3a2bd52c6c4018efea66aef3fbdbcc4378c788c"
+          "value": "65cbd249df6c618da864c55c91d46474150c4f37680831f5c463247c092d4131"
         }
       ]
     }

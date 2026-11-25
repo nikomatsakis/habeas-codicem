@@ -1,7 +1,7 @@
 {
   "requirement": "The agent accounts for each delivered `search_structure` result under\n{cite}`requirements.sdk.graph.search.finish_search.inputs`, including an empty\nresult. A separate tracked read of a matched item records its own dependency.",
   "determination": true,
-  "rationale": "The reviewed tests adequately check `requirements.sdk.graph.search.search_structure.inputs`. The requirement has two obligations.\n\n**Obligation 1: each delivered `search_structure` result is accounted for under `finish_search.inputs`, including an empty result.**\n- `search_obligations_follow_delivery_and_keep_the_original_snapshot` runs an empty `search_structure` on a peer session.\n  - It asserts `matches` is `[]` and the first-search instructions are present.\n  - It asserts `outstanding_searches()` lists exactly that `search_id`.\n  - It asserts `finish_search` with `used:[]` succeeds and yields no dependencies.\n- The same test covers the wider `finish_search` contract, through `search_text` and paging:\n  - Selecting a tag twice yields the same original-snapshot dependency.\n  - Earlier selections survive later calls.\n  - An invalid `finish_search` call is rejected.\n  - After the rejected call, `outstanding_searches().len()` is still 2.\n  - Another session cannot close the search.\n- `empty_structural_search_results_remain_discovery` (in `agent/tests.rs`) asserts that an empty structural result is `{\"complete\":true,\"matches\":[]}`. It also asserts there are no dependencies and no observation callback.\n- `source_tools_forward_arguments_and_present_discovery_and_read_results` and `fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies` assert that a `search_structure` delivery has empty dependencies and does not read domain content.\n- `structural_tags_select_only_the_original_enclosing_item` finishes a structural search with `used:[]`, which adds no dependency.\n  - It then selects the tag for `fn[two]` after the file has changed on disk.\n  - The recorded `Dependency::Node(\"code.rs#fn[two]\", fingerprint)` matches the original snapshot's fingerprint.\n  - Selecting the tag again preserves that dependency.\n  - Unselected matches add no dependency.\n- `search_excerpts_redact_credentials_before_serialization_and_paging` runs `search_structure` and `search_text` through the same loop. It selects the tag and asserts the dependency is the enclosing `fn[chosen]` node at the snapshot fingerprint.\n- Paging and open-search tracking are shared across both search tools (`pages.rs#impl[Pages<N, L>]/fn[search]`, `outstanding`), so the `search_text` paging checks apply to structural results too. I checked this only from search snippets, not by reading the paging code.\n\n**Obligation 2: a separate tracked read of a matched item records its own dependency.**\n- `cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input` runs `search_structure`, then `outline_source`, then `read_source` of `fn[observed]`, then a failing read.\n  - The final dependency list is exactly one `Dependency::Node` with the selected-content fingerprint.\n  - The search itself and the failed read add no dependency.\n- `source_tools_forward_arguments_and_present_discovery_and_read_results` asserts the observation callback runs only for reads (selectors `\"\"`, `\"\"` and `fn[chosen]`), not for search pages.\n- `fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies` asserts `read_source` records the dependency from the prepared domain content.\n\nI found no plausible violating behavior that these tests would accept, so I report no gaps.",
+  "rationale": "The reviewed tests adequately cover `requirements.sdk.graph.search.search_structure.inputs`. The subject has three obligations: each delivered `search_structure` result is accounted for under `finish_search.inputs`, empty results included; selecting a tag records the right dependency; and a separate tracked read of a matched item records its own dependency.\n\n**Delivered results must be accounted for, including empty ones.**\n- `search_obligations_follow_delivery_and_keep_the_original_snapshot` runs an empty `search_structure` (`absent()`) in a peer session. It asserts that `matches` is `[]`, that `instructions` are present, and that `outstanding_searches()` equals exactly that `search_id`. This shows an empty structural result is delivered as an open search.\n- It then finishes that search with `used: []` and asserts that no dependencies are added and that the search is closed.\n- `structural_tags_select_only_the_original_enclosing_item` shows that a non-empty structural result has a `search_id` that `finish_search` can close.\n- `search_excerpts_redact_credentials_before_serialization_and_paging` finishes a structural result too.\n- The shared page and outstanding bookkeeping is also exercised through `search_text` in the same marked test: invalid, unknown and peer-session finishes error, and earlier calls survive.\n- Submission is rejected while any search is still open (`GraphSession::submit` in `crates/trust-but-verify/src/agent/tools.rs`, which relies on `outstanding_searches`).\n\n**Selecting a tag records a dependency for the original snapshot.**\n- `structural_tags_select_only_the_original_enclosing_item` returns two matches in one file, `fn[one]` and `fn[two]`. It selects the tag for `fn[two]`, rewrites the file after the search, and asserts that the dependency is `Dependency::Node(\"code.rs#fn[two]\", fingerprint)`. The fingerprint is computed from the pre-change content, and the other match adds nothing.\n- It also checks that `used: []` adds no dependency and that selecting the same tag twice gives the same dependency.\n- `search_excerpts_redact_credentials_before_serialization_and_paging` checks that a selected structural tag yields a dependency on `code.rs#fn[chosen]` with the fingerprint of the raw, unredacted source.\n- The search delivery itself carries no dependencies. This is asserted in `fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies`, `empty_structural_search_results_remain_discovery` and `source_tools_forward_arguments_and_present_discovery_and_read_results`.\n- `empty_structural_search_results_remain_discovery` also asserts that the observation callback is never invoked.\n- Domain contents are never read during search (`reads == 0`).\n\n**A separate tracked read records its own dependency.**\n- `cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input` runs `search_structure` followed by `read_source` of `fn[observed]`. It asserts that the only recorded dependency is the read's node, with the exact delivered content.\n- `fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies` shows the same: `read_source` adds its own dependency after a search adds none.\n\n**Remaining gap check.** I found no gap. Multi-page structural results are not tested separately, but they go through the same page code as `search_text`, which is tested for multiple pages. The `agent/sources.rs` path has no `finish_search`, so the requirement does not apply there.",
   "references": "6ded9434dcc35ca3111675a3dca576dac7db64c0ade7a7f10698f0fe970422eb",
   "inputs": [
     {
@@ -35,22 +35,22 @@
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]",
-      "hash": "20ae5d094e7db53e60852ffc9efe136f3c1e652b90133644f791cfaf23f41ea2"
+      "hash": "fcd492230081605d3c3f00fcec9057e7ae75e2c125f5356613b37cf4fbc140aa"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]",
-      "hash": "85c054c420f5e672bd3a4bd69469a10bdd7a248b758ce5b12730c31bf199825e"
+      "hash": "b9e9d0c7a5219381674520257235d53f071bc05e5c000f6bec0808cf2789251a"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies]",
-      "hash": "07ab11b8642abb344691d4a80bf01c80f4114050fea40e8d042da906090dd0f4"
+      "hash": "fe9a500299cd9033e41b2ec2e066c7fea8b7019cabb22e37f014081fdbb81749"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[search_excerpts_redact_credentials_before_serialization_and_paging]",
-      "hash": "ca5e47c912646a688211d4afb6e720802f70f2dac1f58b99c7f135bd8a629352"
+      "hash": "1878452cdd2365d3c8afccfb7317a8d1852cb5f9a9e77145889c941127332b53"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -68,11 +68,6 @@
       "hash": "f6fd7fc7b5fc640a35a3ad0ecdbc7459f0d8b588f41ae9b9d5abd3a8218de5de"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/pages.rs",
-      "item": "impl[Pages<N,%20L>]/fn[outstanding]",
-      "hash": "51db20b0d61d8230fd2a840931e08435bd89a7def99fede21d3a84ff086ea95e"
-    },
-    {
       "file": "crates/trust-but-verify/src/agent/tools.rs",
       "item": "impl[SessionTools<'a,%20D>]/fn[outstanding_searches]",
       "hash": "fc29617c91ff1c26ccab8235eb9dcd93fbc85937e01b1f0fd0ca8eed1365e2cd"
@@ -83,9 +78,9 @@
       "hash": "4816a1637670a890bf652ec819aba884aa88ab38931201492b4715090a116559"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/pages.rs",
-      "item": "impl[Pages<N,%20L>]/fn[search]",
-      "hash": "ef3c5aecf85a83c1cc34648f93dffdc20cba33654edbcd986cce1633a7f56eea"
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]",
+      "hash": "862d40250187e7af060aa8758a98df2a5c0c5b670c3c2611971bba21bf6c10c7"
     }
   ],
   "format_version": 1,
@@ -149,7 +144,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "03c2a9dbec5f05a90c8a2055b99e5a91b24a5228f674c84657bc2c0ca7d3a0eb"
+          "value": "df28dea3064ff665e1ac5c4dee39960f549838f9440ceded3706aa46ac103871"
         }
       ]
     },
@@ -166,7 +161,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f0e65ad9841b7796a60eb1384d000b38f9849990fc0b0d874dd9c7a1c7764956"
+          "value": "f5e506a21808dd31cf5424aee14db0bbe104f911bac94dbd00df48a5308f2090"
         }
       ]
     },
@@ -183,7 +178,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "e8f5d9c70e95b6c9b4b4a2b98e5c9dd200e3804074362ce9f397d4d0f8809e77"
+          "value": "f7e56da9aa994eb75dec23d69893527b1e631f3dcfae5d0ecaea460ec2716039"
         }
       ]
     },
@@ -200,7 +195,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9c084668f6540a04d409a6f8dc6bfd478515aa8db93ab3ced389e03b17eeb119"
+          "value": "91b0ea11a3928312e42834f3daafe9f7b9b61cacfb904c66dcaee5e9a33e70cc"
         }
       ]
     },
@@ -261,23 +256,6 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/pages.rs"
-            },
-            "selector": "impl[Pages<N,%20L>]/fn[outstanding]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "a13f54387682f3ba5adb8f46e2d0cc8db0e3cee0bd6326f84c6aaabf665be6f2"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/tools.rs"
             },
             "selector": "impl[SessionTools<'a,%20D>]/fn[outstanding_searches]"
@@ -312,14 +290,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/pages.rs"
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
             },
-            "selector": "impl[Pages<N,%20L>]/fn[search]"
+            "selector": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "b73e9c861127c6cb6ed1c45a017beaf2db554d29888bd0102e04c6a3ae15dd01"
+          "value": "a9a56623694c0f2b8bf9ebf86a4a3b188cf2f584cc4de8abdc220765f1eb5597"
         }
       ]
     }

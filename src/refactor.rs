@@ -316,7 +316,7 @@ fn rewrite_source(mappings: &Mappings, path: &Path, content: &str) -> (String, u
     let mut edits = Vec::new();
     // Only roles that count as references are rewritten; a role in a string
     // literal is literal text.
-    let contexts = crate::evidence::ReferenceContexts::parse(path, content);
+    let contexts = crate::evidence::ReferenceContexts::parse(&Default::default(), path, content);
     for role in crate::reference_roles(content, markdown) {
         if !contexts.allows(role.start) {
             continue;
@@ -442,6 +442,7 @@ impl States {
         let mut failures = Vec::new();
         let files = crate::evidence::discovered_files(root, &mut failures);
         let references = crate::evidence::collect_references_with_progress(
+            &Default::default(),
             root,
             &files,
             &mut failures,

@@ -368,13 +368,14 @@ fn owning_site(
 /// violation query's matches only inside a site of its `within` query in
 /// the same snippet. A snippet that does not parse is an error.
 pub(crate) fn snippet_matches(
+    cache: &trust_but_verify::domain::ValidationCache,
     language: &str,
     rule: &StructuralRule,
     site_rule: Option<&StructuralRule>,
     snippet: &str,
 ) -> Result<usize, String> {
     let filename = format!("snippet.{}", rule.language().profile.extensions[0]);
-    let outline = crate::outline_items::for_file(Path::new(&filename), snippet)
+    let outline = crate::outline_items::for_file(cache, Path::new(&filename), snippet)
         .map_err(|error| format!("does not parse as {language}: {error}"))?;
     if let Some(error) = &outline.diagnostic {
         return Err(format!("does not parse as {language}: {error}"));

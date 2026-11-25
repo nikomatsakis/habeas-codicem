@@ -76,7 +76,8 @@ mod ownership_tests {
             path: PathBuf::from("a.md"),
             source: source.to_owned(),
             redacted: source.to_owned(),
-            items: crate::outline_items::for_file(Path::new("a.md"), source).unwrap(),
+            items: crate::outline_items::for_file(&Default::default(), Path::new("a.md"), source)
+                .unwrap(),
             outline: outline::parse(Path::new("a.md"), source).unwrap(),
         };
         let ordinary = parsed.reference_owner_at_line(2);
@@ -96,7 +97,8 @@ mod ownership_tests {
             path: PathBuf::from("a.rs"),
             source: rust.to_owned(),
             redacted: rust.to_owned(),
-            items: crate::outline_items::for_file(Path::new("a.rs"), rust).unwrap(),
+            items: crate::outline_items::for_file(&Default::default(), Path::new("a.rs"), rust)
+                .unwrap(),
             outline: outline::parse(Path::new("a.rs"), rust).unwrap(),
         };
         assert_eq!(
@@ -111,6 +113,7 @@ mod ownership_tests {
 /// Clones share entries populated by any caller in that run.
 #[derive(Default)]
 pub(crate) struct OutlineCache {
+    pub(crate) validation: trust_but_verify::domain::ValidationCache,
     files: Arc<Mutex<HashMap<PathBuf, Arc<Result<ParsedSource, String>>>>>,
     /// Content to parse in place of a file's, by project-relative path.
     overrides: Arc<HashMap<String, String>>,
@@ -135,6 +138,7 @@ impl Clone for OutlineCache {
     // {cite}`habeas:util`
     fn clone(&self) -> Self {
         Self {
+            validation: self.validation.clone(),
             files: self.files.clone(),
             overrides: self.overrides.clone(),
             catalogs: self.catalogs.clone(),
@@ -186,6 +190,7 @@ impl OutlineCache {
         let mut failures = Vec::new();
         let files = crate::evidence::discovered_files(root, &mut failures);
         let references = crate::evidence::collect_references_with_progress(
+            &self.validation,
             root,
             &files,
             &mut failures,
@@ -211,18 +216,26 @@ impl OutlineCache {
         if let Some(parsed) = self.files.lock().expect("outline cache lock").get(&key) {
             return parsed.clone();
         }
-        let read = match self.overrides.get(file) {
-            Some(content) => check_project_file(root, file).map(|path| (path, content.clone())),
-            None => read_project_file(root, file),
-        };
-        let parsed = Arc::new(read.and_then(|(path, source)| {
+        let parsed = Arc::new(check_project_file(root, file).and_then(|path| {
+            let snapshot = match self.overrides.get(file) {
+                Some(text) => trust_but_verify::outline::OutlineContent::from_source(
+                    &self.validation,
+                    &path,
+                    Arc::from(text.as_str()),
+                ),
+                None => {
+                    trust_but_verify::outline::OutlineContent::from_path(&self.validation, &path)
+                }
+            }
+            .map_err(|error| format!("cannot read {file}: {error}"))?;
+            let source = snapshot.text().to_owned();
             let redaction = Redaction::of_file_with_config(
                 &path,
                 &source,
                 crate::config::user_config_path().ok().as_deref(),
             );
             let profile = outline::profile_for_path(&path);
-            let items = crate::outline_items::for_file(&path, &source)?;
+            let items = crate::outline_items::OutlineItems::new(snapshot.outline(), &source);
             if let Some(error) = &items.diagnostic {
                 return Err(format!(
                     "{file}: cannot parse {} source: {error}",
@@ -261,13 +274,17 @@ mod tests {
         fs::write(&file, "fn original() {}\n").unwrap();
         let outlines = OutlineCache::default();
         let clone = outlines.clone();
+        let snapshot =
+            trust_but_verify::outline::OutlineContent::from_path(&outlines.validation, &file)
+                .unwrap();
+        assert_eq!(snapshot.text(), "fn original() {}\n");
+        fs::write(&file, "fn changed() {}\n").unwrap();
         let original = clone.parse(temp.path(), "a.rs");
         assert_eq!(
             original.as_ref().as_ref().unwrap().source,
             "fn original() {}\n"
         );
 
-        fs::write(&file, "fn changed() {}\n").unwrap();
         let cached = outlines.parse(temp.path(), "a.rs");
         assert_eq!(
             cached.as_ref().as_ref().unwrap().source,
@@ -598,15 +615,6 @@ pub(crate) fn project_relative(root: &Path, file: &str) -> String {
 // {cite}`habeas:util`
 fn check_project_file(root: &Path, file: &str) -> Result<PathBuf, String> {
     crate::authoring::access::resolve_evidence_file(root, file).map_err(|error| error.to_string())
-}
-
-pub(crate) fn read_project_file(root: &Path, file: &str) -> Result<(PathBuf, String), String> {
-    let path = check_project_file(root, file)?;
-    let bytes = fs::read(&path).map_err(|error| format!("cannot read {file}: {error}"))?;
-    let content = std::str::from_utf8(&bytes)
-        .map_err(|error| format!("cannot read {file}: {error}"))?
-        .to_owned();
-    Ok((path, content))
 }
 
 /// Resolves the outline node `item` in `file`, relative to the project

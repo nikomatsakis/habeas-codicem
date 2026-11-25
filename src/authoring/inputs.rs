@@ -459,6 +459,7 @@ impl AssessmentSources {
         let mut errors = Vec::new();
         let files = discovered_files(&root, &mut errors);
         let references = crate::evidence::collect_references_with_progress(
+            &outlines.validation,
             &root,
             &files,
             &mut errors,

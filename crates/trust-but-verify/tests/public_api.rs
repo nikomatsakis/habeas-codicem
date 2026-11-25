@@ -14,7 +14,26 @@ struct DeclarationLink<'a> {
     chapter: &'a str,
     requirement: &'a str,
     members: BTreeSet<String>,
-    linked_methods: Vec<&'a str>,
+    linked_methods: Vec<(&'a str, &'a str, &'a str)>,
+}
+
+fn declaration_target(target: &str) -> (&str, &str) {
+    let (chapter, fragment) = target
+        .split_once('#')
+        .expect("declaration link with an anchor");
+    assert_ne!(
+        chapter, "public-api.md",
+        "declarations belong in narrative chapters"
+    );
+    let chapter_id = chapter.strip_suffix(".md").unwrap();
+    let namespace = match chapter_id {
+        "../sdk" => "requirements.sdk".to_owned(),
+        relative => format!("requirements.sdk.{}", relative.replace('/', ".")),
+    };
+    let requirement = fragment
+        .strip_prefix(&format!("habeas-req-{namespace}."))
+        .unwrap_or_else(|| panic!("Invalid requirement anchor for {target}"));
+    (chapter, requirement)
 }
 
 fn specified_exports() -> (Exports, BTreeMap<String, DeclarationLink<'static>>) {
@@ -70,23 +89,12 @@ fn specified_exports() -> (Exports, BTreeMap<String, DeclarationLink<'static>>) 
             .collect::<Vec<_>>()
             .join("::");
         if !matches!(&captures[2], "mod" | "crate") {
-            let (chapter, fragment) = line
-                .split_once(" — [Declaration](")
-                .and_then(|(_, rest)| rest.split_once(')'))
-                .and_then(|(url, _)| url.split_once('#'))
-                .unwrap_or_else(|| panic!("Missing declaration link for {path}"));
-            assert_ne!(
-                chapter, "public-api.md",
-                "{path} belongs in a narrative chapter"
+            let (chapter, requirement) = declaration_target(
+                line.split_once(" — [Declaration](")
+                    .and_then(|(_, rest)| rest.split_once(')'))
+                    .unwrap_or_else(|| panic!("Missing declaration link for {path}"))
+                    .0,
             );
-            let chapter_id = chapter.strip_suffix(".md").unwrap();
-            let namespace = match chapter_id {
-                "../sdk" => "requirements.sdk".to_owned(),
-                relative => format!("requirements.sdk.{}", relative.replace('/', ".")),
-            };
-            let requirement = fragment
-                .strip_prefix(&format!("habeas-req-{namespace}."))
-                .unwrap_or_else(|| panic!("Invalid requirement anchor for {path}: {fragment}"));
             let mut members = BTreeSet::new();
             let mut linked_methods = Vec::new();
             while let Some(item) = bullets.next_if(|line| member.is_match(line)) {
@@ -99,8 +107,8 @@ fn specified_exports() -> (Exports, BTreeMap<String, DeclarationLink<'static>>) 
                 let name = item.get(2).unwrap().as_str();
                 if let Some(target) = item.get(3) {
                     let method = name.strip_suffix("()").expect("linked method name");
-                    assert_eq!(target.as_str(), format!("{chapter}#{fragment}.{method}"));
-                    linked_methods.push(method);
+                    let (chapter, requirement) = declaration_target(target.as_str());
+                    linked_methods.push((method, chapter, requirement));
                 }
                 assert!(
                     members.insert(name.to_owned()),
@@ -376,9 +384,9 @@ fn check_declaration(
         "Indexed members for {id}"
     );
     let mut declaration = declaration.to_owned();
-    // A type may declare individual methods in child requirements in this chapter.
-    for method in &link.linked_methods {
-        let marker = format!(":::{{req}} {}.{method}\n", link.requirement);
+    for (method, chapter, requirement) in &link.linked_methods {
+        let spec = fs::read_to_string(chapters.join(chapter)).unwrap();
+        let marker = format!(":::{{req}} {requirement}\n");
         let (_, section) = spec
             .split_once(&marker)
             .unwrap_or_else(|| panic!("Missing declaration for {id}::{method}"));

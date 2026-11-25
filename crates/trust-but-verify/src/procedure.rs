@@ -124,7 +124,7 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
     // {cite}`habeas:util`
     #[doc(hidden)]
     #[cfg(any(test, feature = "habeas-integration"))]
-    pub fn with_agent(graph: &'d D, node: D::NodeId, agent: &'d dyn Agent<D>) -> Self {
+    pub(crate) fn with_agent(graph: &'d D, node: D::NodeId, agent: &'d dyn Agent<D>) -> Self {
         Self::configured(graph, node, Some(agent))
     }
 
@@ -409,6 +409,8 @@ impl<'a, 'd, D: Domain, R, P> Ask<'a, 'd, D, R, P>
 where
     R: DeserializeOwned + JsonSchema + Send + 'a,
     P: 'a,
+    D::Error: std::fmt::Display,
+    D::EdgeLabel: DeserializeOwned + JsonSchema + PartialEq,
     'd: 'a,
 {
     // {impl}`requirements.sdk.graph.agent-calls.judge.node_contents`
@@ -416,7 +418,18 @@ where
     // {impl}`requirements.sdk.graph.agent-calls.model_capability`
     // {impl}`requirements.sdk.graph.validation-context.shared_context`
     async fn execute(self) -> Result<R, ValidationError<D::Error>> {
-        let agent = self.ctx.agent.ok_or(ValidationError::NoAgentConfigured)?;
+        let agent = self
+            .ctx
+            .agent
+            .or_else(|| {
+                self.ctx
+                    .graph
+                    .cache()
+                    .agent
+                    .as_deref()
+                    .map(|agent| agent as &dyn Agent<D>)
+            })
+            .ok_or(ValidationError::NoAgentConfigured)?;
         let mut inputs = Vec::new();
         for insertion in self.insertions {
             let nodes = match insertion {
@@ -476,6 +489,8 @@ macro_rules! await_phase {
         where
             R: DeserializeOwned + JsonSchema + Send + 'a,
             'd: 'a,
+            D::Error: std::fmt::Display,
+            D::EdgeLabel: DeserializeOwned + JsonSchema + PartialEq,
         {
             type Output = Result<R, ValidationError<D::Error>>;
             type IntoFuture = BoxFuture<'a, Self::Output>;

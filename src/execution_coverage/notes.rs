@@ -59,6 +59,7 @@ pub(super) fn pages(root: &Path, files: &BTreeSet<String>, index: &Path) -> Vec<
                 Ok(parsed) => {
                     let absolute = root.join(file);
                     let references: Vec<_> = crate::evidence::file_references(
+                        &outlines.validation,
                         &absolute, &parsed.source, absolute.starts_with(&md_root),
                     )
                     .into_iter()

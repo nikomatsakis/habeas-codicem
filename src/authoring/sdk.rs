@@ -79,6 +79,9 @@ impl NodeContents for ReviewContent {
 
 // {impl}`requirements.sdk.domain`
 impl Domain for ReviewGraph<'_> {
+    fn cache(&self) -> &trust_but_verify::domain::ValidationCache {
+        &self.outlines.validation
+    }
     type NodeId = HabeasNode;
     type EdgeLabel = HabeasEdgeLabel;
     type Error = io::Error;
@@ -482,26 +485,29 @@ async fn run(
         agent_failure: Arc::new(Mutex::new(None)),
     };
     let agent = ReviewAgent(provider);
-    let review = Review { node: node.clone() };
-    let version = review.version();
-    let mut ctx = ValidationContext::with_agent(&graph, node.clone(), &agent);
-    let judgment = match review.execute(&mut ctx).await {
-        Ok(judgment) => judgment,
-        Err(ValidationError::Graph(error)) => return Err(error),
-        Err(ValidationError::Agent(message)) => {
-            return Err(graph
-                .agent_failure
-                .lock()
-                .expect("review error lock")
-                .take()
-                .unwrap_or_else(|| io::Error::other(message)));
-        }
-        Err(ValidationError::NoAgentConfigured) => {
-            return Err(io::Error::other("no agent is configured"));
-        }
-        Err(ValidationError::Output(error)) => return Err(io::Error::other(error)),
-    };
-    ctx.finish(version, judgment).map_err(io::Error::other)
+    let review = Review { node };
+    let verified =
+        match trust_but_verify::agent_runtime::verify_with_agent(&graph, &agent, review).await {
+            Ok(result) => result,
+            Err(ValidationError::Graph(error)) => return Err(error),
+            Err(ValidationError::Agent(message)) => {
+                return Err(graph
+                    .agent_failure
+                    .lock()
+                    .expect("review error lock")
+                    .take()
+                    .unwrap_or_else(|| io::Error::other(message)));
+            }
+            Err(ValidationError::NoAgentConfigured) => {
+                return Err(io::Error::other("no agent is configured"));
+            }
+            Err(ValidationError::Output(error)) => return Err(io::Error::other(error)),
+        };
+    Ok(trust_but_verify::graph::Record::new(
+        verified.version().cloned(),
+        verified.dependencies().to_vec(),
+        verified.into_output(),
+    ))
 }
 
 #[cfg(test)]
@@ -582,12 +588,12 @@ mod tests {
     // {test}`requirements.sdk.graph.criteria.criterion_trait.version`
     // {test}`requirements.sdk.graph.criteria.execute`
     // {test}`requirements.sdk.graph.evidence.check_node`
-    // {test}`requirements.sdk.graph.validators.validate_node`
+    // {test}`requirements.sdk.graph.running-criteria.validate_node`
     // {test}`requirements.sdk.graph.evidence.evidence_storage`
     // {test}`requirements.sdk.habeas.evidence_format.loading`
     #[tokio::test]
     async fn review_graph_persists_and_reuses_a_negative_validation_through_the_sdk() {
-        use trust_but_verify::graph::validator::Validator;
+        use trust_but_verify::graph as validation;
 
         let root = inputs::tests::project();
         let state = tempfile::tempdir().unwrap();
@@ -618,24 +624,33 @@ mod tests {
             json!({"determination":false,"rationale":"The readiness case is missing."}),
         )]));
         let agent = Arc::new(ReviewAgent(provider.clone()));
-        let validator = Validator::new(graph.clone()).with_agent_adapter(agent);
         let review = || Review { node: node.clone() };
         let path = node.evidence_path(root.path()).unwrap();
         assert_eq!(review().source_node_id(), node);
         assert_eq!(review().criterion_path().segments(), ["review"]);
         assert_eq!(review().version().as_str(), crate::sdk::REVIEW_VERSION);
-        assert!(validator.load_evidence(&review()).await.unwrap().is_none());
+        assert!(
+            validation::load_evidence(&graph, &review())
+                .await
+                .unwrap()
+                .is_none()
+        );
         assert!(!path.exists());
         assert!(provider.requests.lock().unwrap().is_empty());
 
-        let fingerprinted = validator.verify(review()).await.unwrap();
+        let fingerprinted =
+            trust_but_verify::agent_runtime::verify_with_agent(&graph, agent.as_ref(), review())
+                .await
+                .unwrap();
         let answer = fingerprinted.output();
         assert_eq!(answer["determination"], false);
         assert_eq!(answer["rationale"], "The readiness case is missing.");
         assert!(answer.get("result").is_none());
         assert!(answer.get("metadata").is_none());
         assert!(!path.exists());
-        validator.store_evidence(&fingerprinted).await.unwrap();
+        validation::store_evidence(&graph, &fingerprinted)
+            .await
+            .unwrap();
         let saved = fs::read(&path).unwrap();
         let record = graph
             .load_evidence(&node, &review().criterion_path())
@@ -648,9 +663,12 @@ mod tests {
         );
         assert_eq!(record.output, *answer);
         assert!(!record.dependencies.is_empty());
-        let cached = validator.load_evidence(&review()).await.unwrap().unwrap();
+        let cached = validation::load_evidence(&graph, &review())
+            .await
+            .unwrap()
+            .unwrap();
         assert!(review().version().is_compatible_with(cached.version()));
-        assert!(validator.check_inputs(&cached).unwrap());
+        assert!(validation::check_inputs(&graph, &cached).unwrap());
         assert_eq!(cached.output(), answer);
         assert_eq!(provider.requests.lock().unwrap().len(), 1);
         assert_eq!(fs::read(&path).unwrap(), saved);

@@ -39,7 +39,7 @@ use backoff::{ProviderBackoff, Retry};
 use backoff::{RETRY_LIMIT, failure_codes};
 pub(crate) use configured::ConfiguredAgent;
 #[doc(hidden)]
-pub(crate) use tools::{NoTools, ToolAgent, ToolDelivery, ToolFactory, ToolSession};
+pub(crate) use tools::{ToolAgent, ToolDelivery, ToolFactory, ToolSession};
 
 /// Built-in project source tools with an application graph-observation mapping.
 ///
@@ -343,4 +343,17 @@ pub async fn converse<P: CompletionProvider, C: Conversation>(
         session.save()?;
         request.chat_history.push(Message::tool_results(results));
     }
+}
+
+/// Execute a criterion using an application-provided conversation adapter.
+#[doc(hidden)]
+#[cfg(any(test, feature = "habeas-integration"))]
+pub async fn verify_with_agent<D: crate::domain::Domain, V: crate::graph::Criterion<D>>(
+    domain: &D,
+    agent: &dyn crate::request::Agent<D>,
+    criterion: V,
+) -> Result<crate::graph::Fingerprinted<D, V::Ok>, crate::graph::ValidationError<D::Error>> {
+    let ctx =
+        crate::request::ValidationContext::with_agent(domain, criterion.source_node_id(), agent);
+    crate::graph::execute_with_context(ctx, criterion).await
 }

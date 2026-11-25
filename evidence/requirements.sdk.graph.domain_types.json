@@ -1,7 +1,7 @@
 {
   "requirement": "{cite}`requirements.sdk.domain`\n\nThe {term}`requirements.sdk.application_domain` implements\n`trust_but_verify::domain::Domain` to define its node-identity type. Its\nerror type is introduced in {cite}`requirements.sdk.errors`:\n\n```rust,ignore\npub trait Domain: Clone + Send + Sync {\n    // ...\n\n    /// The *identifier* identifies a particular node in the graph.\n    type NodeId: Clone + Eq + Send + Sync;\n\n    // ...\n}\n```",
   "determination": true,
-  "rationale": "**Obligation.** `requirements.sdk.graph.domain_types` says the application domain implements `Domain` and defines its node-identity type as `type NodeId: Clone + Eq + Send + Sync`. The testable content is:\n- A domain can supply a `NodeId` type that has exactly these bounds.\n- The `Domain` trait itself requires `NodeId` to be `Clone + Eq + Send + Sync`. Neither fewer nor more bounds are allowed.\n- Distinct identities are distinguishable and comparable, and they work as the node identity across node, edge and evidence operations.\n\n**Tests reviewed.**\n- `crates/trust-but-verify/tests/contracts.rs#fn[domain_relationships_accept_opaque_types_and_send_only_errors]`\n  - The fixture's `Identity` derives only `Clone, PartialEq, Eq`. It has no `Debug` or `Hash`. The `Domain` impl compiles with it, which rules out the trait demanding extra bounds on `NodeId`.\n  - The generic function `check_bounds<G: Domain>` calls `identity::<G::NodeId>()`, where `identity` requires `Clone + Eq + Send + Sync`. If the trait loosened any of those bounds, this would fail to compile.\n  - Runtime use covers `node_path`, `outgoing_edges` and `load_evidence`/`store_evidence` with that identity. `assert_ne!` on paths checks that distinct ids are distinguished. `outgoing_edges` is checked for duplicate ids and for ids with no successors.\n- `crates/trust-but-verify/src/graph/validation_tests.rs#fn[enum_node_ids_distinguish_requirements_and_source_items_in_one_domain]`\n  - A realistic enum `NodeId` (`Clone, Debug, PartialEq, Eq`) is used end to end. `assert_ne!(requirement, source)` checks `Eq`. Clones are used to store and compare evidence.\n  - Dependencies are recorded and compared by id equality. `load_evidence` is checked for the stored node and for a different node.\n- Other marked tests use the node identity in the other `Domain` implementations: `src/sdk.rs` for `HabeasDomain`, `src/authoring/sdk.rs` for `ReviewGraph`, and the `Memory` fixture in `crates/trust-but-verify/src/agent/tests.rs`. They check that paths, content, edges and dependencies work with the node-id type. `crates/trust-but-verify/tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` does the same for the `Application` domain.\n\n**Assessment.** The only normative content is the bound set on `NodeId` and its use as node identity. The compile-time generic bound check and the minimal-bounds opaque fixture catch both loosened and over-tightened bounds. The runtime assertions cover identity comparison and use. The `Error` type is introduced by `requirements.sdk.errors` and is cited context, so I did not reassess it. I found no gap and no FIXME.",
+  "rationale": "`requirements.sdk.graph.domain_types` obligates `Domain` to define a `NodeId` associated type bounded by exactly `Clone + Eq + Send + Sync`. An application domain implements it to supply its node identity. The tests cover this as follows.\n\n- **Bounds.** `crates/trust-but-verify/tests/contracts.rs#fn[domain_relationships_accept_opaque_types_and_send_only_errors]` contains a generic `check_bounds<G: Domain>` function. It calls `identity::<G::NodeId>()`, where `identity` requires `T: Clone + Eq + Send + Sync`. If the trait's `NodeId` bound lost `Clone`, `Eq`, `Send` or `Sync`, this would fail to compile.\n- **No extra bounds.** The fixture `Identity` derives only `Clone, PartialEq, Eq`. It has no `Debug` or `Hash`, so the test would also fail to compile if the trait added a bound beyond those four.\n- **Behaviour with the type.** The same test runs `node_path`, `outgoing_edges` and `load_evidence` on that opaque identity. It asserts that `outgoing_edges` returns repeated and distinct identities in order.\n- **A different kind of identity.** `crates/trust-but-verify/src/graph/validation_tests.rs#fn[enum_node_ids_distinguish_requirements_and_source_items_in_one_domain]` uses an enum `NodeId` with two variants. It asserts that the variants compare unequal (`assert_ne!`). It also asserts that ids drive `node_path`, the edges, `read`, and the evidence store and load.\n- **Real implementations and further uses.**\n  - `src/sdk.rs#mod[tests]/fn[habeas_paths_preserve_opaque_segments_and_separate_all_node_kinds]` exercises the real `HabeasDomain` node ids.\n  - `src/sdk.rs#mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]` exercises the real `HabeasDomain` node ids.\n  - `src/authoring/sdk.rs#mod[tests]/fn[review_graph_delegates_unprepared_sources_and_paths_to_the_domain]` exercises the real node ids.\n  - The agent tests in `crates/trust-but-verify/src/agent/tests.rs` and the criteria test `criteria_keep_typed_answers_and_persist_only_when_requested` use the `NodeId` type in other flows.\n\nThe requirement states a single type-level contract, and the compile-time bound checks assert it directly. The behavioural tests add runtime evidence that equality and cloning of ids work as the graph needs. I found no unacknowledged gap.",
   "references": "8f371c4ec7f0c0885da5414a2e1353bd9a2d1a595b7e6b3d293f799812f87832",
   "inputs": [
     {
@@ -50,6 +50,7 @@
         "    type NodeContent: NodeContents;",
         "    type EdgeLabel: Clone + Send + Sync;",
         "",
+        "    fn cache(&self) -> &ValidationCache;",
         "    fn node_path(&self, node: &Self::NodeId) -> NodePath;",
         "    fn node_content(",
         "        &self,",
@@ -71,6 +72,8 @@
         "        criterion: &CriterionPath,",
         "        record: &Record<Self::NodeId, Self::EdgeLabel>,",
         "    ) -> impl Future<Output = Result<(), Self::Error>> + Send;",
+        "",
+        "    fn project_sources(&self) -> Option<SourceProject<Self>> { ... }",
         "}",
         "```",
         ":::"
@@ -106,27 +109,27 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[default_tool_accepts_scalar_results_and_keeps_the_exact_prefix]",
-      "hash": "b17c042c012909c7e85c97f9613f6b7435a264447298801e69893bbb1dee686c"
+      "hash": "aab1f7e6dbf06e9aea24f6c63a92ea17a658b6a8f5b24717f4c714c888f7bf3c"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[deterministic_validation_uses_required_storage_without_an_agent]",
-      "hash": "6855ceb72cad4207905aa0be9cadc3210222330178b8fb3ab152cdfe7279b242"
+      "hash": "b442efc8cdaf6a005467fae1b11fe34828c57e5f36cb157f13d47eccdf2f935f"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[enum_node_ids_distinguish_requirements_and_source_items_in_one_domain]",
-      "hash": "de4ef23efec56bf68236da93453ee7a761a59ba35e241442f6b5305d155d2714"
+      "hash": "7be68d607b72811118e56400cd39cb2d29298d9933d5e227046b1a49b3c02ed5"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]",
-      "hash": "9da549bbcba92481264a2bb262538bfc3c0846c8c3bedf02c195bd80a34b8552"
+      "hash": "1ee2c614389303996787e2852ce66a42f33197edf45dde45c740ce53f74308e8"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[criteria_keep_typed_answers_and_persist_only_when_requested]",
-      "hash": "dc7c8956d3d5681384322fad29d3bd3c4276c59bf1bf06d8e742ff1bc993ca3c"
+      "hash": "a97c7ec9ce25ce55fd9b62ba41256e14b5ed7e44e547dccda13cd562e7a3360e"
     },
     {
       "file": "src/authoring/sdk.rs",
@@ -203,7 +206,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "877152da04beedf84fa17e2badad2ebaf956b8433bc2005fe585986cf7d0f146"
+          "value": "a08b132cf133158fc08548ea99ca883d60f6baaa63eb32895672985f4ebf1da7"
         }
       ]
     },
@@ -231,7 +234,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f0ffb765a696ff55225e6014560e0b2996d544133d1f245b719577c0520120d3"
+          "value": "d6e2dc84bf802db6895d7639e10293019645855168250bc92804c30510f96d86"
         }
       ]
     },
@@ -248,7 +251,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "2829341695131ae63f20531291092a3f030a3f8b07e160f5c8588379e78fd47a"
+          "value": "531b3d0f4b457cd2242766c749f35640e368f474b102121ef2669dc6b7353d95"
         }
       ]
     },
@@ -265,7 +268,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "8b4b87d028692f4e4692dd7ea0d3ddc3446cfe77868b7c2efcb315a080ad27ea"
+          "value": "48751d410d3a2bd26fd6882053e73cc557d0bf618ae47d02c0e0338f93a0490c"
         }
       ]
     },
@@ -282,7 +285,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9f45a6d4084397570ca07a2b5fc9df0e1f506e45e6a30d00887e0afff857a327"
+          "value": "6961cfab17098299773f07d2fca4d9cfa11ebf70a35d708ed3a3fd088643e3af"
         }
       ]
     },
@@ -299,7 +302,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "72e659479e2c7eb4b34bc1f0ca83f43697b5b388463c7865ebe7c2a8e08c5abf"
+          "value": "a36441439e235779b2ca52efae16d2747d1c3a13177e8bd90ad01fd3037110d1"
         }
       ]
     },

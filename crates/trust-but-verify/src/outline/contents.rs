@@ -8,7 +8,7 @@
 pub mod languages;
 #[path = "selector.rs"]
 pub mod selector;
-use crate::domain::NodeContents;
+use crate::domain::{NodeContents, ValidationCache};
 use crate::graph::Fingerprint;
 pub(crate) use crate::outline_engine::LegacyOutline;
 pub(crate) use crate::outline_engine::parse_provider;
@@ -237,22 +237,67 @@ impl std::fmt::Debug for OutlineContent {
 impl OutlineContent {
     /// Read and outline a file, selecting its root.
     // {impl}`requirements.sdk.outlines.parser`
-    pub fn from_path(path: impl AsRef<Path>) -> Result<Self, OutlineError> {
+    // {impl}`requirements.sdk.outlines.outline_cache`
+    // {impl}`requirements.sdk.outlines.outline_cache.retry`
+    // {impl}`requirements.sdk.outlines.outline_cache.fresh`
+    // {impl}`requirements.sdk.outlines.outline_file`
+    // {impl}`requirements.sdk.outlines.outline_file.lifetime`
+    pub fn from_path(
+        cache: &ValidationCache,
+        path: impl AsRef<Path>,
+    ) -> Result<Self, OutlineError> {
         let path = path.as_ref();
-        let source = std::fs::read_to_string(path).map_err(read_error)?;
-        Self::from_source(path, source.into())
+        let mut outlines = cache.outlines.lock().expect("outline cache lock poisoned");
+        if let Some(outline) = outlines.get(path).and_then(|file| file.outline.as_ref()) {
+            return Ok(outline.clone());
+        }
+        let source = match outlines.get(path) {
+            Some(file) => file.source.clone(),
+            None => std::fs::read_to_string(path).map_err(read_error)?.into(),
+        };
+        let outline = Self::parse_source(path, source.clone())?;
+        outlines.insert(
+            path.to_owned(),
+            crate::domain::CachedFile {
+                source,
+                outline: Some(outline.clone()),
+            },
+        );
+        Ok(outline)
     }
 
     /// Read the addressed file, then select its item.
     // {impl}`requirements.sdk.outlines.parser`
-    pub fn from_id(id: &OutlineId) -> Result<Self, OutlineError> {
-        Self::from_path(&id.path)?.select(&id.selector)
+    pub fn from_id(cache: &ValidationCache, id: &OutlineId) -> Result<Self, OutlineError> {
+        Self::from_path(cache, &id.path)?.select(&id.selector)
     }
 
     /// Outline supplied text without reading the named file.
     // {impl}`requirements.sdk.outlines.parser.supplied_source`
     // {impl}`requirements.sdk.outlines.defaults`
-    pub fn from_source(filename: impl AsRef<Path>, source: Arc<str>) -> Result<Self, OutlineError> {
+    pub fn from_source(
+        cache: &ValidationCache,
+        filename: impl AsRef<Path>,
+        source: Arc<str>,
+    ) -> Result<Self, OutlineError> {
+        let path = filename.as_ref();
+        if let Some(outline) = cache
+            .outlines
+            .lock()
+            .expect("outline cache lock poisoned")
+            .get(path)
+            .filter(|file| file.source == source)
+            .and_then(|file| file.outline.clone())
+        {
+            return Ok(outline);
+        }
+        Self::parse_source(path, source)
+    }
+
+    pub(crate) fn parse_source(
+        filename: impl AsRef<Path>,
+        source: Arc<str>,
+    ) -> Result<Self, OutlineError> {
         let filename = filename.as_ref();
         if let Some(profile) = languages::registry().for_path(filename) {
             return Self::prepare(
@@ -262,23 +307,67 @@ impl OutlineContent {
                 &format!("{}-structural-v1", profile.profile().name),
             );
         }
-        Self::from_source_with(&languages::PlainText, filename, source)
+        Self::parse_with(&languages::PlainText, filename, source)
     }
 
     /// Read a file using explicit language rules.
     // {impl}`requirements.sdk.outlines.additional_languages`
     pub fn from_path_with<L: OutlineLang>(
+        cache: &ValidationCache,
         language: &L,
         path: impl AsRef<Path>,
     ) -> Result<Self, OutlineError> {
         let path = path.as_ref();
-        let source = std::fs::read_to_string(path).map_err(read_error)?;
-        Self::from_source_with(language, path, source.into())
+        let cache = &cache.outlines;
+        let cached = cache
+            .lock()
+            .expect("outline cache lock poisoned")
+            .get(path)
+            .map(|file| file.source.clone());
+        if let Some(source) = cached {
+            return Self::parse_with(language, path, source);
+        }
+        let source: Arc<str> = std::fs::read_to_string(path).map_err(read_error)?.into();
+        // Custom languages can request another outline. Parse outside the lock.
+        let parsed = Self::parse_with(language, path, source.clone())?;
+        let retained = cache
+            .lock()
+            .expect("outline cache lock poisoned")
+            .entry(path.to_owned())
+            .or_insert_with(|| crate::domain::CachedFile {
+                source: source.clone(),
+                outline: None,
+            })
+            .source
+            .clone();
+        if retained == source {
+            Ok(parsed)
+        } else {
+            Self::parse_with(language, path, retained)
+        }
     }
 
     /// Outline supplied text using explicit language rules.
     // {impl}`requirements.sdk.outlines.additional_languages`
     pub fn from_source_with<L: OutlineLang>(
+        cache: &ValidationCache,
+        language: &L,
+        filename: impl AsRef<Path>,
+        source: Arc<str>,
+    ) -> Result<Self, OutlineError> {
+        let path = filename.as_ref();
+        let source = cache
+            .outlines
+            .lock()
+            .expect("outline cache lock poisoned")
+            .get(path)
+            .filter(|file| file.source == source)
+            .map(|file| file.source.clone())
+            .unwrap_or(source);
+        Self::parse_with(language, path, source)
+    }
+
+    fn parse_with<L: OutlineLang>(
         language: &L,
         filename: impl AsRef<Path>,
         source: Arc<str>,

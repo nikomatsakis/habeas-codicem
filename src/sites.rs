@@ -265,7 +265,7 @@ pub(crate) fn discover(
         }
         let (queries, problems) = crate::structural::parse_queries(declaration);
         errors.extend(problems);
-        let runnable = validate_queries(name, declaration, &queries, errors);
+        let runnable = validate_queries(&outlines.validation, name, declaration, &queries, errors);
         // Evaluate dependencies first, even when a violation is declared
         // before its site query. Report results in declaration order below.
         let mut site_results = BTreeMap::new();
@@ -330,6 +330,7 @@ pub(crate) fn discover(
 /// `no_match` snippet none.
 // {impl}`requirements.ci.errors`
 fn validate_queries<'a>(
+    cache: &trust_but_verify::domain::ValidationCache,
     name: &str,
     declaration: &Declaration,
     queries: &'a [DeclaredQuery],
@@ -425,6 +426,7 @@ fn validate_queries<'a>(
         ] {
             for (index, snippet) in snippets.iter().enumerate() {
                 let problem = match crate::structural::snippet_matches(
+                    cache,
                     &query.body.language,
                     &rule,
                     site_rule.as_ref(),

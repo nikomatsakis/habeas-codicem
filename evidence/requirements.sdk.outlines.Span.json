@@ -1,7 +1,7 @@
 {
   "requirement": "`trust_but_verify::outline::Span` locates text by byte offsets from the start\nof the original source snapshot, including when a caller selects a nested item.\n`start` is inclusive and `end` is exclusive. A valid span satisfies\n`start <= end <= source.len()` and both offsets are UTF-8 character boundaries.\nFor `source: &str`, `&source[span]` yields the same slice as\n`&source[span.start..span.end]`, with the same bounds and boundary checks.\n\n```rust,ignore\n#[non_exhaustive]\npub struct Span {\n    pub start: usize,\n    pub end: usize,\n}\n\nimpl Span {\n    pub fn new(start: usize, end: usize) -> Self;\n}\n```\n\nTrait implementations\n\n```rust,ignore\nimpl Clone for Span;\nimpl Copy for Span;\nimpl Eq for Span;\nimpl PartialEq for Span;\nimpl Debug for Span;\nimpl Index<Span> for str {\n    type Output = str;\n}\n```",
   "determination": true,
-  "rationale": "The reviewed tests adequately check `requirements.sdk.outlines.Span`.\n\n**Indexing semantics.** `crates/trust-but-verify/tests/outline_content.rs#fn[span_indexes_str_at_utf8_byte_boundaries]` uses the source \"aé🦀\", which is 7 bytes long.\n- It asserts `&source[Span::new(1, 3)] == \"é\"`. This covers an inclusive start, an exclusive end and multi-byte characters.\n- It asserts that `Span::new(7, 7)` gives `\"\"`. This is an empty span at the end boundary, with `end == len`.\n- It asserts that each of these spans panics:\n  - `Span::new(2, 3)`: the start is not a character boundary.\n  - `Span::new(0, 2)`: the end is not a character boundary.\n  - `Span::new(2, 2)`: both offsets are off boundary.\n  - `Span::new(0, 8)`: the end is greater than `source.len()`.\n  - `Span::new(3, 1)`: `start > end`.\n- Together these cover each clause of \"valid span\" and the \"same bounds and boundary checks\" as range slicing. They also exercise `Index<Span> for str` and `Span::new`.\n\n**Offsets from the original snapshot, including nested items.**\n- `fn[unicode_spans_use_bytes_and_whitespace_only_lines_create_no_items]` asserts exact byte spans for the root and for nested line items after multi-byte characters. For example, 🦀 sits at `Span::new(6, 10)`. It also asserts that `&source[item.span]` equals the item text.\n- `fn[setext_sections_inside_directives_lists_and_quotes_retain_container_spans]` checks nested Markdown sections inside directives, lists and quotes. It asserts `item.span.start`, `name_span` and `selected.text() == &source[item.span]` against the original source, with non-ASCII text.\n- Both tests cover the \"original source snapshot, including when a caller selects a nested item\" clause.\n\n**Type shape and trait implementations.**\n- Public fields and `Span::new` are used in many other tests in `outline_content.rs`.\n- `Copy`, `PartialEq` and `Debug` are exercised through `.map(|item| item.span)` on a borrowed item and through `assert_eq!` on spans.\n- `crates/trust-but-verify/tests/public_api.rs#fn[check_declaration]`, run from `fn[public_exports_match_the_appendix]`, compares the requirement's declaration and trait-impl listing with rustdoc output. That listing covers `Clone`, `Copy`, `Eq`, `PartialEq`, `Debug` and `Index<Span> for str`. The check also requires `#[non_exhaustive]` on structs with public fields. It would catch a missing `Eq` or `Clone` impl, or a missing `non_exhaustive`.\n\nI found no untested obligation and no wrong expected result. There are no acknowledgments.",
+  "rationale": "I judged this from the supplied test source alone. I did not request implementation source. I found no adequacy gap.\n\n**Indexing obligations.** `Index<Span> for str` must behave like `&source[span.start..span.end]`, with the same bounds and UTF-8 boundary checks. The test `span_indexes_str_at_utf8_byte_boundaries` in `crates/trust-but-verify/tests/outline_content.rs` covers this. Its source is `\"aé🦀\"`, which is 7 bytes: `a` is 1 byte, `é` is 2 and `🦀` is 4.\n- **Valid spans:** `Span::new(1, 3)` yields `\"é\"`. `Span::new(7, 7)` yields `\"\"`, so an empty span at `len` is accepted and `end` is exclusive.\n- **Panic cases:** each of these is asserted to panic through `catch_unwind`.\n  - `Span::new(2, 3)` has a start inside `é`.\n  - `Span::new(0, 2)` has an end inside `é`.\n  - `Span::new(2, 2)` is an empty span on a non-boundary.\n  - `Span::new(0, 8)` has `end` greater than `len`.\n  - `Span::new(3, 1)` has `start` greater than `end`.\n- **Construction:** `Span::new` is called outside the `catch_unwind` closure. So the test also shows that `new` does not validate or panic, and that an invalid span can be constructed.\n\n**Offsets from the original snapshot, including nested items.**\n- `unicode_spans_use_bytes_and_whitespace_only_lines_create_no_items` checks byte-based spans on multibyte text. The expected spans are `Span::new(0, source.len())`, `Span::new(0, 2)` and `Span::new(6, 10)`. It also asserts `&source[item.span]` equals the selected text.\n- `setext_sections_inside_directives_lists_and_quotes_retain_container_spans` covers nested items inside a directive, a quote and a list. It asserts `item.span.start` and `item.name_span` equal offsets in the original source. It also asserts `selected.text() == &source[item.span]`. This supports \"from the start of the original source snapshot, including when a caller selects a nested item\".\n\n**Type shape and trait implementations.**\n- The public `start` and `end` fields are read directly in the setext test.\n- `Span::new` is used throughout.\n- `Copy` is exercised because the `catch_unwind` closure uses `span` after it is iterated.\n- `PartialEq` and `Debug` are exercised by `assert_eq!` on `Span` values.\n- `Clone` is implied by the `Copy` bound.\n- `Eq` is a marker trait with no behavior of its own.\n- `#[non_exhaustive]` is a compile-time attribute with no runtime conditional. The `public_exports_match_the_appendix` test in `crates/trust-but-verify/tests/public_api.rs` also checks the public inventory.\n\nAll the observable obligations are tested with assertions that match the requirement.",
   "references": "bc479642cbcee3dc0bd17e8e50419c10e1a51e84345c3b44a5745e0345937c5d",
   "inputs": [
     {
@@ -54,32 +54,17 @@
     {
       "file": "crates/trust-but-verify/tests/outline_content.rs",
       "item": "fn[unicode_spans_use_bytes_and_whitespace_only_lines_create_no_items]",
-      "hash": "84a1f6d6802783227d1c2609e317ac64057f0862755b5e3c0dd0d233ef56ed55"
+      "hash": "a56075f5eb5f0491db5b9fcedd24a08fa7c3252d8919cbb3342ba7d6b339a05e"
     },
     {
       "file": "crates/trust-but-verify/tests/outline_content.rs",
       "item": "fn[setext_sections_inside_directives_lists_and_quotes_retain_container_spans]",
-      "hash": "459533de234c9e8c08ea207f24cee2ca700dce25e0cbe2f239c51e00c0534d27"
+      "hash": "3498274011a7a3989d3456d7e8ccdb16b55a47361281f6357a62202bb66da9ae"
     },
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[public_exports_match_the_appendix]",
       "hash": "4d6ce6161754fb9e88ad84ef64f9bb131b308298104915179b2c5d573ed2b087"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/public_api.rs",
-      "item": "fn[check_declaration]",
-      "hash": "c2641df4291284653f239a9ce3be3002eda283fd0c19492a3f29f81a2bc61829"
-    },
-    {
-      "file": "crates/trust-but-verify/src/outline/contents.rs",
-      "item": "struct[Span]",
-      "hash": "24c72fff187686c20e260745046bfabf90b24abaf85e829a9e99c7cc28f1b069"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/public_api.rs",
-      "item": "impl[RustdocSignatures]/fn[trait_impls]",
-      "hash": "ebfad3e82996cc9623a2e46280c4e4e3056bb114f9fa5bb9bb4e65413bf00080"
     }
   ],
   "format_version": 1,
@@ -149,7 +134,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "5ac00ec6e8917b6af6064c0029a5b5eb6d2e5f2610b91b21f24591eb95733245"
+          "value": "924111935b0844012800c71f641da2e1c50e967d4a7a5547297c1f29353d5005"
         }
       ]
     },
@@ -166,7 +151,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "b4966daee02ecf733737cc2442888a167ce990c39d8a52f5656039c767e5b8d8"
+          "value": "21ab84dd537aec7e760f8dbac34f55a95990be3a358c7b6879e2d72a9b95d44a"
         }
       ]
     },
@@ -184,57 +169,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "ae4819b6e5ac9cd22992cc4254e7868f438e101dbd53f1bd7d443a33ee96f61d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/public_api.rs"
-            },
-            "selector": "fn[check_declaration]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "1a4ac7dcf98a2bfdcc8e62b828699053c877a0a8af9ca1d708d6b94dae2cc7e4"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/outline/contents.rs"
-            },
-            "selector": "struct[Span]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "8ab846bfcca49cb58bd721c01d41ed224229d0bea4e23a9ff48aa3a623b2db8b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/public_api.rs"
-            },
-            "selector": "impl[RustdocSignatures]/fn[trait_impls]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "7954c02a7da347eee2f5a8d92d5afa279abdea98d807a48050453d5481906d0c"
         }
       ]
     }

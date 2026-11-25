@@ -138,7 +138,9 @@ impl HabeasNode {
 }
 
 // {cite}`habeas:util`
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub(crate) enum HabeasEdgeLabel {
     Implements,
     Tests,
@@ -198,6 +200,9 @@ impl NodeContents for HabeasNodeContent {
 // {impl}`requirements.sdk.graph.domain_types`
 // {impl}`requirements.sdk.domain`
 impl Domain for HabeasDomain<'_> {
+    fn cache(&self) -> &trust_but_verify::domain::ValidationCache {
+        &self.outlines.validation
+    }
     type NodeId = HabeasNode;
     type EdgeLabel = HabeasEdgeLabel;
 

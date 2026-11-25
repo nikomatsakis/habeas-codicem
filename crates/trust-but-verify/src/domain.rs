@@ -6,11 +6,55 @@ use crate::graph::NodePath;
 use crate::graph::Record;
 use std::future::Future;
 
+use crate::agent::AgentConfig;
+use crate::agent_runtime::ConfiguredAgent;
+use crate::outline::OutlineContent;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+/// Shared outline snapshots and the agent configured for a domain.
+// {impl}`requirements.sdk.validation-cache.ValidationCache`
+#[derive(Clone, Default)]
+pub struct ValidationCache {
+    pub(crate) outlines: Arc<Mutex<HashMap<PathBuf, CachedFile>>>,
+    pub(crate) agent: Option<Arc<ConfiguredAgent>>,
+}
+
+pub(crate) struct CachedFile {
+    pub source: Arc<str>,
+    pub outline: Option<OutlineContent>,
+}
+
+impl ValidationCache {
+    // {impl}`requirements.sdk.validation-cache.new`
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    // {impl}`requirements.sdk.validation-cache.with_agent`
+    pub fn with_agent(config: AgentConfig) -> Self {
+        Self {
+            agent: Some(Arc::new(ConfiguredAgent::new(config))),
+            ..Self::new()
+        }
+    }
+}
+
 /// The application's graph and evidence persistence.
 ///
 /// Clones can share application state while each execution records its own inputs.
 // {impl}`requirements.sdk.domain`
 pub trait Domain: Clone + Send + Sync {
+    /// The cache shared by this domain and its clones.
+    // {impl}`requirements.sdk.validation-cache.cache`
+    fn cache(&self) -> &ValidationCache;
+
+    /// Project source tools available to the configured agent.
+    fn project_sources(&self) -> Option<crate::sources::SourceProject<Self>> {
+        None
+    }
+
     /// Application-defined errors from domain operations.
     // {impl}`requirements.sdk.errors`
     type Error: Send;
@@ -82,4 +126,17 @@ pub trait NodeContents: Send + Sync {
 // {impl}`requirements.sdk.sources.source_nodes`
 pub trait SourceNodes: Domain {
     fn source_node(&self, item: &crate::outline::OutlineId) -> Result<Self::NodeId, Self::Error>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // {test}`requirements.sdk.validation-cache.new`
+    #[test]
+    fn new_cache_starts_without_files_or_agent() {
+        let cache = ValidationCache::new();
+        assert!(cache.outlines.lock().unwrap().is_empty());
+        assert!(cache.agent.is_none());
+    }
 }

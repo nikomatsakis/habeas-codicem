@@ -391,8 +391,11 @@ mod tests {
             "//! :::{cite} habeas:util\n// :::\n",
             "fn f() { let a = (); // :::{cite} habeas:util\n// :::\n}\n",
         ] {
-            let contexts =
-                crate::evidence::ReferenceContexts::parse(std::path::Path::new("lib.rs"), source);
+            let contexts = crate::evidence::ReferenceContexts::parse(
+                &Default::default(),
+                std::path::Path::new("lib.rs"),
+                source,
+            );
             let fences = contexts.fences(source);
             assert_eq!(fences.len(), 1);
             assert!(!fences[0].closed);
@@ -405,9 +408,12 @@ mod tests {
     fn comment_fences_close_within_one_comment_run() {
         let source = "// :::{cite} habeas:util\n// Exists for its caller.\n// :::\nfn a() {}\n\n// :::{cite} habeas:util\n// never closed here\n\n// :::\nfn b() {}\n/*\n * :::{impl} requirements.ready\n * Checks it.\n * :::\n */\nfn c() {}\n".to_owned();
         let outline = crate::outline::parse(std::path::Path::new("lib.rs"), &source).unwrap();
-        let fences =
-            crate::evidence::ReferenceContexts::parse(std::path::Path::new("lib.rs"), &source)
-                .fences(&source);
+        let fences = crate::evidence::ReferenceContexts::parse(
+            &Default::default(),
+            std::path::Path::new("lib.rs"),
+            &source,
+        )
+        .fences(&source);
         assert_eq!(fences.len(), 3, "{fences:?}");
         assert_eq!(fences[0].body, "Exists for its caller.");
         assert!(fences[0].closed);

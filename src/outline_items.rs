@@ -96,10 +96,15 @@ impl OutlineItems {
     }
 }
 
-pub(crate) fn for_file(path: &std::path::Path, source: &str) -> Result<OutlineItems, String> {
-    let snapshot = trust_but_verify::outline::OutlineContent::from_source(path, source.into())
-        .map_err(|error| error.to_string())?;
-    Ok(OutlineItems::new(snapshot.outline(), source))
+pub(crate) fn for_file(
+    cache: &trust_but_verify::domain::ValidationCache,
+    path: &std::path::Path,
+    source: &str,
+) -> Result<OutlineItems, String> {
+    let contents =
+        trust_but_verify::outline::OutlineContent::from_source(cache, path, source.into())
+            .map_err(|error| error.to_string())?;
+    Ok(OutlineItems::new(contents.outline(), source))
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@ use super::sources::SourceTools;
 use crate::agent_runtime::*;
 use crate::domain::Domain;
 use crate::domain::NodeContents;
-use crate::graph::validator::Validator;
+use crate::graph as validation;
 use crate::graph::*;
 use crate::request::Context;
 use crate::request::ValidationContext;
@@ -57,6 +57,7 @@ impl NodeContents for Content {
 struct Metadata;
 #[derive(Clone)]
 struct Memory {
+    cache: crate::domain::ValidationCache,
     contents: Arc<Mutex<String>>,
     node_contents: Arc<Mutex<std::collections::BTreeMap<u8, String>>>,
     reads: Arc<Mutex<Vec<u8>>>,
@@ -66,6 +67,7 @@ struct Memory {
 impl Memory {
     fn new(contents: String) -> Self {
         Self {
+            cache: Default::default(),
             contents: Arc::new(Mutex::new(contents)),
             node_contents: Arc::default(),
             reads: Arc::default(),
@@ -75,6 +77,9 @@ impl Memory {
     }
 }
 impl Domain for Memory {
+    fn cache(&self) -> &crate::domain::ValidationCache {
+        &self.cache
+    }
     async fn load_evidence(
         &self,
         node: &Node,
@@ -234,6 +239,7 @@ fn returned_node_page(request: &CompletionRequest) -> uuid::Uuid {
 // {test}`requirements.sdk.graph.agent-harness.fixed_tools`
 // {test}`requirements.sdk.graph.agent-calls.judge.caching`
 // {test}`requirements.sdk.graph.domain_types`
+// {test}`requirements.sdk.graph.validation-context.pages.mcp`
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
 #[tokio::test]
 async fn default_tool_accepts_scalar_results_and_keeps_the_exact_prefix() {
@@ -267,6 +273,15 @@ async fn default_tool_accepts_scalar_results_and_keeps_the_exact_prefix() {
             "get_next_page",
             "submit_result"
         ]
+    );
+    let next_page = requests[0]
+        .tools
+        .iter()
+        .find(|tool| tool.name == "get_next_page")
+        .unwrap();
+    assert_eq!(
+        next_page.parameters,
+        json!({"type":"object","required":["uuid"],"properties":{"uuid":{"type":"string","format":"uuid"}}})
     );
     assert_eq!(requests[0].chat_history[0], Message::system("Question é"));
     assert!(
@@ -433,7 +448,7 @@ impl Criterion<Memory> for Question {
         Node(1)
     }
     fn criterion_path(&self) -> CriterionPath {
-        CriterionPath::new(vec![self.name.clone()])
+        CriterionPath::new(vec!["question".into()])
     }
     fn version(&self) -> CriterionVersion {
         CriterionVersion::new("v1")
@@ -451,14 +466,14 @@ impl Criterion<Memory> for Question {
     }
 }
 
-// {test}`requirements.sdk.graph.validators.validator`
-// {test}`requirements.sdk.graph.validators.validate_node`
+// {test}`requirements.sdk.graph.running-criteria.verify.concurrent`
+// {test}`requirements.sdk.graph.running-criteria.validate_node`
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
 // {test}`requirements.sdk.graph.agent-harness.tool_agent`
 // {test}`requirements.sdk.graph.agent-harness.with_agent`
 #[tokio::test]
-async fn validator_agent_executions_isolate_conversations_and_dependency_traces() {
+async fn agent_executions_isolate_conversations_and_dependency_traces() {
     let mut graph = Memory::new("source".into());
     graph.formatter = distinct_pages;
     let agent = ToolAgent::new(ParallelConversations {
@@ -466,15 +481,18 @@ async fn validator_agent_executions_isolate_conversations_and_dependency_traces(
         calls: Mutex::default(),
     });
     let agent = Arc::new(agent);
-    let validator = Validator::new(graph.clone()).with_agent_adapter(agent.clone());
     let question = |name: &str, successors| Question {
         name: name.into(),
         successors,
     };
     let (alpha, beta) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         futures::join!(
-            validator.verify(question("alpha", false)),
-            validator.verify(question("beta", true)),
+            crate::agent_runtime::verify_with_agent(
+                &graph,
+                agent.as_ref(),
+                question("alpha", false)
+            ),
+            crate::agent_runtime::verify_with_agent(&graph, agent.as_ref(), question("beta", true)),
         )
     })
     .await
@@ -482,8 +500,7 @@ async fn validator_agent_executions_isolate_conversations_and_dependency_traces(
     let (alpha, beta) = (alpha.unwrap(), beta.unwrap());
     assert_eq!(alpha.output(), "alpha");
     assert_eq!(beta.output(), "beta");
-    validator.store_evidence(&alpha).await.unwrap();
-    validator.store_evidence(&beta).await.unwrap();
+    validation::store_evidence(&graph, &alpha).await.unwrap();
     {
         let calls = agent.provider.calls.lock().unwrap();
         assert_eq!(calls["alpha"], 3);
@@ -494,6 +511,7 @@ async fn validator_agent_executions_isolate_conversations_and_dependency_traces(
         .await
         .unwrap()
         .unwrap();
+    validation::store_evidence(&graph, &beta).await.unwrap();
     let beta_record = graph
         .load_evidence(&Node(1), &question("beta", true).criterion_path())
         .await
@@ -523,20 +541,19 @@ async fn validator_agent_executions_isolate_conversations_and_dependency_traces(
             ]
     );
     assert_eq!(
-        validator
-            .load_evidence(&question("alpha", false))
+        validation::load_evidence(&graph, &question("alpha", false))
             .await
             .unwrap()
             .unwrap()
             .into_output(),
-        "alpha"
+        "beta"
     );
     assert_eq!(agent.provider.calls.lock().unwrap()["alpha"], 3);
 }
 
 // {test}`requirements.sdk.graph.validation-context.tracked_inspection`
 // {test}`requirements.sdk.graph.snapshot`
-// {test}`requirements.sdk.graph.validators.validate_node`
+// {test}`requirements.sdk.graph.running-criteria.validate_node`
 // {test}`requirements.sdk.graph.evidence.check_node`
 // {test}`requirements.sdk.graph.evidence.store_evidence`
 // {test}`requirements.sdk.graph.evidence.inputs`
@@ -550,10 +567,14 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     #[derive(Clone)]
     struct GraphWithChangingEdges {
+        cache: crate::domain::ValidationCache,
         lookups: Arc<AtomicUsize>,
         records: Arc<Mutex<Vec<(u8, Record<u8, u8>)>>>,
     }
     impl Domain for GraphWithChangingEdges {
+        fn cache(&self) -> &crate::domain::ValidationCache {
+            &self.cache
+        }
         type NodeId = u8;
         type EdgeLabel = u8;
 
@@ -640,6 +661,7 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
     }
 
     let graph = GraphWithChangingEdges {
+        cache: Default::default(),
         lookups: Arc::new(AtomicUsize::new(0)),
         records: Arc::default(),
     };
@@ -651,19 +673,18 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
         Some(vec![("submit_result", json!({"result":true}))]),
     ]));
     let agent = Arc::new(agent);
-    let validator = Validator::new(graph.clone()).with_agent_adapter(agent.clone());
     assert!(
-        validator
-            .load_evidence(&EdgeReview(1))
+        validation::load_evidence(&graph, &EdgeReview(1))
             .await
             .unwrap()
             .is_none()
     );
-    let result = validator.verify(EdgeReview(1)).await.unwrap();
+    let result = crate::agent_runtime::verify_with_agent(&graph, agent.as_ref(), EdgeReview(1))
+        .await
+        .unwrap();
     assert!(result.output().result);
-    validator.store_evidence(&result).await.unwrap();
-    let saved = validator
-        .load_evidence(&EdgeReview(1))
+    validation::store_evidence(&graph, &result).await.unwrap();
+    let saved = validation::load_evidence(&graph, &EdgeReview(1))
         .await
         .unwrap()
         .unwrap();
@@ -705,6 +726,7 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
     drop(records);
     // An unknown path cannot trigger a graph query or add an observation.
     let graph = GraphWithChangingEdges {
+        cache: Default::default(),
         lookups: Arc::default(),
         records: Arc::default(),
     };
@@ -747,6 +769,7 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
     assert_eq!(graph.lookups.load(Ordering::SeqCst), 1);
     assert!(ctx.dependencies().is_empty());
     let graph = GraphWithChangingEdges {
+        cache: Default::default(),
         lookups: Arc::default(),
         records: Arc::default(),
     };
@@ -1057,12 +1080,12 @@ async fn source_reads_track_optional_dependencies_and_empty_searches_remain_disc
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
 // {test}`requirements.sdk.graph.criteria.deterministic_procedures`
 // {test}`requirements.sdk.graph.criteria.execute`
+// {test}`requirements.sdk.graph.agent-harness.with_agent`
 #[tokio::test]
 async fn deterministic_validation_uses_required_storage_without_an_agent() {
     let graph = Memory::new("ordinary computation".into());
-    let validator = Validator::new(graph.clone());
-    let result = validator.verify(Review(Node(1))).await.unwrap();
-    validator.store_evidence(&result).await.unwrap();
+    let result = validation::verify(&graph, Review(Node(1))).await.unwrap();
+    validation::store_evidence(&graph, &result).await.unwrap();
     let saved = graph
         .load_evidence(&Node(1), &CriterionPath::new(vec![]))
         .await
@@ -1705,7 +1728,7 @@ impl Criterion<Memory> for BehavioralAdequacy {
 
 // {test}`requirements.sdk.graph.criteria.behavioral_adequacy`
 // {test}`requirements.sdk.graph.criteria.criterion_definition`
-// {test}`requirements.sdk.graph.validators.evaluate_criterion`
+// {test}`requirements.sdk.graph.running-criteria.evaluate_criterion`
 // {test}`requirements.sdk.graph.evidence.refresh_evidence`
 // {test}`requirements.sdk.graph.evidence.store_evidence`
 // {test}`requirements.sdk.graph.agent-harness.tool_agent`
@@ -1727,14 +1750,17 @@ async fn behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprin
         json!({"result":expected}),
     )])]);
     let agent = Arc::new(ToolAgent::new(provider));
-    let validator = Validator::new(domain.clone()).with_agent_adapter(agent.clone());
-    let inputs = validator
-        .refresh_evidence(BehavioralAdequacy {
+    let inputs = crate::agent_runtime::verify_with_agent(
+        &domain,
+        agent.as_ref(),
+        BehavioralAdequacy {
             requirement: Node(1),
             review_policy: "Review test adequacy.".into(),
-        })
-        .await
-        .unwrap();
+        },
+    )
+    .await
+    .unwrap();
+    validation::store_evidence(&domain, &inputs).await.unwrap();
     assert_eq!(inputs.output(), &expected);
     assert_eq!(inputs.criterion_path().segments(), ["behavior"]);
     assert_eq!(*domain.reads.lock().unwrap(), [1, 2]);
@@ -1749,27 +1775,31 @@ async fn behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprin
     assert!(inputs.dependencies().iter().any(|dep| matches!(dep,
         Dependency::OutgoingEdges(Node(1), Label, fp) if *fp == edge_fingerprint(&domain, &[Node(2)]))));
     assert_eq!(domain.records.lock().unwrap().len(), 1);
-    assert!(validator.check_inputs(&inputs).unwrap());
-    let restored = validator
-        .load_evidence(&BehavioralAdequacy {
+    assert!(validation::check_inputs(&domain, &inputs).unwrap());
+    let restored = validation::load_evidence(
+        &domain,
+        &BehavioralAdequacy {
             requirement: Node(1),
             review_policy: "Review test adequacy.".into(),
-        })
-        .await
-        .unwrap()
-        .unwrap();
+        },
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert_eq!(restored.output(), &expected);
     assert!(restored.source_node_id() == inputs.source_node_id());
     assert_eq!(restored.criterion_path(), inputs.criterion_path());
     assert_eq!(restored.version(), inputs.version());
     assert!(restored.dependencies() == inputs.dependencies());
-    let reused = validator
-        .refresh_evidence(BehavioralAdequacy {
+    let reused = validation::refresh_evidence(
+        &domain,
+        BehavioralAdequacy {
             requirement: Node(1),
             review_policy: "Review test adequacy.".into(),
-        })
-        .await
-        .unwrap();
+        },
+    )
+    .await
+    .unwrap();
     assert_eq!(reused.output(), &expected);
     assert!(reused.dependencies() == inputs.dependencies());
     assert_eq!(domain.records.lock().unwrap().len(), 1);
@@ -1778,7 +1808,7 @@ async fn behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprin
         .lock()
         .unwrap()
         .insert(2, "Only earlier times are tested.".into());
-    assert!(!validator.check_inputs(&inputs).unwrap());
+    assert!(!validation::check_inputs(&domain, &inputs).unwrap());
     let requests = agent.provider.requests.lock().unwrap();
     assert_eq!(requests.len(), 1);
     assert_eq!(
@@ -2273,6 +2303,7 @@ async fn graph_page_ids_from_a_populated_peer_conversation_are_rejected() {
 // {test}`requirements.sdk.graph.search.search_structure.inputs`
 // {test}`requirements.sdk.graph.validation-context.pages.behavior`
 // {test}`requirements.sdk.graph.validation-context.pages.inputs`
+// {test}`requirements.sdk.graph.search.search_text.mcp`
 #[tokio::test]
 async fn source_tools_forward_arguments_and_present_discovery_and_read_results() {
     struct Provider(Arc<Mutex<Vec<Value>>>);

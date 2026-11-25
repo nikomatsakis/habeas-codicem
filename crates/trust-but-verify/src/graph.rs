@@ -6,8 +6,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::future::Future;
 
-#[path = "graph/runtime.rs"]
-pub mod validator;
 use crate::request::ValidationContext;
 
 // {impl}`requirements.sdk.graph.fingerprint`
@@ -334,6 +332,132 @@ pub trait Criterion<D: Domain>: Send + Sized {
         self,
         ctx: &mut ValidationContext<'_, D>,
     ) -> impl Future<Output = Result<Self::Ok, ValidationError<D::Error>>> + Send;
+}
+
+// {impl}`requirements.sdk.graph.evidence.refresh_evidence`
+/// Reuse compatible, current evidence, or evaluate and save a new answer.
+/// Errors from loading, decoding, checking, execution, or saving propagate.
+// {impl}`requirements.sdk.graph.running-criteria.refresh_evidence`
+pub fn refresh_evidence<D: Domain, V: Criterion<D>>(
+    domain: &D,
+    criterion: V,
+) -> impl Future<Output = Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>>> + Send {
+    async move {
+        if let Some(saved) = load_evidence(domain, &criterion).await? {
+            if criterion.version().is_compatible_with(saved.version())
+                && check_inputs(domain, &saved).map_err(ValidationError::Graph)?
+            {
+                return Ok(saved);
+            }
+        }
+
+        let inputs = verify(domain, criterion).await?;
+        store_evidence(domain, &inputs).await?;
+        Ok(inputs)
+    }
+}
+
+// {impl}`requirements.sdk.graph.evidence.check_node`
+// {impl}`requirements.sdk.graph.evidence.procedure_identity`
+// {impl}`requirements.sdk.graph.evidence.record.output`
+// {impl}`requirements.sdk.graph.evidence.inputs`
+/// Load this criterion's evidence and decode its answer.
+// {impl}`requirements.sdk.graph.running-criteria.load_evidence`
+pub fn load_evidence<D: Domain, V: Criterion<D>>(
+    domain: &D,
+    criterion: &V,
+) -> impl Future<Output = Result<Option<Fingerprinted<D, V::Ok>>, ValidationError<D::Error>>> + Send
+{
+    // Read the descriptor before constructing the future: V needs no Sync.
+    let node = criterion.source_node_id();
+    let criterion_path = criterion.criterion_path();
+    async move {
+        let Some(record) = domain
+            .load_evidence(&node, &criterion_path)
+            .await
+            .map_err(ValidationError::Graph)?
+        else {
+            return Ok(None);
+        };
+        let output = serde_json::from_value(record.output).map_err(ValidationError::Output)?;
+        Ok(Some(Fingerprinted {
+            source: node,
+            criterion: criterion_path,
+            version: record.version,
+            dependencies: record.dependencies,
+            output,
+        }))
+    }
+}
+
+// {impl}`requirements.sdk.graph.evidence.checking_records`
+/// Compare recorded input fingerprints with the current domain state.
+// {impl}`requirements.sdk.graph.running-criteria.check_inputs`
+pub fn check_inputs<D: Domain, O>(
+    domain: &D,
+    inputs: &Fingerprinted<D, O>,
+) -> Result<bool, D::Error> {
+    dependencies_are_current(domain, &inputs.dependencies)
+}
+
+// {impl}`requirements.sdk.graph.running-criteria.validate_node`
+// {impl}`requirements.sdk.graph.running-criteria.validate_node.errors`
+// {impl}`requirements.sdk.graph.evidence.procedure_identity`
+// {impl}`requirements.sdk.graph.evidence.inputs`
+/// Execute the criterion and return its completed answer and observed inputs.
+// {impl}`requirements.sdk.graph.running-criteria.verify`
+// {impl}`requirements.sdk.graph.running-criteria.verify.concurrent`
+pub fn verify<D: Domain, V: Criterion<D>>(
+    domain: &D,
+    criterion: V,
+) -> impl Future<Output = Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>>> + Send {
+    execute_with_context(
+        ValidationContext::new(domain, criterion.source_node_id()),
+        criterion,
+    )
+}
+
+pub(crate) async fn execute_with_context<D: Domain, V: Criterion<D>>(
+    mut ctx: ValidationContext<'_, D>,
+    criterion: V,
+) -> Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>> {
+    let node = ctx.node_id().clone();
+    let criterion_path = criterion.criterion_path();
+    let version = criterion.version();
+
+    let answer = criterion.execute(&mut ctx).await?;
+    Ok(Fingerprinted {
+        source: node,
+        criterion: criterion_path,
+        version: Some(version),
+        dependencies: ctx.dependencies(),
+        output: answer,
+    })
+}
+
+// {impl}`requirements.sdk.graph.evidence.store_evidence`
+// {impl}`requirements.sdk.graph.evidence.record.output`
+/// Encode the answer and atomically replace its source/criterion record.
+// {impl}`requirements.sdk.graph.running-criteria.store_evidence`
+pub fn store_evidence<D: Domain, O: Serialize>(
+    domain: &D,
+    inputs: &Fingerprinted<D, O>,
+) -> impl Future<Output = Result<(), ValidationError<D::Error>>> + Send {
+    // Encode before constructing the future: O needs no Sync or Clone.
+    let encoded = serde_json::to_value(&inputs.output).map(|output| Record {
+        version: inputs.version.clone(),
+        dependencies: inputs.dependencies.clone(),
+        output,
+    });
+    let node = inputs.source.clone();
+    let criterion_path = inputs.criterion.clone();
+    async move {
+        let record = encoded.map_err(ValidationError::Output)?;
+        domain
+            .store_evidence(&node, &criterion_path, &record)
+            .await
+            .map_err(ValidationError::Graph)
+    }
 }
 
 fn dependencies_are_current<D: Domain>(

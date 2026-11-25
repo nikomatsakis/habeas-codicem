@@ -1,11 +1,11 @@
 //! Fixed project tools; every delivered source read has a domain observation.
 use super::{Pages, ToolDelivery, ToolFactory, ToolSession};
 use crate::domain::NodeContents;
-use crate::domain::SourceNodes;
+
 use crate::graph::Dependency;
 use crate::outline::OutlineId;
 use crate::sources::SourceScope;
-use crate::sources::Sources;
+
 use crate::sources::StructuralQuery;
 use crate::sources::TextQuery;
 use futures::future::BoxFuture;
@@ -13,12 +13,9 @@ use rig_core::completion::ToolDefinition;
 use serde_json::{Value, json};
 use std::io;
 
-pub(crate) struct ProjectSources<D: SourceNodes> {
-    pub sources: Sources,
-    pub domain: D,
-}
+use crate::sources::SourceProject as ProjectSources;
 
-impl<D: SourceNodes> ProjectSources<D>
+impl<D: crate::domain::Domain> ProjectSources<D>
 where
     D::Error: std::fmt::Display,
 {
@@ -30,14 +27,12 @@ where
         file: &crate::sources::SourceFile,
     ) -> Result<Dependency<D::NodeId, D::EdgeLabel>, String> {
         let contents = crate::outline::OutlineContent::from_source(
+            self.domain.cache(),
             path,
             file.text().map_err(|e| e.to_string())?.into(),
         )
         .map_err(|e| e.to_string())?;
-        let node = self
-            .domain
-            .source_node(contents.id())
-            .map_err(|e| e.to_string())?;
+        let node = (self.source_node)(&self.domain, contents.id()).map_err(|e| e.to_string())?;
         Ok(Dependency::Node(node, contents.fingerprint()))
     }
 }
@@ -46,7 +41,8 @@ where
 mod tests {
     use super::super::tools::SessionTools;
     use super::*;
-    use crate::domain::Domain;
+    use crate::domain::{Domain, SourceNodes};
+    use crate::graph as validation;
     use crate::graph::Criterion;
     use crate::graph::CriterionPath;
     use crate::graph::CriterionVersion;
@@ -54,8 +50,8 @@ mod tests {
     use crate::graph::NodePath;
     use crate::graph::Record;
     use crate::graph::ValidationError;
-    use crate::graph::validator::Validator;
     use crate::request::ValidationContext;
+    use crate::sources::Sources;
     use std::sync::{Arc, Mutex};
 
     struct State {
@@ -67,7 +63,7 @@ mod tests {
     }
 
     #[derive(Clone)]
-    struct Project(Arc<Mutex<State>>);
+    struct Project(Arc<Mutex<State>>, crate::domain::ValidationCache);
 
     struct Content(String);
     impl NodeContents for Content {
@@ -79,6 +75,9 @@ mod tests {
         }
     }
     impl Domain for Project {
+        fn cache(&self) -> &crate::domain::ValidationCache {
+            &self.1
+        }
         type Error = io::Error;
         type NodeId = String;
         type NodeContent = Content;
@@ -160,13 +159,16 @@ mod tests {
     }
 
     fn project(text: &str) -> Project {
-        Project(Arc::new(Mutex::new(State {
-            text: text.into(),
-            reads: 0,
-            read_nodes: Vec::new(),
-            record: None,
-            fail_read: false,
-        })))
+        Project(
+            Arc::new(Mutex::new(State {
+                text: text.into(),
+                reads: 0,
+                read_nodes: Vec::new(),
+                record: None,
+                fail_read: false,
+            })),
+            Default::default(),
+        )
     }
 
     // {test}`requirements.sdk.graph.search.first_search.instructions`
@@ -179,18 +181,24 @@ mod tests {
     // {test}`requirements.sdk.graph.search.search_text.behavior`
     // {test}`requirements.sdk.graph.validation-context.pages.mcp`
     // {test}`requirements.sdk.graph.validation-context.pages.behavior`
+    // {test}`requirements.sdk.graph.search.search_text.mcp`
     #[tokio::test]
     async fn search_obligations_follow_delivery_and_keep_the_original_snapshot() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("source.txt");
         let original = "hit me here\n".repeat(300);
         std::fs::write(&path, &original).unwrap();
-        let expected = crate::outline::OutlineContent::from_source("source.txt", original.into())
-            .unwrap()
-            .fingerprint();
+        let expected = crate::outline::OutlineContent::from_source(
+            project("").cache(),
+            "source.txt",
+            original.into(),
+        )
+        .unwrap()
+        .fingerprint();
         let tools = ProjectSources {
+            source_node: Project::source_node,
             sources: Sources::new(root.path()),
-            domain: project("unrelated domain text"),
+            domain: project("unrelated domain text").into(),
         };
         let mut session = SessionTools::new(tools.session());
         let finish = session
@@ -355,6 +363,7 @@ mod tests {
     }
 
     // {test}`requirements.sdk.graph.validation-context.pages.behavior`
+    // {test}`requirements.sdk.graph.search.search_text.mcp`
     #[tokio::test]
     async fn search_pages_return_every_original_match_in_order() {
         let root = tempfile::tempdir().unwrap();
@@ -362,12 +371,38 @@ mod tests {
         let lines: Vec<_> = (1..=350).map(|i| format!("hit {i}")).collect();
         std::fs::write(&path, lines.join("\n")).unwrap();
         let tools = ProjectSources {
+            source_node: Project::source_node,
             sources: Sources::new(root.path()),
-            domain: project(""),
+            domain: project("").into(),
         };
         let mut session = SessionTools::new(tools.session());
+        let search = session
+            .extra
+            .definitions()
+            .unwrap()
+            .into_iter()
+            .find(|tool| tool.name == "search_text")
+            .unwrap();
+        assert_eq!(
+            search.parameters,
+            json!({"type":"object","required":["pattern"],"properties":{
+                "pattern":{"type":"string"}, "prefix":{"type":"string"},
+                "context_lines":{"type":"integer","minimum":0}, "limit":{"type":"integer","minimum":0}
+            }})
+        );
+        for invalid in [
+            json!({}),
+            json!({"pattern":"hit","limit":"1"}),
+            json!({"pattern":"hit","context_lines":-1}),
+        ] {
+            assert!(session.dispatch("search_text", &invalid).await.is_err());
+        }
+        std::fs::write(root.path().join("excluded-by-prefix.txt"), "hit outside").unwrap();
         let mut delivery = session
-            .dispatch("search_text", &json!({"pattern":"hit"}))
+            .dispatch(
+                "search_text",
+                &json!({"pattern":"hit","prefix":"source.txt"}),
+            )
             .await
             .unwrap();
         std::fs::write(&path, "changed").unwrap();
@@ -407,8 +442,9 @@ mod tests {
         std::fs::write(&code, "fn one(){call();} fn two(){call();}").unwrap();
         let domain = project("");
         let tools = ProjectSources {
+            source_node: Project::source_node,
             sources: Sources::new(root.path()),
-            domain: domain.clone(),
+            domain: domain.clone().into(),
         };
         let mut session = SessionTools::new(tools.session());
         let args = json!({"language":"rust","rule":{"rule":{"pattern":"call()"}}});
@@ -421,7 +457,7 @@ mod tests {
             .iter()
             .find(|m| m["node"]["selector"] == "fn[two]")
             .unwrap()["tag"];
-        let expected = crate::outline::OutlineContent::from_path(&code)
+        let expected = crate::outline::OutlineContent::from_path(domain.cache(), &code)
             .unwrap()
             .select("fn[two]")
             .unwrap()
@@ -463,8 +499,9 @@ mod tests {
             .collect();
         std::fs::write(root.path().join("code.rs"), code).unwrap();
         let tools = ProjectSources {
+            source_node: Project::source_node,
             sources: Sources::new(root.path()),
-            domain: project(""),
+            domain: project("").into(),
         };
         let mut session = SessionTools::new(tools.session());
         let mut delivery = session
@@ -523,8 +560,9 @@ mod tests {
             std::fs::write(root.path().join(name), "").unwrap();
         }
         let tools = ProjectSources {
+            source_node: Project::source_node,
             sources: Sources::new(root.path()),
-            domain: project(""),
+            domain: project("").into(),
         };
         let mut session = SessionTools::new(tools.session());
         let first = session.dispatch("list_sources", &json!({})).await.unwrap();
@@ -566,6 +604,7 @@ mod tests {
     // {test}`requirements.sdk.graph.validation-context.list_sources.mcp`
     // {test}`requirements.sdk.graph.validation-context.outline_source.mcp`
     // {test}`requirements.sdk.graph.search.search_text.behavior`
+    // {test}`requirements.sdk.graph.search.search_text.mcp`
     #[tokio::test]
     async fn fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies() {
         let root = tempfile::tempdir().unwrap();
@@ -579,8 +618,9 @@ mod tests {
         .unwrap();
         let domain = project("prepared domain contents");
         let tools = ProjectSources {
+            source_node: Project::source_node,
             sources: Sources::new(root.path()),
-            domain: domain.clone(),
+            domain: domain.clone().into(),
         };
         let mut session = SessionTools::new(tools.session());
         assert_eq!(
@@ -771,8 +811,9 @@ mod tests {
         std::fs::write(root.path().join("source.txt"), "disk text").unwrap();
         let domain = project("whole file from domain");
         let tools = ProjectSources {
+            source_node: Project::source_node,
             sources: Sources::new(root.path()),
-            domain: domain.clone(),
+            domain: domain.clone().into(),
         };
         let mut session = SessionTools::new(tools.session());
         let tool = session
@@ -821,17 +862,17 @@ mod tests {
     // {test}`requirements.sdk.graph.validation-context.read_source.inputs`
     // {test}`requirements.sdk.graph.evidence.refresh_evidence`
     #[tokio::test]
-    async fn source_capable_validator_tracks_deterministic_reads_and_reuses_saved_results() {
-        let root = tempfile::tempdir().unwrap();
+    async fn deterministic_source_reads_reuse_saved_results() {
         let domain = project("first");
         let config = crate::agent::AgentConfig::OpenAi(crate::agent::OpenAiConfig {
             api_key_env: Some("TBV_NEVER_REQUIRED_BY_DETERMINISTIC_SOURCE_READS".into()),
             ..Default::default()
         });
-        let validator = Validator::new(domain.clone())
-            .with_agent(config.clone())
-            .with_sources(Sources::new(root.path()));
-        let first = validator.refresh_evidence(ReadSource).await.unwrap();
+        let mut domain = domain;
+        domain.1 = crate::domain::ValidationCache::with_agent(config);
+        let first = validation::refresh_evidence(&domain, ReadSource)
+            .await
+            .unwrap();
         assert_eq!(first.output(), "first");
         assert_eq!(
             first.dependencies(),
@@ -840,18 +881,15 @@ mod tests {
                 Content("first".into()).fingerprint()
             )]
         );
-        let saved = validator.refresh_evidence(ReadSource).await.unwrap();
+        let saved = validation::refresh_evidence(&domain, ReadSource)
+            .await
+            .unwrap();
         assert_eq!(saved.output(), "first");
         domain.0.lock().unwrap().text = "second".into();
-        let changed = validator.refresh_evidence(ReadSource).await.unwrap();
+        let changed = validation::refresh_evidence(&domain, ReadSource)
+            .await
+            .unwrap();
         assert_eq!(changed.output(), "second");
-        let reverse_order = Validator::new(domain.clone())
-            .with_sources(Sources::new(root.path()))
-            .with_agent(config);
-        assert_eq!(
-            reverse_order.verify(ReadSource).await.unwrap().output(),
-            "second"
-        );
     }
 
     // {test}`requirements.sdk.graph.validation-context.read_source.fn`
@@ -915,6 +953,7 @@ mod tests {
     // {test}`requirements.sdk.graph.validation-context.read_source.inputs`
     // {test}`requirements.sdk.sources.redaction`
     // {test}`requirements.sdk.graph.validation-context.read_source.mcp`
+    // {test}`requirements.sdk.sources.source_nodes`
     #[tokio::test]
     async fn fixed_source_reads_redact_delivery_and_propagate_preparation_errors() {
         let root = tempfile::tempdir().unwrap();
@@ -923,8 +962,9 @@ mod tests {
         let raw = format!("visible text\ncredential {token}\nlast line\n");
         let domain = project(&raw);
         let tools = ProjectSources {
+            source_node: Project::source_node,
             sources: Sources::new(root.path()),
-            domain: domain.clone(),
+            domain: domain.clone().into(),
         };
         let mut session = SessionTools::new(tools.session());
         domain.0.lock().unwrap().fail_read = true;
@@ -973,6 +1013,7 @@ mod tests {
 
     // {test}`requirements.sdk.sources.redaction`
     // {test}`requirements.sdk.graph.search.search_structure.inputs`
+    // {test}`requirements.sdk.graph.search.search_text.mcp`
     #[tokio::test]
     async fn search_excerpts_redact_credentials_before_serialization_and_paging() {
         let root = tempfile::tempdir().unwrap();
@@ -998,8 +1039,9 @@ mod tests {
         std::fs::write(root.path().join("code.rs"), &raw).unwrap();
         let domain = project("domain contents are not read for search");
         let tools = ProjectSources {
+            source_node: Project::source_node,
             sources: Sources::new(root.path()),
-            domain: domain.clone(),
+            domain: domain.clone().into(),
         };
         let mut session = SessionTools::new(tools.session());
         let queries = [
@@ -1040,11 +1082,14 @@ mod tests {
             } else {
                 "fn[chosen]"
             };
-            let snapshot =
-                crate::outline::OutlineContent::from_source("code.rs", raw.as_str().into())
-                    .unwrap()
-                    .select(selector)
-                    .unwrap();
+            let snapshot = crate::outline::OutlineContent::from_source(
+                domain.cache(),
+                "code.rs",
+                raw.as_str().into(),
+            )
+            .unwrap()
+            .select(selector)
+            .unwrap();
             assert_eq!(
                 selected.dependencies,
                 [Dependency::Node(
@@ -1076,8 +1121,9 @@ mod tests {
         std::fs::write(root.path().join(".git/config"), "metadata").unwrap();
         let domain = project("domain text");
         let tools = ProjectSources {
+            source_node: Project::source_node,
             sources: Sources::new(root.path()),
-            domain: domain.clone(),
+            domain: domain.clone().into(),
         };
         let mut session = SessionTools::new(tools.session());
         let allowed = session
@@ -1112,7 +1158,7 @@ mod tests {
     }
 }
 
-impl<D: SourceNodes> ToolFactory<D> for ProjectSources<D>
+impl<D: crate::domain::Domain> ToolFactory<D> for ProjectSources<D>
 where
     D::Error: std::fmt::Display,
 {
@@ -1125,11 +1171,11 @@ where
     }
 }
 
-struct Session<'a, D: SourceNodes> {
+struct Session<'a, D: crate::domain::Domain> {
     tools: &'a ProjectSources<D>,
 }
 
-impl<D: SourceNodes> ToolSession<D> for Session<'_, D>
+impl<D: crate::domain::Domain> ToolSession<D> for Session<'_, D>
 where
     D::Error: std::fmt::Display,
 {
@@ -1266,10 +1312,7 @@ where
                             .into(),
                     )
                     .map_err(io::Error::other)?;
-                    let node = self
-                        .tools
-                        .domain
-                        .source_node(&item)
+                    let node = (self.tools.source_node)(&self.tools.domain, &item)
                         .map_err(|error| io::Error::other(error.to_string()))?;
                     let contents = self
                         .tools
@@ -1324,10 +1367,7 @@ where
                                 scheme,
                                 node.structural_hash.clone(),
                             );
-                            let input = self
-                                .tools
-                                .domain
-                                .source_node(&found.node)
+                            let input = (self.tools.source_node)(&self.tools.domain, &found.node)
                                 .map(|id| Dependency::Node(id, fingerprint))
                                 .map_err(|error| error.to_string());
                             let excerpt = crate::redaction::redact_text(&found.excerpt);

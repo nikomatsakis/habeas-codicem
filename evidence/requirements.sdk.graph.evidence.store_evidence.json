@@ -1,8 +1,8 @@
 {
-  "requirement": "```rust,ignore\n// Method on Validator<D>.\n/// Encode the answer and atomically replace this source/criterion's record.\npub fn store_evidence<O: serde::Serialize>(\n    &self,\n    inputs: &Fingerprinted<D, O>,\n) -> impl Future<Output = Result<(), ValidationError<D::Error>>> + Send;\n```\n\nThe method saves under the source identity and criterion path captured in\n`Fingerprinted`, preserving its version, input trace, and completed answer. Encoding follows\n{cite}`requirements.sdk.graph.evidence.record.output`; atomic replacement follows\n{cite}`requirements.sdk.graph.evidence.evidence_storage`. The result type needs\nno `Sync` bound: the method encodes the answer and captures the record and\nstorage key before constructing the storage future.",
+  "requirement": "```rust,ignore\n/// Encode the answer and atomically replace this source/criterion's record.\npub fn store_evidence<D: Domain, O: serde::Serialize>(\n    domain: &D,\n    inputs: &Fingerprinted<D, O>,\n) -> impl Future<Output = Result<(), ValidationError<D::Error>>> + Send;\n```\n\nThe function saves under the source identity and criterion path captured in\n`Fingerprinted`, preserving its version, input trace, and completed answer. Encoding follows\n{cite}`requirements.sdk.graph.evidence.record.output`; atomic replacement follows\n{cite}`requirements.sdk.graph.evidence.evidence_storage`. The result type needs\nno `Sync` bound: the function encodes the answer and captures the record and\nstorage key before constructing the storage future.",
   "determination": true,
-  "rationale": "The reviewed tests cover every obligation in `store_evidence`.\n\n**Save under the captured source and criterion path, preserving version, input trace and answer**\n- `criteria_keep_typed_answers_and_persist_only_when_requested` verifies the following.\n  - It stores a verified value, then loads it back.\n  - The loaded value has the same output, `source_node_id`, `criterion_path`, `version` and `dependencies`.\n  - Raw stored records for different criteria (`behavior`, `text`) hold the expected JSON output under the right criterion path.\n  - A later `verify` with a replacement answer does not change the stored record until an explicit save.\n- `input_checking_and_execution_keep_separate_observations` stores a record with a non-empty `Dependency::Node` trace. It asserts the stored dependencies equal the expected fingerprint, so the input trace is saved with its content.\n- `agent_edge_tools_record_selections_without_validating_targets` stores a result that has `Dependency::OutgoingEdges`. It asserts the record is keyed by node 1, the loaded dependencies equal the original, and the stored dependencies equal the expected edge fingerprint.\n- `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer` round-trips the source, criterion path, version and dependencies of a stored record.\n- `typed_loading_reports_decode_errors_even_for_stale_evidence` and the storage test check that the stored version is the one the executed criterion produced.\n\n**Serialization failure returns `ValidationError::Output` and leaves the existing record unchanged**\n- `serialization_failure_leaves_the_existing_record_unchanged` stores an old record, then tries to store an `Unencodable` answer.\n- It asserts the error is `ValidationError::Output` with the expected message.\n- It asserts the stored version, dependencies and output are unchanged.\n- It asserts the write count is still 1.\n\n**Storage failure returns `ValidationError::Graph`**\n- `resolution_storage_and_callback_errors_are_not_judgments` sets `fail_store` and asserts `Err(ValidationError::Graph(\"store\"))`, with no record written.\n\n**Result type needs `Send` but no `Sync`**\n- `validation_and_answer_need_send_without_sync` uses a `Cell<u32>` answer, which is not `Sync`. It passes the `store_evidence` future through the `send` helper and checks the round trip.\n\n**Atomic replacement and key preservation**\n- These are delegated to the cited `evidence_storage` requirement.\n- `concurrent_same_criterion_executions_keep_complete_independent_records` stores two competing records for the same criterion. It asserts exactly one record remains and that its version, dependencies and output all belong to the same save.\n\n**Real storage**\n- `malformed_records_are_storage_errors_and_bad_outputs_are_output_errors` stores through the `FileEvidenceStorage` backend.\n\nVersion `None` is not tested, but the requirement does not name it, so I do not count it as a gap. The assertions are strong enough to catch dropped or mutated fields, a wrong key, a missing error mapping, or a partial write. I found no unacknowledged gap.",
-  "references": "3906913037a414bf0e63f366419c56b540e2a75f2ebcc7c0f2f06df82088f0f8",
+  "rationale": "I judged this from the supplied test sources only. I did not request any implementation source.\n\n**Obligations in `requirements.sdk.graph.evidence.store_evidence`:**\n1. The function saves under the source identity and criterion path captured in `Fingerprinted`.\n2. It preserves the version, the input trace and the completed answer.\n3. Encoding follows `record.output`: a serialization failure returns `ValidationError::Output` and leaves the existing record unchanged, and a storage failure returns `ValidationError::Graph`.\n4. Replacement is atomic, per `evidence_storage`. This is a cited requirement, so I only checked that the subject's tests exercise it.\n5. The result future needs no `Sync` bound.\n\n**Coverage:**\n- **Key and round trip.**\n  - `tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` stores a verified value, then loads it back.\n  - It asserts that the loaded output, source node id, criterion path, version and dependencies equal the original's.\n  - It also checks the stored raw records. The `behavior` record has the encoded output JSON, and the `text` record has `null`.\n  - Separate criteria (`behavior`, `structure`, `text`) land in separate records, and every stored record has the empty dependency list.\n  - The `behavior` record stays unchanged until an explicit store.\n- **Version and input trace preserved.**\n  - `agent/tests.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` stores a result, then asserts the stored record's dependencies equal `Dependency::OutgoingEdges(1, 7, edge_fingerprint(..))`. It also asserts the record is keyed by node 1.\n  - `agent/tests.rs#fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]` checks that the restored output, source, path, version and dependencies equal the originals.\n  - `graph/validation_tests.rs#fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]` checks the stored dependencies.\n  - `contracts.rs#fn[input_checking_and_execution_keep_separate_observations]` stores a new answer over an old record. It asserts the replaced record's dependencies are the new ones, and checks for exactly one record via `records[0]`.\n- **Serialization failure.**\n  - `contracts.rs#fn[serialization_failure_leaves_the_existing_record_unchanged]` stores an `Unencodable` answer over an existing record.\n  - It asserts `ValidationError::Output` and the \"cannot encode answer\" message.\n  - It also asserts the version, dependencies and output are unchanged and that there was only one write.\n- **Storage failure.**\n  - `validation_tests.rs#fn[resolution_storage_and_callback_errors_are_not_judgments]` sets `fail_store` and asserts `ValidationError::Graph(\"store\")`, with no record left behind.\n  - `tests/storage.rs#fn[malformed_records_are_storage_errors_and_bad_outputs_are_output_errors]` stores through the real `FileEvidenceStorage`.\n- **Replacement and atomicity.**\n  - `typed_loading_reports_decode_errors_even_for_stale_evidence` stores a replacement and asserts one record remains.\n  - `contracts.rs#fn[concurrent_same_criterion_executions_keep_complete_independent_records]` runs two concurrent `store_evidence` calls for the same source and criterion.\n  - It asserts that exactly one complete record remains and that its version, dependencies and output all come from the same save.\n- **No `Sync` bound.** `contracts.rs#fn[validation_and_answer_need_send_without_sync]` uses a `Cell`-based answer, which is not `Sync`. It wraps `store_evidence(&domain, &value)` in the `send` helper, so the future must be `Send` without borrowing the non-`Sync` value across an await. It then loads the stored value back and checks it.\n\n**Gaps:**\n- I found no gap. The key-distinctness example (`[\"a\"]` plus `[\"b\",\"c\"]` versus `[\"a\",\"b\"]` plus `[\"c\"]`) belongs to `evidence_storage` and the domain. The subject only cites it, so it needs no test here.\n- The `Fingerprinted` source and criterion are passed to the domain as separate arguments. The tests above exercise this through the domain's own `store_evidence`.",
+  "references": "f1965f6afe295644af1a46e98974f883af83df43442b9e98e83d018f1aaa191c",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.evidence.store_evidence",
@@ -12,19 +12,18 @@
       "text": [
         ":::{req} store_evidence",
         "```rust,ignore",
-        "// Method on Validator<D>.",
         "/// Encode the answer and atomically replace this source/criterion's record.",
-        "pub fn store_evidence<O: serde::Serialize>(",
-        "    &self,",
+        "pub fn store_evidence<D: Domain, O: serde::Serialize>(",
+        "    domain: &D,",
         "    inputs: &Fingerprinted<D, O>,",
         ") -> impl Future<Output = Result<(), ValidationError<D::Error>>> + Send;",
         "```",
         "",
-        "The method saves under the source identity and criterion path captured in",
+        "The function saves under the source identity and criterion path captured in",
         "`Fingerprinted`, preserving its version, input trace, and completed answer. Encoding follows",
         "{cite}`requirements.sdk.graph.evidence.record.output`; atomic replacement follows",
         "{cite}`requirements.sdk.graph.evidence.evidence_storage`. The result type needs",
-        "no `Sync` bound: the method encodes the answer and captures the record and",
+        "no `Sync` bound: the function encodes the answer and captures the record and",
         "storage key before constructing the storage future.",
         ":::"
       ]
@@ -36,12 +35,12 @@
       ],
       "text": [
         ":::{req} record.output",
-        "`Validator::store_evidence` serializes the answer in `Fingerprinted` before passing",
+        "`store_evidence` serializes the answer in `Fingerprinted` before passing",
         "the complete record to storage. A serialization failure returns",
         "`ValidationError::Output` and leaves the existing record unchanged. A storage",
         "failure returns `ValidationError::Graph`.",
         "",
-        "`Validator::load_evidence` decodes a loaded record's output into the requested",
+        "`load_evidence` decodes a loaded record's output into the requested",
         "`Criterion::Ok`. An output that cannot decode returns `ValidationError::Output`,",
         "including when the saved version or inputs are stale. Missing evidence returns",
         "`Ok(None)`; malformed stored records and storage failures return",
@@ -91,7 +90,7 @@
         "}",
         "```",
         "",
-        "The validator passes the source identity and criterion path to both methods. The",
+        "The SDK passes the source identity and criterion path to both methods. The",
         "key preserves both parts: source paths `[\"a\"]` and `[\"a\", \"b\"]` with criteria",
         "`[\"b\", \"c\"]` and `[\"c\"]` identify different records, even though flattening each",
         "pair would produce the same segments.",
@@ -109,57 +108,57 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[agent_edge_tools_record_selections_without_validating_targets]",
-      "hash": "36b214f59a72f8ede5df6efd55862feab3eb3b2a901b46420cfcc18398cde2dc"
+      "hash": "fd026c4d0e4cd4f697d39e5732aa55ef78ce56b74a71b376283f941c2bc449ca"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]",
-      "hash": "26e30cc009c5bbec23294c9d2310a58c20f27827342a93619d99ce6f936fac7a"
+      "hash": "9653e3b706f77c9127b61bf2ca6c710e2faa487efcb0f0ce4a244d6ac2b968e8"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]",
-      "hash": "ef92d36a914b81c7f8d15011c753be5105671105cb4f15126fcad9e6e7381e39"
+      "hash": "83d1b4ee274864c38d36531ae4d5620f74204e70046629331f1551e9013f91f5"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[resolution_storage_and_callback_errors_are_not_judgments]",
-      "hash": "019d9b3dcaf43b538f3a14448e2ca0e42fc6f000972a6af300f11b86fb14e3ac"
+      "hash": "b6992bdafd7b7f331fa55b768b6f630a14bcaf53443420a7c608c86348e765b5"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[criteria_keep_typed_answers_and_persist_only_when_requested]",
-      "hash": "dc7c8956d3d5681384322fad29d3bd3c4276c59bf1bf06d8e742ff1bc993ca3c"
+      "hash": "a97c7ec9ce25ce55fd9b62ba41256e14b5ed7e44e547dccda13cd562e7a3360e"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[typed_loading_reports_decode_errors_even_for_stale_evidence]",
-      "hash": "4cf5e036a22700e170cae6eba1ee79a7d3caee688cdf39cc918b4a568064328d"
+      "hash": "6631141409658ab48a58c6f884abec33d4b7107ea7a034c77968e77567b81fa4"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[input_checking_and_execution_keep_separate_observations]",
-      "hash": "d0327f7a62e7d7c48025532340cb37752d8a9aff3c88ee38c1101860d5c6c165"
+      "hash": "f39fbd4bce6fce2292feec48bafe779a83ee3380e31ea0c684ec7c8147c4cc1c"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[validation_and_answer_need_send_without_sync]",
-      "hash": "949fb3a00a164a6932b73fcd42652fd7673f951f9b81ee20b692b383da14aafa"
+      "hash": "d1f81e5683e36ae59219eb96f0cb2e5d29cbf3bd9733780cf0c6d64120532c5f"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[serialization_failure_leaves_the_existing_record_unchanged]",
-      "hash": "dbb108cac80f1e3de98434788fc6272c284ec6a6b179ec7380f73407129f52be"
+      "hash": "15f35b501f3565107962b5f3e92f95ae6a639de0ae515fff061f59ce1d8358c5"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[concurrent_same_criterion_executions_keep_complete_independent_records]",
-      "hash": "3427b5f4b76bff0df2eaab5269ee9851a684948278670aed6484f6bdcdf76eb7"
+      "hash": "3d76691636b26e422fb12b95ed732bd609ae9beb5fc48996a57feaecd033004f"
     },
     {
       "file": "crates/trust-but-verify/tests/storage.rs",
       "item": "fn[malformed_records_are_storage_errors_and_bad_outputs_are_output_errors]",
-      "hash": "b79219c20cb618e7f8d8053459c9c17c266067fb44cbe1422f1abc177d01ae59"
+      "hash": "c8c00cce02307a8b7de802cb5b5872182239b12125105b6e1d7be4b35ec5a158"
     },
     {
       "definition": "requirements.sdk.application_domain",
@@ -187,7 +186,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "3906913037a414bf0e63f366419c56b540e2a75f2ebcc7c0f2f06df82088f0f8"
+          "value": "f1965f6afe295644af1a46e98974f883af83df43442b9e98e83d018f1aaa191c"
         }
       ]
     },
@@ -210,7 +209,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1c4fea18f1f7d3f373195ea4e2f316079e6916fe00decdc56a277eee0c3ea70f"
+          "value": "d772749d856274e867419ff1068c42872cf4ee62820dda1807de658e82d3d1d7"
         }
       ]
     },
@@ -221,7 +220,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "99482caa094df8527ad2ed699eb9fd092ea02242fafa5f79ffa7c1ef6feb5a2e"
+          "value": "7de8cc465e0e2ba988a89672cf1bc5f51ad4061d6dc35d24ab0bb84a84211766"
         }
       ]
     },
@@ -232,7 +231,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "b5dbc5d51989c6946cb5315f0b6c50f4bee399b7e66002da6c8b5cff4d6e6f68"
+          "value": "3868243a356b43c082c6eb933683690c031ab9f8a7d86ca909ece0056aa14943"
         }
       ]
     },
@@ -249,7 +248,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1a801b0c4f1cf101ca7385605a248ae1ac710fc2fc594df745d9273a8b077507"
+          "value": "7c447cd0ccf62c6dd9f6c3e292ba9824837709cb50c2f23bd468305f1a428ad9"
         }
       ]
     },
@@ -266,7 +265,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "12dbd8defec755daa873a1281d8a872dd90862be35ef573c183aa700f3223049"
+          "value": "172400ca26c9868a037b6976bb5c1135c7d7b7d586a7e7fcfb0b581b726b3a13"
         }
       ]
     },
@@ -283,7 +282,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ca7f5b87fc70e690aaa5f1e5fa32637faf13af432bd4ff67a17f3d9c8e788025"
+          "value": "f93722a211799751fef40641f681b99205a79a9c53fbdd1d823833a5598a9c91"
         }
       ]
     },
@@ -300,7 +299,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "175b03b01a251cd962cd06cd5d69fcd1804b0ebd479bfc0f1eb0db1205cf9fac"
+          "value": "c04f7ece8174d7be3b716b984cccc5ffc51eb7184003b511523f88b42e7e7ad8"
         }
       ]
     },
@@ -317,7 +316,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "72e659479e2c7eb4b34bc1f0ca83f43697b5b388463c7865ebe7c2a8e08c5abf"
+          "value": "a36441439e235779b2ca52efae16d2747d1c3a13177e8bd90ad01fd3037110d1"
         }
       ]
     },
@@ -334,7 +333,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "5bf5a3bcb3b7d60432495baaff8911b116cac69153182d2653caeec64d3171c5"
+          "value": "2eb2c15115c5a5a7f4e97aa61ec15b5e345448ad1b3e474edc0b50d22c799d59"
         }
       ]
     },
@@ -351,7 +350,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1948a57f991d6eb12e63d293d0bb0802d4213392ce8c80af3fd048a8b238b244"
+          "value": "47a128d40015c2cbe15355cb0aa694f3a231b7bc91c1a6ff59d255a4f204c047"
         }
       ]
     },
@@ -368,7 +367,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "7471cd4ee7b747fb3311ee29c366819e7254e34994aebc929463dd434e9ea1e3"
+          "value": "d97bf3eea3dc548991784640dc826677e00cd98243517402c2e05168504d8627"
         }
       ]
     },
@@ -385,7 +384,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "8fdd2bbc7aef5f81b411961e15ec8e26e627ce3a308e8db548869e93c477eee6"
+          "value": "c80b812cd68307ac97e176063feda8e18dcec109aaa680d280774c42ac9f6731"
         }
       ]
     },
@@ -402,7 +401,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "a4eaebc1f1303156fc3ae3297cb5c316cc40fa26530c046f3431d6bd09a7fdf9"
+          "value": "77427c0a08ef1e5a1444910d28df016e077c729a29872d09a3a378f98a67d061"
         }
       ]
     },
@@ -419,7 +418,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "2fb6518bd1e97bd96e35dd5486b869985f8819a4b5148656774b792a74df0aae"
+          "value": "6733c4f03f5b7616775df0c27b1cec9df714ee2abb775b05d48b68f92cb6a42d"
         }
       ]
     },

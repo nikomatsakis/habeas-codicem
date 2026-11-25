@@ -1214,6 +1214,33 @@ fn a_moved_chapter_rewrites_glob_selections_and_their_matches() {
     assert_eq!(errors(root), Vec::<String>::new());
 }
 
+// {test}`requirements.refactor.definition_inputs`
+#[test]
+fn a_moved_chapter_with_a_new_glob_match_leaves_the_record_stale() {
+    let temp = project();
+    let root = temp.path();
+    author(root);
+    let original = fs::read(root.join("evidence/rules.check.json")).unwrap();
+    let chapter = fs::read_to_string(root.join("md/rules.md")).unwrap();
+    fs::rename(root.join("md/rules.md"), root.join("md/core.md")).unwrap();
+    fs::write(
+        root.join("md/core.md"),
+        format!("{chapter}\n:::{{req}} added\nAn additional requirement.\n:::\n"),
+    )
+    .unwrap();
+    let output = refactor(root, &["--map", "rules=core"]);
+    assert!(output.status.success(), "{output:?}");
+    let report = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        report.contains("no longer selects what it recorded"),
+        "{report}"
+    );
+    assert_eq!(
+        fs::read(root.join("evidence/rules.check.json")).unwrap(),
+        original
+    );
+}
+
 // {test}`requirements.refactor.record_fields`
 #[test]
 fn a_citation_reviews_commentary_follows_a_renamed_requirement() {
