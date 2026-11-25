@@ -1,7 +1,7 @@
 {
   "requirement": "Start an agent request that will decode its submitted answer as `R`. Its graph tools share the dependency list used by direct reads under {cite}`requirements.sdk.graph.validation-context.shared_context`.\n\n```rust,ignore\nimpl<'d, D: Domain> ValidationContext<'d, D> {\n    pub fn ask<R>(&self) -> Ask<'_, 'd, D, R, ContextPhase>\n    where\n        R: DeserializeOwned + JsonSchema + Send;\n}\n```",
   "determination": true,
-  "rationale": "**Obligations derived from `ValidationContext.ask`**\n1. `ask::<R>()` starts an agent request, and its answer is decoded as `R`. The signature needs `R: DeserializeOwned + JsonSchema + Send`, and the builder is `Ask<'_, 'd, D, R, ContextPhase>`.\n2. The agent's graph tools share the context's dependency list with direct reads, as `requirements.sdk.graph.validation-context.shared_context` describes. That means reads by the criterion and reads by the agent land in the same list, and later asks keep the existing trace.\n\n**Test mapping**\n- `explicit_insertions_preserve_order_repetition_and_selection_snapshots` in `crates/trust-but-verify/src/graph/validation_tests.rs`:\n  - It calls `ctx.ask::<Answer>()`, sets the question text with `.context(...)`, and awaits the future. It asserts `answer.n == 7`, so the answer is decoded as `R`.\n  - It asserts the result schema passed to the agent has `properties.n.type == \"integer\"`. That shows the schema comes from `R`'s `JsonSchema`.\n  - It asserts that the future is `Send`, which covers the `Send` bound.\n  - It checks the request text, the ordered and repeated inputs, and the graph reads `[1,3,2,3,1]`.\n  - The final `ctx.dependencies()` assertion shows the explicit inputs the mock agent recorded. They appear in the same context, deduplicated: `Node(1)`, `Node(3)` and `Node(2)` all appear, alongside `OutgoingEdges(1,7,…)`.\n- `later_lighter_agent_calls_preserve_the_contexts_existing_trace` in the same file:\n  - A direct `ctx.read(&2)` happens before the ask and `ctx.read(&3)` after it.\n  - The agent-served reads from the ask sit between them in a single list: `[Node(2), OutgoingEdges, Node(1), Node(3)]`.\n  - A second, lighter `ask()` leaves the dependency list unchanged, and `finish` returns the same dependencies.\n  - This covers direct reads and agent reads sharing one list, and the list persisting across asks. It also checks that `ask()` works with `R` inferred and that `ValidationContext` is `Send + Sync`.\n- `MockAgent` calls `record_read` on the `ValidationContext` that `Agent::run` receives. That is the context `ask` was started from, so the shared-list obligation is checked end to end. The real tool implementations are covered by separate `ValidationContext.*` and `shared_context` tests in `agent/tests.rs`, which are outside this subject.\n- `public_exports_match_the_appendix` in `crates/trust-but-verify/tests/public_api.rs` checks the public export of the `ask` method against the documented API inventory.\n\n**Gaps considered**\n- The requirement says nothing about decode-failure behavior, so no test is needed for it. `MockAgent` has an `invalid` mode anyway.\n- Only the first test is an obligation-specific scenario for `R` decoding. It gives a wrong-typed `R` no chance to slip through, because the schema and the decoded value are both asserted.\n- No plausible violation of the stated obligations would pass these tests. For example, an `ask` that gave the agent a fresh dependency list would fail both dependency assertions.\n\nNo gaps found, and there are no acknowledgments.",
+  "rationale": "The reviewed tests adequately check `requirements.sdk.graph.validation-context.ValidationContext.ask`.\n\n**Obligations drawn from the text**\n1. `ctx.ask::<R>()` starts an agent request, returning an `Ask` builder. The signature requires `R: DeserializeOwned + JsonSchema + Send`.\n2. The submitted answer is decoded as `R`.\n3. The request's graph tools record their reads in the same dependency list that direct reads use. This is the cited `shared_context` behavior: direct reads and tool reads interleave in one `ValidationContext`.\n\n**Test mapping**\n- `crates/trust-but-verify/src/graph/validation_tests.rs#fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]` calls `ctx.ask::<Answer>()` and awaits the future.\n  - It asserts `assert_send(&future)`, which covers the `Send` bound.\n  - It asserts that `answer.n == 7`, so the submitted JSON is decoded into `R`.\n  - It asserts that the request's result schema is the `JsonSchema`-derived one (`properties.n.type == \"integer\"`).\n  - The mock `Agent::run` in `impl[MockAgent/Agent<Memory>]` calls `inspection.record_read` for each input. The test then asserts that `ctx.dependencies()` holds the `OutgoingEdges` entry followed by the deduplicated `Node` entries for 1, 3 and 2. These entries were recorded during the agent run, so the agent's tool path writes into the caller's context rather than a separate one.\n- `fn[later_lighter_agent_calls_preserve_the_contexts_existing_trace]` covers the interleaving.\n  - It performs a direct `ctx.read`, then `ctx.ask()` with inputs, then another direct read.\n  - It asserts that the single dependency list contains all of them in order: direct before, agent-recorded edge and node, direct after.\n  - A second `ask` with no inputs leaves `ctx.dependencies()` unchanged.\n  - `ctx.finish` returns the persisted form of that same shared list.\n  - Here `ask()` has its `R` inferred from the `let _: Answer` binding, and the test checks that `ctx` is `Send + Sync`.\n- `crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]` covers the exported API surface. It is only marginally relevant, but it is not needed for the behavior above.\n\n**Delegated or out of scope**\n- The rule that a subsequent verification starts with an empty dependency list belongs to `shared_context`. It is a cited requirement and is not reassessed here.\n- Decode-failure behavior is not part of this requirement's text. The mock's `invalid` mode exists for other requirements.\n\n**Residual note**\nThe tests use a mock agent that calls `record_read` to stand in for real tool reads. That is a reasonable test double for checking that the `inspection` context handed to the agent is the caller's own context. I found no unmet obligation or missing boundary in the requirement's text.",
   "references": "2ff717cd8f2736ce5dff075a1b281e7c79cd60d94a17dfcf7cb59b40e4ad036d",
   "inputs": [
     {
@@ -42,12 +42,12 @@
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]",
-      "hash": "9359c08e74a3d94de11ac4a169c18f28993284f182871b98d112f3a73c69dbb1"
+      "hash": "82438bac07f4989af64bb695b72a6bf8e5866fdc840c6e877de25626a6bfdd25"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[later_lighter_agent_calls_preserve_the_contexts_existing_trace]",
-      "hash": "95addbd64a223f14c25d100b9e359160cded086d4277baff04fe8ad26057fa87"
+      "hash": "3d8d45bcfb91dd42c4496203c0275753211599c9f41ee53f0126f73158aaeca5"
     },
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
@@ -57,22 +57,12 @@
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "impl[MockAgent/Agent<Memory>]",
-      "hash": "6a37d1cf7f932c38e0706934ca96486f5d3699ec627d6d5fb3ddcc0d3c432508"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
-      "item": "struct[Answer]",
-      "hash": "fc297dc44b4c461e937409e9bb7a23f717dcb38c46d8a96e531236d8604cdfff"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
-      "item": "impl[MockAgent/Agent<Memory>]/fn[run]",
-      "hash": "316b81d2ed111415ee3e86fc297ef8f241c08120fc13537b04c9771a45e8ca8a"
+      "hash": "22ff311e90c3a22547f68da7afbbf29529fd90905127138101a003aa6c2b730e"
     },
     {
       "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]",
-      "hash": "ca2e49a65c75f92504ba6aad3f92ecdf03e895c4d005b66535c940186f712923"
+      "item": "impl[ValidationContext<'d,%20D>]#3/fn[ask]",
+      "hash": "d9a60d50f0b840ec20b6a28f2f101abb5fe48bf743b7a81ba471cfb1b7de3f20"
     }
   ],
   "format_version": 1,
@@ -136,7 +126,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "5c94ee5e1c6dd62543f7c55c657eb5be70b2e8ff7ca837b4ee768731e025e24b"
+          "value": "30ceab2121ddfdf47068ebaaa73758bdf2544f0c12badc817f253156ef093753"
         }
       ]
     },
@@ -153,7 +143,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "5b79a2ba244ed18c0ee3c548adc30d1fe7b9d119ba5d9f2653f713f3df597253"
+          "value": "7f6922d1e943699b21437e44e466f43cba36d557fb8812dbe86de0df53a205b0"
         }
       ]
     },
@@ -187,41 +177,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "065c8f229ea39bd735e69a2dd93981ca5204d12bbb959e88a75dab69126a2cb3"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
-            },
-            "selector": "struct[Answer]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "de3a77bff55399650f4e8218d75273ec8885767dfa60977466b8347f7fac4b06"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
-            },
-            "selector": "impl[MockAgent/Agent<Memory>]/fn[run]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "1d7f841f9d8dae0af689789820170da14d39ac9c825e4abd4f376b2063c2ff71"
+          "value": "04fe77d6e6187eb839a18085f1752cbde4d2d6ffa3b5abc6eb710df3d9095612"
         }
       ]
     },
@@ -233,12 +189,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/procedure.rs"
             },
-            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]"
+            "selector": "impl[ValidationContext<'d,%20D>]#3/fn[ask]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f5ecffed8b7c0eee599574de2dfdc0669a4c1283dd9426a227750290c44ff537"
+          "value": "1d9367d754e75a8c5866eb59cf8c64fd8830f09eedab383a330c6d08dff3a41e"
         }
       ]
     }

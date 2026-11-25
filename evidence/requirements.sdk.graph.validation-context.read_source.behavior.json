@@ -1,7 +1,7 @@
 {
-  "requirement": "`Domain::source_node` maps the `OutlineId` into the graph. `Domain::node_content` returns that node’s contents. Mapping and read failures return errors. Agents use the node reference from discovery with `read_node`.",
+  "requirement": "The SDK interns the node data returned by `Domain::source_node` for the `OutlineData`. `Domain::node_content` returns that node’s contents. Mapping and read failures return errors. Agents use the node reference from discovery with `read_node`.",
   "determination": true,
-  "rationale": "I judged this from the supplied test sources only. I did not request any implementation source.\n\nThe requirement has five obligations:\n1. `Domain::source_node` maps the `OutlineId` into the graph.\n2. `Domain::node_content` returns that node's contents.\n3. Mapping failures return errors.\n4. Read failures return errors.\n5. Agents use the discovery node reference with `read_node`.\n\n**Mapping, content and failure obligations (1–4)**\n- `agent/project_sources.rs#mod[tests]/fn[direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns]` covers all four directly.\n- Mapping failures: it uses an unknown path and an unknown selector. Each returns an error containing \"unsupported source item\", and no dependency is recorded.\n- It also asserts `reads == 0` and that `read_nodes` is empty after those failures. So a mapping failure never reaches `node_content`.\n- Read failure: with `fail_read` set, the read returns an error (\"prepared source read failed\") and records no dependency.\n- Success: the read returns \"prepared contents\". `read_nodes` records `[\"source-node\", \"source-node\"]`, so the mapped node is the one read. The recorded dependency carries the returned content's fingerprint.\n- It then changes the domain text and asserts the record is no longer current. That confirms the read content is what gets recorded.\n\n**Agent use of `read_node` (5)**\n- `agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` drives a real tool loop, run twice with independent executions.\n- It calls `list_sources`, then `read_node` with a bogus node. That call is rejected with \"invalid node ID\".\n- It then calls `read_node` with the node reference taken from the discovery listing. The result text is \"a source snapshot\", which comes from the domain. The test asserts it is not the on-disk \"selected disk contents\".\n- It also reads a node taken from a `search_text` hit.\n- It asserts the domain saw exactly the expected `OutlineId` for `visible/selected.txt`. It also asserts the exact dependency list. Together these show the mapping goes through `source_node`.\n- The advertised `read_node` schema is checked to take a node object with an integer `id`.\n\n**Supporting tests**\n- The `agent/tests.rs` tests also carry `{test}` markers for this requirement. They are `source_tools_keep_search_discovery_separate_from_delivered_source_reads`, `source_reads_track_optional_dependencies_and_empty_searches_remain_discovery`, `cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input`, `source_read_pages_retain_text_and_dependencies_without_another_read` and `source_tools_forward_arguments_and_present_discovery_and_read_results`.\n- They add coverage of selector-specific content, delivered text, and unreadable or missing selectors adding no dependency.\n- `search_excerpts_redact_credentials_before_serialization_and_paging` is also marked. Its relevant assertion is that discovery does not read domain contents.\n\nNo obligation lacks a test with a relevant assertion, and I found no marking gap. I found no {fixme} acknowledgments, and none are needed.",
+  "rationale": "The tests cover every obligation in `read_source.behavior`.\n\n**Interning the `Domain::source_node` result.**\n- `direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns` in `project_sources.rs` maps `source.txt` to \"source-node\" through the test domain's `source_node`.\n- It asserts that the recorded dependency is `Dependency::Node(intern_node(\"source-node\"), returned.fingerprint())`.\n- It also asserts that `read_nodes` equals `[\"source-node\", \"source-node\"]`, so the interned node data reached `node_content`.\n- `source_tools_forward_arguments_and_present_discovery_and_read_results` in `agent/tests.rs` covers several selectors (none, empty, `fn[chosen]`) and checks each resulting dependency.\n\n**`Domain::node_content` returns that node's contents.**\n- The direct-read test asserts `returned.format() == \"prepared contents\"`.\n- After the domain text changes, it asserts the record is no longer current.\n- `source_read_pages_retain_text_and_dependencies_without_another_read` and `cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input` assert the delivered text and fingerprint values.\n\n**Mapping failures return errors.**\n- The direct-read test tries two failing addresses: `unknown.txt`, and `source.txt` with selector `line[unknown]`.\n- For both, `read_source` returns an error containing \"unsupported source item\".\n- The test then asserts that no dependency was recorded, that `reads == 0` and that `read_nodes` is empty. This shows the error happens before any content read.\n\n**Read failures return errors.**\n- With `fail_read = true`, the direct-read test asserts the error contains \"prepared source read failed\" and that no dependency is recorded.\n- A later successful read records exactly one dependency, so only successful returns are recorded.\n- `cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input` adds a missing-selector read (`fn[missing]`). It asserts that only the successful read contributes a dependency.\n\n**Agents use the discovery node reference with `read_node`.**\n- `configured_agent_uses_domain_source_tools_in_independent_executions` in `configured.rs` runs a scripted agent against a local HTTP server.\n- The agent calls `list_sources`, then `read_node` with the integer node taken from the listing. The test asserts that the text is \"a source snapshot\", which is the domain content. It also asserts that the on-disk \"selected disk contents\" is absent.\n- It then calls `read_node` with the node from a `search_text` hit.\n- `read_node` with `\"unknown\"` is rejected with \"invalid node ID\".\n- The test asserts the `read_node` schema takes an integer `node`, and that the dependency list includes the nodes read.\n- It runs the scenario twice, to cover independent executions.\n- `search_excerpts_redact_credentials_before_serialization_and_paging` in `project_sources.rs` checks that a search hit's node reference, once chosen, yields the expected interned dependency and fingerprint.\n\nI found no obligation without a test and no assertion that contradicts the requirement. I read the test domain's `source_node` and `node_content`. They confirm that the error and content assertions exercise the mapping and read paths.",
   "references": "8dd8de79d0a6e3d8d5666c2c2e12294450569d5291c27a71be57931f922895b0",
   "inputs": [
     {
@@ -11,49 +11,59 @@
       ],
       "text": [
         ":::{req} read_source.behavior",
-        "`Domain::source_node` maps the `OutlineId` into the graph. `Domain::node_content` returns that node’s contents. Mapping and read failures return errors. Agents use the node reference from discovery with `read_node`.",
+        "The SDK interns the node data returned by `Domain::source_node` for the `OutlineData`. `Domain::node_content` returns that node’s contents. Mapping and read failures return errors. Agents use the node reference from discovery with `read_node`.",
         ":::"
       ]
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]",
-      "hash": "0bb7522373cd58f5d22e38ffe891842f63791cfed89ef4b432977290ee60d79b"
+      "hash": "55063c7bdfb02a7b0e193d469c746430aa45c1340ebe1848a183956427f86264"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns]",
-      "hash": "9ea0efbfffa092a472d2e96ed0f37c2d2ef38796edd753901205942ac72e3986"
+      "hash": "6d4d5c3ecff21114d8a3664f6636e1d11c6cc468e31c61e5d6a9ac4dd5c4b3cf"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[search_excerpts_redact_credentials_before_serialization_and_paging]",
-      "hash": "cf32517e7883f094bf85f8ef3bf04258049f81543c9e76cd2437d52f2301437b"
+      "hash": "dd158703652d9c80cccbeb3f830b23c9fe8d2c0265b2f1967f34af5834eff80e"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[source_tools_keep_search_discovery_separate_from_delivered_source_reads]",
-      "hash": "46f318c5189995748f326bd9ace34b982f331b010d851438e8d786bb1f6ff56f"
+      "hash": "411c8669624d7fe886a79621b1640c28fb2bebdf8254b18443bf5ab806c33f41"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[source_reads_track_optional_dependencies_and_empty_searches_remain_discovery]",
-      "hash": "efb99585f72c1d13e327d6a410680fe2883208789deb1d334b57602f24493bf0"
+      "hash": "1fd233dce937559edb44cf4d88ca59bde8a212fd930cb9078fd3dad5fb8fdf07"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input]",
-      "hash": "259f25a5832a3c37660fd98462d34ce48561c13aacf629ecee3786267e2b7f10"
+      "hash": "71a7f1deb43f63a69839e99242ab5dc5644e3eff6ac2f4b7ce3ced2210249c1d"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[source_read_pages_retain_text_and_dependencies_without_another_read]",
-      "hash": "f8c258f40a270a73649467a67f8d030156cd32e5c648b0e02d29f55277217bfb"
+      "hash": "c10b96ff8b650ff4bc3ab10365f81d9c2fc49c338c5eefbcbd298f401a0acb9e"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[source_tools_forward_arguments_and_present_discovery_and_read_results]",
-      "hash": "4d23db061e025d47d10b644313820942fa2884f7da7ee95341803244b5c6682d"
+      "hash": "b10318478a19e688ab3a17fbbe5e2139828bc4feac583992d1bd1a0c5b5f202e"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "mod[tests]/impl[Project/Domain]/fn[source_node]",
+      "hash": "614cd73188cd053cffd57f70da029ebe3e049f3ca14a57168673eefa63e65972"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "mod[tests]/impl[Project/Domain]/fn[node_content]",
+      "hash": "00a486a1e7fd2191b7b9f1112b30f2c5cc6130d408dae500d75fa7abc0771dab"
     }
   ],
   "format_version": 1,
@@ -89,7 +99,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "5ccdb9d7f1e27f984ee101a481897d01c10d9fbb865a879b532a82156e3959fb"
+          "value": "a380e62cdffe4b5842a31f5282c8965dcac548ecf017c2c49175af7aa3d4b7a7"
         }
       ]
     },
@@ -106,7 +116,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ddfb05bf744a25743033a8955c799cba684adced37d4a9feb365c005373b64ac"
+          "value": "da2d1f53e4f8d6772fc96672ec9eb919e8e4cd46540f043050aceba0f79ed6ec"
         }
       ]
     },
@@ -123,7 +133,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "abb74f6cd38690e11ccfd92cb7575e853c729fece5c8b2ab7b2bf6a2aa8a6699"
+          "value": "9346a9426df6ba6fcd2196c647cdb3dd6fe404f8b5bc5de639be4aaac8aa2a1a"
         }
       ]
     },
@@ -140,7 +150,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c1b5c39a48beb2ff1185e09c223f0654788f672f092313e443cd28c69399998f"
+          "value": "fa9205aba5af562d80e2b704234f01c20576d925733f78f832d278cf3edc11f9"
         }
       ]
     },
@@ -157,7 +167,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "bb0175ebc990406469e2f25a88c3740fde6057400b07c13789005178bd20df22"
+          "value": "76c834f7cd2327608f196fe50c0c0cc65e588cc0542d6824c109e620b78bd38d"
         }
       ]
     },
@@ -174,7 +184,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "eeb6c3cf239882089dd4b582445d15a2c7070d0d436098d85e57e1bcbea2cd43"
+          "value": "be41c7e3e96516d083c2e8c7ac7efc956320758395f00083865fc6d7622a237a"
         }
       ]
     },
@@ -191,7 +201,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "2fa61ae3bb05e03d21728600e64650b1f05dcd282c0073398ae07d558539250c"
+          "value": "a612b1918e435ee8032000ba8f6500620d5bfb333b810a0382c5c61458a16d1e"
         }
       ]
     },
@@ -208,7 +218,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "5382964cda818c6f71c7f43b8f05049de587023a87b0e7bd28d33804249b9698"
+          "value": "a64726d7fa17e7bc4345d2a70a3faf626c7aacd215deb1566e4fbac4bcbaaa52"
         }
       ]
     },
@@ -225,7 +235,41 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "70f5670e7ddb89c4e5069fcfeae868ff34cb50ae0b80a61f9f87477f61ce3d20"
+          "value": "3ce18749c12e856e9a7a7387230bf14103e320892ca971475fd36136a8329269"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "mod[tests]/impl[Project/Domain]/fn[source_node]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "3feff4a40965239312ebf286dc8a3664f255c2ad31b5a51494ba35fb62f35bfa"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "mod[tests]/impl[Project/Domain]/fn[node_content]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "245c57ab5c3f01842fd81d7befe5fd23b1b249399bcb784f27b749b9b96a8d02"
         }
       ]
     }

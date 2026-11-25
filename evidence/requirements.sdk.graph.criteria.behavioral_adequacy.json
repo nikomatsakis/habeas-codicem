@@ -1,7 +1,7 @@
 {
   "example": "{cite}`requirements.sdk.graph.agent-calls.judge`\n{cite}`requirements.sdk.graph.agent-calls.judge.node_contents`\n{cite}`requirements.sdk.graph.evidence.inputs`\n\nHere is the `execute` method from\n`impl Criterion<HabeasDomain> for BehavioralAdequacy`:\n\n```rust,ignore\nasync fn execute(\n    self,\n    cx: &mut ValidationContext<'_, HabeasDomain>,\n) -> Result<Self::Ok, ValidationError<std::io::Error>> {\n    cx.ask()\n        .context(&self.review_policy)\n        .context(\"Check whether these tests cover the requirement's behavior and edge cases.\")\n        .contents_of_current_node()\n        .contents_of_successors(HabeasEdgeLabel::Tests)\n        .await\n}\n```\n\nThe [`ask` builder](agent-calls.md#build-a-request) determines what is given to\nthe [configured agent](agent-harness.md#choose-an-agent-backend):\n\n- [`context()`](agent-calls.md#compose-reusable-context) provides common context,\n  including the question.\n- [`contents_of_current_node()`](agent-calls.md#deliver-and-record-node-inputs)\n  provides the [contents](../graph.md#read-node-contents) of the criterion's source node:\n  here, the requirement.\n- [`contents_of_successors(label)`](agent-calls.md#deliver-and-record-node-inputs)\n  provides the [contents](../graph.md#read-node-contents) of its successors with that label:\n  here, the requirement's tests.\n\nFor any additional information the answer relies on, use\n[tracked context tools](validation-context.md), including for filesystem or network\ninputs.",
   "determination": true,
-  "rationale": "**Concrete case.** The example `requirements.sdk.graph.criteria.behavioral_adequacy` gives the `execute` body of a criterion. The body calls `cx.ask()`, then `.context(review_policy)`, `.context(question)`, `.contents_of_current_node()` and `.contents_of_successors(Tests)`, and awaits. The expected behavior is that the agent receives the common context, the requirement's contents, and the contents of the requirement's `Tests` successors. The cited requirements add that:\n- the node contents are read through the domain;\n- delivered nodes and the successor selection are recorded as dependencies;\n- the typed output is wrapped as `Fingerprinted`.\n\n**Test setup.** The test is `crates/trust-but-verify/src/agent/tests.rs#fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]`. It uses a test-local `BehavioralAdequacy` (`impl[BehavioralAdequacy/Criterion<Memory>]`), whose `execute` body is the example's code with a test `Label` in place of `HabeasEdgeLabel::Tests`. The `Memory` domain's `outgoing_edges` returns `[Node(2)]` for node 1. Node 1 holds the requirement text and node 2 holds the tests text. A scripted provider returns a `submit_result` tool call.\n\n**Assertions by outcome:**\n- **Contents come from the domain.** `domain.reads == [1, 2]` shows the current node is read first and then its successor, and nothing else is read. The `Unselected` default content is never delivered.\n- **Common context.** The first chat message is asserted equal to `Message::system(\"Review test adequacy.\\n\\nCheck whether these tests cover…\")`. This checks that both `.context()` calls are delivered, in order.\n- **Current node, then successors.** The serialized user message must contain \"Tokens expire\" before \"Tests check\". This checks that the requirement text and the test text are both delivered, in that order.\n- **Typed answer.** `inputs.output() == expected` is asserted, and the `submit_result` tool schema is checked for `result.adequate` being boolean.\n- **Dependencies, per `requirements.sdk.graph.evidence.inputs` and `…judge.node_contents`.** There are exactly 3 dependencies. Two are `Dependency::Node` entries with the delivered values. One is `OutgoingEdges(Node(1), Label, fp)`, where `fp` equals `edge_fingerprint(&domain, &[Node(2)])`.\n- **Wrapper metadata and persistence.** The criterion path is `[\"behavior\"]`. `store_evidence` is called, and one record is stored. `load_evidence` returns restored output, source id, path, version and dependencies equal to the original. `refresh_evidence` reuses the record: the output and dependencies match and the record count stays at 1.\n- **Invalidation.** After node 2's content changes, `check_inputs` returns false, so the recorded fingerprints are in use.\n\n**Gaps.** I found none. The test covers the example's scenario and each outcome it states, and the cited requirements are applied in this case. Duplicate-target handling and failure paths belong to the cited requirements' own tests. The example does not require them. The criterion in the test is a local mirror of the documented code over a test domain. That is a reasonable stand-in for the illustrative `HabeasDomain` snippet.",
+  "rationale": "The example `requirements.sdk.graph.criteria.behavioral_adequacy` describes a concrete case. It is an `execute` method that calls `ask()` with two `context()` calls, then `contents_of_current_node()`, then `contents_of_successors(Tests)`. Its stated outcomes are:\n- The agent receives the common context, including the question.\n- The agent receives the requirement's contents.\n- The agent receives the contents of the requirement's tests.\n- The answer is a typed result that carries the observed dependencies (per `requirements.sdk.graph.evidence.inputs`).\n\nThe test is `crates/trust-but-verify/src/agent/tests.rs#fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]`. It runs `crates/trust-but-verify/src/agent/tests.rs#impl[BehavioralAdequacy/Criterion<Memory>]`, whose `execute` body matches the example's code. Its only differences are the test domain and the `Label` edge label. The test covers each outcome as follows:\n\n- **Common context and question:** The test asserts that the first chat message is the system message \"Review test adequacy.\\n\\nCheck whether these tests cover the requirement's behavior and edge cases.\". That is the review policy followed by the question.\n- **Current node contents:** Node 1 holds the requirement text. The test asserts that this text appears in the user message, and that a `Dependency::Node` for node 1 records exactly that value.\n- **Successor contents:** Node 2 is the only `Label` successor of node 1. The test asserts that its text appears in the message after the requirement text, so the order is current node first, then successors. It also asserts `Dependency::Node` for node 2 with its value, and a `Dependency::OutgoingEdges` for node 1 labelled `Label` with the edge fingerprint of `[node 2]`.\n- **Only selected nodes are resolved:** The default node contents are \"unselected\". The test asserts `reads == [1, 2]`, so no other node was read. It also asserts exactly 3 dependencies.\n- **Typed answer:** `inputs.output()` equals the expected `TestReview`, and the `submit_result` tool schema is checked for `result.adequate` of type boolean. The test also checks the criterion path, one agent request, and a stored record. After a change to node 2's contents, `check_inputs` returns false. Before that change, it returns true.\n- **Evidence round trip:** `load_evidence` and `refresh_evidence` restore an equal output and equal dependencies, and `refresh_evidence` adds no second record.\n\nI found no outcome in the example that these assertions would let a violating implementation pass. For instance, a missing successor selection, a wrong order, a missing question context, or extra reads would each fail an assertion. The test carries a `{test}` reference to the example, and no acknowledgments are needed.",
   "references": "27b698b8e512bddb3433e9bb966144ed83c60396fcc7b8817a2cf26ba6180ded",
   "inputs": [
     {
@@ -113,16 +113,16 @@
         "",
         "`verify` constructs this value from the criterion's completed answer and",
         "execution trace. `load_evidence` reconstructs it from the selected saved record.",
-        "Its node identities and edge labels keep their domain-defined types.",
+        "Its dependencies use `NodeId<D>` handles from the current cache and domain-defined edge labels.",
         "",
         "```rust,ignore",
         "pub struct Fingerprinted<D: Domain, O> { /* private fields */ }",
         "",
         "impl<D: Domain, O> Fingerprinted<D, O> {",
-        "    pub fn source_node_id(&self) -> &D::NodeId;",
+        "    pub fn source_node_id(&self) -> &NodeId<D>;",
         "    pub fn criterion_path(&self) -> &CriterionPath;",
         "    pub fn version(&self) -> Option<&CriterionVersion>;",
-        "    pub fn dependencies(&self) -> &[Dependency<D::NodeId, D::EdgeLabel>];",
+        "    pub fn dependencies(&self) -> &[Dependency<NodeId<D>, D::EdgeLabel>];",
         "    pub fn output(&self) -> &O;",
         "    pub fn into_output(self) -> O;",
         "}",
@@ -133,17 +133,17 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]",
-      "hash": "9653e3b706f77c9127b61bf2ca6c710e2faa487efcb0f0ce4a244d6ac2b968e8"
+      "hash": "69048b64a195513551fdc8614a7e6cea5e002203603971efcae1e18be26ff809"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "struct[BehavioralAdequacy]",
+      "hash": "0939caf1ea15528054b64fdb6765acbb9be3232db28271d3c0153392c90c802a"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "impl[BehavioralAdequacy/Criterion<Memory>]",
-      "hash": "2d0f05cd416171414d3590a4f1cd464c01f5a376550c418096c394b26d0a7869"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "impl[Memory/Domain]/fn[outgoing_edges]",
-      "hash": "4b1ae019cc134524e628ba7b73a0b6037e6d04799a5b2258da7015b0ccf31bbe"
+      "hash": "064b6726ee6d670f914b81f37ede1d0b515d2b966a9f4e7081b8ed622d086d77"
     }
   ],
   "format_version": 1,
@@ -212,7 +212,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "e4ee287921363fc62aee9b15a643d89cb5765b7c39fbb91dfbd952d319823260"
+          "value": "52e2648fb3a1222becf10daae31e460f2159187cd3d4d2c46a35a0fb409d01a7"
         }
       ]
     },
@@ -229,7 +229,24 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "172400ca26c9868a037b6976bb5c1135c7d7b7d586a7e7fcfb0b581b726b3a13"
+          "value": "53b29e878fc28b411aeb2c3a8544267087c2ebd893b981cac35ebbdbe82f3cff"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
+            },
+            "selector": "struct[BehavioralAdequacy]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "7ae1ff01977fac9a71fca5ad2c3e63c981d20acddc071682caba5259d3c6d7b9"
         }
       ]
     },
@@ -246,24 +263,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ff9072f34c6916ce03e2ce806457c1692c01651ca10d8998b574e0874115c463"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "impl[Memory/Domain]/fn[outgoing_edges]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "7d812c40c5f0205f46c3aa3dfe0cb85cbd0e5d1df5cd42141e6d71deb10fea2a"
+          "value": "2f8db0f357c89ae7eb3a2709a8246c895454d4bc61b457eb09a90e23a0474e08"
         }
       ]
     }

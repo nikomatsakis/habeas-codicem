@@ -1,8 +1,8 @@
 {
   "requirement": "`trust_but_verify::domain::NodeContents::fingerprint` describes the\n{term}`requirements.sdk.graph.observation_fingerprint` of the retained contents\nread under\n{cite}`requirements.sdk.graph.node_content`:\n\n```rust,ignore\npub trait NodeContents: Send + Sync {\n    // ...\n\n    /// Describe these retained contents without further resource reads\n    /// or querying mutable external state.\n    ///\n    /// The same contents under the same rules give the same fingerprint.\n    /// Retain everything needed to describe this observation, including\n    /// its rules and their version. When the rules change, change the scheme.\n    fn fingerprint(&self) -> Fingerprint;\n\n    // ...\n}\n```",
   "determination": true,
-  "rationale": "The reviewed tests adequately check `requirements.sdk.graph.node_content.fingerprint`.\n\n**Obligations derived from the text**\n1. `fingerprint()` describes the retained contents. It must not do further resource reads or query mutable external state.\n2. The same contents under the same rules give the same fingerprint.\n3. The fingerprint retains everything needed to describe the observation, including its rules and version. Both scheme and digest take part in comparisons, per `requirements.sdk.graph.observation_fingerprint`.\n4. When the rules change, the scheme changes.\n\n**Mapping obligations to tests**\n- **No further reads or mutable-state queries.**\n  - `crates/trust-but-verify/tests/contracts.rs#fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]` reads a snapshot, then changes the underlying graph contents from \"before\" to \"after\".\n  - It asserts that `snapshot.content.fingerprint()` still equals the stored `snapshot.fingerprint`.\n  - It asserts that `format()` still returns \"before\".\n  - It asserts that the graph's `reads` list is still `[1]`, so no new read happened.\n  - In `src/sdk.rs#mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]`, the test rewrites the source file on disk. It then asserts that `retained_references.fingerprint()` and `retained_source.fingerprint()` are unchanged. This covers the Habeas file-backed domain.\n- **Same contents give the same fingerprint, different contents give a different one.**\n  - In the same `src/sdk.rs` test, `domain.node_content(..).fingerprint()` equals the earlier retained fingerprint for the same input.\n  - After the file changes, the fresh domain's `node_content(..).fingerprint()` differs for both the reference set and the outline source node.\n  - `crates/trust-but-verify/src/graph/validation_tests.rs#fn[wildcard_versions_still_check_inputs_and_errors]` shows a record stays current when the fingerprint matches. It shows the record is no longer current when the digest differs or when only the scheme differs (`Fingerprint::new(\"other\",\"same\")` against `fp(\"same\")`). That covers \"both scheme and digest participate\".\n- **Scheme and rules retained.**\n  - The `src/sdk.rs` test asserts the exact fingerprints `Fingerprint::new(\"habeas-reference-set-v1\", ...)` and `Fingerprint::new(\"habeas-input-v1\", <digest>)`. These pin both the named scheme and the digest.\n  - \"When the rules change, change the scheme\" is guidance for authors. It cannot be exercised without changing the implementation's rules, and the pinned scheme and digest assertions guard it.\n- **Other implementation.** The `ReviewContent` implementation in `src/authoring/sdk.rs` only returns its stored fingerprint, unchanged. That is a pass-through with no conditional, so it needs no separate test. The `contracts.rs` test also exercises the trait with a snapshot-held fingerprint.\n\n**Gaps**\nI found no unacknowledged gaps. There are no `{fixme}` acknowledgments, and none are needed.",
-  "references": "840d6f6ebb18fa35fe43cc260f81f1d8fa9429fd09d3a0ee7497343f8038ef11",
+  "rationale": "The tests adequately check `requirements.sdk.graph.node_content.fingerprint`.\n\n**Obligations I derived from the requirement text**\n1. `fingerprint()` describes the retained contents that were read, using the observation fingerprint (scheme plus digest).\n2. It makes no further resource reads and does not query mutable external state.\n3. The same contents under the same rules give the same fingerprint.\n4. The fingerprint retains the rules and their version, and a rule change changes the scheme.\n\n**Coverage by the supplied tests**\n- `crates/trust-but-verify/tests/contracts.rs#fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]`:\n  - It reads a snapshot, then mutates the underlying application state from \"before\" to \"after\".\n  - It asserts that `snapshot.content.fingerprint()` still equals the `snapshot.fingerprint` taken at read time.\n  - It asserts that the read log is still `[1]`, so `fingerprint()` triggered no further reads.\n  - This covers obligations 1 and 2, and the stability part of obligation 3.\n- `src/sdk.rs#mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]`:\n  - It asserts exact `Fingerprint` values with explicit scheme names (`habeas-reference-set-v1` and `habeas-input-v1`) and a concrete digest. This checks that the scheme participates in the fingerprint (obligation 4).\n  - It asserts that a retained content's fingerprint is unchanged after the files on disk change. This shows no re-querying of mutable state.\n  - It asserts that a fresh `node_content(...).fingerprint()` equals the retained fingerprint for the same selector. This is the \"same contents give the same fingerprint\" case.\n  - It asserts that fresh contents read after the source or references change give a different fingerprint, so the fingerprint reflects the contents.\n  - It also exercises a record's `is_current` check against the changed domain.\n- `crates/trust-but-verify/src/graph/validation_tests.rs#fn[wildcard_versions_still_check_inputs_and_errors]`: node dependencies are compared by both scheme and digest. A different scheme with the same digest makes the record not current, and a changed digest does too. This supports the requirement that scheme and digest both participate.\n\n**Implementation exemption**\nThe implementation `src/sdk.rs#impl[HabeasNodeContent/NodeContents]/fn[fingerprint]` just returns the stored fingerprint, with no conditional or transformation. The tests above still check it.\n\n**Remaining point**\n\"When the rules change, change the scheme\" is design guidance for implementers of `NodeContents`. The tests pin the scheme names and digests, so a silent change would be caught.\n\nI found no gap.",
+  "references": "998021daf7def89b0edbb20302a0551179336d71dcaff78c6f98786321cbfc62",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.node_content.fingerprint",
@@ -57,7 +57,7 @@
         "    type NodeContent: NodeContents;",
         "",
         "    /// Load and prepare this node's contents.",
-        "    fn node_content(&self, node: &Self::NodeId) -> Result<Self::NodeContent, Self::Error>;",
+        "    fn node_content(&self, node: &NodeId<Self>) -> Result<Self::NodeContent, Self::Error>;",
         "",
         "    // ...",
         "}",
@@ -73,12 +73,12 @@
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]",
-      "hash": "b674e4cebcb6efc83126680f2e192ff172ebfab167973b43544d48ae6528c0e7"
+      "hash": "39b621f61ac860578f1ce6544cd645bb9cabd138be2466122e877ef621164150"
     },
     {
       "file": "src/sdk.rs",
       "item": "mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]",
-      "hash": "8c7767a3319874c082b7d4114dda121d857384a73fb31e4ba0093b3930581d66"
+      "hash": "31f193d35a164fef1a88a2b59a8c2b7be575148cb46f4a4c12acf57f20bdfe48"
     },
     {
       "definition": "requirements.sdk.application_domain",
@@ -111,19 +111,19 @@
       ]
     },
     {
-      "file": "src/authoring/sdk.rs",
-      "item": "impl[ReviewContent/NodeContents]/fn[fingerprint]",
-      "hash": "483344764d47472a3057338955fe106ea9ed2304e749ad24a67859569671cdbe"
-    },
-    {
-      "file": "src/authoring/sdk.rs",
-      "item": "impl[ReviewContent/NodeContents]",
-      "hash": "85de1a873f064690d323dd5962eb880862fe639bf96e277232a30c06fc1c619a"
-    },
-    {
       "file": "src/sdk.rs",
       "item": "impl[HabeasNodeContent/NodeContents]",
       "hash": "2c347329e385694e4d27ec271a8934529dbc116f5ba893c5f2b05571ee05cda6"
+    },
+    {
+      "file": "src/sdk.rs",
+      "item": "impl[HabeasNodeContent/NodeContents]/fn[fingerprint]",
+      "hash": "483344764d47472a3057338955fe106ea9ed2304e749ad24a67859569671cdbe"
+    },
+    {
+      "file": "src/sdk.rs",
+      "item": "fn[input_fingerprint]",
+      "hash": "1654bf41024385f65be9b5ff99ed2689f18ed04a1ecee83bb02eb12d51f0cb71"
     }
   ],
   "format_version": 1,
@@ -136,7 +136,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "840d6f6ebb18fa35fe43cc260f81f1d8fa9429fd09d3a0ee7497343f8038ef11"
+          "value": "998021daf7def89b0edbb20302a0551179336d71dcaff78c6f98786321cbfc62"
         }
       ]
     },
@@ -170,7 +170,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "08a38fc5202e5a4b3a0a0046e90139825c6e3baa93366a10619b8e7bcc6d7c92"
+          "value": "948db73aedf37d9232aef5194144fc9393f117b36b1796422bbacabf650bc565"
         }
       ]
     },
@@ -204,7 +204,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "5f1fcd0f1aa97ebb2ce3f9225cd48fc59e663e1215e4d4c801e434ad966d66f7"
+          "value": "594ad1890d1514304554c636722ad54b63597179a7585db57c2f1011fbf545eb"
         }
       ]
     },
@@ -221,7 +221,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c7ddcef507841329938721c6d30eb38ed121f88ae883eb04fffe285d3c614cf4"
+          "value": "7b58d8a3b786c53dbfcfc4187a5b60a156f79bac335c38cd0441a8dbbe19ab6d"
         }
       ]
     },
@@ -253,31 +253,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "src/authoring/sdk.rs"
+              "location": "src/sdk.rs"
             },
-            "selector": "impl[ReviewContent/NodeContents]/fn[fingerprint]"
+            "selector": "impl[HabeasNodeContent/NodeContents]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "27d71d10724a61b7f794cd623ec530b420b63677049c02aa51f5878c04b012c0"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/sdk.rs"
-            },
-            "selector": "impl[ReviewContent/NodeContents]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "80544a32140ab95e704e16ad6bf37afcda7344c28477bce04c53f1fed10e9521"
+          "value": "079bbead6320104988cb4b92829e2638df3e7ae4f39de89319beac956603ac09"
         }
       ]
     },
@@ -289,12 +272,29 @@
               "scheme": "repo",
               "location": "src/sdk.rs"
             },
-            "selector": "impl[HabeasNodeContent/NodeContents]"
+            "selector": "impl[HabeasNodeContent/NodeContents]/fn[fingerprint]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "079bbead6320104988cb4b92829e2638df3e7ae4f39de89319beac956603ac09"
+          "value": "66e72ef0068be1eb1b44d142bfe05672d11f3e5ce6c869f9db21ceea75d7dbc7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/sdk.rs"
+            },
+            "selector": "fn[input_fingerprint]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "5fabb29863d514d699d330571452693feab3a316347e4968e617c600ffd4b465"
         }
       ]
     }

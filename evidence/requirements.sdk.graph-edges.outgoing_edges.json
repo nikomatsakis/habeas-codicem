@@ -1,7 +1,7 @@
 {
-  "requirement": "{cite}`requirements.sdk.domain`\n\nThe `trust_but_verify::domain::Domain` trait includes a method for obtaining a node's\nsuccessors with a given label:\n\n```rust,ignore\npub trait Domain: Clone + Send + Sync {\n    // ...\n\n    /// Return the target node identities for this source and label.\n    fn outgoing_edges(\n        &self,\n        source_node: &Self::NodeId,\n        label: Self::EdgeLabel,\n    ) -> Result<Vec<Self::NodeId>, Self::Error>;\n\n    // ...\n}\n```",
+  "requirement": "{cite}`requirements.sdk.domain`\n\nThe `trust_but_verify::domain::Domain` trait includes a method for obtaining a node's\nsuccessors with a given label:\n\n```rust,ignore\npub trait Domain: Clone + Send + Sync {\n    // ...\n\n    /// Return the target node identities for this source and label.\n    fn outgoing_edges(\n        &self,\n        source_node: &NodeId<Self>,\n        label: Self::EdgeLabel,\n    ) -> Result<Vec<NodeId<Self>>, Self::Error>;\n\n    // ...\n}\n```",
   "determination": true,
-  "rationale": "**Obligations.** `requirements.sdk.graph-edges.outgoing_edges` requires four things:\n- `Domain` has an `outgoing_edges(&self, &NodeId, EdgeLabel)` method.\n- It returns `Result<Vec<NodeId>, Error>`.\n- The `Ok` value holds the target node identities for the given source and label.\n- Failures come back through the domain's `Error` type.\n\n**Signature and contract.** `crates/trust-but-verify/tests/contracts.rs#fn[domain_relationships_accept_opaque_types_and_send_only_errors]` covers these.\n- It implements `Domain` for an opaque fixture, where `NodeId` and `EdgeLabel` are not `Debug` and the error is `Send` only. The `outgoing_edges` signature has to match for the fixture to compile.\n- The generic helper `successors<G: Domain>` calls `graph.outgoing_edges(node, label)` through the trait. It passes a `&G::NodeId` and a `G::EdgeLabel` by value and expects a `Vec<G::NodeId>` back.\n- Behavior is asserted for several inputs:\n  - Label 2 from node 1 returns `[3, 2, 3]`, which checks order and duplicates.\n  - Label 3 from node 1 returns `[4]`, which checks that the label selects the edges.\n  - An unmatched label from node 1 returns an empty vector.\n  - Node 2 with label 2 returns an empty vector, which checks that the source selects the edges.\n- The error path is covered. Node 255 returns `Err`, and the test unwraps it and checks that the payload survives as the domain's `Error`.\n\n**Real implementation.** `src/sdk.rs#mod[tests]/fn[test_edges_select_only_tests_for_the_requested_requirement]` exercises `HabeasDomain::outgoing_edges`.\n- `Tests` returns only the test source for the requested requirement.\n- `Implements` returns a different, single-element result.\n- A source node has no `Tests` successors.\n- Together these show that the label and source determine the returned targets.\n\n**Callers.** `crates/trust-but-verify/src/graph/validation_tests.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]` and `crates/trust-but-verify/src/agent/tools.rs#fn[nested_label_schema_references_resolve_from_the_tool_parameters_root]` also carry `{test}` references. They cover wrappers around the method. The validation test checks that successors are read per source and label, that errors propagate, and that results are tracked. These are extra assurance and are not needed for the subject's own obligations.\n\n**Gaps.** I found none. The requirement states no further obligations, such as error cases or ordering rules beyond returning targets. The cited `requirements.sdk.domain` context is covered by the same contract test, which implements and uses the full `Domain` trait.",
+  "rationale": "The tests adequately check `requirements.sdk.graph-edges.outgoing_edges`.\n\n**Obligations.** The requirement says `Domain` has an `outgoing_edges(&self, source_node: &NodeId<Self>, label: Self::EdgeLabel) -> Result<Vec<NodeId<Self>>, Self::Error>` method. The method returns the target node identities for a source and a label. That gives four things to check:\n- The method exists with that signature.\n- The result depends on both the source and the label.\n- Successes return a vector of targets.\n- Failures return `Self::Error`.\n\n**Coverage.**\n- **Signature.** `tests/contracts.rs#fn[domain_relationships_accept_opaque_types_and_send_only_errors]` implements `Domain` for a fixture. Its `outgoing_edges` takes `&NodeId<Self>` and a by-value `Label`, and returns `Result<Vec<NodeId<Self>>, Self::Error>`. The generic helper `successors<G: Domain>` calls `graph.outgoing_edges(node, label)`, so the trait signature is checked through the trait bound.\n- **Label and source selection.** The same test asserts several outcomes:\n  - (node 1, label 2) returns `[3, 2, 3]`, so order and duplicates are preserved.\n  - (node 1, label 3) returns `[4]`, a different result for another label.\n  - (node 1, label 4) returns an empty vector.\n  - (node 2, label 2) returns an empty vector.\n- **Error path.** Node 255 makes `outgoing_edges` return `Err`. The test asserts the `Send`-only error value is recovered.\n- **A concrete domain.** `src/sdk.rs#mod[tests]/fn[test_edges_select_only_tests_for_the_requested_requirement]` calls `HabeasDomain::outgoing_edges` with the `Tests` and `Implements` labels. It asserts different results per label, and an empty result for a source node with no edges.\n- **Consumer behavior.** `graph/validation_tests.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]` exercises `outgoing_edges` through `ValidationContext`. It covers the edges ordering and duplicates, and an `Err(\"edges\")` error that propagates.\n\n**Other points.** The `tools.rs` test is marked for this requirement but mainly checks schema generation. That is extra marking and does not leave a gap. The cited `requirements.sdk.domain` is context only. Its signature matches the subject's.\n\nI found no plausible violation of the stated obligations that these tests would accept.",
   "references": "cf0b8b046fc4de2dde4f612e816367b379b4fefed621769c8e732943e6632158",
   "inputs": [
     {
@@ -23,9 +23,9 @@
         "    /// Return the target node identities for this source and label.",
         "    fn outgoing_edges(",
         "        &self,",
-        "        source_node: &Self::NodeId,",
+        "        source_node: &NodeId<Self>,",
         "        label: Self::EdgeLabel,",
-        "    ) -> Result<Vec<Self::NodeId>, Self::Error>;",
+        "    ) -> Result<Vec<NodeId<Self>>, Self::Error>;",
         "",
         "    // ...",
         "}",
@@ -49,35 +49,38 @@
         "```rust,ignore",
         "pub trait Domain: Clone + Send + Sync {",
         "    type Error: Send;",
-        "    type NodeId: Clone + Eq + Send + Sync;",
+        "    type NodeData: Clone + Eq + Hash + Send + Sync;",
         "    type NodeContent: NodeContents;",
         "    type EdgeLabel: Clone + Send + Sync;",
         "",
-        "    fn cache(&self) -> &ValidationCache;",
-        "    fn node_path(&self, node: &Self::NodeId) -> NodePath;",
+        "    fn cache(&self) -> &ValidationCache<Self>;",
+        "    fn node_path(&self, node: &NodeId<Self>) -> NodePath;",
         "    fn node_content(",
         "        &self,",
-        "        node: &Self::NodeId,",
+        "        node: &NodeId<Self>,",
         "    ) -> Result<Self::NodeContent, Self::Error>;",
         "    fn outgoing_edges(",
         "        &self,",
-        "        node: &Self::NodeId,",
+        "        node: &NodeId<Self>,",
         "        label: Self::EdgeLabel,",
-        "    ) -> Result<Vec<Self::NodeId>, Self::Error>;",
+        "    ) -> Result<Vec<NodeId<Self>>, Self::Error>;",
         "    fn load_evidence(",
         "        &self,",
-        "        node: &Self::NodeId,",
+        "        node: &NodeId<Self>,",
         "        criterion: &CriterionPath,",
-        "    ) -> impl Future<Output = Result<Option<Record<Self::NodeId, Self::EdgeLabel>>, Self::Error>> + Send;",
+        "    ) -> impl Future<Output = Result<Option<Record<Self::NodeData, Self::EdgeLabel>>, Self::Error>> + Send;",
         "    fn store_evidence(",
         "        &self,",
-        "        node: &Self::NodeId,",
+        "        node: &NodeId<Self>,",
         "        criterion: &CriterionPath,",
-        "        record: &Record<Self::NodeId, Self::EdgeLabel>,",
+        "        record: &Record<Self::NodeData, Self::EdgeLabel>,",
         "    ) -> impl Future<Output = Result<(), Self::Error>> + Send;",
         "",
         "    fn project_sources(&self) -> Option<SourceProject<Self>> { ... }",
-        "    fn source_node(&self, item: &OutlineId) -> Result<Self::NodeId, SourceError> { ... }",
+        "    fn source_node(",
+        "        &self,",
+        "        item: &OutlineData,",
+        "    ) -> Result<Self::NodeData, SourceError> { ... }",
         "}",
         "```",
         ":::"
@@ -91,17 +94,17 @@
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[labeled_selections_track_only_target_membership_without_reading_contents]",
-      "hash": "700de848bf5305dbf1d7bd2affdaa5f3da9aa8554a178553e711fcd3447efa2f"
+      "hash": "99523765d03546a8080ace6dab2053ee9b74cfbd8ee76dd224c1693883961924"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]",
-      "hash": "72c108fc677ee6f1918b113f3a496789379b59e81ee07ea523316790e83e7f36"
+      "hash": "f2e82361bdd1652718ae5096ea111e774efeae93333bc69b10254303d26b103e"
     },
     {
       "file": "src/sdk.rs",
       "item": "mod[tests]/fn[test_edges_select_only_tests_for_the_requested_requirement]",
-      "hash": "ababfcb59c18dcfc888bed330ae35dd342d715e211eaaa80cf2da4b8bb79cb28"
+      "hash": "d8db842d0422a8c7589538e00ce369335ebba0d2139adca99385e7898c99e9cb"
     },
     {
       "definition": "requirements.sdk.application_domain",
@@ -152,7 +155,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "0df33d9662f2ba3fed1812bc7a8b4eaf338cee719e91f50ecd4ccc34def323f3"
+          "value": "c0c43cac7b8dee60830106868420e733e7a8b153f65f402e7a4ef5fbb829b428"
         }
       ]
     },
@@ -163,7 +166,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "0dd6f9ccc0baa947746b56d016e1383bfc1a54901b7bbda9e1c1bffa7f5efe5a"
+          "value": "084de406e3a5a301afb43aec7947f9e29c3a1137527c5f1109eb717108d16f94"
         }
       ]
     },
@@ -197,7 +200,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "7ee7dfb9edfada22eb7f8b87a4a01b5600be604557561e3653cbdd9398c2d338"
+          "value": "e78758c0539762303a26ab156954eb8e1aea3a2abfa1da69f7f252b2373d7d05"
         }
       ]
     },
@@ -214,7 +217,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "be20d2fa10e32c0043ac6b2e46282b3adad2e5c4421e0d1337938751a45b9acc"
+          "value": "74f6324e2786c0590ed175ee978418de8a5973f9db898d4780029eac379c590b"
         }
       ]
     },
@@ -231,7 +234,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "faa98a40d5328a3f4a473721cc663169c057bc03f5509cb6dca820cad1e86719"
+          "value": "70d8aea87e70c645db45666851d311bc519fb3837fd276d175a4c4ca5ee5311e"
         }
       ]
     },

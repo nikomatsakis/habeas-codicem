@@ -1,7 +1,7 @@
 {
   "requirement": "For each match the agent receives an excerpt and a reference to the enclosing node under {cite}`requirements.sdk.graph.validation-context.node_reference`. The agent can pass the reference to `read_node` to inspect that item. The `complete` flag has the same meaning as in text search.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation in `requirements.sdk.graph.search.search_structure.behavior`. I judged this from the supplied test sources only and did not request any implementation source.\n\n**Obligations derived from the text**\n1. Each match gives the agent an excerpt.\n2. Each match gives a reference to the enclosing node, in the form `node_reference` defines.\n3. The agent can pass that reference to `read_node` to inspect the item.\n4. The `complete` flag means the same as in text search: true when no limit truncated the results, false when it did.\n\n**Coverage**\n- **Excerpt and enclosing-node reference**\n  - `crates/trust-but-verify/src/agent/project_sources.rs#mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]` runs a real structural search over `fn one(){call();} fn two(){call();}`. It asserts exact `(node, span, text)` tuples: `code.rs#fn[one]` with `call()`, and `code.rs#fn[two]` with `call()`. This shows the reference is the enclosing item rather than the file, and that the excerpt is the matched text.\n  - The same test then dispatches `search_structure` through the session and checks that each JSON entry's `excerpt` equals the hit text.\n  - `crates/trust-but-verify/src/agent/tests.rs#fn[source_tools_forward_arguments_and_present_discovery_and_read_results]` asserts the exact delivered JSON shape `{\"complete\":…,\"matches\":[{\"node\":{\"path\":…,\"selector\":\"fn[chosen]\"},\"excerpt\":…}]}`.\n  - `crates/trust-but-verify/tests/source_defaults.rs#fn[built_in_languages_and_structural_search_use_the_project_scope]` asserts the node path and selector (`visible.rs`, `fn[visible]`) and the excerpt `call()` against a real `Sources` provider.\n- **Reference passed to `read_node`**\n  - In the first test above, `session.read_node(&context, &matches[1])` takes the delivered match entry. It asserts the resulting dependency is the node `hits.matches[1].node` with the expected content fingerprint. This shows the reference from a search result round-trips into `read_node`.\n- **`complete` flag**\n  - The `source_defaults` test checks four cases:\n    - Unlimited search gives `complete == true`.\n    - `limit(0)` with a match present gives `false`.\n    - `limit(1)` with exactly one match gives `true`.\n    - `limit(1)` with two matches gives `false`, and unlimited with two matches gives `true`.\n  - `structural_tags_select_only_the_original_enclosing_item` asserts `complete == false` for a limited dispatch and checks that the unlimited page's `complete` equals the hit's `complete`.\n  - `fn[empty_structural_search_results_remain_discovery]` asserts `{\"complete\":true,\"matches\":[]}` for a search with no matches.\n  - The text-search tests (`fn[source_tools_forward_arguments_and_present_discovery_and_read_results]`) assert the same convention, so \"same meaning\" is checked.\n\n**Gaps**\nNone found. The cited `node_reference` requirement is context only. Its own details, such as invalid ID errors, are not part of this subject. I found no behavior that violates the requirement and would still pass these assertions.",
+  "rationale": "The reviewed tests adequately check `requirements.sdk.graph.search.search_structure.behavior`.\n\n**Obligations derived from the text**\n1. Each match carries an excerpt.\n2. Each match carries a reference to the enclosing node, in the integer form from `requirements.sdk.graph.validation-context.node_reference`.\n3. The agent can pass that reference to `read_node` to inspect the item.\n4. `complete` means the same as in text search: true when the result is not truncated, false when a limit truncates it.\n\n**Coverage**\n- **Excerpt and enclosing node reference.** `project_sources.rs#mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]` runs a structural search for `call()` over `fn one(){call();} fn two(){call();}`.\n  - It asserts that each hit's node is the interned `code.rs#fn[one]` and `code.rs#fn[two]` respectively. It also asserts the exact span and the text `call()`.\n  - Through the agent-facing `search_structure` dispatch, it asserts that each JSON entry's `excerpt` equals the hit's text.\n  - It locates the entry whose `node` equals the serialized node of hit 1. So the reference is the node ID in the agent-facing result, and it distinguishes the two enclosing items.\n- **Reference usable with `read_node`.** The same test passes the dispatched match entry `matches[1]` to `session.read_node`. It asserts that the resulting dependency is the node of `hits.matches[1]`, with the expected fingerprint. This is the requirement's \"agent can pass the reference to `read_node`\" scenario, and it is also the cited `node_reference` case in this subject's context.\n- **`complete`, false case.** The same test dispatches with `limit` 1 against two matches and asserts `complete == false`. `source_defaults.rs#fn[built_in_languages_and_structural_search_use_the_project_scope]` checks the provider-level semantics with `limit(0)`, `limit(1)` over one match, and `limit(1)` over two matches. These give complete false, true and false respectively.\n- **`complete`, true case.**\n  - The unlimited dispatch in `fn[structural_tags_select_only_the_original_enclosing_item]` asserts the page's `complete` equals the direct search's `complete`.\n  - `source_defaults.rs` asserts `complete` is true for the unlimited search.\n  - `agent/tests.rs#fn[source_tools_forward_arguments_and_present_discovery_and_read_results]` asserts `\"complete\": prefix.is_none()` in the delivered JSON.\n  - `agent/tests.rs#fn[empty_structural_search_results_remain_discovery]` asserts `{\"complete\":true,\"matches\":[]}` for a search with no hits.\n- **Scope and failures.** `source_defaults.rs#fn[built_in_languages_and_structural_search_use_the_project_scope]` covers scope and ignore handling. `agent/tests.rs#fn[source_tools_forward_arguments_and_present_discovery_and_read_results]` covers provider errors being surfaced and large excerpts being delivered intact.\n\n**Delegated obligations**\nMalformed or unassigned integer handling belongs to the cited `node_reference` requirement and its own tests, so I did not reassess it.\n\nI found no plausible requirement-violating behavior that these tests would accept. I found no marking gaps: each test carries a `{test}` reference to the subject.",
   "references": "0409c57e9027959b77ce8bd1271f123326265a4da9b683eff7192f5b5a840b78",
   "inputs": [
     {
@@ -22,36 +22,41 @@
       ],
       "text": [
         ":::{req} node_reference",
-        "The agent harness serializes the current node, supplied input nodes, and node IDs in tool results using the domain's Serde representation of `D::NodeId`. A tool accepting a node ID deserializes the same JSON value. Its argument schema uses `D::NodeId`'s `JsonSchema` implementation. An invalid ID representation produces a tool error before the domain is queried.",
+        "The agent harness uses the unsigned integer representation of `NodeId<D>` for the current node, supplied inputs, and nodes in tool results. Built-in tools accepting a node ID resolve that integer in the domain's cache. A malformed value or an unassigned integer produces a tool error before any graph read.",
         "",
-        "For example, if a search hit contains `\"node\": {\"Issue\": 42}`, the agent can call `read_node({\"node\": {\"Issue\": 42}})` to read that issue.",
+        "For example, if a search hit contains `\"node\": 7`, the agent can call `read_node({\"node\": 7})` to read the enclosing node.",
         ":::"
       ]
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]",
-      "hash": "c36ad720da7917dd5292319f01409250f9b6e9e2d06eab66bbea689be73026dc"
+      "hash": "52995b412a301672e26a62e8086c0437b14b1040842db8cc8c225b2fefc142cd"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input]",
-      "hash": "259f25a5832a3c37660fd98462d34ce48561c13aacf629ecee3786267e2b7f10"
+      "hash": "71a7f1deb43f63a69839e99242ab5dc5644e3eff6ac2f4b7ce3ced2210249c1d"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[source_tools_forward_arguments_and_present_discovery_and_read_results]",
-      "hash": "4d23db061e025d47d10b644313820942fa2884f7da7ee95341803244b5c6682d"
+      "hash": "b10318478a19e688ab3a17fbbe5e2139828bc4feac583992d1bd1a0c5b5f202e"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[empty_structural_search_results_remain_discovery]",
-      "hash": "f6fd7fc7b5fc640a35a3ad0ecdbc7459f0d8b588f41ae9b9d5abd3a8218de5de"
+      "hash": "ee7a7cc19bdb06c057fa2e98e2324393ca57dca1b91e1cc673070b50165bc091"
     },
     {
       "file": "crates/trust-but-verify/tests/source_defaults.rs",
       "item": "fn[built_in_languages_and_structural_search_use_the_project_scope]",
       "hash": "dd3a494d5e6273b333b185acd1a7638593485f94894f7eea37faffdc625a1fa5"
+    },
+    {
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "struct[NodeId]",
+      "hash": "8d04b901c7278519c7d9bd5af6b244bc7dfef8cf674eb1edf0a998c0405fc6a5"
     }
   ],
   "format_version": 1,
@@ -98,7 +103,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "2e7e926d54f43616b8c69e7803f6eb20e44454cb1f831924386500a8671610da"
+          "value": "1430580f5cd20d4d44b571e0e083e7647f8232070211c9e723833e7f6fff2d73"
         }
       ]
     },
@@ -115,7 +120,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "a57b31f34187a7968bb9605b2ec0b51b6d343bafa0541cdf45cc9147304c95e0"
+          "value": "9b5b23ed4e62c31aa9a5888f525cf8c7cb8c39f8f92cd22214cc6333f58d49b5"
         }
       ]
     },
@@ -132,7 +137,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "2fa61ae3bb05e03d21728600e64650b1f05dcd282c0073398ae07d558539250c"
+          "value": "a612b1918e435ee8032000ba8f6500620d5bfb333b810a0382c5c61458a16d1e"
         }
       ]
     },
@@ -149,7 +154,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "70f5670e7ddb89c4e5069fcfeae868ff34cb50ae0b80a61f9f87477f61ce3d20"
+          "value": "3ce18749c12e856e9a7a7387230bf14103e320892ca971475fd36136a8329269"
         }
       ]
     },
@@ -166,7 +171,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "b9ac32a01f0cee60ad0331264092e2c361614cc8afd685e44341c354ddfb767a"
+          "value": "31a22e10197fbdd37ddf5c849ad3647295f1220267309de3878dafceeb8296d2"
         }
       ]
     },
@@ -184,6 +189,23 @@
         {
           "scheme": "habeas-input-v1",
           "value": "c64ed2b4c2ccb9decfa97a796ae153f1fd66a3cd4720ae9ea3140aa467221040"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "struct[NodeId]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "1d9bf3954888eba8453c19e5c3c9db1de71901756dc3400e40a9542a639fd4a0"
         }
       ]
     }

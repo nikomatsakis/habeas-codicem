@@ -1,7 +1,7 @@
 {
   "requirement": "Each awaited ask builder has independent conversation, paging, and submission\nstate. Calls in the same criterion contribute their delivered\ninputs to that criterion's shared trace under\n{cite}`requirements.sdk.graph.agent-calls.author_procedure`.",
   "determination": true,
-  "rationale": "**Obligations from `tool_agent.isolation`:** (1) each awaited ask builder has its own conversation state; (2) each has its own paging state; (3) each has its own submission state; (4) calls in the same criterion contribute their delivered inputs to one shared trace, as `author_procedure` describes. That cited requirement is context only.\n\n**Conversation, paging and submission isolation.** `agent/tests.rs#fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]` runs two asks concurrently on one `ValidationContext`.\n- A `tokio::sync::Barrier` forces the two conversations to interleave.\n- A 2-second timeout fails the test if the calls were serialized.\n- The provider `impl[ParallelConversations/CompletionProvider]` is reached from this test and does the checking:\n  - It checks that each request's history length is `2 + turn*2`, so a conversation never sees the other's turns.\n  - It checks that the serialized history contains the call's own contents and does not contain the other call's contents.\n  - On later turns it checks the same of the last delivered page.\n  - Both conversations use the same tool call ID, `\"same-call-id\"`, which would expose cross-talk keyed on call ID.\n  - `fn[distinct_pages]` makes the content long enough to page, with distinct per-node text.\n  - Each conversation pages through its own `get_next_page` UUID.\n  - Each submits a different value, `\"alpha\"` and `\"beta\"`. The test asserts that `alpha.unwrap() == \"alpha\"` and `beta.unwrap() == \"beta\"`, so submission state does not leak.\n  - The test also asserts three provider calls per conversation.\n\n**Peer page IDs.** `fn[graph_page_ids_from_a_populated_peer_conversation_are_rejected]` runs two sequential asks on one context. The first produces a page ID. The second conversation tries to use that foreign page ID and gets an `unknown page` error result. It asserts that the foreign and local IDs differ, which confirms paging state is per conversation. The test then expects a normal submission from the second conversation, and it asserts two graph reads and five provider turns.\n\n**Shared trace.** The concurrent test asserts that `ctx.dependencies()` holds exactly three entries. They are the `Dependency::Node` entries for nodes 1 and 2 with their fingerprints, and the `OutgoingEdges` entry. Alpha reads the current node and beta reads successors, so the entries come from both calls. It also asserts that `ctx.finish` returns the same dependencies.\n\n**Real transport.** `agent/configured.rs#mod[tests]/fn[supplied_openai_backend_runs_independent_calls_against_a_local_transport]` is also marked for this requirement. It runs repeated verify calls against a local HTTP backend. It checks that the first request of each pair has no `function_call_output` and the second does, so no history carries over between independent calls. It also checks request shape and that the saved evidence has one dependency per answer.\n\n**Gaps:** I found none. Each obligation has a scenario with concrete assertions, covering the concurrent case, the sequential case, and both paging and submission state. The unawaited-builder and trace-merge details belong to `author_procedure`, not to this subject.",
+  "rationale": "The tests adequately cover `tool_agent.isolation`. Its obligations are independent conversation, paging and submission state per awaited ask builder, plus delivered inputs from calls in one criterion landing in that criterion's shared trace.\n\n- **Independent conversations.** `src/agent/tests.rs#fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]` runs two ask builders concurrently with `futures::join!`. One reads the current node and the other reads successors. The `ParallelConversations` provider, behind a `Barrier`, makes the two conversations interleave at every turn. On each request it asserts these things:\n  - The history length equals `2 + turn*2`.\n  - The history contains its own contents.\n  - The history does not contain the other call's contents.\n  - Both calls use the same tool-call ID, so only real isolation passes.\n- **Independent paging.** Each conversation's turn 1 calls `get_next_page` with the page UUID returned in its own conversation. The provider asserts the last delivered page belongs to that conversation. `distinct_pages` gives the two nodes different content. `src/agent/tests.rs#fn[graph_page_ids_from_a_populated_peer_conversation_are_rejected]` covers the cross-conversation case. A page ID taken from one populated conversation is submitted in another, and the result is an error containing \"unknown page\". The test also asserts that the IDs differ.\n- **Independent submissions.** The two concurrent calls submit different answers. They return `\"alpha\"` and `\"beta\"` respectively, and each makes exactly 3 provider calls. In the foreign-page test, two successive asks on the same context each submit successfully. A submission in one conversation therefore does not poison another.\n- **Shared trace.** After the concurrent calls, the test asserts that `ctx.dependencies()` holds exactly three entries: the Node 1 content, the Node 2 content, and the outgoing-edges selection. It also asserts that `ctx.finish` yields the same dependency set. Together these show that both calls' delivered inputs merge into the criterion's trace.\n- **Backend-level check.** `src/agent/configured.rs#mod[tests]/fn[supplied_openai_backend_runs_independent_calls_against_a_local_transport]` runs two calls through the real OpenAI-backend wire format. The first and third requests contain no `function_call_output`. The second and fourth do. This shows the calls do not share conversation history.\n\nThe cited `author_procedure` behaviors, such as a later call preserving earlier inputs, are context and belong to that requirement's own tests. I found no obligation in the subject text without a test.",
   "references": "0a144f4436c3dd4e0c7c2a254170eb3d2ac8315e6689f6039bd220c1dabbb4ba",
   "inputs": [
     {
@@ -51,17 +51,22 @@
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[supplied_openai_backend_runs_independent_calls_against_a_local_transport]",
-      "hash": "be2ea4292aed9ebefd85b91f462c906f37f6fe23e58f2a413c18a6d3e2d4ecae"
+      "hash": "e2a943a78837f2c1567ae0aee3943348fb3c23610881b112a23d99b09cebfeff"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]",
-      "hash": "e174b353a5188ba8250c9be15229f041f62a1a7c2cf43ea5d908651282e1132e"
+      "hash": "ce5910db3f51c79716eacd6ed0e14047a6cc9620e87298ed573bacdddbd27216"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[graph_page_ids_from_a_populated_peer_conversation_are_rejected]",
-      "hash": "1af179ac618437f57f2f2172bd347a4d244786af75ec9ae88947e70d63ee4333"
+      "hash": "ce148ac2402f576321499270afcdf0397c07759eb6be7b4a47bceffa662679e7"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "struct[ParallelConversations]",
+      "hash": "1bdc6269de579c6be8df018df323ddb04cde0b13d9464d994d5316e08bde0013"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -135,7 +140,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "2bf07459b5022bcff84af767218d5511776670b94e69e7446abd44455a3de024"
+          "value": "c3c8af71f78c9270f948c7c0a21ec744e0d6f1a4de18c66520bc87b325344278"
         }
       ]
     },
@@ -152,7 +157,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "4037c50c3e37c8c956478307a66e779e975c7f51f80fb3f87a4e75369f287fc1"
+          "value": "48a915bd09b5009c59ae08da015119046223c6fa314af6572c8062782a4759d3"
         }
       ]
     },
@@ -169,7 +174,24 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "66be4f393b0e36bd7583d6a104600a639337cdbd160fa3adab6f3965b2f70047"
+          "value": "5eaee30a3f620131def7174ffa7b381292adb68f303a78ab806f6f0ac7e693b1"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
+            },
+            "selector": "struct[ParallelConversations]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "1601adae4eac378372c98cae8e44733589f0de9db968066c903b15db0f410f3b"
         }
       ]
     },

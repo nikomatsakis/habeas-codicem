@@ -1,7 +1,7 @@
 {
   "requirement": "```rust,ignore\n/// Encode the answer and atomically replace this source/criterion's record.\npub fn store_evidence<D: Domain, O: serde::Serialize>(\n    domain: &D,\n    inputs: &Fingerprinted<D, O>,\n) -> impl Future<Output = Result<(), ValidationError<D::Error>>> + Send;\n```\n\nThe function saves under the source identity and criterion path captured in\n`Fingerprinted`, preserving its version, input trace, and completed answer. Encoding follows\n{cite}`requirements.sdk.graph.evidence.record.output`; atomic replacement follows\n{cite}`requirements.sdk.graph.evidence.evidence_storage`. The result type needs\nno `Sync` bound: the function encodes the answer and captures the record and\nstorage key before constructing the storage future.",
   "determination": true,
-  "rationale": "I judged the tests adequate for `requirements.sdk.graph.evidence.store_evidence`. I did not request implementation source. Every obligation in the subject text maps to a marked test with a relevant assertion.\n\n**Key: source identity and criterion path captured in `Fingerprinted`**\n- `criteria_keep_typed_answers_and_persist_only_when_requested` stores three criteria (`behavior`, `structure`, `text`) for source `Node(1)`.\n  - It then finds each record by criterion path and checks that each holds the right output.\n  - It checks that a replacement `verify` leaves the `behavior` record unchanged until an explicit store.\n- `agent_edge_tools_record_selections_without_validating_targets` asserts that the stored record's node key is `1`.\n- `malformed_records_are_storage_errors_and_bad_outputs_are_output_errors` stores through `validation::store_evidence`. It then reads the record back through the domain with the same source and criterion (via `record_path`).\n- Every test uses a single source id. A swapped or wrong source key is therefore only weakly ruled out. The criterion path varies across tests, and a store keyed on the wrong criterion would fail those tests.\n- Distinct-key semantics belong to `evidence_storage`, which is cited here. `concurrent_same_criterion_executions_keep_complete_independent_records` is also marked against it.\n\n**Preserving version, input trace and completed answer**\n- `criteria_keep_typed_answers_and_persist_only_when_requested` stores, reloads, and compares output, source, path, version and dependencies. It also checks the raw stored JSON output.\n- `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer` checks that the restored dependencies equal the originals. Those dependencies are `Node` and `OutgoingEdges` entries with fingerprints.\n- `concurrent_same_criterion_executions_keep_complete_independent_records` asserts the saved version and dependencies for the winning save.\n- `input_checking_and_execution_keep_separate_observations` asserts the stored `Node` fingerprint dependency.\n- `typed_loading_reports_decode_errors_even_for_stale_evidence` stores a v2 version and checks that the record count stays 1, so the record is replaced rather than added.\n\n**Encoding failure (cited `record.output`)**\n- `serialization_failure_leaves_the_existing_record_unchanged` uses an unencodable answer. It asserts `ValidationError::Output` with the message \"cannot encode answer\". It asserts that the old record's version, dependencies and output are unchanged, and that the write count is still 1.\n\n**Storage failure**\n- `resolution_storage_and_callback_errors_are_not_judgments` sets `fail_store`. It asserts `ValidationError::Graph(\"store\")` and that no record is written.\n\n**Atomic replacement (cited `evidence_storage`)**\n- The competing-saves test `concurrent_same_criterion_executions_keep_complete_independent_records` stores concurrently. It asserts that exactly one complete record remains, with version and dependencies matching one of the two saves' answers.\n\n**No `Sync` bound on the result**\n- `validation_and_answer_need_send_without_sync` uses a `Cell`-based answer, which is `Send` but not `Sync`. It wraps `store_evidence` in `send(...)`, which requires the future to be `Send`. It also checks that the stored answer loads back.\n\nI found no unacknowledged gap.",
+  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.graph.evidence.store_evidence` that is assessed here. I did not request implementation source, because the tests were enough to judge adequacy.\n\n- **Save under the captured source identity and criterion path.**\n  - `contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` stores records for the `behavior`, `structure` and `text` criteria of one source. It then finds the stored records by criterion path and checks that each holds the right output.\n  - `tests/storage.rs#fn[malformed_records_are_storage_errors_and_bad_outputs_are_output_errors]` stores through a file-backed domain. It derives the record path from `node_path(source)` and the criterion, then reads the file at that path.\n  - The agent test `agent/tests.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` checks that the stored record sits under node 1.\n- **Preserve version, input trace and completed answer.**\n  - The `criteria_keep_typed_answers_and_persist_only_when_requested` test reloads the stored record. It asserts equality of `output`, `source_node_id`, `criterion_path`, `version` and `dependencies` with the original `Fingerprinted` value. It also asserts the raw stored JSON output.\n  - `contracts.rs#fn[input_checking_and_execution_keep_separate_observations]` checks the stored `Dependency::Node` fingerprint.\n  - The agent tests `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer` and `agent_edge_tools_record_selections_without_validating_targets` check that dependencies, including edge fingerprints, survive the store and load round trip.\n- **Serialization failure returns `ValidationError::Output` and leaves the existing record unchanged.** `contracts.rs#fn[serialization_failure_leaves_the_existing_record_unchanged]` stores an `Unencodable` answer over an existing record. It asserts `Output`, checks the error message, and checks that version, dependencies and output are unchanged. It also checks that the write count stays at 1.\n- **Storage failure returns `ValidationError::Graph`.** `validation_tests.rs#fn[resolution_storage_and_callback_errors_are_not_judgments]` sets `fail_store`, asserts `Err(ValidationError::Graph(\"store\"))`, and checks that no record was written.\n- **No `Sync` bound on the result.** `contracts.rs#fn[validation_and_answer_need_send_without_sync]` stores a `Cell<u32>` answer, which is `Send` but not `Sync`. It passes the store future through the `send(...)` helper, so a `Send` bound is enforced at compile time. It then reloads the value and checks that it is 17.\n- **Replacement.**\n  - `contracts.rs#fn[typed_loading_reports_decode_errors_even_for_stale_evidence]` stores over an existing record and asserts that only one record remains. It does not assert the new content.\n  - `concurrent_same_criterion_executions_keep_complete_independent_records` checks a complete single record after competing stores.\n  - Atomic replacement itself is a cited obligation of `evidence_storage`, so it is not assessed here.\n\nTogether the tests cover every named success and failure outcome, and I found no unmet obligation or marking gap.",
   "references": "f1965f6afe295644af1a46e98974f883af83df43442b9e98e83d018f1aaa191c",
   "inputs": [
     {
@@ -71,19 +71,19 @@
         "    /// Ok(None) means absent; Err means loading failed.",
         "    fn load_evidence(",
         "        &self,",
-        "        source: &Self::NodeId,",
+        "        source: &NodeId<Self>,",
         "        criterion: &CriterionPath,",
         "    ) -> impl Future<Output = Result<",
-        "        Option<Record<Self::NodeId, Self::EdgeLabel>>,",
+        "        Option<Record<Self::NodeData, Self::EdgeLabel>>,",
         "        Self::Error,",
         "    >> + Send;",
         "",
         "    /// Atomically replace only this source/criterion pair's complete record.",
         "    fn store_evidence(",
         "        &self,",
-        "        source: &Self::NodeId,",
+        "        source: &NodeId<Self>,",
         "        criterion: &CriterionPath,",
-        "        record: &Record<Self::NodeId, Self::EdgeLabel>,",
+        "        record: &Record<Self::NodeData, Self::EdgeLabel>,",
         "    ) -> impl Future<Output = Result<(), Self::Error>> + Send;",
         "",
         "    // ...",
@@ -108,57 +108,57 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[agent_edge_tools_record_selections_without_validating_targets]",
-      "hash": "3752def53e59555536d6dc1ecdaf5eea8533cfaf80529339264b362d8ca838c0"
+      "hash": "26a9315f3b502bade193bcf6eb305da74f2273b900122a29c939344eaf35046e"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]",
-      "hash": "9653e3b706f77c9127b61bf2ca6c710e2faa487efcb0f0ce4a244d6ac2b968e8"
+      "hash": "69048b64a195513551fdc8614a7e6cea5e002203603971efcae1e18be26ff809"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]",
-      "hash": "83d1b4ee274864c38d36531ae4d5620f74204e70046629331f1551e9013f91f5"
+      "hash": "21c1fb6cb24691cbd5b76b20089afea52c46285271af1f6f3cb5eaa6c0f917f9"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[resolution_storage_and_callback_errors_are_not_judgments]",
-      "hash": "b6992bdafd7b7f331fa55b768b6f630a14bcaf53443420a7c608c86348e765b5"
+      "hash": "efa3b0c7f7dfa4795c0984566dad2b62c43b4b2f550c795c5f4f424e7c662a93"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[criteria_keep_typed_answers_and_persist_only_when_requested]",
-      "hash": "a97c7ec9ce25ce55fd9b62ba41256e14b5ed7e44e547dccda13cd562e7a3360e"
+      "hash": "c91f0b4950727c0c402d2eb000e29722804773d0c55fa7a32eb8154e8e60a8c3"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[typed_loading_reports_decode_errors_even_for_stale_evidence]",
-      "hash": "6631141409658ab48a58c6f884abec33d4b7107ea7a034c77968e77567b81fa4"
+      "hash": "928603917f43ecdb1515c3d89d0e065cc6a078d81d377bcefd6a22ea7ff7d1d5"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[input_checking_and_execution_keep_separate_observations]",
-      "hash": "f39fbd4bce6fce2292feec48bafe779a83ee3380e31ea0c684ec7c8147c4cc1c"
+      "hash": "0e7c64154548b856da013a6698bd9164f7e41ecb772be79c7b6dc79fb8de84ef"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[validation_and_answer_need_send_without_sync]",
-      "hash": "d1f81e5683e36ae59219eb96f0cb2e5d29cbf3bd9733780cf0c6d64120532c5f"
+      "hash": "3698933716fe21fc34ef5f4427d98ebadbf25b8967be80bba633fd406c64b372"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[serialization_failure_leaves_the_existing_record_unchanged]",
-      "hash": "15f35b501f3565107962b5f3e92f95ae6a639de0ae515fff061f59ce1d8358c5"
+      "hash": "0d1eca2d806607c5afbf8f7474e36db574e61aa191e1b5878fdc0585dbfdb896"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[concurrent_same_criterion_executions_keep_complete_independent_records]",
-      "hash": "3d76691636b26e422fb12b95ed732bd609ae9beb5fc48996a57feaecd033004f"
+      "hash": "4f73c97763bcf0157666d94ecfd67a67a9ffe643002796b9b3e90bfb31f78cb4"
     },
     {
       "file": "crates/trust-but-verify/tests/storage.rs",
       "item": "fn[malformed_records_are_storage_errors_and_bad_outputs_are_output_errors]",
-      "hash": "bcb4ba4dd1f40219733125c2eb638e33fa5fa15d04638532913c04f0cda1306d"
+      "hash": "582e2f6169b90f89a4b721425949100b7ae1c7af9f9dd260123839d76597ceb0"
     },
     {
       "definition": "requirements.sdk.application_domain",
@@ -174,6 +174,11 @@
         ":::",
         "::::"
       ]
+    },
+    {
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "fn[send]",
+      "hash": "8584e807e9abc79dc59d3352ed10789b3f88c34eaf2710718740786192bf2708"
     }
   ],
   "format_version": 1,
@@ -231,7 +236,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "3868243a356b43c082c6eb933683690c031ab9f8a7d86ca909ece0056aa14943"
+          "value": "c7f27458b6588b955695e577d871fa935e4f6fde516107710f6681f589279d73"
         }
       ]
     },
@@ -248,7 +253,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "82ca8d24ea5463f545e0d5a24d4597da02c0c6ae706b186e7a5e85260f66f6c0"
+          "value": "c2adedefda8714618783a82bfd00e73946a1817a41cfd60da9a48aac5e591375"
         }
       ]
     },
@@ -265,7 +270,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "172400ca26c9868a037b6976bb5c1135c7d7b7d586a7e7fcfb0b581b726b3a13"
+          "value": "53b29e878fc28b411aeb2c3a8544267087c2ebd893b981cac35ebbdbe82f3cff"
         }
       ]
     },
@@ -282,7 +287,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f93722a211799751fef40641f681b99205a79a9c53fbdd1d823833a5598a9c91"
+          "value": "2f55ea84ecfdbcfe81ea069bc4aaf94cc28390e4bef15e8bbe51302e6f98730e"
         }
       ]
     },
@@ -299,7 +304,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c04f7ece8174d7be3b716b984cccc5ffc51eb7184003b511523f88b42e7e7ad8"
+          "value": "8d19867dfec1bbddc4c75671cfb1cdd13eab4a2769cc93f60a322a909728c6b3"
         }
       ]
     },
@@ -316,7 +321,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "a36441439e235779b2ca52efae16d2747d1c3a13177e8bd90ad01fd3037110d1"
+          "value": "71daa5201e44592a4d878703ba9d3631160d1d9e7b691018fb772f8c27ef8312"
         }
       ]
     },
@@ -333,7 +338,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "2eb2c15115c5a5a7f4e97aa61ec15b5e345448ad1b3e474edc0b50d22c799d59"
+          "value": "26bf7bcdf50cd9526f76b555c5d2831837e501deb041db70101b930b7cb86762"
         }
       ]
     },
@@ -350,7 +355,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "47a128d40015c2cbe15355cb0aa694f3a231b7bc91c1a6ff59d255a4f204c047"
+          "value": "c48274254837eeefdd346ed7ac03190d0d832fe4dfe6dcae0277786464fe674d"
         }
       ]
     },
@@ -367,7 +372,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "d97bf3eea3dc548991784640dc826677e00cd98243517402c2e05168504d8627"
+          "value": "a72f5315b4d043ef91de100ef723e1b93b07c9cd373330fd2c1d81865c1219c4"
         }
       ]
     },
@@ -384,7 +389,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c80b812cd68307ac97e176063feda8e18dcec109aaa680d280774c42ac9f6731"
+          "value": "26f4920578b4e5c560df61c45a211e82622f293f57d97ad2b91c6944fdbd3014"
         }
       ]
     },
@@ -401,7 +406,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "77427c0a08ef1e5a1444910d28df016e077c729a29872d09a3a378f98a67d061"
+          "value": "33d99cc7e85459def8c3b050059876740d56532315d55122813711348da160a7"
         }
       ]
     },
@@ -418,7 +423,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "0ec0e59743fc49a0b53e9fd2d7e189a1c9dce92bb09551db4e89be05007698fe"
+          "value": "5e740cb885d7558abec5c5ab7ca077efa9919c0da6760f9d951180bb41cd85bd"
         }
       ]
     },
@@ -430,6 +435,23 @@
         {
           "scheme": "habeas-input-v1",
           "value": "1f3d0d387ce356e5b4cc0cc22d20543142b5dcd7352c1eb5e4dd8dd73b058a34"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/contracts.rs"
+            },
+            "selector": "fn[send]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "86bee7067ca39c280b68dadad8b407627bc90720b9cbf2702e8aa3e626a35880"
         }
       ]
     }

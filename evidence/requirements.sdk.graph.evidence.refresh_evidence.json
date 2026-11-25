@@ -1,7 +1,7 @@
 {
   "requirement": "```rust,ignore\nuse std::future::Future;\n\n/// Reuse compatible, current evidence, or evaluate and save a new answer.\n/// Errors from loading, decoding, checking, execution, or saving propagate.\npub fn refresh_evidence<D: Domain, V: Criterion<D>>(\n    domain: &D,\n    criterion: V,\n) -> impl Future<Output = Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>>> + Send {\n    async move {\n        if let Some(saved) = load_evidence(domain, &criterion).await? {\n            if criterion.version().is_compatible_with(saved.version())\n                && check_inputs(domain, &saved).map_err(ValidationError::Graph)?\n            {\n                return Ok(saved);\n            }\n        }\n\n        let inputs = verify(domain, criterion).await?;\n        store_evidence(domain, &inputs).await?;\n        Ok(inputs)\n    }\n}\n```\n\nLoading and decoding follow {cite}`requirements.sdk.graph.evidence.check_node`\nand {cite}`requirements.sdk.graph.evidence.record.output`. Revision and input\ncomparison follow\n{cite}`requirements.sdk.graph.evidence.checking_records.version_match` and\n{cite}`requirements.sdk.graph.evidence.checking_records`. Evaluation follows\n{cite}`requirements.sdk.graph.running-criteria.validate_node`; saving follows\n{cite}`requirements.sdk.graph.evidence.store_evidence`.",
   "determination": true,
-  "rationale": "I judged the tests adequate for `requirements.sdk.graph.evidence.refresh_evidence`. I did not request implementation source. The tests cover each obligation in the requirement's text, as follows.\n\n**Reuse of compatible, current evidence**\n- `refresh_reuses_current_positive_negative_and_legacy_answers_without_saving` saves an answer with a dependency on node 2. It then rewrites the saved version to `v1` and to the legacy value `*`, which `CriterionVersion::from_recorded` presumably maps to an unversioned record.\n- It runs `refresh_evidence` again with a criterion that is set to fail if executed.\n- It asserts the reused output, dependencies, source id, criterion path and version match the saved ones.\n- It asserts executions and writes both stay at 1, the dependency was re-read, and the stored record is unchanged.\n- It runs for both positive and negative answers. This covers the \"saved version known and equal\" and \"saved version unknown passes\" branches of `checking_records.version_match`.\n\n**Evaluate and save when evidence is missing, incompatible or changed**\n- `refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace` has four causes: missing record, revision change, node contents change, and outgoing-edge (successors) change.\n- For each cause it asserts the new answer is returned and the dependencies are the fresh trace.\n- It asserts executions and writes both increment, and one record is left, replaced with the new output, dependencies and version.\n- It asserts the read sequence. For the revision cause, only node 1 is read, so obsolete inputs are not resolved. For the contents cause, the old input is checked before the new one.\n- This covers both `checking_records` mismatch kinds (node and edge fingerprints) and the version mismatch.\n\n**Error propagation**\n- `refresh_propagates_load_decode_check_execution_and_save_errors` covers the following stages.\n  - Load failure returns `Graph`.\n  - Decode failure returns `Output` for a current, a stale-version and an unversioned record.\n  - Node-read failure and edge-resolution failure during `check_inputs` both return `Graph`.\n  - Execution failure and store failure also return `Graph`.\n- It asserts the error variant and payload. It also asserts the execution and write counts and that the saved record is unchanged.\n- This matches `record.output`, including \"including when stale\".\n- `refresh_serialization_failure_preserves_the_saved_record` covers an encode failure after evaluation. It returns `ValidationError::Output`, with no write and the old record intact.\n\n**Other behavior**\n- `validation_and_answer_need_send_without_sync` and `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer` exercise the miss-then-store and reuse paths end to end.\n- `concurrent_refreshes_execute_independently_and_store_complete_records` checks that concurrent refreshes execute independently and leave one complete record.\n\nThe cited requirements are context only. Their behaviors are applied in the subject's scenarios, and I did not reassess them. I found no untested obligation and no assertion that contradicts the requirement.",
+  "rationale": "The reviewed tests cover every clause of `refresh_evidence`, and their assertions enforce the expected outcomes.\n\n**Reuse when compatible and current**\n- `refresh_reuses_current_positive_negative_and_legacy_answers_without_saving` runs satisfied and unsatisfied answers. It saves a record, then sets the saved version to `v1` (matching) or `*` (unversioned, so `from_recorded` gives `None`).\n- The next criterion carries a different answer and `failure = Some(\"must reuse\")`, so any re-execution would fail the test.\n- It asserts that the output, dependencies, source, criterion path and version equal the saved ones. It also asserts executions and writes stay at (1,1), exactly one record remains, and the stored version and output are unchanged. Reads are `[2,2]`, so inputs were re-checked.\n- That covers reuse, no save on reuse, and the `None`-passes-version rule.\n- `validation_and_answer_need_send_without_sync` and `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer` also show reuse with unchanged inputs.\n\n**Evaluate and save when there is no reusable record**\n- `refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace` covers four causes:\n  - `missing` evidence.\n  - A `revision` mismatch (`v1` saved, `v2` requested). The obsolete input is removed from the domain, so any attempt to resolve it before the version check would show up in the reads. This also exercises the \"version first\" ordering.\n  - Changed `contents` (a fingerprint mismatch). Reads are `[2,1]`, so the check ran and then execution ran.\n  - Changed `successors` (an edge-set mismatch).\n- Each case asserts the new answer, a fresh trace containing only the new execution's reads (obsolete reads excluded), the execution and write counts, a single replaced record, and a saved record equal to the returned one.\n- The unchanged `Review::new` default of `v1` against saved `v1` is the version-match case the reuse test covers.\n\n**Error propagation**\n- `refresh_propagates_load_decode_check_execution_and_save_errors` covers the following stages:\n  - `load` failure returns `Graph`.\n  - `decode` failure returns `Output`.\n  - `stale decode` (version also mismatched) returns `Output`.\n  - `unversioned decode` returns `Output`.\n  - A failing `read` during the input check returns `Graph`.\n  - A failing `edges` lookup during the input check returns `Graph`.\n  - `execute` failure propagates.\n  - `store` failure propagates.\n- After each stage it asserts the execution count, that writes stay at 1, and that the stored record is unchanged.\n- `refresh_serialization_failure_preserves_the_saved_record` covers an encode failure after execution. It returns `ValidationError::Output`, with executions and writes at (1,0) and the old record intact.\n\n**Other behavior**\n- `concurrent_refreshes_execute_independently_and_store_complete_records` shows that independent refreshes run without interference and that the stored record is complete and consistent with a returned answer.\n- The Send-without-Sync bound is exercised through `validation_and_answer_need_send_without_sync`.\n\n**Cited requirements** apply to their own obligations and need no separate coverage here. Their application in this subject's case is exercised by the tests above: load and decode, version comparison, input comparison, evaluation, and saving.\n\nI found no unacknowledged gap. The refresh-level tests never combine a wildcard saved version with changed inputs. That is not a gap against this subject: it is a distinct case that `wildcard_versions_still_check_inputs_and_errors` covers at the record level.",
   "references": "02b0218f15476d2cc789b5dbecc7cd2c23e5f261bf583c5c030f818a2613e30b",
   "inputs": [
     {
@@ -179,42 +179,62 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]",
-      "hash": "9653e3b706f77c9127b61bf2ca6c710e2faa487efcb0f0ce4a244d6ac2b968e8"
+      "hash": "69048b64a195513551fdc8614a7e6cea5e002203603971efcae1e18be26ff809"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[validation_and_answer_need_send_without_sync]",
-      "hash": "d1f81e5683e36ae59219eb96f0cb2e5d29cbf3bd9733780cf0c6d64120532c5f"
+      "hash": "3698933716fe21fc34ef5f4427d98ebadbf25b8967be80bba633fd406c64b372"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[refresh_reuses_current_positive_negative_and_legacy_answers_without_saving]",
-      "hash": "dc11574d4cc4f6f1c497a23c87b0bf8d2af0fb15cb19b83324d929019a96c7bb"
+      "hash": "b4c3ae90833a79f6f26484f67759ed91df9cab320bc8faaf3911397e25c7e622"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace]",
-      "hash": "21ae2360f66a8508038937c8628b243045455aef92696ad31b155eb7cf64c994"
+      "hash": "9330c9618477f6057f8720e6d43a0de5ca608101a3c707e937cf221f6eabf7f2"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[refresh_propagates_load_decode_check_execution_and_save_errors]",
-      "hash": "4b294516c7b18224d9ad915235271c02d1f23e49fe8cafbcea0266bfbf321657"
+      "hash": "d672251747a8e92d2f4d26d094a769b4682403e843e25c9387c46279e11b0db7"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[refresh_serialization_failure_preserves_the_saved_record]",
-      "hash": "6b39ce774700a68b5446292d27e51cd96d3ee3e4568197671194d7da6af80637"
+      "hash": "eede4e9a6682a572d08b8403901f891e6435df8ce21d71fb19120885f04ca2ca"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[concurrent_refreshes_execute_independently_and_store_complete_records]",
-      "hash": "f893c31ac6c08f71685d0c1ec0199dfd5ccc2dd53d84df1cfbf5fa7a0016d030"
+      "hash": "bb3f77821539a9b4ecf85175d5bc7cb11c36604690f5281977a27f50d298aed1"
     },
     {
       "file": "crates/trust-but-verify/src/graph.rs",
       "item": "impl[CriterionVersion]/fn[from_recorded]",
       "hash": "c81ae424df75ebb9006756c7624561b491b4e89bab128324242b15d4758f250c"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "impl[CriterionVersion]/fn[is_compatible_with]",
+      "hash": "123ed6b2b5a2d367912c76429c4a01e6e8f0b21727498a55f40a915e734db689"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "fn[wildcard_versions_still_check_inputs_and_errors]",
+      "hash": "2056a24b49cd7a2e254e477383e8e262d4a4c200bafb15a6614318e928de6bfa"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "impl[Review<O>]/fn[new]",
+      "hash": "80e8164afcd362997f2ae1239edb611cad79907f830c21b7cfd3f72efafa65c6"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "impl[Review<O>/Criterion<Application>]/fn[version]",
+      "hash": "c7506f521ea7a55932383b6b854976e168558337320cd6bb812b38828b693ca8"
     }
   ],
   "format_version": 1,
@@ -333,7 +353,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "172400ca26c9868a037b6976bb5c1135c7d7b7d586a7e7fcfb0b581b726b3a13"
+          "value": "53b29e878fc28b411aeb2c3a8544267087c2ebd893b981cac35ebbdbe82f3cff"
         }
       ]
     },
@@ -350,7 +370,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "d97bf3eea3dc548991784640dc826677e00cd98243517402c2e05168504d8627"
+          "value": "a72f5315b4d043ef91de100ef723e1b93b07c9cd373330fd2c1d81865c1219c4"
         }
       ]
     },
@@ -367,7 +387,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "2a691cadc91c3066f38335e33f1c5ab79435be3a4a70baf0d2d21d36f41ba3c5"
+          "value": "aaaba00eefde3b7c2348d1b6d91d60601a4ff0c59cfb6b468f163b3f9c61d5ed"
         }
       ]
     },
@@ -384,7 +404,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1a5331399687f82437b9297b7a9199e58cc61856fe3af56a9f1c3d3bbbce4f83"
+          "value": "3428a27c4befa416f4ea704e8e40c8af151f3b6eda0e137e8a50a681668ccc50"
         }
       ]
     },
@@ -401,7 +421,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "2ac651db2b41bc4ca946a13a37121cd9795f1b4ea980e282a8770b22a2e2e23d"
+          "value": "580d8fef21aeb4dedd59c93b0af10c8096cefa24e860683ae823c2c6fe4e0382"
         }
       ]
     },
@@ -418,7 +438,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "83343df2de1a42f14d135b70753eaf9314480fa2a201d4d68d8e124f28c485f3"
+          "value": "db370e546abd652a287a26fabc78007a05f0734319688aa150c8edc44c367965"
         }
       ]
     },
@@ -435,7 +455,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "be23b7ff71c36fe4c3fc8ffe4cc62383e04393897fdb886038c174b792ceafe4"
+          "value": "7bfaec0b106535d83e5c8c66e9d012e55841ad4cbb49d2cc33938bc871f8cd43"
         }
       ]
     },
@@ -453,6 +473,74 @@
         {
           "scheme": "habeas-input-v1",
           "value": "bc19b57adbd7dfa7bd4033cae4fb830d3188bdbc4071ae662066b64df4ac4529"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "impl[CriterionVersion]/fn[is_compatible_with]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "7d5cd2f43dc606a8dd0f5b96e39e71d5b867ad8f7acce7ec5668f92aaae5b963"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+            },
+            "selector": "fn[wildcard_versions_still_check_inputs_and_errors]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "7e3dadf769ce29dbc0927f36616c5e54f60bafde3e9eb179de7497ce1f42778c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/contracts.rs"
+            },
+            "selector": "impl[Review<O>]/fn[new]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "e20d6d94a444ca70a63ae7b3945538de723afe1d791753300ad1546d96310970"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/contracts.rs"
+            },
+            "selector": "impl[Review<O>/Criterion<Application>]/fn[version]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "8dacbd4993b38a548385831ef829f4923886199c96c2046cbe387e323500f2f9"
         }
       ]
     }

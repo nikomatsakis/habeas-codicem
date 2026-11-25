@@ -1,7 +1,7 @@
 {
   "requirement": "`trust_but_verify` exposes `Ask` and its public `ContextPhase` and\n`NodePhase` state types. The validation context starts a builder:\n\n```rust,ignore\n/// Create an independent request borrowing this context through a shared reference.\npub fn ask<R>(&self) -> Ask<'_, 'd, D, R, ContextPhase>\nwhere\n    R: serde::de::DeserializeOwned + schemars::JsonSchema + Send;\n```\n\nBoth states implement `std::future::IntoFuture` with\n`Output = Result<R, ValidationError<D::Error>>` and a `Send` future for\n`R: serde::de::DeserializeOwned + schemars::JsonSchema + Send`.\nAwaiting executes the assembled request, even with no contexts or node\ninsertions. Building it does not invoke an agent.",
   "determination": true,
-  "rationale": "I judged this from the supplied test sources only. I did not request implementation source.\n\n**Obligations derived from `requirements.sdk.graph.agent-calls.judge`**\n1. `ValidationContext::ask::<R>()` takes `&self` and returns an independent `Ask<…, ContextPhase>` builder.\n2. Both `ContextPhase` and `NodePhase` implement `IntoFuture`. The output is `Result<R, ValidationError<D::Error>>`, and the future is `Send`.\n3. Awaiting executes the assembled request, including a request with no contexts and no node insertions.\n4. Building the request does not invoke an agent.\n\n**Mapping to tests**\n- **Shared-reference, independent builders:** `shared_context_allows_independent_concurrent_agent_calls` makes two `ctx.ask::<Answer>()` calls on one `&ctx` and joins them concurrently. A barrier forces both to be in flight at once. It asserts two separate agent requests with distinct results (7 and 11). `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` also creates several builders from one context.\n- **`IntoFuture` for `ContextPhase`, `Send`:** `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` calls `.context(..).into_future()` on a `ContextPhase` and runs `assert_send` on the future. It then awaits it and asserts the prompt text the agent received.\n- **`IntoFuture` for `NodePhase`, `Send`:** `explicit_insertions_preserve_order_repetition_and_selection_snapshots` builds a `NodePhase` with `contents_of_current_node` and `contents_of_successors`. It runs `assert_send` on the `into_future()` result and awaits it. It asserts the answer, the agent request contents and the recorded dependencies.\n- **Output type:** The success path is exercised through `.unwrap()` on `Answer`. Error outputs are matched as `ValidationError::NoAgentConfigured` and `ValidationError::Graph(\"read\" | \"edges\" | \"render\")`. These are in `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` and `queued_reads_selection_and_rendering_fail_before_agent_invocation`. Together they check the `Result<R, ValidationError<…>>` shape.\n- **Awaiting with no contexts or insertions:** `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` awaits bare `ctx.ask::<Answer>()`. It also awaits a builder with an empty `Vec<String>` context. It asserts that the agent was invoked with an empty prompt and an empty node-content list.\n- **Building does not invoke the agent:**\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` drops a built `NodePhase` builder and asserts the agent's recorded requests are empty.\n  - `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` drops a builder and asserts there are no dependencies and no graph reads.\n  - For `ContextPhase`, the `contexts_render_once…` test indexes requests 0 to 2 and expects exactly the awaited prompts. A call made at build time would shift those entries and break the assertions. There is no explicit \"no requests before await\" assertion there, but the behavior is covered indirectly.\n\n**Result:** Each obligation has a test that exercises it and asserts the outcome. The tests carry `{test}` references to the subject. I found no unacknowledged gap.",
+  "rationale": "I judged the tests adequate. I did not read the implementation. I derived the obligations from the requirement text and checked each against the supplied tests in `crates/trust-but-verify/src/graph/validation_tests.rs`.\n\n1. **`ValidationContext::ask(&self)` starts an independent builder over a shared reference.**\n   - `fn[shared_context_allows_independent_concurrent_agent_calls]` runs two `ctx.ask::<Answer>()` requests concurrently on one shared context. A barrier forces both calls to be in flight at once.\n   - It asserts each request gets its own result (`n` of 7 and 11), that two agent requests were made, and that the dependencies are the expected single entry.\n\n2. **Both `ContextPhase` and `NodePhase` implement `IntoFuture` with a `Send` future and the stated `Output`.**\n   - `ContextPhase`: `fn[contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text]` builds a `.context(..).context(..)` builder, calls `into_future()`, and runs `assert_send` on the future. The builder still holds a non-`Send` `Rc` context value.\n   - `NodePhase`: `fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]` adds a context and node insertions, calls `into_future()`, and runs `assert_send`.\n   - Output type: the tests `.unwrap()` the `Ok` value and match `Err(ValidationError::NoAgentConfigured)` and `Err(ValidationError::Graph(\"read\" | \"edges\" | \"render\"))`. These matches show the error is a `ValidationError` carrying the graph error type.\n\n3. **Awaiting executes the assembled request, even with no contexts or node insertions.**\n   - `fn[contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text]` awaits a bare `ctx.ask::<Answer>()` and one with an empty `Vec<String>` context. It asserts the agent received an empty prompt, the fingerprint of `\"\"`, and no node contents.\n   - The `NodePhase` await paths are covered by `fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]`. `fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]` covers an empty or irrelevant successor selection, which awaits successfully with no reads.\n\n4. **Building does not invoke an agent.**\n   - `fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]` drops a `contents_of_current_node()` builder and asserts the agent's `requests` list is empty.\n   - `fn[dropped_builders_and_missing_agents_do_not_resolve_queued_inputs]` drops a builder and asserts that no dependencies were recorded and that no reads or selections occurred.\n   - `fn[contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text]` builds a `ContextPhase` builder and asserts only that rendering happened once. It does not directly assert that the agent was uninvoked at that point. An eager call would still change the later `requests` contents, so this is a minor weakness and not a gap.\n\n5. **Failure paths of awaiting.**\n   - `fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]` and `fn[dropped_builders_and_missing_agents_do_not_resolve_queued_inputs]` assert the error variants (`Graph`, `NoAgentConfigured`) and that no agent request was made.\n\nAll obligations in the subject text map to tests with concrete assertions. I found no gap.",
   "references": "f4a6a6911b3085a081b20fc75e6f64c38d517244ed26eaf06ba623808fbce4e9",
   "inputs": [
     {
@@ -32,27 +32,27 @@
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[dropped_builders_and_missing_agents_do_not_resolve_queued_inputs]",
-      "hash": "9de7c413a682b7a0c92de76c056167a4ee6272cb8fd4ce0fac8a035a691b1396"
+      "hash": "9cbe92178baf6b64f5b753b824d8484aaeaf4cef82c6372f433f35776444e34c"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]",
-      "hash": "9359c08e74a3d94de11ac4a169c18f28993284f182871b98d112f3a73c69dbb1"
+      "hash": "82438bac07f4989af64bb695b72a6bf8e5866fdc840c6e877de25626a6bfdd25"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text]",
-      "hash": "502a9b96c8c750f3f26714ed0698e2edd5bcc644f1fc52b9152ece44614b6bb5"
+      "hash": "01441102387ed039d6d594f89e6345ded7bd3d4eb83fd7a3ac86e75297c3cdc5"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[shared_context_allows_independent_concurrent_agent_calls]",
-      "hash": "0a08304224981df981cd1d688fefa355db7c7b5bf22c7f6c9ad746fca1e51c42"
+      "hash": "c1e103cff6f9bbdbf982230e4b2beac870658b9ecab472a2cac25b61da76317f"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]",
-      "hash": "d87746a361dc0b25514fe633d10fa2512926e1ba51ffb2643755ea717b6fd42b"
+      "hash": "16e5d66c127375503160b7357b3aab780341b16eb17adf36510391e372907734"
     }
   ],
   "format_version": 1,
@@ -105,7 +105,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "016facc5f4f6b3d46e991dbfd1050f1bcf909625306004b4ef7a7dbab58e2d16"
+          "value": "2960ea17d6cadb1f8171fb93f330634c35b91a08f485cfc1eeb01b6f2ec02137"
         }
       ]
     },
@@ -122,7 +122,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "5c94ee5e1c6dd62543f7c55c657eb5be70b2e8ff7ca837b4ee768731e025e24b"
+          "value": "30ceab2121ddfdf47068ebaaa73758bdf2544f0c12badc817f253156ef093753"
         }
       ]
     },
@@ -139,7 +139,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "627155af6a9d9076a85d6d72a4867a6548b44cc4e57baa8d85183c2b399a820c"
+          "value": "9bca063d006595ed84b77011974c75c2e751b53a171f60063c650098e1c42a1a"
         }
       ]
     },
@@ -156,7 +156,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "7826cbd7abbb9ed2a3f58ccb5830f907003dadfc5028d8b4273e324a8a0103e7"
+          "value": "326ace612eda4828cac5fc9dd1d283700e550786d1a53a93a7b33d02b41d0f48"
         }
       ]
     },
@@ -173,7 +173,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ecbaf6343efa045573bada9b089df3e1d0f8735bf2908de4f96c699b842b3f72"
+          "value": "cee46e0806fccf4bd824ab4d2ae06bf43eff788b48df5c8c006b31383f7cd626"
         }
       ]
     }

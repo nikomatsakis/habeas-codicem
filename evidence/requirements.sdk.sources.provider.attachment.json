@@ -1,7 +1,7 @@
 {
   "requirement": "Configure the domain’s project files with {cite}`requirements.sdk.validation-cache.with_sources`. `Domain::project_sources` binds those files to the domain for Rust searches and agent inspection. Each hit identifies a node under {cite}`requirements.sdk.sources.source_nodes`.",
   "determination": true,
-  "rationale": "**Obligations derived from `requirements.sdk.sources.provider.attachment`:**\n1. Files configured with `ValidationCache::with_sources` are the files `Domain::project_sources` binds to the domain.\n2. Those bound sources are what the Rust searches and the agent's inspection tools use.\n3. Each hit identifies a node mapped through `source_nodes`.\n4. A domain with no attached sources has no source binding.\n\nObligations of `with_sources` and `source_nodes` are cited context. I did not reassess them.\n\n**Test coverage:**\n- **Positive attachment and binding (obligations 1 and 2):** `agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` builds a domain with `ValidationCache::with_agent(config).with_sources(Sources::new(dir))`.\n  - It asserts the tool list gains `list_sources`, `outline_source`, `search_text`, `search_structure` and `finish_search`. The agent runner only adds these when `project_sources()` returns `Some`.\n  - It asserts `list_sources` lists the configured directory's files. Gitignored files are excluded and `visible-old` does not leak into `visible`.\n  - It asserts `read_node` on the listed file returns the domain's `a source snapshot` text and not the disk contents. That shows the tools are bound to the domain.\n  - It runs the whole flow twice and gets the same result.\n- **Hits identify mapped nodes (obligation 3):** the same test searches with `search_text` and gets hits that carry a domain `node`. Reading a hit's node and finishing a search with its tag produce `Dependency::Node(TestNode{id: 8/9/…}, OutlineContent…fingerprint)`. Those are the nodes `source_node` mapped. The test also asserts the domain's recorded `OutlineId` lookups equal `OutlineId::new(\"visible/selected.txt\", \"\")`.\n- **No sources (obligation 4):** `tests/contracts.rs#fn[domain_without_project_sources_leaves_source_tools_disabled]` asserts `Application::default().project_sources().is_none()`. In `agent/configured.rs#mod[tests]/fn[supplied_openai_backend_runs_independent_calls_against_a_local_transport]`, a domain without sources sends only the four base tools (`read_node`, `outgoing_edges`, `get_next_page`, `submit_result`).\n- **Rust-level searches:** the `SourceProject` tests in `agent/project_sources.rs` (for example `search_groups_exact_occurrences_and_records_the_selected_declaration` and `an_unmapped_hit_fails_the_search`) check hit node identification and unmapped-hit errors. They belong to `requirements.sdk.sources.SourceProject` and the search requirements, so their coverage is not part of this subject. They construct `SourceProject` directly rather than through `project_sources()`. I did not count that as a gap, because `project_sources` only wraps the cache's `Sources` and the domain into a `SourceProject`. The configured-agent test covers that wrapping end to end.\n\n**Gaps:** none established. The two outcomes the subject names are covered: sources attached, and sources absent. The marked tests assert their outcomes. There are no acknowledgments, and none were needed.",
+  "rationale": "**Obligations.** I derived three from `requirements.sdk.sources.provider.attachment`:\n1. Project files configured with `with_sources` are bound to the domain by `Domain::project_sources`.\n2. The bound files serve searches and agent inspection.\n3. Each hit identifies a node under `source_nodes`.\n\n**Attachment and binding.**\n- `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` builds a domain with `ValidationCache::with_agent(config).with_sources(Sources::new(dir))`.\n- It asserts that the agent's tool list gains `list_sources`, `outline_source`, `search_text`, `search_structure` and `finish_search`.\n- The agent actually uses the bound files. `list_sources` returns numeric node ids, and `read_node` of a listed file returns the mapped snapshot text. `search_text` returns three matches for `^excerpt `.\n- The binding is scoped to the supplied project directory. The test sets up an ignored file and a `visible-old` sibling and checks which paths reach the domain's `source_node` mapping.\n- The test repeats this for two independent executions.\n\n**No sources configured.**\n- `crates/trust-but-verify/tests/contracts.rs#fn[domain_without_project_sources_leaves_source_tools_disabled]` asserts `project_sources()` is `None` when no sources are attached.\n- `configured.rs#mod[tests]/fn[supplied_openai_backend_runs_independent_calls_against_a_local_transport]` has no sources attached. It asserts that the tool list is exactly the four base tools, so the source tools are absent.\n\n**Hits identify nodes.**\n- In the configured-agent test, each search match carries a `node` and a `tag`. `read_node` on a hit's node works.\n- The recorded dependencies are asserted exactly. They include `TestNode` ids 8 and 9, which map to the alpha and beta files with fingerprints built by `OutlineContent::from_source(...).at_offset(0)`. This shows that search hits resolve to graph nodes through the domain's `source_node` mapping.\n- The `visible/selected.txt` assertion shows the file was routed through the domain's mapping with the expected `OutlineData`.\n\n**Residual risk.** `search_structure` appears in the tool list but is not exercised in these tests. The requirement's attachment obligation is the binding and the node identity of hits. `search_text` exercises both, and structure-search behavior belongs to separate search requirements. This is not a gap for the subject. No unacknowledged gap remains.",
   "references": "6c8ce8157893ac62f7994d2ab6e8b2ce8aea5bbb38571d10c5ffa8d4eb885fad",
   "inputs": [
     {
@@ -25,7 +25,7 @@
         "`with_sources` attaches a project directory to the cache. Domains with project sources map each selectable outline item to a graph node under {cite}`requirements.sdk.sources.source_nodes`.",
         "",
         "```rust,ignore",
-        "impl ValidationCache {",
+        "impl<D: Domain> ValidationCache<D> {",
         "    pub fn with_sources(self, sources: Sources) -> Self;",
         "}",
         "```",
@@ -40,15 +40,15 @@
       "text": [
         ":::{req} source_nodes",
         "",
-        "An application supporting tracked source inspection maps `OutlineId` to its",
-        "graph's `NodeId`. The mapped node represents the requested path and selector;",
-        "an unsupported or invalid address returns an error. The SDK reads the mapped",
-        "node through the application's `Domain` interface.",
+        "An application supporting tracked source inspection returns `Self::NodeData` for the requested path and selector. The SDK interns that data in the domain's cache to obtain `NodeId<Self>`. An unsupported or invalid address returns an error.",
         "",
         "```rust,ignore",
         "pub trait Domain: Clone + Send + Sync {",
         "    // ...",
-        "    fn source_node(&self, item: &OutlineId) -> Result<Self::NodeId, SourceError> { ... }",
+        "    fn source_node(",
+        "        &self,",
+        "        item: &OutlineData,",
+        "    ) -> Result<Self::NodeData, SourceError> { ... }",
         "}",
         "```",
         ":::"
@@ -57,12 +57,12 @@
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[supplied_openai_backend_runs_independent_calls_against_a_local_transport]",
-      "hash": "be2ea4292aed9ebefd85b91f462c906f37f6fe23e58f2a413c18a6d3e2d4ecae"
+      "hash": "e2a943a78837f2c1567ae0aee3943348fb3c23610881b112a23d99b09cebfeff"
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]",
-      "hash": "0bb7522373cd58f5d22e38ffe891842f63791cfed89ef4b432977290ee60d79b"
+      "hash": "55063c7bdfb02a7b0e193d469c746430aa45c1340ebe1848a183956427f86264"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
@@ -75,19 +75,54 @@
       "hash": "7e2d7410f834a61a2accca905d01bbc4cc5f6f65783b431fbd84c1b8d3825eae"
     },
     {
+      "file": "crates/trust-but-verify/src/sources/hits.rs",
+      "item": "use@a05e10b8afd0",
+      "hash": "a05e10b8afd0b896a0f96522078c5b240b1c856f9d3e01493c01f08d6b72ad14"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/hits.rs",
+      "item": "use@fdeaa17ec648",
+      "hash": "fdeaa17ec648f52e3dcb57f79376f24063a5fb11bf6bd7c4e58c765a8fcea3fc"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/hits.rs",
+      "item": "use@a70e456bc349",
+      "hash": "a70e456bc34960f0f86e20a1ca1d11835ac27a86f10a0fbefccad5a037cbc895"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/hits.rs",
+      "item": "use@54451fcaf142",
+      "hash": "54451fcaf1422b759e8e846cb780f1c6a365ad9fe9939f4e8abeed88045125f1"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/hits.rs",
+      "item": "use@6a930788740d",
+      "hash": "6a930788740d79aa7590ef41a2abb5de37b4d7de3de453b92d86691496b694e8"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/hits.rs",
+      "item": "impl[SourceProject<D>]",
+      "hash": "550af77a62828623f38b3097f84caa9ccccf8f479de7ad7b7f89681df944cf4d"
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "impl[ConfiguredAgent/Agent<D>]/fn[run]",
-      "hash": "78172b37d7e34c7762efd68b1a9628e461e37924df5db264e0558cd57fee34ee"
+      "hash": "2fc67d1a15536d65fb146f074a3300fb536b2a70cc38b95412101bc10eb90263"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "fn[enum_node_ids_distinguish_requirements_and_source_items_in_one_domain]",
+      "hash": "61a93d21edb1be43a9acb04687588ecd89d787604e3082ebd7ac294567a7df36"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
-      "item": "mod[tests]/fn[search_pages_return_every_original_match_in_order]",
-      "hash": "7c7f7258f711c557e69010ea16fad1d7d4815bd22af7bc6ef82686ea92db3872"
+      "item": "mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]",
+      "hash": "52995b412a301672e26a62e8086c0437b14b1040842db8cc8c225b2fefc142cd"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
-      "item": "mod[tests]/fn[an_unmapped_hit_fails_the_search]",
-      "hash": "20e52ba6c741971f367909501105cc7c22e7a36b09712c2e5b5d376f89f367f0"
+      "item": "mod[tests]/fn[search_groups_exact_occurrences_and_records_the_selected_declaration]",
+      "hash": "4d9bebedef811759dd1cffd511f0ed16e7bea2333485fd9d7d8271307dbd9206"
     }
   ],
   "format_version": 1,
@@ -134,7 +169,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "524d51afbdedf59ce91d11a801a1b9eed2d2c2efeeaa1121db4c9a4b27654999"
+          "value": "2d14c8d595715c370f74c57b18509dc60ff315f13c0533c0a82caa0146bc549a"
         }
       ]
     },
@@ -145,7 +180,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "0bca810b26e7d8069731ee9e1ff30a1ceeca11b6d0310b3dc1ed5483658eb4b2"
+          "value": "8b161b9e29941045eb4a07b6fd5505397c8ddd5d228beb7531cdde1c38afcd9c"
         }
       ]
     },
@@ -162,7 +197,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "2bf07459b5022bcff84af767218d5511776670b94e69e7446abd44455a3de024"
+          "value": "c3c8af71f78c9270f948c7c0a21ec744e0d6f1a4de18c66520bc87b325344278"
         }
       ]
     },
@@ -179,7 +214,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ddfb05bf744a25743033a8955c799cba684adced37d4a9feb365c005373b64ac"
+          "value": "da2d1f53e4f8d6772fc96672ec9eb919e8e4cd46540f043050aceba0f79ed6ec"
         }
       ]
     },
@@ -223,6 +258,108 @@
           "Source": {
             "resource": {
               "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/hits.rs"
+            },
+            "selector": "use@a05e10b8afd0"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "fd1e853f15886c098f9672df6b5736b48565492e10abd8bd2a03437647ca2ab4"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/hits.rs"
+            },
+            "selector": "use@fdeaa17ec648"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "c11956579623c293a1c360f2b3d8bded3a9d96197e236c2629e1b908a8e73f35"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/hits.rs"
+            },
+            "selector": "use@a70e456bc349"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "069cd932f2ea44b6798a25e2e8574f8150cb0eec45c8bd611d60ea559c5f5709"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/hits.rs"
+            },
+            "selector": "use@54451fcaf142"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "4c2f48e964b6accb0d3d9ea4d59ce216ee8e4577a2fa3269fa767898662708b6"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/hits.rs"
+            },
+            "selector": "use@6a930788740d"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "4186039d71d09dd9f24f6e84f581bb2dc455d0a804f9e05b84af75f878f291aa"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/hits.rs"
+            },
+            "selector": "impl[SourceProject<D>]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "47b1971fece8f4420b08500623a24e4b29998dee7ad0635e67d05fd0090322dc"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/configured.rs"
             },
             "selector": "impl[ConfiguredAgent/Agent<D>]/fn[run]"
@@ -230,7 +367,24 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9d17a16a69a696d270a3c485d51cc657089cbeba6ce8e9cdcde14843a4e2c661"
+          "value": "ace071a2c4ed186c16c7a609a88ceada430b832015c543c1b9ece5c6ce2781a2"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+            },
+            "selector": "fn[enum_node_ids_distinguish_requirements_and_source_items_in_one_domain]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "e0ebe86c0380d7215b4f3098cfebd033ac7bff311220fe5f0b83ce5c2c5a3817"
         }
       ]
     },
@@ -242,12 +396,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/project_sources.rs"
             },
-            "selector": "mod[tests]/fn[search_pages_return_every_original_match_in_order]"
+            "selector": "mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "d65faf36f9b7f25e424c58d95ad95ecac736e0ce1591aac0f327489e1be9ef5d"
+          "value": "9b5b23ed4e62c31aa9a5888f525cf8c7cb8c39f8f92cd22214cc6333f58d49b5"
         }
       ]
     },
@@ -259,12 +413,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/project_sources.rs"
             },
-            "selector": "mod[tests]/fn[an_unmapped_hit_fails_the_search]"
+            "selector": "mod[tests]/fn[search_groups_exact_occurrences_and_records_the_selected_declaration]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ba8a8bc1a53eab40fcfbf4133e2e956ccd880b0b9ff2d5e3ff675823d939d036"
+          "value": "19992c03285f529c6f41532d4739a7bfee75a5851afdd907851f7bce13a82606"
         }
       ]
     }

@@ -1,7 +1,7 @@
 {
   "requirement": "Criteria obtain the agent selected by the domain's validation cache through\ntheir `ValidationContext`. The application supplies the configuration under\n{cite}`requirements.sdk.validation-cache.with_agent`. The SDK does not persist it.\nA cache created without an agent supports deterministic criteria under\n{cite}`requirements.sdk.graph.criteria.deterministic_procedures`.",
   "determination": true,
-  "rationale": "I judge the reviewed tests adequate for `requirements.sdk.graph.agent-harness.with_agent`.\n\n**Obligations derived from the text**\n1. Criteria obtain the agent selected by the domain's validation cache through their `ValidationContext`.\n2. The application supplies the configuration through `ValidationCache::with_agent` (cited, so only its use here is checked).\n3. The SDK does not persist the configuration.\n4. A cache created without an agent supports deterministic criteria (cited `deterministic_procedures`).\n\n**Coverage**\n- **Obligation 1, agent obtained from the cache.**\n  - `supplied_openai_backend_runs_independent_calls_against_a_local_transport` builds a `TestDomain` whose cache comes from `ValidationCache::with_agent(OpenAiConfig{..})`. It runs `validation::verify` twice. A local HTTP server receives four requests, and the test asserts the model, the tool list, the prompt and the returned answer. The criterion therefore reached the cache-selected agent through the validation context.\n  - `supplied_ollama_backend_delivers_tools_and_results_over_native_chat` does the same for the Ollama backend. It also asserts the endpoint, the bearer key and the options in the request.\n  - `configured_agents_initialize_only_when_asked_and_report_setup_errors` covers the failure path. An awaited ask on a cache with an unusable credential fails with `ValidationError::Agent`, and the error names the environment variable.\n  - `agent_executions_isolate_conversations_and_dependency_traces` calls `verify_with_agent` with an explicit agent. It adds isolation coverage but is not needed for this obligation.\n- **Obligation 2, the config is attached to the cache.** `bedrock_configuration_attaches_to_a_cache_without_being_persisted` checks that the cache holds the same agent (`Arc::ptr_eq`) across domain clones and that `agent.config` equals the supplied config. It also checks that the new cache is otherwise empty.\n- **Obligation 3, not persisted.**\n  - The Bedrock test serializes the stored evidence record. It asserts there is no `backend` key and that neither the profile string `development` nor `claude-sonnet` appears.\n  - The OpenAI test makes the same check after each `store_evidence`. The saved JSON must not contain the API key, the model name, `backend` or `api_key`.\n  - Together these check both the secrets and the backend settings.\n- **Obligation 4, a cache without an agent supports deterministic criteria.**\n  - `deterministic_validation_uses_required_storage_without_an_agent` uses `Memory`, whose cache is the default one with no agent. An ask returns `ValidationError::NoAgentConfigured`. A deterministic `Review` criterion verifies and stores evidence with the expected dependency.\n  - `runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls` adds a check that a missing agent stores nothing.\n  - `new_cache_starts_without_files_or_agent` in `domain.rs` shows the default cache has `agent.is_none()`.\n  - The converse case, deterministic criteria on a cache that has an agent, is also covered. In `configured_agents_initialize_only_when_asked_and_report_setup_errors`, a deterministic refresh leaves `agent.provider.get()` as `None`, which shows backend setup is deferred. It also records one dependency and a correct output.\n- **Supporting check.** `supported_backend_settings_create_transports_without_sending_requests` shows that each backend configuration can build a transport without sending a request.\n\n**Gaps**\nI found no unacknowledged gap. Each obligation has a test that exercises it and asserts its outcome.",
+  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.graph.agent-harness.with_agent`. I judged this from the supplied test source only and did not request any implementation source.\n\n**Obligations in the subject text**\n1. Criteria obtain the agent selected by the domain's validation cache through their `ValidationContext`.\n2. The application supplies the configuration through `ValidationCache::with_agent`. That requirement is cited, so I did not reassess it.\n3. The SDK does not persist the agent configuration.\n4. A cache created without an agent supports deterministic criteria.\n\n**Coverage**\n- **Agent selected by the cache (1).**\n  - `supplied_openai_backend_runs_independent_calls_against_a_local_transport` builds a domain with `ValidationCache::with_agent(config)`. It runs `validation::verify` through the criterion's ask path twice. It asserts that the local transport receives four requests, each with the configured model, the fixed tool list and the expected prompt. It also asserts the output is `true` and that dependencies are recorded.\n  - `supplied_ollama_backend_delivers_tools_and_results_over_native_chat` does the same for the Ollama backend. It checks the requests, the tool results and the answer.\n  - `agent_executions_isolate_conversations_and_dependency_traces` exercises criteria asking through the agent.\n  - `bedrock_configuration_attaches_to_a_cache_without_being_persisted` asserts that the cache holds the configured agent (`backend == config`). It also asserts that a cloned domain shares the same `Arc` agent.\n- **Setup deferred, and failure reported only when a request is awaited (1).** `configured_agents_initialize_only_when_asked_and_report_setup_errors` uses a cache with an unusable OpenAI credential. A deterministic refresh succeeds on that cache. The awaited `verify` ask fails with `ValidationError::Agent`, and the error text names the missing credential environment variable.\n- **Configuration not persisted (3).**\n  - The Bedrock test serializes the stored evidence. It asserts there is no `backend` key and that the profile and model strings are absent.\n  - The OpenAI local-transport test serializes the stored evidence after each run. It asserts that the API key, the model name, `backend` and `api_key` do not appear.\n- **Cache without an agent supports deterministic criteria (4).**\n  - `deterministic_validation_uses_required_storage_without_an_agent` uses a plain `Memory` graph with no agent. A deterministic `Review` criterion verifies and stores evidence with a recorded dependency. An `ask` on the same graph returns `ValidationError::NoAgentConfigured`.\n  - `runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls` shows `NoAgentConfigured` is returned and nothing is stored.\n  - `configured_agents_initialize_only_when_asked_and_report_setup_errors` also checks that deterministic criteria run on an agent-configured cache.\n- **Provider setup (1, 2).** `supported_backend_settings_create_transports_without_sending_requests` shows OpenAI, Ollama and Bedrock settings connect without sending any request. This supports the point that setup does not send anything.\n\n**Gaps**\nNone found. The assertions check the required outcomes, not only that the code ran. Persistence is checked on serialized stored evidence. The no-agent case is checked on both the deterministic success path and the `NoAgentConfigured` error path.",
   "references": "a7c327df3723dd097da425415d02491ba38f1398e61cad8e250b6b3934e6537e",
   "inputs": [
     {
@@ -27,13 +27,18 @@
       "text": [
         ":::{req} with_agent",
         "",
-        "`ValidationCache::with_agent(config)` creates an empty cache and selects the",
-        "agent for requests made by criteria on this domain. The SDK defers backend",
-        "setup until a criterion awaits an agent request.",
+        "`ValidationCache::with_agent` accepts either a plain `AgentConfig` or an agent",
+        "configured with tools under {cite}`requirements.sdk.graph.agent-harness.with_tool`.",
+        "It creates an empty cache. Requests through the cache and its clones run that",
+        "agent with its registered tools. The SDK defers backend setup until a criterion",
+        "awaits an agent request.",
         "",
         "```rust,ignore",
-        "impl ValidationCache {",
-        "    pub fn with_agent(config: AgentConfig) -> Self;",
+        "impl<D: Domain> ValidationCache<D> {",
+        "    pub fn with_agent(config: impl AgentSettings<D>) -> Self",
+        "    where",
+        "        D::EdgeLabel: DeserializeOwned + JsonSchema + PartialEq,",
+        "        D::Error: Display;",
         "}",
         "```",
         ":::"
@@ -55,22 +60,22 @@
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[configured_agents_initialize_only_when_asked_and_report_setup_errors]",
-      "hash": "e7a03467a1c8d51bdb4cd973011d7f601fef2cbd5a232c1a67a9ce7e4dbb4298"
+      "hash": "5dc45f5e3bcd3cdd951ab3f944e1623f48d036b4a4025f86fb0eafa843b884e7"
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[bedrock_configuration_attaches_to_a_cache_without_being_persisted]",
-      "hash": "42a29ce2797c29a324177f075bf3d94d9a8aba72099ee23b05af45ab1f237c08"
+      "hash": "ecadd592adeb3da6293afffc7a174c77ceac4f5cdcb5e716854950cc094faea8"
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[supplied_openai_backend_runs_independent_calls_against_a_local_transport]",
-      "hash": "be2ea4292aed9ebefd85b91f462c906f37f6fe23e58f2a413c18a6d3e2d4ecae"
+      "hash": "e2a943a78837f2c1567ae0aee3943348fb3c23610881b112a23d99b09cebfeff"
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[supplied_ollama_backend_delivers_tools_and_results_over_native_chat]",
-      "hash": "a26f3a3527c6d1b3f7354c60fc815a6b8a2a2d2759db414c38c9f7e2404c819f"
+      "hash": "7199d7c87120b56cbe3ad7ae174f944a2bc60f9b60de2b52ab80ac13630c61c4"
     },
     {
       "file": "crates/trust-but-verify/src/agent/providers.rs",
@@ -80,37 +85,17 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[agent_executions_isolate_conversations_and_dependency_traces]",
-      "hash": "1a630ac3fb2283ca46e49986874acc76f61609770936a7ad10a4054a5c5fda31"
+      "hash": "7ade1fe7ac35deec58a416aa42b2795c4958849bca8cc8221f067437f7aac4aa"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[deterministic_validation_uses_required_storage_without_an_agent]",
-      "hash": "8adbd538084947e9899638c5b0772991febdb2870fd90d8ccd938ccdb296fbee"
+      "hash": "d26c975d0d117f4234ef63a135d6154ad3acf6743dd2c9a567842dec925fa2a9"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]",
-      "hash": "83d1b4ee274864c38d36531ae4d5620f74204e70046629331f1551e9013f91f5"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "impl[Memory/Domain]/fn[cache]",
-      "hash": "622902fe7a9c76706f48a4435b5de81570e6eddc4784727ca676ce29f8ae288f"
-    },
-    {
-      "file": "crates/trust-but-verify/src/domain.rs",
-      "item": "mod[tests]/fn[new_cache_starts_without_files_or_agent]",
-      "hash": "36483ae3164f90bfbd09cf76aabd0de76070fcaf9583c02c4a4e20b6df93c28a"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "struct[Memory]",
-      "hash": "edddb4c7f41ac01b0c23fd0e274b07b9a274f474ca4bffa35d43e11ff596abbf"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
-      "item": "struct[Memory]",
-      "hash": "bc46725ea00a8a8fb76ebe007c283b03fee13674f3ea1aa348c8c25d27052f1b"
+      "hash": "21c1fb6cb24691cbd5b76b20089afea52c46285271af1f6f3cb5eaa6c0f917f9"
     }
   ],
   "format_version": 1,
@@ -157,7 +142,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "e331ad942f3d401f2b6d5693cd3aca610d7e652903330cc047cf1bf03b3566ed"
+          "value": "4214f86ab8fd6f95b6e9450fbb8ef01fdca90ea19ef4390ed1cdfbbcb7df207f"
         }
       ]
     },
@@ -185,7 +170,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "aec44feec01a77a9388b910327a120348695dc7d4deca465d3a5b4360371e2cd"
+          "value": "dbaad365d64ae7a43b2ae2bb11dd876ca55e41b6cb1a552947cd85d314bd2706"
         }
       ]
     },
@@ -202,7 +187,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "21d382e64b8faca1dad18f12240921af7dd41a247dc87050710629f75076aaad"
+          "value": "d0c488aa0779b9330d50b5aa4966fed709f04950c4c786fd9148a35675522d38"
         }
       ]
     },
@@ -219,7 +204,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "2bf07459b5022bcff84af767218d5511776670b94e69e7446abd44455a3de024"
+          "value": "c3c8af71f78c9270f948c7c0a21ec744e0d6f1a4de18c66520bc87b325344278"
         }
       ]
     },
@@ -236,7 +221,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "b9de09734bae19fff88a8b2d40f1f98eb7db912bbdf7ded614fcb0f1f44b2a24"
+          "value": "3be33b0402cb7801204f1ffe270b9576873690b6a8025abb82617b73a00b2d49"
         }
       ]
     },
@@ -270,7 +255,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "23ffea656399fb60c3f6e42e7332e777b11812e6bd2e358619da20c1a5a7930a"
+          "value": "018f8509f75eee891e007d42461e1acecd027a34e9aeb2b3481e8a72f2e09f30"
         }
       ]
     },
@@ -287,7 +272,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "d6517d26c6710d8e74ad0b66821d462bd2d1cd0558e03162f386e90ca802eb27"
+          "value": "f98f7eb44c540fb32d9d615e0699ad81c288576b6e30ad42bfc9b3ed39bde19e"
         }
       ]
     },
@@ -304,75 +289,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f93722a211799751fef40641f681b99205a79a9c53fbdd1d823833a5598a9c91"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "impl[Memory/Domain]/fn[cache]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "f3f459e91f8d7d6ee67999a5f57a640c3c26a3daf5db390be114a5ac862fc9e7"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/domain.rs"
-            },
-            "selector": "mod[tests]/fn[new_cache_starts_without_files_or_agent]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "4df8f674a461d5bf1f8d95ce8b51055be43d206a730abe44de64d4f56cfe8cee"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "struct[Memory]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "7e3d7b2446d90d89a499c60a53421abbeaa93dbce0e677f14a8a252ca65c088b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
-            },
-            "selector": "struct[Memory]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "82d15755ad35fd6f2ef6fee3c1450cf503b61e7fed94480426d32e746b648d9e"
+          "value": "2f55ea84ecfdbcfe81ea069bc4aaf94cc28390e4bef15e8bbe51302e6f98730e"
         }
       ]
     }

@@ -1,7 +1,7 @@
 {
   "requirement": "Run the criterion with a fresh `ValidationContext`. `execute` borrows it for this call. The returned `Fingerprinted` owns the answer and the dependencies collected during execution. Call `store_evidence` to persist it. See {cite}`requirements.sdk.graph.running-criteria.validate_node`.\n\n```rust,ignore\npub fn verify<D: Domain, V: Criterion<D>>(\n    domain: &D,\n    criterion: V,\n) -> impl Future<Output = Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>>> + Send;\n```",
   "determination": true,
-  "rationale": "I judged the tests against the text of `requirements.sdk.graph.running-criteria.verify`. I did not request implementation source. The obligations and the tests that cover them are below.\n\n1. **Fresh context per call, with dependencies captured in the returned value.**\n   - `crates/trust-but-verify/src/graph/validation_tests.rs#fn[concurrent_single_node_validations_keep_separate_traces]` runs three `validation::verify` calls concurrently against one graph. Each call reads its own node and edges inside the callback.\n   - After storing each result, the test asserts that every record holds exactly its own node's `Dependency::Node` and `Dependency::OutgoingEdges`. A shared or reused context would leak dependencies between calls, and this assertion would catch that.\n   - It also asserts that the three executions overlapped (`peak == 3`) and that all three nodes started.\n   - `tests/contracts.rs#fn[input_checking_and_execution_keep_separate_observations]` shows `verify` running through `persist`, with the dependency on `Node(2)` collected during execution. The test asserts that dependency in the stored record, and it asserts that the new execution's read of node 2 was recorded in `state.reads`. That read is separate from the earlier input check.\n\n2. **The `Fingerprinted` owns the answer, including a negative one, and carries the source node, criterion path and version.**\n   - `tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` verifies a negative answer (`satisfied: false`).\n   - It asserts `output()`, `source_node_id()`, `criterion_path()`, `version()`, and empty `dependencies()` for a criterion that reads nothing.\n\n3. **`verify` does not persist; `store_evidence` does.**\n   - The same test asserts `(executions, writes) == (1, 0)` after `verify`, and `load_evidence` still returns `None`.\n   - After `store_evidence`, `load_evidence` returns the same output, node, path, version and dependencies.\n   - A second `verify` with a different answer leaves the stored record unchanged. This shows that execution ignores saved records and does not overwrite them.\n   - The final state asserts `(executions, writes) == (4, 3)`, which matches only the explicit persists.\n\n4. **Signature: the future is `Send` and the answer type needs only `Send`.**\n   - `tests/contracts.rs#fn[validation_and_answer_need_send_without_sync]` passes the `verify` future through a `send(...)` helper, using a `Cell` answer that is not `Sync`. It then stores and loads the result.\n   - The borrow of the context for the call is a compile-time property. Every test exercises it by compiling.\n\nThe `public_exports_match_the_appendix` test is marked with this requirement but only checks the public API inventory. It adds nothing here and does no harm. The cited `validate_node` requirement is covered by the same tests, and its implementation and tests are out of scope.\n\nThe error path of the signature (`Result<_, ValidationError<_>>`) is not described by the subject text beyond the type, so I treated it as outside the obligations.\n\nI found no gap.",
+  "rationale": "The tests adequately check `requirements.sdk.graph.running-criteria.verify`. Each obligation maps to at least one marked test:\n\n- **Fresh `ValidationContext` per call.** `crates/trust-but-verify/src/graph/validation_tests.rs#fn[concurrent_single_node_validations_keep_separate_traces]` runs three `verify` calls concurrently on different nodes. Each returned `Fingerprinted` stores exactly its own dependencies: `Dependency::Node` and `OutgoingEdges` for its own node. The test also checks that all three executions overlapped (`peak == 3`). Shared or reused contexts would mix the traces and fail this.\n- **Returned `Fingerprinted` owns the answer, including a negative assessment.** `crates/trust-but-verify/tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` verifies a negative answer. It asserts `output()` equals the answer and checks the source node, criterion path and version. It also asserts that `dependencies()` is empty when the criterion reads nothing.\n- **Dependencies are collected during execution.** `crates/trust-but-verify/tests/contracts.rs#fn[input_checking_and_execution_keep_separate_observations]` calls `verify`, through the `persist` helper, on a criterion that reads node 2. It asserts the stored record's dependencies are `Dependency::Node(Node(2), fingerprint of \"after\")`. That shows `verify` captured the dependency, and that it ran fresh against the current state rather than the older saved record.\n- **Persisting needs an explicit `store_evidence` call.** The same `criteria_keep_typed_answers_and_persist_only_when_requested` test asserts `(executions, writes) == (1, 0)` after `verify`, and that `load_evidence` still returns `None`. Only after `store_evidence` does the record load. A later `verify` with a different answer leaves the saved record unchanged. Final counts are `(4, 3)`, and the stored JSON outputs are checked.\n- **Signature (`Send` future, borrowed domain, owned result).** `crates/trust-but-verify/tests/contracts.rs#fn[validation_and_answer_need_send_without_sync]` passes the `verify` future through `send::<T: Send>`, which fixes the `Send` bound at compile time. It uses a `Cell` answer, so the answer needs `Send` but not `Sync`. It also checks the output value and a store/load round trip.\n\nThe requirement states no error behavior for `verify`, so I did not look for error-path tests. The `persist` helper is just `verify` followed by `store_evidence`, so tests that use it do exercise `verify`.\n\n`crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]` carries no `{test}` reference to the subject. It relates to the public API requirements, so I treated it as irrelevant here. The remaining tests all carry `{test}` references to the subject.",
   "references": "aeaf8090f9df894e875c492902f642ee1839ef954c958433c56cec57373e25bf",
   "inputs": [
     {
@@ -40,22 +40,22 @@
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[concurrent_single_node_validations_keep_separate_traces]",
-      "hash": "4d50a95d4e2c6600a4039d51c361d375322142f8c51020f855a68384b360d020"
+      "hash": "657d8b2da60ea29abeedb9c94da1b3a2a877add285648841e65d988648bdaba4"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[criteria_keep_typed_answers_and_persist_only_when_requested]",
-      "hash": "a97c7ec9ce25ce55fd9b62ba41256e14b5ed7e44e547dccda13cd562e7a3360e"
+      "hash": "c91f0b4950727c0c402d2eb000e29722804773d0c55fa7a32eb8154e8e60a8c3"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[input_checking_and_execution_keep_separate_observations]",
-      "hash": "f39fbd4bce6fce2292feec48bafe779a83ee3380e31ea0c684ec7c8147c4cc1c"
+      "hash": "0e7c64154548b856da013a6698bd9164f7e41ecb772be79c7b6dc79fb8de84ef"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[validation_and_answer_need_send_without_sync]",
-      "hash": "d1f81e5683e36ae59219eb96f0cb2e5d29cbf3bd9733780cf0c6d64120532c5f"
+      "hash": "3698933716fe21fc34ef5f4427d98ebadbf25b8967be80bba633fd406c64b372"
     },
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
@@ -66,6 +66,16 @@
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[send]",
       "hash": "8584e807e9abc79dc59d3352ed10789b3f88c34eaf2710718740786192bf2708"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "fn[persist]",
+      "hash": "4e3e6adb29b51d7ab9825bdcbc7cbd42661ffbcd7825c53a5bff44f900b425f4"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "impl[Review<O>/Criterion<Application>]/fn[execute]",
+      "hash": "9d26a67d5a4cead54b0c25e6135bcc2ce90c3014138cc5f27910df87d12d2d50"
     }
   ],
   "format_version": 1,
@@ -129,7 +139,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "76fb0ed76f1532453ef8c114f499456433056f2873370d0fbb515b935826f40c"
+          "value": "268fdc7ca61481f590070d30fa2489e82a30ab3da883895df98e0f2cdac57d68"
         }
       ]
     },
@@ -146,7 +156,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "a36441439e235779b2ca52efae16d2747d1c3a13177e8bd90ad01fd3037110d1"
+          "value": "71daa5201e44592a4d878703ba9d3631160d1d9e7b691018fb772f8c27ef8312"
         }
       ]
     },
@@ -163,7 +173,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "47a128d40015c2cbe15355cb0aa694f3a231b7bc91c1a6ff59d255a4f204c047"
+          "value": "c48274254837eeefdd346ed7ac03190d0d832fe4dfe6dcae0277786464fe674d"
         }
       ]
     },
@@ -180,7 +190,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "d97bf3eea3dc548991784640dc826677e00cd98243517402c2e05168504d8627"
+          "value": "a72f5315b4d043ef91de100ef723e1b93b07c9cd373330fd2c1d81865c1219c4"
         }
       ]
     },
@@ -215,6 +225,40 @@
         {
           "scheme": "habeas-input-v1",
           "value": "86bee7067ca39c280b68dadad8b407627bc90720b9cbf2702e8aa3e626a35880"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/contracts.rs"
+            },
+            "selector": "fn[persist]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "9be5fd32c10de6bd643486aea1344c14ecd3efe280e7871836a1fc1a6875c749"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/contracts.rs"
+            },
+            "selector": "impl[Review<O>/Criterion<Application>]/fn[execute]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "989e8a5a5027bbe9f779658f63d3ee4286e28cd8a8e5335eb2f661493dba1df7"
         }
       ]
     }

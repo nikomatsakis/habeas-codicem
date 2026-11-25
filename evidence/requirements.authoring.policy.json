@@ -1,7 +1,7 @@
 {
   "requirement": "Every `habeas author` form MUST assess its subjects under an assessment policy,\n`confirm` or `once`. The policy MUST come from `--policy <name>` when given,\notherwise from the selected configuration's `policy`, and otherwise MUST be\n`once` for OpenAI and `confirm` for other backends. Under `confirm`, each subject MUST be assessed as\n{cite}`requirements.authoring.confirmation` specifies. Under `once`, each subject\nMUST receive a single assessment (including model escalation under\n{cite}`requirements.authoring.adaptive`), whose result is recorded; it uses fewer tokens\nand less time, such as with a slow local model. An unknown policy name MUST be\nrejected as invalid configuration or arguments. The completion report MUST name\nthe policy used, and each usage record MUST identify it.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation of `requirements.authoring.policy`.\n\n**Precedence of the policy source.**\n- `tests/authoring_batch.rs#fn[policy_comes_from_the_flag_then_the_configuration_then_defaults_to_confirm]` runs four cases through the CLI against an Ollama backend. With no flag and no configured policy, the policy is `confirm` and there are 2 conversations. With `--policy once` and no configured policy, it is `once` with 1 conversation. With `--policy once` over a configured `confirm`, it is `once`. With a configured `once` and no flag, it is `once`.\n- `tests/configuration.rs#fn[authoring_policy_defaults_to_confirm_and_round_trips]` checks `effective_policy` for no flag and no configuration (`confirm`), for configuration alone, and for a flag overriding either configured value.\n\n**Backend-dependent default.**\n- `tests/configuration.rs#fn[openai_policy_defaults_to_once_without_changing_explicit_policy]` shows OpenAI resolves to `once` by default. An explicit configured `confirm` stays `confirm`, and the flag overrides in both directions.\n- `tests/authoring_cli.rs#fn[adaptive_routes_fresh_assessments_and_records_each_model]` confirms end to end that an OpenAI profile with no policy runs as `once`. Every usage log has `policy` equal to `once`.\n\n**`confirm` behaviour.**\n- The tests do not re-test the cited `confirmation` rules. They do check that `confirm` produces the second conversation and a second usage record: the single-subject case, `tests/authoring_batch.rs#fn[confirm_with_all_runs_a_second_assessment_for_each_batch_subject]` for `--all`, and the confirm cases in `adaptive_routes_fresh_assessments_and_records_each_model`.\n- `tests/authoring_cli.rs#fn[adaptive_sol_failure_is_final_and_confirm_uses_sol_verification]` covers disagreement. It verifies a recorded rationale containing \"assessments disagreed\".\n\n**`once` behaviour.**\n- A single conversation is asserted in the precedence test.\n- A single assessment with adaptive escalation is covered in `adaptive_routes_fresh_assessments_and_records_each_model`. Its cases are mini true, mini false, mini FIXME, mini failure, and an existing FIXME going straight to Sol.\n- Sol's failure is final under `once` in `adaptive_sol_failure_is_final_and_confirm_uses_sol_verification`, where the evidence file stays unchanged.\n- The recorded result is checked through the evidence determination.\n\n**Unknown policy name.**\n- `--policy twice` fails with the message `unknown assessment policy \"twice\"`.\n- A configuration `policy = 'twice'` fails for both the single-subject and `--all` forms. The error names the config path and `policy`.\n- The test asserts no model request was made.\n- `authoring_policy_defaults_to_confirm_and_round_trips` also rejects `'twice'`, `'Confirm'` and `true` at configuration parse time.\n\n**Report and usage records.**\n- The completion report names the policy in the per-subject stdout line (`; policy {expected}`), in the `--stdout` stderr line, and in the batch summary (`...; policy once`).\n- Every usage record's `policy` field is asserted in the precedence test, in `adaptive_routes_fresh_assessments_and_records_each_model`, and in the `assert_policy` helper of `adaptive_sol_failure_is_final_and_confirm_uses_sol_verification`.\n\n**Other forms.**\n- The tests do not run `sites:<req>` or citation-review subjects with a policy flag. I checked `src/authoring/batch.rs#fn[run_batch]`, which resolves `effective_policy`, records `outcome.policy` and passes the policy to each assessment. It is shared by `--all` and the `sites:` form, which `src/main.rs#fn[main]` also routes through the batch path. The policy decision therefore has no separate branch for those forms, and the `--all` and single-subject tests exercise it.\n\nI found no requirement-violating behaviour that these tests would accept.",
+  "rationale": "The reviewed tests cover each obligation in `requirements.authoring.policy`.\n\n**Policy precedence**\n- `tests/authoring_batch.rs#fn[policy_comes_from_the_flag_then_the_configuration_then_defaults_to_confirm]` runs four cases against an ollama (non-OpenAI) fixture:\n  - No configured policy and no flag gives `confirm`, with 2 conversations.\n  - `--policy once` with no configured policy gives `once`, with 1 conversation.\n  - `--policy once` overriding a configured `confirm` gives `once`.\n  - A configured `once` alone gives `once`.\n- Each case checks the number of requests the server saw. It also checks that the stdout report says `; policy <name>` and that every new usage record's `policy` equals the expected name.\n\n**OpenAI default**\n- `tests/configuration.rs#fn[openai_policy_defaults_to_once_without_changing_explicit_policy]` checks that an OpenAI profile defaults to `Once`. It also checks that an explicit `confirm` stays `Confirm` and that the `--policy` override wins.\n- `tests/authoring_cli.rs#fn[adaptive_routes_fresh_assessments_and_records_each_model]` checks the same end to end. An OpenAI config without a policy produces usage logs with `policy == \"once\"`. An explicit `policy = 'confirm'` gives `confirm` and two mini conversations.\n- `tests/configuration.rs#fn[authoring_policy_defaults_to_confirm_and_round_trips]` covers the non-OpenAI default and config-versus-flag resolution at the unit level.\n\n**Every form**\n- The policy test covers the single-subject form, the `--stdout` form, and the `--all` batch form. The `--stdout` form is checked on stderr and the batch summary is `... policy once`.\n- `tests/authoring_batch.rs#fn[confirm_with_all_runs_a_second_assessment_for_each_batch_subject]` checks that under `confirm` every batch subject gets exactly two conversations. It also checks that usage records for second assessments are tagged `(second assessment)`.\n- The `--all` batch includes the citation and site review subjects, which are selected by the same command. I did not find a separate test that pairs a single citation or site review with `--policy`. Those forms share the same option path in `main`, so I did not treat this as a gap.\n\n**`once` semantics**\n- The tests check that `once` makes exactly one request and records the result. The `--stdout` case prints `determination == true`.\n- `fn[adaptive_routes_fresh_assessments_and_records_each_model]` and `tests/authoring_cli.rs#fn[adaptive_sol_failure_is_final_and_confirm_uses_sol_verification]` cover model escalation under `once`. They show mini then Sol, with Sol's result final, whether true, false, or a failed submission.\n\n**Unknown policy**\n- `--policy twice` fails with a message containing `unknown assessment policy \"twice\"`.\n- A configured `policy = 'twice'` fails for both the single-subject and `--all` forms. The error names the config path and `policy`.\n- The test asserts that no model request was made in either case.\n- `fn[authoring_policy_defaults_to_confirm_and_round_trips]` also rejects `'twice'`, `'Confirm'`, and a non-string `true` at parse time.\n\n**Report and usage records**\n- The single-subject, `--stdout`, and batch summaries all name the policy.\n- Usage records carry the policy in every scenario above. This includes adaptive parent and attempt records and the confirm-with-Sol-verification flow.\n\nThe `confirm` behavior itself is cited from `requirements.authoring.confirmation`, so it is assessed there. The tests here still check that `confirm` yields a second conversation and that disagreements are verified by a third.",
   "references": "1da02f5acf60460b7e898b40238a4b632041d2466cb461f9e267af31c8e15a9b",
   "inputs": [
     {
@@ -115,14 +115,9 @@
       "hash": "16ef5273fd7ac8b14751573449e1cdcbf29b12688671930807e8afa077f8f701"
     },
     {
-      "file": "src/authoring/batch.rs",
-      "item": "fn[run_batch]",
-      "hash": "ce50ef9f8304d777297b5250818e7817669ee5101b5e67410e8ea83ede7718cf"
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "item": "fn[site_reviews_are_authored_by_requirement_and_orphans_deleted_by_all]",
-      "hash": "25b0fbf2ceaea0f1446e87d0c8b49c119d1a37b8ab8170ef401e7af5343a5bd6"
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[openai_key_only_profile_defaults_to_sol_and_accepts_overrides]",
+      "hash": "32d2439455a93ffc9007559ba014c38a2d359d5f1bc502c6309235dcd5278664"
     },
     {
       "file": "src/main.rs",
@@ -135,19 +130,9 @@
       "hash": "c8bb0bd2ba7bc0594725702c8ca176ff5a854077c1b930ca7de7018541ad534a"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[configured_record]",
-      "hash": "add8153b5c92c9322a5ec2ec989ceae49f1726eb80c3273601628b77e93bc182"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[assess_subject]",
-      "hash": "4c90a67c81ce3e3d0b24242eae4d3d3672714fac051a08e4d5d5f7417cadfd54"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[followup_log]",
-      "hash": "c9d18028d450c37323b297bef599d54bc770282adbb75f879be02d01213fa075"
+      "file": "src/config.rs",
+      "item": "impl[ResolvedAuthoringConfig]/fn[effective_policy]",
+      "hash": "2c9f82ce9d170a4b62a7d151b886ef4f856d549b5e4c5b445deac8e3519358d6"
     }
   ],
   "format_version": 1,
@@ -317,31 +302,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "src/authoring/batch.rs"
+              "location": "tests/authoring_cli.rs"
             },
-            "selector": "fn[run_batch]"
+            "selector": "fn[openai_key_only_profile_defaults_to_sol_and_accepts_overrides]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "e932fc471de6f76c5d88c8a0d1998f1bb89ef39b6c91a4d9cf2f275e60a64ada"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "tests/authoring_batch.rs"
-            },
-            "selector": "fn[site_reviews_are_authored_by_requirement_and_orphans_deleted_by_all]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "5ffc7168b45bd7cf099b3a63a0a28fc8c9246aadb716f266bea7f8f4f04f7c46"
+          "value": "d13e5d0ffb2b0bf20d822347a62885d1704019064c38745a84630845cb2d4941"
         }
       ]
     },
@@ -385,48 +353,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "src/authoring/mod.rs"
+              "location": "src/config.rs"
             },
-            "selector": "fn[configured_record]"
+            "selector": "impl[ResolvedAuthoringConfig]/fn[effective_policy]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "b4ef5b0bf35dcd4f8e971042cfc81463e6d4c80ea85b9aedf407de7275110d2f"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/mod.rs"
-            },
-            "selector": "fn[assess_subject]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "56cef2ae44b0da331278e883015cc7b1c58c12bb7b838d8c2417a14bfe668e42"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/mod.rs"
-            },
-            "selector": "fn[followup_log]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "f47ec8a62684a0b24ae44ab7e4fa9388ce562f90bfc3b2b7d51a9c0222cdaf27"
+          "value": "0fc7c474a194915a103a9a5f3d55b4d022ce401706499ecc5daca2e09c36c1c3"
         }
       ]
     }

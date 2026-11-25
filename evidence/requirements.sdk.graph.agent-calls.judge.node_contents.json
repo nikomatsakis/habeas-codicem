@@ -1,7 +1,7 @@
 {
   "requirement": "Node-insertion methods queue selections. They resolve no contents or edges,\nrender no inputs, and record no observations while building.\n\nAwaiting with a configured agent resolves these selections in call order:\n\n| Insertion | Contents delivered |\n| --- | --- |\n| `contents_of_current_node()` | The node identified by `ValidationContext::node_id`. |\n| `contents_of_successors(label)` | Targets of edges whose labels equal `label`, in returned edge order, including duplicate targets. |\n\nEach successful successor selection records its source, label, and target-set\nfingerprint, even when nothing matches. Only selected targets have their contents\nresolved. Each delivered node is recorded with its supplied snapshot's\nfingerprint under {cite}`requirements.sdk.graph.agent-calls.author_procedure`.\nInput-resolution failures return `ValidationError::Graph`.",
   "determination": true,
-  "rationale": "The three supplied tests cover every obligation in `requirements.sdk.graph.agent-calls.judge.node_contents`. I judged this from the test text alone and did not read the implementation or the `Memory` and `MockAgent` helpers.\n\n**Queueing only while building**\n- `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` drops a builder that has both insertions queued. It asserts that `ctx.dependencies()` is empty. It also awaits a builder on a context with no agent. That await returns `NoAgentConfigured`, and the test asserts that the graph recorded no reads and no edge selections. The graph is set to fail on edges, so any resolution during building would show up.\n- `queued_reads_selection_and_rendering_fail_before_agent_invocation` drops a builder that has `contents_of_current_node()` queued. It asserts that the mock agent received no requests.\n\n**Delivery in call order**\n- `explicit_insertions_preserve_order_repetition_and_selection_snapshots` queues current node, then successors(7), then current node again.\n- It asserts that the agent receives `[1, 3, 2, 3, 1]` with the matching contents.\n- It asserts that the graph's `reads` are `[1, 3, 2, 3, 1]`.\n\n**Successor selection**\n- The edges are `[(7,3),(8,99),(7,2),(7,3)]`. The test asserts that only label-7 targets are delivered, in returned edge order, with the duplicate target 3 kept. The label-8 edge to node 99 is excluded.\n- Node 99 is never read, which shows that only selected targets are resolved.\n\n**Recording on success**\n- The same test asserts `Dependency::OutgoingEdges(1, 7, edge_fingerprint(..[2,3]))`. That records the source, label and target-set fingerprint.\n- It also asserts `Dependency::Node(id, fp(content))` for nodes 1, 3 and 2. That covers the `author_procedure` citation (node identity plus fingerprint).\n- Node 1 is delivered twice but recorded once.\n\n**Selection that matches nothing**\n- `queued_reads_selection_and_rendering_fail_before_agent_invocation` loops over an empty edge list and over only non-matching edges `[(8,99)]`.\n- In both cases the await succeeds, no node is read, and the only dependency is `OutgoingEdges(1, 7, <empty-set fingerprint>)`.\n\n**Input-resolution failures**\n- A failing node read returns `ValidationError::Graph(\"read\")`.\n- A failing edge listing returns `ValidationError::Graph(\"edges\")`.\n- A failing render or prepare returns `ValidationError::Graph(\"render\")`. That case also asserts empty dependencies and no extra agent requests.\n\n**Minor gaps, not reported**\n- No test asserts that a failed successor selection leaves no edge dependency. The requirement only says that successful selections are recorded.\n- Only one successor label appears in the multi-edge case. The requirement does not distinguish more labels.\n\nNo acknowledgments (`{fixme}`) apply, and I found no unacknowledged gap.",
+  "rationale": "I judge the three marked tests adequate for `judge.node_contents`. They are in `crates/trust-but-verify/src/graph/validation_tests.rs`. I relied on the supplied test source only and requested no implementation source.\n\n**Queueing without resolving**\n- `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` builds `contents_of_current_node().contents_of_successors(7)` and drops it. It asserts `ctx.dependencies()` is empty, so no observations were recorded.\n- The same test awaits with no agent configured and expects `NoAgentConfigured`. It then asserts that `state.reads` and `state.selections` are empty, so no contents or edges were resolved.\n- `queued_reads_selection_and_rendering_fail_before_agent_invocation` drops a `contents_of_current_node()` builder with an agent present. It asserts that the agent received no requests.\n\n**Delivery in call order, current node, and successor contents**\n- `explicit_insertions_preserve_order_repetition_and_selection_snapshots` chains current, successors(7), then current. It asserts the delivered contents are `[1, 3, 2, 3, 1]`, and it asserts the read order is the same.\n- The edge list `[(7,3),(8,99),(7,2),(7,3)]` shows several things:\n  - Only edges labelled 7 are selected.\n  - Targets come out in returned edge order.\n  - The duplicate target 3 is delivered twice.\n  - Node 99, which sits behind a non-matching label, is never read, so only selected targets are resolved.\n- The test also checks that node 1 is the one `ValidationContext::node_id` identifies.\n\n**Recording**\n- The first test asserts the dependencies exactly: an `OutgoingEdges(source, label, fingerprint)` entry, then `Node(id, fp(content))` for each delivered node. The edge fingerprint is computed over the target set.\n- `queued_reads_selection_and_rendering_fail_before_agent_invocation` covers the \"even when nothing matches\" case. It runs two scenarios, one with empty edges and one with only non-matching labels. In both, reads stay empty and `ctx.dependencies()` is exactly one `OutgoingEdges` entry with the empty-set fingerprint.\n\n**Failures return `ValidationError::Graph`**\n- The same test forces three failures:\n  - A read failure returns `Graph(\"read\")`.\n  - An edge-listing failure returns `Graph(\"edges\")`.\n  - A render/prepare failure returns `Graph(\"render\")`.\n- For the render failure it also asserts no dependencies were recorded and no further agent request was made.\n\n**Residual points, not gaps**\n- No test uses two different successor labels in one call chain. Ordering across insertion kinds is already exercised by the current/successors/current chain, so I don't count this as a gap.\n- The fingerprint comes from the supplied snapshot, and the tests assert the recorded fingerprints match the supplied contents. A stricter distinction between a snapshot fingerprint and a re-read is not something the text distinguishes or a test could reasonably separate.\n- The `author_procedure` citation is context only. It is also assessed through the shared `Node` dependency assertions.",
   "references": "7bd4533911d2213c53511b44f512236c459c21df1b3e2413254c335fbcc86ad6",
   "inputs": [
     {
@@ -62,17 +62,17 @@
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[dropped_builders_and_missing_agents_do_not_resolve_queued_inputs]",
-      "hash": "9de7c413a682b7a0c92de76c056167a4ee6272cb8fd4ce0fac8a035a691b1396"
+      "hash": "9cbe92178baf6b64f5b753b824d8484aaeaf4cef82c6372f433f35776444e34c"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]",
-      "hash": "9359c08e74a3d94de11ac4a169c18f28993284f182871b98d112f3a73c69dbb1"
+      "hash": "82438bac07f4989af64bb695b72a6bf8e5866fdc840c6e877de25626a6bfdd25"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]",
-      "hash": "d87746a361dc0b25514fe633d10fa2512926e1ba51ffb2643755ea717b6fd42b"
+      "hash": "16e5d66c127375503160b7357b3aab780341b16eb17adf36510391e372907734"
     }
   ],
   "format_version": 1,
@@ -136,7 +136,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "016facc5f4f6b3d46e991dbfd1050f1bcf909625306004b4ef7a7dbab58e2d16"
+          "value": "2960ea17d6cadb1f8171fb93f330634c35b91a08f485cfc1eeb01b6f2ec02137"
         }
       ]
     },
@@ -153,7 +153,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "5c94ee5e1c6dd62543f7c55c657eb5be70b2e8ff7ca837b4ee768731e025e24b"
+          "value": "30ceab2121ddfdf47068ebaaa73758bdf2544f0c12badc817f253156ef093753"
         }
       ]
     },
@@ -170,7 +170,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ecbaf6343efa045573bada9b089df3e1d0f8735bf2908de4f96c699b842b3f72"
+          "value": "cee46e0806fccf4bd824ab4d2ae06bf43eff788b48df5c8c006b31383f7cd626"
         }
       ]
     }

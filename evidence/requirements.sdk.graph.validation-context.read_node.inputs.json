@@ -1,7 +1,7 @@
 {
   "requirement": "A successful `ValidationContext::read` records the node's identity and the\nfingerprint of the returned contents, under\n{cite}`requirements.sdk.graph.evidence.node_inputs`. A failed read records no\nsuccessful observation. The evidence becomes stale when a later read of that\nnode has a different fingerprint; a failure to resolve it is reported by\n{cite}`requirements.sdk.graph.evidence.checking_records`.\n\nFor a Rust caller, the SDK records the fingerprint when `read` returns the\ncontents. For an agent, the harness puts a tool result in the next request to\nthe model and records the fingerprint once the provider responds successfully.\nThat successful exchange is *delivery*. For example, suppose the tool reads a\nfunction that returns `3`, and someone changes it to return `4` before the\nprovider responds. The model saw the version that returns `3`, so the SDK\nrecords the fingerprint it computed from that version. Reading the function\nagain at this point would record a fingerprint for code the model never saw.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation in `requirements.sdk.graph.validation-context.read_node.inputs`. I read only the supplied test sources and did not request implementation source.\n\n**Rust caller: a successful read records identity and fingerprint**\n- `snapshots_record_exact_reads_and_retain_distinct_versions` asserts that `read(&1)` records `Dependency::Node(1, fp(\"before\"))`.\n- `direct_reads_return_complete_unicode_contents_and_snapshots` asserts that `read_snapshot` records the fingerprint of the complete contents. It runs on an empty string and on a large multi-byte Unicode string.\n\n**Rust caller: a failed read records no successful observation**\n- In `snapshots_record_exact_reads_and_retain_distinct_versions`, `read(&2)` errors and the dependencies list is unchanged.\n- In `direct_reads_return_complete_unicode_contents_and_snapshots`, a failed context's `read(&9)` errors and its `dependencies()` stay empty.\n\n**Stale evidence when a later read has a different fingerprint**\n- `snapshots_record_exact_reads_and_retain_distinct_versions` reads the same node with different contents. It asserts that both observations are retained and that `is_current` is false.\n- `direct_reads_return_complete_unicode_contents_and_snapshots` changes the contents and asserts that `is_current` is false.\n- Resolution failures belong to the cited `checking_records` requirement and are out of scope here.\n\n**Agent delivery semantics**\n- `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` has a `read_node` tool call followed by a successful provider exchange. It asserts the recorded `Dependency::Node(Node(2), fingerprint)` with the full 18,000-character value. It also asserts that `finish` carries the same dependencies.\n- The same test has a `read_node` call followed by a provider failure (`None`). It asserts that `ctx.ask::<bool>().await` is an error and that `dependencies()` is empty. This shows that nothing is recorded before delivery succeeds.\n- `node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents` makes the tool read fail. It asserts that no dependency is recorded and that the error is delivered to the model as an error tool result. The run then recovers and submits.\n- `graph_read_pages_retain_the_prepared_snapshot_after_contents_change` matches the requirement's example (read, change before the provider responds). The provider swaps the node contents while the request that carries the tool result is in flight. The test asserts three things:\n  - The graph is read exactly once (`reads == [1]`).\n  - The recorded fingerprint value equals the original contents, not the replacement.\n  - The pages the model received reassemble to the original.\n  \n  This rules out recording a fingerprint for code the model never saw.\n- `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` checks that agent reads are recorded as `Dependency::Node` in the shared context and that `finish` preserves them.\n\n**Duplicate and distinct observations**\nIdentical observations are deduplicated and distinct fingerprints for the same identity are both kept. This follows from the dependency assertions in `snapshots_record_exact_reads_and_retain_distinct_versions`.\n\nI found no obligation without a test and no assertion that contradicts the requirement. All of these tests carry `{test}` references to the subject.",
+  "rationale": "I judge the tests adequate. I did not request any implementation source. The checks below come from the supplied test text.\n\n**Successful read records identity and fingerprint**\n- `graph/validation_tests.rs#fn[snapshots_record_exact_reads_and_retain_distinct_versions]` reads node 1 through `read` and `read_snapshot`. It asserts `Dependency::Node(node, fp(\"before\"))` and the exact read counts.\n- `graph/validation_tests.rs#fn[direct_reads_return_complete_unicode_contents_and_snapshots]` covers empty and large multi-byte contents. It asserts the recorded fingerprint equals the full contents and that the returned snapshot is unaffected by later changes.\n- For the agent path, `agent/tests.rs#fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]` asserts that a `read_node` tool call yields `Dependency::Node(Node(2), fingerprint)`. The fingerprint equals the full 18,000-character content. The test also asserts that `finish` persists those observations.\n- `agent/tests.rs#fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]` checks the node observations for nodes 1 and 2, and that the finished record equals the context's dependencies.\n\n**Failed read records no successful observation**\n- `snapshots_record_exact_reads_and_retain_distinct_versions` reads missing node 2 and gets an error. The dependencies afterwards contain only the two earlier observations.\n- `direct_reads_return_complete_unicode_contents_and_snapshots` reads missing node 9 and gets `\"missing\"`. `failed.dependencies()` is empty.\n- `agent/tests.rs#fn[node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents]` makes the formatter fail. The error tool result is delivered to the model, and `ctx.dependencies()` is empty.\n\n**Staleness after a later read with a different fingerprint**\n- `snapshots_record_exact_reads_and_retain_distinct_versions` reads \"before\" and then \"after\" for the same node. It asserts that both observations are preserved, in order. The finished record's `is_current` returns false.\n- `direct_reads_return_complete_unicode_contents_and_snapshots` also asserts `is_current` is false after the contents change.\n- The failure-to-resolve case belongs to the cited `checking_records` requirement, which is not reassessed here.\n\n**Delivery semantics for agents**\n- `agent/tests.rs#fn[graph_read_pages_retain_the_prepared_snapshot_after_contents_change]` matches the requirement's example. The provider mutates the node contents while it handles the request that carries the tool result. The test asserts that the graph was read only once (`reads == [1]`) and that the recorded fingerprint equals the original contents. It also asserts that the pages the model received reconstruct the original text. The model saw the old version, the old version is recorded, and no re-read happens.\n- In `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery`, the provider fails (`None`) after a `read_node` call. `ask` errors and `dependencies()` is empty, so nothing is recorded without a successful provider response.\n- The same test also checks the Rust-caller path through `contents_of_current_node`. There the read is recorded when the contents are returned, even though the later provider call fails (one dependency).\n\nEach obligation has an exercising test with assertions on the outcome. I found no gap.",
   "references": "db9d1024d2ed9d588c253c85d8451f5022bb03c8d24833bd2a07b2e33063d1c7",
   "inputs": [
     {
@@ -79,32 +79,32 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]",
-      "hash": "e174b353a5188ba8250c9be15229f041f62a1a7c2cf43ea5d908651282e1132e"
+      "hash": "ce5910db3f51c79716eacd6ed0e14047a6cc9620e87298ed573bacdddbd27216"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]",
-      "hash": "78e16bd6b700e8c857faaae083630ff13d18c00aedb0954d61969f2374f072d5"
+      "hash": "6816c3e20ad4c2a25fe0d22c59b3b443360f48b3c428d152fbf6b8fc786aefe1"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents]",
-      "hash": "8c23afe3f09b19754b3dca644e6067f6e623e914cc3796cf192841907c33d8fa"
+      "hash": "421d302372b0b1869b776dbeb21275e6942dae97306c67651f019c874d362a04"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[graph_read_pages_retain_the_prepared_snapshot_after_contents_change]",
-      "hash": "2ddabdf5cad1cccf01089f39e9e39d3badc593b3f63bd444c57e0481a3a2a8d3"
+      "hash": "a78d90654acea5890ba8eabe9024bc2722130b9affb7fab8e94b8b62f03a6623"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[snapshots_record_exact_reads_and_retain_distinct_versions]",
-      "hash": "e16d8bde2ebe1934d47fd8e1d8254c9003090e435bb79ae9ee3e6f5cb0e80918"
+      "hash": "f8ea3ec9bfea77fff1dd9ea1ecbcc8cb80aa310da9dad91e241a49ac2fd1125d"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[direct_reads_return_complete_unicode_contents_and_snapshots]",
-      "hash": "5f0d957ee788f0a58c3f691b8a364a15620ff2ebc04fc9e1564b75f5839d9ad3"
+      "hash": "70a10d4d72283c94cabf0fac6591f0f2a097104d8a4321c8d87c3196b534da0d"
     }
   ],
   "format_version": 1,
@@ -179,7 +179,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "4037c50c3e37c8c956478307a66e779e975c7f51f80fb3f87a4e75369f287fc1"
+          "value": "48a915bd09b5009c59ae08da015119046223c6fa314af6572c8062782a4759d3"
         }
       ]
     },
@@ -196,7 +196,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "720f54024df4ff4ca27b73cc47144d2b8cf370fbb4036f81a62aacab3480cf09"
+          "value": "0e4c0139880454966fac2bc04043d6b7e3f2ffe3e977b0ad8e64aa7bd51012e0"
         }
       ]
     },
@@ -213,7 +213,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9203c1def067ef52be29119a893a1f0bc1d97cabec203118ca2bc8a520396540"
+          "value": "a68310a9cae20ec19c7ca60ed1d63d01aadc55ff03e95047f162ad34940c9ffe"
         }
       ]
     },
@@ -230,7 +230,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "166d7810e08f887b0784af83678259e9d0ddd84469e5262d7705ea5d2c5adcbb"
+          "value": "6f410a48adb926a373cae511cb76189b7b8d97316caa510e1ee2447776a7001f"
         }
       ]
     },
@@ -247,7 +247,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ec70f86b0d7d929559ae6e6d2fa54cf2e9c4ecf741b7b4b2ac6e7242812ac348"
+          "value": "46e64fe1cae795b00880fe90bca67849b023e364121a0383c555aa8188e610b3"
         }
       ]
     },
@@ -264,7 +264,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "367e31cbe154e0f07daed7e836f5a20c58b2a35c9de5faa8b4e1059c3bab32a3"
+          "value": "10a2688ce828febd92c9026d4d1f9fe831b47b72b24289e1454d77edeaf026cb"
         }
       ]
     }

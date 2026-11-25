@@ -1,8 +1,8 @@
 {
-  "requirement": "`with_sources` attaches a project directory to the cache. Domains with project sources map each selectable outline item to a graph node under {cite}`requirements.sdk.sources.source_nodes`.\n\n```rust,ignore\nimpl ValidationCache {\n    pub fn with_sources(self, sources: Sources) -> Self;\n}\n```",
+  "requirement": "`with_sources` attaches a project directory to the cache. Domains with project sources map each selectable outline item to a graph node under {cite}`requirements.sdk.sources.source_nodes`.\n\n```rust,ignore\nimpl<D: Domain> ValidationCache<D> {\n    pub fn with_sources(self, sources: Sources) -> Self;\n}\n```",
   "determination": true,
-  "rationale": "I judge the tests adequate for `requirements.sdk.validation-cache.with_sources`.\n\n**Obligations**\n1. `with_sources(Sources)` attaches a project directory to the cache. The implementation, `crates/trust-but-verify/src/domain.rs#impl[ValidationCache]/fn[with_sources]`, stores the `Sources` and returns the cache.\n2. Domains with project sources map each selectable outline item to a graph node. The requirement cites `requirements.sdk.sources.source_nodes` for this, so I did not reassess that requirement's own tests.\n\n**Coverage of obligation 1**\n- `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` builds `ValidationCache::with_agent(config).with_sources(Sources::new(tempdir))`. It then runs `validation::verify` against a local transport.\n- The test asserts that the attached directory takes effect:\n  - The agent's tool list includes the source tools `list_sources`, `outline_source`, `search_text`, `search_structure` and `finish_search`.\n  - The `list_sources` output contains integer node ids.\n  - A file chosen from the `Sources::list` result is read through `read_node`, and the text returned is the domain's \"a source snapshot\", not the disk contents.\n  - An unknown node id is rejected with `invalid node ID`.\n  - `search_text` hits are mapped to `TestNode` ids 8 and 9, and their fingerprints are built from `OutlineContent::from_source` for `alpha.txt` and `beta.txt`.\n  - The domain's source-node lookup records the requested id `OutlineId::new(\"visible/selected.txt\", \"\")`. Files under the unselected `visible-old` directory and the gitignored file are not touched.\n- The test runs twice, so independent executions are covered.\n- `...#fn[supplied_openai_backend_runs_independent_calls_against_a_local_transport]` is also marked as a test. It builds a cache without `with_sources` and asserts that only the four graph tools are offered. It therefore acts as a control showing that source tools appear only when sources are attached.\n\n**Coverage of obligation 2**\nThe dependencies, the `read_node` mapping and the recorded `OutlineId` all show that outline items resolve to graph nodes when sources are attached. That is the with_sources-specific part of the mapping obligation.\n\n**Gaps**\nI found no obligation without a test. The requirement is a builder with no conditionals, and its observable effect is asserted end to end. I found no `{fixme}` references and no relevant unmarked tests.",
-  "references": "ced0fc76f98d42f1e875ee0131ca125a8c020049c7e10527b0d0c077ddc66a03",
+  "rationale": "The subject has two obligations. `with_sources` attaches a project directory to the cache. Domains with project sources then map each selectable outline item to a graph node through `Domain::source_node`.\n\n`mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` in `crates/trust-but-verify/src/agent/configured.rs` covers both. It builds the cache with `ValidationCache::with_agent(config).with_sources(Sources::new(selected.path()))`, then runs the agent twice against a local transport.\n\n- **Attachment:**\n  - The `list_sources`, `search_text` and `read_node` tools only work because the sources were attached. The test asserts the attached tool set in both executions.\n  - `list_sources` returns the project files, with the `.gitignore`d file excluded from the selected index lookup.\n  - The assertions check that every listed file is a numeric node ID, that a bogus node is rejected, and that the selected file's node reads back as `a source snapshot` rather than the disk contents.\n- **Mapping to graph nodes:**\n  - The test's `TestDomain::source_node` records each `OutlineData` it receives and returns a distinct `TestNode` per path.\n  - The test asserts that the `visible/` outline items passed to the domain are exactly `OutlineData::new(\"visible/selected.txt\", \"\")`.\n  - It asserts the final `answer.dependencies()` contain the domain-mapped nodes 8 and 9 for `alpha.txt` and `beta.txt`, each with the fingerprint of that file's source content. A cache that failed to route outline items through the domain's `source_node` would produce different dependencies.\n  - The unused file's node is read, but the test deliberately leaves it out of `finish_search`, and it is absent from the dependencies. That confirms the mapping is per item.\n\nThe other marked test, `supplied_openai_backend_runs_independent_calls_against_a_local_transport`, never calls `with_sources`. Its mark adds no coverage, but the first test already covers the subject, so this is not a gap. No `{fixme}` acknowledgments apply. I found no untested obligation or boundary in the subject's text.",
+  "references": "3e6bff1052d1381992a643f7ba0f4604b2fdc1093f4f9dde19131dd9dd0985b4",
   "inputs": [
     {
       "requirements": "requirements.sdk.validation-cache.with_sources",
@@ -14,7 +14,7 @@
         "`with_sources` attaches a project directory to the cache. Domains with project sources map each selectable outline item to a graph node under {cite}`requirements.sdk.sources.source_nodes`.",
         "",
         "```rust,ignore",
-        "impl ValidationCache {",
+        "impl<D: Domain> ValidationCache<D> {",
         "    pub fn with_sources(self, sources: Sources) -> Self;",
         "}",
         "```",
@@ -29,15 +29,15 @@
       "text": [
         ":::{req} source_nodes",
         "",
-        "An application supporting tracked source inspection maps `OutlineId` to its",
-        "graph's `NodeId`. The mapped node represents the requested path and selector;",
-        "an unsupported or invalid address returns an error. The SDK reads the mapped",
-        "node through the application's `Domain` interface.",
+        "An application supporting tracked source inspection returns `Self::NodeData` for the requested path and selector. The SDK interns that data in the domain's cache to obtain `NodeId<Self>`. An unsupported or invalid address returns an error.",
         "",
         "```rust,ignore",
         "pub trait Domain: Clone + Send + Sync {",
         "    // ...",
-        "    fn source_node(&self, item: &OutlineId) -> Result<Self::NodeId, SourceError> { ... }",
+        "    fn source_node(",
+        "        &self,",
+        "        item: &OutlineData,",
+        "    ) -> Result<Self::NodeData, SourceError> { ... }",
         "}",
         "```",
         ":::"
@@ -46,17 +46,22 @@
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[supplied_openai_backend_runs_independent_calls_against_a_local_transport]",
-      "hash": "be2ea4292aed9ebefd85b91f462c906f37f6fe23e58f2a413c18a6d3e2d4ecae"
+      "hash": "e2a943a78837f2c1567ae0aee3943348fb3c23610881b112a23d99b09cebfeff"
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]",
-      "hash": "0bb7522373cd58f5d22e38ffe891842f63791cfed89ef4b432977290ee60d79b"
+      "hash": "55063c7bdfb02a7b0e193d469c746430aa45c1340ebe1848a183956427f86264"
     },
     {
       "file": "crates/trust-but-verify/src/domain.rs",
-      "item": "impl[ValidationCache]/fn[with_sources]",
+      "item": "impl[ValidationCache<D>]/fn[with_sources]",
       "hash": "d1e20d7b82b9588cf7ad629f61d9706139d0cc0ddbf3e27910a053c77067f64c"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/impl[TestDomain/Domain]/fn[source_node]",
+      "hash": "e3986c74e3723c75e3b599b034c3ef8b7de2f88ee148135a3dcb247b9bf2ec5a"
     }
   ],
   "format_version": 1,
@@ -69,7 +74,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "ced0fc76f98d42f1e875ee0131ca125a8c020049c7e10527b0d0c077ddc66a03"
+          "value": "3e6bff1052d1381992a643f7ba0f4604b2fdc1093f4f9dde19131dd9dd0985b4"
         }
       ]
     },
@@ -92,7 +97,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "524d51afbdedf59ce91d11a801a1b9eed2d2c2efeeaa1121db4c9a4b27654999"
+          "value": "2d14c8d595715c370f74c57b18509dc60ff315f13c0533c0a82caa0146bc549a"
         }
       ]
     },
@@ -103,7 +108,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "0bca810b26e7d8069731ee9e1ff30a1ceeca11b6d0310b3dc1ed5483658eb4b2"
+          "value": "8b161b9e29941045eb4a07b6fd5505397c8ddd5d228beb7531cdde1c38afcd9c"
         }
       ]
     },
@@ -120,7 +125,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "2bf07459b5022bcff84af767218d5511776670b94e69e7446abd44455a3de024"
+          "value": "c3c8af71f78c9270f948c7c0a21ec744e0d6f1a4de18c66520bc87b325344278"
         }
       ]
     },
@@ -137,7 +142,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ddfb05bf744a25743033a8955c799cba684adced37d4a9feb365c005373b64ac"
+          "value": "da2d1f53e4f8d6772fc96672ec9eb919e8e4cd46540f043050aceba0f79ed6ec"
         }
       ]
     },
@@ -149,12 +154,29 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/domain.rs"
             },
-            "selector": "impl[ValidationCache]/fn[with_sources]"
+            "selector": "impl[ValidationCache<D>]/fn[with_sources]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "767527a93f73b45a8d3baad2fc7b07d3a1f92223d93c255bfa919d1c96b6854f"
+          "value": "300dbeacccbbf22ac6ef1b706709098aba698d10fb86efba4fb0a68df1817cda"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
+            },
+            "selector": "mod[tests]/impl[TestDomain/Domain]/fn[source_node]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "763e5d690e8d32530b6b5df153c6be4e6b74c33750d4e1ca058df1b71f94910c"
         }
       ]
     }

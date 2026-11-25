@@ -1,7 +1,7 @@
 {
   "requirement": "For each selected tag, the harness records the node identity and fingerprint\nfrom the snapshot that produced the delivered excerpt. Selecting a tag again\npreserves the original dependency. Earlier selections survive later calls.\nAn empty `used` list adds no dependency. Unselected excerpts and the match set\nadd none either. An invalid call leaves all recorded inputs intact.",
   "determination": true,
-  "rationale": "I judge the tests adequate for `requirements.sdk.graph.search.finish_search.inputs`. I did not request implementation source, because the supplied tests were enough to map every obligation.\n\n**Obligations and the tests that cover them**\n\n1. **Node identity and fingerprint come from the snapshot that produced the delivered excerpt.**\n   - `agent/project_sources.rs#mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]` computes the expected fingerprint from the original source. It then overwrites `source.txt` with \"changed after search\" before finishing. It asserts that the dependency is exactly `Dependency::Node(expected_id, expected)`.\n   - `agent/project_sources.rs#mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]` rewrites `code.rs` to `fn two(){changed();}` after the search. It asserts the recorded dependency is `code.rs#fn[two]` with the original fingerprint. The tag for `fn[two]` selects only that item, not the other `call()` hit in `fn[one]`.\n   - `agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` checks the final `answer.dependencies()` for alpha and beta. They carry fingerprints built from the snapshot text \"excerpt alpha.txt\" and \"excerpt beta.txt\". The test also asserts that the on-disk content \"selected disk contents\" does not appear in what the agent reads.\n\n2. **Selecting a tag again preserves the original dependency.**\n   - Both `project_sources` tests finish with the same tag twice (`for _ in 0..2`) after the file has changed. Both calls must return the original fingerprint. An implementation that re-fingerprinted on re-selection would fail.\n   - The configured-agent test selects beta twice (steps 12 and 13).\n\n3. **Earlier selections survive later calls.**\n   - In the configured-agent test, alpha is selected at step 10. Later calls follow: a failed call at step 11, the beta calls at steps 12–13, and a `read_node`. The final dependency list still contains alpha.\n   - The first `project_sources` test finishes a second search with `used: []` after the tagged selection. It then asserts the search is closed again.\n\n4. **An empty `used` list adds no dependency.**\n   - Both `project_sources` tests assert `dependencies.is_empty()` after `used: []`.\n   - The configured-agent test finishes searches with `used: []` at steps 7–8. The final dependency list has no extra entry for them.\n\n5. **Unselected excerpts and the match set add none.**\n   - The search results themselves are asserted to carry empty `dependencies` in both `project_sources` tests.\n   - The configured-agent test's final list excludes `unused.txt`. Its dependency comes only from the explicit `read_node` at step 14.\n\n6. **An invalid call leaves all recorded inputs intact.**\n   - The first `project_sources` test calls `finish_search` with `[\"1\",\"unknown\"]` and asserts an error. It asserts two searches are still outstanding. The later finish returns exactly the one expected dependency, so nothing from the failed call leaked in.\n   - It also checks `finish_search` with a non-search id, and with a search id from another session. Both are errors.\n   - The configured-agent test calls `[unused, \"invalid\"]` at step 11 and expects \"unknown search tag\". It then shows that `unused` is absent from the final dependencies and that alpha is still present.\n\n**Residual notes**\n\n- The re-selection checks in the configured-agent test use unchanged files, so they are weak on their own. The `project_sources` tests cover that case with changed files.\n- I found no untested obligation and no plausible violating behavior the tests would accept.",
+  "rationale": "I judge the tests adequate for `requirements.sdk.graph.search.finish_search.inputs`. I did not read implementation source. I split the requirement into six obligations and mapped each to the marked tests.\n\n**1. Selected tags record node identity and the fingerprint from the delivering snapshot.**\n- `search_obligations_follow_delivery_and_keep_the_original_snapshot` (`project_sources.rs`) rewrites `source.txt` after the first page is delivered. It then selects `first.matches[0].tag` and asserts the dependency equals `Dependency::Node(<interned expected id>, expected fingerprint)`. The expected value is computed from the original contents, so a later re-read would fail the assertion.\n- `structural_tags_select_only_the_original_enclosing_item` rewrites `code.rs` twice, the second time just before selection. It asserts the dependency is `code.rs#fn[two]` with the original `fn[two]` fingerprint. This checks both the enclosing-item node identity and the original snapshot for structural search.\n- `configured_agent_uses_domain_source_tools_in_independent_executions` (`configured.rs`) checks the final `answer.dependencies()`. They contain `alpha.txt` and `beta.txt` nodes with `OutlineContent::from_source(...).at_offset(0).fingerprint()` fingerprints. It runs twice, so each execution is independent.\n\n**2. Selecting a tag again preserves the original dependency.**\n- Both `project_sources.rs` tests select the same tag twice in a `for _ in 0..2` loop. Each time they assert the same original dependency after the source has changed.\n- In the configured-agent test, `beta.txt` is selected in two consecutive turns and the final dependencies hold it once.\n- No test puts the same tag twice in one `used` list. The text's \"selecting a tag again\" most naturally means separate calls, which are covered, so I don't count this as a gap.\n\n**3. Earlier selections survive later calls.**\n- In the configured-agent test, `alpha` is selected at step 10. An invalid call, a `beta` selection and a repeat follow. The final dependencies still include `alpha`.\n- In the first `project_sources.rs` test, the selected dependency is still returned after the second page is delivered and after `finish_search` calls on other searches.\n\n**4. An empty `used` list adds no dependency.**\n- `project_sources.rs` asserts `closed.dependencies.is_empty()` for `used: []` on an empty result, on a peer session, and on the structural search.\n- The configured-agent test closes the empty searches with `used: []` and adds no dependencies for them.\n\n**5. Unselected excerpts and the match set add none.**\n- The search result itself has empty `dependencies` (`assert!(result.dependencies.is_empty())`).\n- With more than one match, selecting a single tag yields exactly one dependency.\n- In the structural test, the other `call()` match (`fn[one]`) never appears.\n- In the configured-agent test, the `unused.txt` excerpt never becomes a search-excerpt dependency. Its only dependency is the explicit `read_node`, which uses `Content.fingerprint()`.\n\n**6. An invalid call leaves all recorded inputs intact.**\n- The tests use an unknown tag (`[\"1\",\"unknown\"]`), a wrong `search_id` (the `next` UUID), and a finish from a different session. Each is asserted to error. The search stays open (`outstanding_searches().len() == 2`).\n- In the configured-agent test, the invalid call mixes a valid `unused` tag with `\"invalid\"`. The error text contains \"unknown search tag\". The `unused` excerpt does not appear in the final dependencies, so a partially applied call would have been caught. The earlier `alpha` selection also survives.\n\nNo obligation is untested, and I found no assertion that contradicts the requirement. All the relevant tests carry `{test}` references to the subject.",
   "references": "028beb8544b68f28a07f007e82f733b7c4a579464d5e29c14ba6d2b394a3ff0d",
   "inputs": [
     {
@@ -22,17 +22,17 @@
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]",
-      "hash": "0bb7522373cd58f5d22e38ffe891842f63791cfed89ef4b432977290ee60d79b"
+      "hash": "55063c7bdfb02a7b0e193d469c746430aa45c1340ebe1848a183956427f86264"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]",
-      "hash": "0bcb3f51a6973a65b57173ee36a348d6a405e101d80502b687125b612c1651c0"
+      "hash": "e34f5942ea959094aac1cffff1d5fe1a49ade0b9864a61b67b262ef630f2fd73"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]",
-      "hash": "c36ad720da7917dd5292319f01409250f9b6e9e2d06eab66bbea689be73026dc"
+      "hash": "52995b412a301672e26a62e8086c0437b14b1040842db8cc8c225b2fefc142cd"
     }
   ],
   "format_version": 1,
@@ -85,7 +85,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ddfb05bf744a25743033a8955c799cba684adced37d4a9feb365c005373b64ac"
+          "value": "da2d1f53e4f8d6772fc96672ec9eb919e8e4cd46540f043050aceba0f79ed6ec"
         }
       ]
     },
@@ -102,7 +102,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "865f7a926c0258b23980e8e614e0f3ad57374b0b097acb4b09b2234d57cd66b4"
+          "value": "40f4d553f745b1f5517caa626ba2e3215a561732152f5c604a11d603aef50923"
         }
       ]
     },
@@ -119,7 +119,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "a57b31f34187a7968bb9605b2ec0b51b6d343bafa0541cdf45cc9147304c95e0"
+          "value": "9b5b23ed4e62c31aa9a5888f525cf8c7cb8c39f8f92cd22214cc6333f58d49b5"
         }
       ]
     }

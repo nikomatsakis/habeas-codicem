@@ -1,7 +1,7 @@
 {
   "example": "{cite}`requirements.sdk.graph.running-criteria.validate_node`\n{cite}`requirements.sdk.graph.agent-harness.with_agent`\n{cite}`requirements.sdk.graph.evidence.refresh_evidence`\n{cite}`requirements.sdk.graph.evidence.inputs`\n\nThe domain supplies Habeas Codicem's graph, contents, and storage. Its\n[validation cache](../validation-cache.md#configure-the-agent) selects the\nagent that answers the criterion's requests.\nThe `refresh_evidence` helper reuses the previous answer when the review rules\nand inputs are current, or evaluates the criterion again:\n\n```rust,ignore\nuse trust_but_verify::graph::refresh_evidence;\n\nlet inputs = refresh_evidence(&domain, BehavioralAdequacy {\n    requirement: requirement.clone(),\n    review_policy: test_review_policy.clone(),\n}).await?;\n\nlet assessment: &TestReview = inputs.output();\nprintln!(\"{}: {}\", assessment.adequate, assessment.rationale);\n```",
   "determination": true,
-  "rationale": "The example `requirements.sdk.graph.running-criteria.evaluate_criterion` is a concrete case. It calls `refresh_evidence` on a `BehavioralAdequacy` criterion against a domain whose validation cache selects the agent. It expects the helper to reuse the previous answer when the review rules and inputs are current, and otherwise to evaluate the criterion again. It also expects a typed `TestReview` answer with `adequate` and `rationale`. Three {test} items cover these outcomes together. No single test runs refresh, re-evaluation and the configured agent in one scenario, but the pieces are covered separately.\n\n- **Typed answer and reuse.** `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer` in `crates/trust-but-verify/src/agent/tests.rs` uses `BehavioralAdequacy` with a `review_policy` and a scripted agent.\n  - It asserts the typed `TestReview` output (`adequate` is true, with its rationale), the criterion path, the dependencies read from the domain, and a single stored record.\n  - It then calls `validation::refresh_evidence` and asserts the output and dependencies are reused, the record count stays at 1, and the agent receives only one request.\n  - That is the reuse outcome.\n  - It also asserts that `check_inputs` turns false once an input changes. The request content (system message, contents ordering, `submit_result` schema with a boolean `adequate`) is checked too.\n- **Re-evaluation.** `refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace` in `crates/trust-but-verify/tests/contracts.rs` runs four causes: missing evidence, an incompatible revision, changed node contents, and changed successors.\n  - In each case it asserts the new answer is returned, the dependencies come from a fresh trace, execution and write counts are as expected, and the stored record is replaced.\n  - That is the \"or evaluates the criterion again\" outcome.\n  - The revision case covers the review rules; the contents and successors cases cover the inputs.\n- **Agent selection.** `configured_agent_uses_domain_source_tools_in_independent_executions` in `crates/trust-but-verify/src/agent/configured.rs` builds the domain with `ValidationCache::with_agent(config)` and runs `validation::verify` twice, so each run evaluates the criterion from scratch.\n  - It asserts the boolean output, the exact dependency list, and the tool set the agent is given.\n  - That covers the agent being selected through the domain's validation cache and the answer being captured with its dependencies.\n\nThe cited requirements are applied in these tests. For `validate_node` and `evidence.inputs`, the tests check that the output and dependencies are captured in `Fingerprinted`. For `with_agent`, the agent is obtained from the cache. For `refresh_evidence`, the reuse and re-evaluation paths are exercised. I found no stated outcome that lacks an input and assertion.\n\nThe `review_policy` text is only a context string passed to the agent. Review-rule currency is therefore governed by the criterion revision, which the contracts test exercises. I report no gap.",
+  "rationale": "**Concrete case.** The example `requirements.sdk.graph.running-criteria.evaluate_criterion` is concrete. A domain whose validation cache selects the agent calls `refresh_evidence(&domain, BehavioralAdequacy{requirement, review_policy})`. The expected behavior has three parts:\n- The previous answer is reused when the review rules and inputs are current.\n- Otherwise the criterion is evaluated again.\n- The typed `TestReview` is returned through `inputs.output()`, with its `adequate` and `rationale` fields.\n\n**Reuse and typed output.** `agent/tests.rs#fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]` uses the example's criterion, `BehavioralAdequacy` with a requirement node and a review policy.\n- It evaluates the criterion through the agent, stores the evidence, and asserts that `inputs.output()` equals the expected `TestReview { adequate, rationale }`.\n- It asserts the captured node and outgoing-edge dependencies.\n- It reloads the saved record with `load_evidence` and asserts the output, criterion path, version and dependencies match.\n- It calls `refresh_evidence` on the same criterion and asserts the output and dependencies are unchanged. It also asserts that only one record exists and that the agent received exactly one request, so the saved answer was reused without a second evaluation.\n- It changes an input and asserts `check_inputs` then returns false, so the saved answer is stale.\n\n**Re-evaluation.** `tests/contracts.rs#fn[refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace]` covers the cases where the answer must be recomputed.\n- The cases are missing evidence, an incompatible revision (the review rules), changed input contents, and changed edge successors.\n- In each case it asserts the new answer is returned, execution and write counts increase, and the fresh dependency trace is stored.\n- It asserts the stored record's output, dependencies and version match the replacement.\n\n**Domain-selected agent.** `agent/configured.rs#fn[configured_agent_uses_domain_source_tools_in_independent_executions]` is also marked as a test of this example. It checks that `validation::verify` obtains the agent selected by the domain's validation cache, and that each evaluation starts with a fresh context, so repeated evaluations are independent and return a fresh answer with captured dependencies.\n\n**Residual limit.** No single test calls `refresh_evidence` on `BehavioralAdequacy` and then sees it re-evaluate through the configured agent. The reuse and recompute paths are covered separately, and together they cover every outcome the example states, so I do not count this as a gap.",
   "references": "3058c788338b4651d80d655e28d9b5b4f4c743718eeaa76981791dcca8b4523f",
   "inputs": [
     {
@@ -119,16 +119,16 @@
         "",
         "`verify` constructs this value from the criterion's completed answer and",
         "execution trace. `load_evidence` reconstructs it from the selected saved record.",
-        "Its node identities and edge labels keep their domain-defined types.",
+        "Its dependencies use `NodeId<D>` handles from the current cache and domain-defined edge labels.",
         "",
         "```rust,ignore",
         "pub struct Fingerprinted<D: Domain, O> { /* private fields */ }",
         "",
         "impl<D: Domain, O> Fingerprinted<D, O> {",
-        "    pub fn source_node_id(&self) -> &D::NodeId;",
+        "    pub fn source_node_id(&self) -> &NodeId<D>;",
         "    pub fn criterion_path(&self) -> &CriterionPath;",
         "    pub fn version(&self) -> Option<&CriterionVersion>;",
-        "    pub fn dependencies(&self) -> &[Dependency<D::NodeId, D::EdgeLabel>];",
+        "    pub fn dependencies(&self) -> &[Dependency<NodeId<D>, D::EdgeLabel>];",
         "    pub fn output(&self) -> &O;",
         "    pub fn into_output(self) -> O;",
         "}",
@@ -139,17 +139,22 @@
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]",
-      "hash": "0bb7522373cd58f5d22e38ffe891842f63791cfed89ef4b432977290ee60d79b"
+      "hash": "55063c7bdfb02a7b0e193d469c746430aa45c1340ebe1848a183956427f86264"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]",
-      "hash": "9653e3b706f77c9127b61bf2ca6c710e2faa487efcb0f0ce4a244d6ac2b968e8"
+      "hash": "69048b64a195513551fdc8614a7e6cea5e002203603971efcae1e18be26ff809"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace]",
-      "hash": "21ae2360f66a8508038937c8628b243045455aef92696ad31b155eb7cf64c994"
+      "hash": "9330c9618477f6057f8720e6d43a0de5ca608101a3c707e937cf221f6eabf7f2"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "struct[BehavioralAdequacy]",
+      "hash": "0939caf1ea15528054b64fdb6765acbb9be3232db28271d3c0153392c90c802a"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -234,7 +239,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "e4ee287921363fc62aee9b15a643d89cb5765b7c39fbb91dfbd952d319823260"
+          "value": "52e2648fb3a1222becf10daae31e460f2159187cd3d4d2c46a35a0fb409d01a7"
         }
       ]
     },
@@ -251,7 +256,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ddfb05bf744a25743033a8955c799cba684adced37d4a9feb365c005373b64ac"
+          "value": "da2d1f53e4f8d6772fc96672ec9eb919e8e4cd46540f043050aceba0f79ed6ec"
         }
       ]
     },
@@ -268,7 +273,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "172400ca26c9868a037b6976bb5c1135c7d7b7d586a7e7fcfb0b581b726b3a13"
+          "value": "53b29e878fc28b411aeb2c3a8544267087c2ebd893b981cac35ebbdbe82f3cff"
         }
       ]
     },
@@ -285,7 +290,24 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1a5331399687f82437b9297b7a9199e58cc61856fe3af56a9f1c3d3bbbce4f83"
+          "value": "3428a27c4befa416f4ea704e8e40c8af151f3b6eda0e137e8a50a681668ccc50"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
+            },
+            "selector": "struct[BehavioralAdequacy]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "7ae1ff01977fac9a71fca5ad2c3e63c981d20acddc071682caba5259d3c6d7b9"
         }
       ]
     },

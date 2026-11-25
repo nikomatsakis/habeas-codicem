@@ -1,8 +1,8 @@
 {
-  "requirement": "The agent harness serializes the current node, supplied input nodes, and node IDs in tool results using the domain's Serde representation of `D::NodeId`. A tool accepting a node ID deserializes the same JSON value. Its argument schema uses `D::NodeId`'s `JsonSchema` implementation. An invalid ID representation produces a tool error before the domain is queried.\n\nFor example, if a search hit contains `\"node\": {\"Issue\": 42}`, the agent can call `read_node({\"node\": {\"Issue\": 42}})` to read that issue.",
+  "requirement": "The agent harness uses the unsigned integer representation of `NodeId<D>` for the current node, supplied inputs, and nodes in tool results. Built-in tools accepting a node ID resolve that integer in the domain's cache. A malformed value or an unassigned integer produces a tool error before any graph read.\n\nFor example, if a search hit contains `\"node\": 7`, the agent can call `read_node({\"node\": 7})` to read the enclosing node.",
   "determination": true,
-  "rationale": "I judge the marked tests adequate for every obligation in `requirements.sdk.graph.validation-context.node_reference`. I did not request implementation source. The expected behavior comes from the requirement text.\n\n**Serialization of the current node and supplied input nodes in the Serde form**\n- `configured.rs#mod[tests]/fn[supplied_openai_backend_runs_independent_calls_against_a_local_transport]` inspects the prompt each local request sends.\n- It asserts that the prompt contains `Current node: {\"id\":1}` and `Node: {\"id\":1}`. `TestNode` is a struct ID, so this is its Serde form.\n- It also drives a `read_node` call with `{\"node\":{\"id\":1}}`.\n\n**Serialization of node IDs in tool results, and the same value deserializing in a tool**\n- `configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` takes `listing[\"files\"][selected_index]` from the `list_sources` result and passes it back unchanged as the `read_node` argument. It asserts the mapped text is \"a source snapshot\".\n- The same test takes the `node` field of a `search_text` hit and passes it to `read_node` (turn 14). This matches the requirement's own search-hit-to-`read_node` example.\n- It asserts that every `files` entry has `id` as an unsigned integer.\n- `tests.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` asserts the `outgoing_edges` result is exactly `{\"targets\":[3,2,3]}`. It also feeds `{\"node\":1,\"label\":7}` to `outgoing_edges` with a `u8` ID. This covers a second NodeId representation, an integer rather than a struct.\n- `tests.rs#fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]` and `tests.rs#fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]` call `read_node` with the integer-ID `Node` type. Together they cover both ID types.\n\n**Argument schema uses `D::NodeId`'s `JsonSchema`**\n- In `configured_agent_uses_domain_source_tools_in_independent_executions`, the request's tool definitions for `read_node`, `outline_source` and `outgoing_edges` are checked.\n- The test follows the `$ref` under `properties.node` and asserts the referenced schema requires `[\"id\"]` and has `id` of type integer. That is the `TestNode` schema, not a generic one.\n\n**Invalid ID representation gives a tool error before the domain is queried**\n- `agent_edge_tools_record_selections_without_validating_targets` sends `outgoing_edges` with `{\"node\":\"unknown\",\"label\":7}`.\n  - It asserts `is_error` is true and the message is `invalid node ID: invalid type: string \"unknown\", expected u8`.\n  - It asserts `graph.lookups` stays 0, meaning the domain was never queried.\n  - It asserts `ctx.dependencies()` is empty.\n- `configured_agent_uses_domain_source_tools_in_independent_executions` sends `read_node` with `{\"node\":\"unknown\"}`. It asserts the delivered output contains `invalid node ID`. It does not separately assert that the domain was not queried on this path, but the `outgoing_edges` test covers that property.\n- That test also asserts the exact dependency list and the exact set of outline reads. Neither shows a read for the invalid ID.\n\nNo obligation lacks a test and no assertion contradicts the requirement. There are no acknowledgments to account for. Only plain-integer and struct IDs are exercised, not an externally tagged enum like the `{\"Issue\":42}` example. The requirement describes one uniform Serde pass-through, so I don't count that as a gap.",
-  "references": "1418933c5aa33548c4ee5b2989887136f7e28758c9084fb36d1589eb32a63e25",
+  "rationale": "**Obligations derived from `requirements.sdk.graph.validation-context.node_reference`**\n1. The harness represents the current node, supplied inputs, and nodes in tool results as unsigned integers.\n2. Built-in tools that accept a node ID resolve that integer in the domain's cache.\n3. A malformed value or an unassigned integer gives a tool error before any graph read.\n\n**Implementation structure.** I looked at the implementation only to see how the tools are wired. `read_node`, `outgoing_edges` and `outline_source` all call the single helper `crates/trust-but-verify/src/agent/tools.rs#fn[node_argument]`. It carries the `{impl}` reference for this requirement and contains both the \"invalid node ID\" and \"unassigned node ID\" checks. Tests that exercise the helper through any one tool therefore cover the shared logic.\n\n**Mapping of obligations to tests**\n- **Integer form of the current node and supplied inputs.** `configured.rs#mod[tests]/fn[supplied_openai_backend_runs_independent_calls_against_a_local_transport]` asserts that the prompt contains \"Current node: 0\" and \"Node: 0\". It also issues `read_node({\"node\":0})` and expects the call to succeed.\n- **Integer form in tool results.**\n  - `tests.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` asserts the `outgoing_edges` result is exactly `{\"targets\":[3,2,3]}`.\n  - `configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` asserts that every `list_sources` entry is a `u64`. It also asserts that the advertised parameter `node` has type `integer` for `read_node`, `outline_source` and `outgoing_edges`.\n  - The same test feeds a search hit's `\"node\"` and a listed file's integer back into `read_node`, which matches the requirement's example.\n- **Resolution in the domain's cache.** `tests.rs#fn[read_node_accepts_a_domain_id_first_supplied_by_the_agent]` first sends the unassigned integer 999 and then the integer 2. The call with 2 succeeds, `graph.reads` is `[2]`, and the recorded dependency is the interned `Node(2)`.\n- **Unassigned integer gives a tool error before any graph read.** The same test asserts `is_error` with the content \"unassigned node ID\". It also asserts that the graph recorded only the later read of node 2, so the rejected 999 caused no read.\n- **Malformed value gives a tool error before any graph read.**\n  - `agent_edge_tools_record_selections_without_validating_targets` sends `{\"node\":\"unknown\"}` to `outgoing_edges`. It asserts an error result with the \"invalid node ID\" message, no recorded dependencies, and `lookups == 0`.\n  - `configured_agent_uses_domain_source_tools_in_independent_executions` sends `read_node({\"node\":\"unknown\"})` and asserts the output contains \"invalid node ID\".\n- **Cross-tool and concurrency behaviour.** `tests.rs#fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]` and `tests.rs#fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]` carry the reference. They read nodes by integer ID through the tool path and check the resulting dependencies.\n\n**Residual observations (not gaps)**\n- The unassigned-ID case is asserted only through `read_node`. The malformed case is asserted through `read_node` and `outgoing_edges`. The unassigned and malformed paths for `outline_source` and `outgoing_edges` are not separately asserted. They run through the same `node_argument` code, so they add no independent branch.\n- `project_sources.rs#mod[tests]/fn[outline_tool_rejects_excluded_and_unreadable_sources_without_domain_reads]` exercises `outline_source` with integer node IDs. It is not marked for `node_reference`, and it does not check this requirement's error cases.\n\nEvery clause has a test that exercises it and asserts the outcome, and I found no unacknowledged gap.",
+  "references": "3c7e87a0485748029acc443133b7e92cff7aed4a573241cb0e2a092ba7262de6",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.validation-context.node_reference",
@@ -11,36 +11,66 @@
       ],
       "text": [
         ":::{req} node_reference",
-        "The agent harness serializes the current node, supplied input nodes, and node IDs in tool results using the domain's Serde representation of `D::NodeId`. A tool accepting a node ID deserializes the same JSON value. Its argument schema uses `D::NodeId`'s `JsonSchema` implementation. An invalid ID representation produces a tool error before the domain is queried.",
+        "The agent harness uses the unsigned integer representation of `NodeId<D>` for the current node, supplied inputs, and nodes in tool results. Built-in tools accepting a node ID resolve that integer in the domain's cache. A malformed value or an unassigned integer produces a tool error before any graph read.",
         "",
-        "For example, if a search hit contains `\"node\": {\"Issue\": 42}`, the agent can call `read_node({\"node\": {\"Issue\": 42}})` to read that issue.",
+        "For example, if a search hit contains `\"node\": 7`, the agent can call `read_node({\"node\": 7})` to read the enclosing node.",
         ":::"
       ]
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[supplied_openai_backend_runs_independent_calls_against_a_local_transport]",
-      "hash": "be2ea4292aed9ebefd85b91f462c906f37f6fe23e58f2a413c18a6d3e2d4ecae"
+      "hash": "e2a943a78837f2c1567ae0aee3943348fb3c23610881b112a23d99b09cebfeff"
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]",
-      "hash": "0bb7522373cd58f5d22e38ffe891842f63791cfed89ef4b432977290ee60d79b"
+      "hash": "55063c7bdfb02a7b0e193d469c746430aa45c1340ebe1848a183956427f86264"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]",
-      "hash": "e174b353a5188ba8250c9be15229f041f62a1a7c2cf43ea5d908651282e1132e"
+      "hash": "ce5910db3f51c79716eacd6ed0e14047a6cc9620e87298ed573bacdddbd27216"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[agent_edge_tools_record_selections_without_validating_targets]",
-      "hash": "3752def53e59555536d6dc1ecdaf5eea8533cfaf80529339264b362d8ca838c0"
+      "hash": "26a9315f3b502bade193bcf6eb305da74f2273b900122a29c939344eaf35046e"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "fn[read_node_accepts_a_domain_id_first_supplied_by_the_agent]",
+      "hash": "000d7dca3d7b85b4e4810985f85d4d54109927d9d5603591ba6fe2ea25ac680e"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]",
-      "hash": "78e16bd6b700e8c857faaae083630ff13d18c00aedb0954d61969f2374f072d5"
+      "hash": "6816c3e20ad4c2a25fe0d22c59b3b443360f48b3c428d152fbf6b8fc786aefe1"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "mod[tests]/fn[outline_tool_rejects_excluded_and_unreadable_sources_without_domain_reads]",
+      "hash": "9e19547a70bf5d882ce36087051ce791277fcd47ab9f111ba50ebdb51a2e251c"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tools.rs",
+      "item": "fn[node_argument]",
+      "hash": "e850f86c1806517a52e743a834c3d5722158e2abbc3225af25fd763cb4e9793e"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]",
+      "hash": "1ed5665f9ec2c289cee54045dd4786f9da5d96d93bddb027b4a54299ff7886dc"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tools.rs",
+      "item": "impl[SessionTools<'a,%20D>]/fn[read_node]",
+      "hash": "e993e0995aa3ed56129ddc1a1177fa51938c1f981f925f079a231d5215747e67"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tools.rs",
+      "item": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[dispatch]",
+      "hash": "127e08180a4cf4231f7fd5d501c60d0cd0b28168aad0b1b328504da6ad3bc6dc"
     }
   ],
   "format_version": 1,
@@ -53,7 +83,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "1418933c5aa33548c4ee5b2989887136f7e28758c9084fb36d1589eb32a63e25"
+          "value": "3c7e87a0485748029acc443133b7e92cff7aed4a573241cb0e2a092ba7262de6"
         }
       ]
     },
@@ -65,7 +95,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "b8a925a5df09dc8c1db7a903d02d06a9703f795b1d2995d2a59e43cb659a2243"
+          "value": "998c616cf263126d9a01aef166181e7a7bef972f54af68ebe77671fefe902b89"
         }
       ]
     },
@@ -76,7 +106,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "2e7e926d54f43616b8c69e7803f6eb20e44454cb1f831924386500a8671610da"
+          "value": "1430580f5cd20d4d44b571e0e083e7647f8232070211c9e723833e7f6fff2d73"
         }
       ]
     },
@@ -93,7 +123,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "2bf07459b5022bcff84af767218d5511776670b94e69e7446abd44455a3de024"
+          "value": "c3c8af71f78c9270f948c7c0a21ec744e0d6f1a4de18c66520bc87b325344278"
         }
       ]
     },
@@ -110,7 +140,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ddfb05bf744a25743033a8955c799cba684adced37d4a9feb365c005373b64ac"
+          "value": "da2d1f53e4f8d6772fc96672ec9eb919e8e4cd46540f043050aceba0f79ed6ec"
         }
       ]
     },
@@ -127,7 +157,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "4037c50c3e37c8c956478307a66e779e975c7f51f80fb3f87a4e75369f287fc1"
+          "value": "48a915bd09b5009c59ae08da015119046223c6fa314af6572c8062782a4759d3"
         }
       ]
     },
@@ -144,7 +174,24 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "82ca8d24ea5463f545e0d5a24d4597da02c0c6ae706b186e7a5e85260f66f6c0"
+          "value": "c2adedefda8714618783a82bfd00e73946a1817a41cfd60da9a48aac5e591375"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
+            },
+            "selector": "fn[read_node_accepts_a_domain_id_first_supplied_by_the_agent]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "7c36d600a97334590a56180ea5aa948f770ac27c5189dc083a9d1b87d7afb58e"
         }
       ]
     },
@@ -161,7 +208,92 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "720f54024df4ff4ca27b73cc47144d2b8cf370fbb4036f81a62aacab3480cf09"
+          "value": "0e4c0139880454966fac2bc04043d6b7e3f2ffe3e977b0ad8e64aa7bd51012e0"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "mod[tests]/fn[outline_tool_rejects_excluded_and_unreadable_sources_without_domain_reads]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "adabfe6ee7d3a80a11b4adcd9919eab149bc032138aac7bafc5408bae1ee61bc"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tools.rs"
+            },
+            "selector": "fn[node_argument]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "09f542524d08d34efa1e33ee5e4fdb42ca75a82d047b2bc4e9351956d87a01f9"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "f17b76b251fd2cef878b6e8d5d96b3353b646c3f7d3a2866d8890f12d60c258c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tools.rs"
+            },
+            "selector": "impl[SessionTools<'a,%20D>]/fn[read_node]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "809ed218e20f958bfda2804c47e4fac0f0fda5371420feebda4c76ad1f94bb95"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tools.rs"
+            },
+            "selector": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[dispatch]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "80344bfb37eaf5eeae4280ded444d4983b8930570519d1dfece275ae64eb1c4f"
         }
       ]
     }

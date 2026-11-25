@@ -1,7 +1,7 @@
 {
   "requirement": "Concurrent `verify` calls on the same domain keep separate dependency\nrecords and agent conversations, even for the same source node and criterion.",
   "determination": true,
-  "rationale": "The tests adequately check `requirements.sdk.graph.running-criteria.verify.concurrent`.\n\nThe requirement has two obligations. Concurrent `verify` calls on one domain must keep separate dependency records, and they must keep separate agent conversations. Both must hold even when the source node and criterion are the same.\n\n**Agent conversations and dependency traces:** `crates/trust-but-verify/src/agent/tests.rs#fn[agent_executions_isolate_conversations_and_dependency_traces]`\n- It runs two `verify_with_agent` calls concurrently with `futures::join!` on one `Memory` graph.\n- Both calls use the `Question` criterion. Its `source_node_id` is always `Node(1)` and its `criterion_path` is always `[\"question\"]`. The two calls differ only in the agent context, `alpha` or `beta`. So this is the same source node and the same criterion.\n- The `ParallelConversations` provider uses a `Barrier(2)`, so the two conversations must be in flight at the same time. A 2-second timeout fails the test if either call blocks the other.\n- The provider asserts on every turn that the chat history length is `2 + turn*2`. It asserts the history contains only its own page contents and never the other conversation's. Both conversations use the tool call ID `same-call-id`, and the provider checks that the last delivered page belongs to its own conversation.\n- The test asserts three calls per conversation.\n- It stores the two results and loads the records. The `alpha` record has only the dependency on `Node(1)`. The `beta` record has the `OutgoingEdges` dependency on `Node(1)` plus the `Node(2)` content dependency. Neither record contains the other's dependencies.\n\n**Dependency records for the same source and criterion:** `crates/trust-but-verify/tests/contracts.rs#fn[concurrent_same_criterion_executions_keep_complete_independent_records]`\n- Two `Review` criteria share source `Node(1)` and criterion path `[\"behavior\"]`. They differ in revision, output and reads (`Node(2)` versus `Node(3)`).\n- A barrier forces the two executions to overlap, and a 5-second timeout fails the test if they wait on each other.\n- It asserts each result's output. It asserts that nothing is written during `verify`, and that `store_evidence` is run for both.\n- The saved record is then checked as a whole. Its output, version and dependencies must all come from the same execution. The expected dependencies are a single `Node(2)` fingerprint \"first input\" for `first` and a single `Node(3)` fingerprint \"second input\" for `second`. Dependencies from the other execution would fail the assertion.\n- It also asserts two executions, two writes and one record.\n\nTogether the tests cover both obligations and the \"same node and criterion\" condition. A bug that mixed dependency traces or conversation histories between concurrent calls would fail these assertions. Both tests carry `{test}` references to the subject, so there is no marking gap.",
+  "rationale": "**Obligations.** The requirement has two parts. Concurrent `verify` calls on one domain must keep (1) separate dependency records and (2) separate agent conversations. Both must hold even when the calls share a source node and a criterion.\n\n**Agent conversations and dependency records: `crates/trust-but-verify/src/agent/tests.rs#fn[agent_executions_isolate_conversations_and_dependency_traces]`**\n- The test runs two `verify_with_agent` calls concurrently with `futures::join!`. Both use `Question` on `Node(1)`.\n- `Question`'s `criterion_path` is the fixed path `[\"question\"]`. So the two calls share the source node and the criterion. They differ only in the prompt name (`alpha` or `beta`) and in whether they read the node or its successors.\n- The `ParallelConversations` provider has a `Barrier(2)`, so the two conversations really interleave. It makes these checks on every turn:\n  - the system message matches the conversation;\n  - the history length is `2 + 2*turn`;\n  - the history contains only its own contents and never the other conversation's;\n  - the last delivered page belongs to its own conversation, even though both use the same tool-call ID.\n- The test then asserts each call's output (`alpha` and `beta`) and each provider's call count (3).\n- It stores both evidence records and asserts the dependency lists exactly. Alpha's list is just `Node(1)`. Beta's list is `OutgoingEdges(Node(1), Label, …)` plus `Node(2)`. Neither trace leaks into the other.\n- A last check confirms that the stored record for the shared criterion is the last one stored (`beta`).\n\n**Dependency records for the same node and criterion: `crates/trust-but-verify/tests/contracts.rs#fn[concurrent_same_criterion_executions_keep_complete_independent_records]`**\n- Two `Review` criteria run concurrently under `validation::verify`. They share the same source node and the same criterion path `behavior`, but they differ in the input nodes they read and in their revisions.\n- A barrier makes the two executions overlap, and a timeout shows they do not wait on each other.\n- The test asserts each output, and that nothing is written before `store_evidence`.\n- After storing, it asserts that the saved record's version and dependencies are wholly one execution's and not a mix of the two.\n- It also asserts 2 executions, 2 writes and 1 final record.\n\n**Other tests.** `crates/trust-but-verify/src/graph/validation_tests.rs#fn[concurrent_single_node_validations_keep_separate_traces]` covers distinct nodes. It is not marked for this requirement, but it is not needed.\n\n**Gaps.** I found none. Both clauses (conversations and dependency traces) and the \"same node and criterion\" boundary are exercised with strong assertions, so a shared or merged trace or conversation would fail these tests. No acknowledgments or `{fixme}` references are involved.",
   "references": "a3e904046faacd0e29b7a681bc3151d22aa775c6614cef3470f5c0caaba96651",
   "inputs": [
     {
@@ -20,32 +20,22 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[agent_executions_isolate_conversations_and_dependency_traces]",
-      "hash": "1a630ac3fb2283ca46e49986874acc76f61609770936a7ad10a4054a5c5fda31"
+      "hash": "7ade1fe7ac35deec58a416aa42b2795c4958849bca8cc8221f067437f7aac4aa"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[concurrent_same_criterion_executions_keep_complete_independent_records]",
-      "hash": "3d76691636b26e422fb12b95ed732bd609ae9beb5fc48996a57feaecd033004f"
+      "hash": "4f73c97763bcf0157666d94ecfd67a67a9ffe643002796b9b3e90bfb31f78cb4"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "fn[distinct_pages]",
-      "hash": "71b30a6c494353acecdeadc53d2f250a6e34cb8a697572bfa3cde2d13c5970cc"
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "fn[concurrent_single_node_validations_keep_separate_traces]",
+      "hash": "657d8b2da60ea29abeedb9c94da1b3a2a877add285648841e65d988648bdaba4"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "impl[Question/Criterion<Memory>]",
-      "hash": "1509e1be34254a10f4345b78252f623313b2d98ecdc78418b63a033d823e91e9"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "impl[Review<O>/Criterion<Application>]",
-      "hash": "80125238d6844df754be58fea7fc6f11ec8e35bfb8d1b7ca3637783d4fedb707"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "fn[verify]",
-      "hash": "f7a223411252d341db98d4df3fdeb16d515a968cd1d3bde482f6accab4a0edcd"
+      "hash": "7df044f913ad87269b9c0c4e8249ee3c438445532bd0e42ea57d4c1ecf80baa2"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -53,19 +43,24 @@
       "hash": "b1426a3b95ac786ea000ec2f1f8726669fb79c303a8e5fbf5123576add36da5e"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "struct[Question]",
-      "hash": "35e06302b085fcd8997745325322bbd449f619aa13141a5d746fecf3fadb2ccf"
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "struct[Review]",
+      "hash": "652b0fbf1429a07f1f684ae3909df03bd45fa67026c91ad5f951a06c00a5cb24"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "impl[Question/Criterion<Memory>]/fn[source_node_id]",
-      "hash": "ad86bba2d5c315b8ec0f90605553d46a6c8589c902df9847d9e3ac34a02695d4"
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "impl[Review<O>/Criterion<Application>]",
+      "hash": "a202e3d0ad8c390e39b5761a40097d16970aed50c75a5335758831dbce63b749"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "impl[Question/Criterion<Memory>]/fn[criterion_path]",
       "hash": "804d15dafcff81bf62b34819458238ccb9073ae21c016ffd5ab72af8d98667d3"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "fn[distinct_pages]",
+      "hash": "71b30a6c494353acecdeadc53d2f250a6e34cb8a697572bfa3cde2d13c5970cc"
     }
   ],
   "format_version": 1,
@@ -118,7 +113,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "23ffea656399fb60c3f6e42e7332e777b11812e6bd2e358619da20c1a5a7930a"
+          "value": "018f8509f75eee891e007d42461e1acecd027a34e9aeb2b3481e8a72f2e09f30"
         }
       ]
     },
@@ -135,7 +130,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "77427c0a08ef1e5a1444910d28df016e077c729a29872d09a3a378f98a67d061"
+          "value": "33d99cc7e85459def8c3b050059876740d56532315d55122813711348da160a7"
         }
       ]
     },
@@ -145,14 +140,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
             },
-            "selector": "fn[distinct_pages]"
+            "selector": "fn[concurrent_single_node_validations_keep_separate_traces]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1a1384d6f8edf12cba153e6cc3e732699e7cb106e2b5e5ed3656e30135dd2a19"
+          "value": "268fdc7ca61481f590070d30fa2489e82a30ab3da883895df98e0f2cdac57d68"
         }
       ]
     },
@@ -169,41 +164,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "875d78c14515ef5a67826a4fb06aa1bb2b4b5fc39383828a515671cfe0d70aa8"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "impl[Review<O>/Criterion<Application>]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "ec4b506d81f1c1eb1ff7e707aae8846c8c7182cd67ef16e12eed86066915efdc"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
-            },
-            "selector": "fn[verify]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "5ae3ece70472ddf1bec3c3361abb1714f3a20fb84b0717b84befd0a53ee3263e"
+          "value": "94134c861caa228c52bc623fa178bc3fdd718f4786e17e781c64f5d3e3e37906"
         }
       ]
     },
@@ -230,14 +191,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
+              "location": "crates/trust-but-verify/tests/contracts.rs"
             },
-            "selector": "struct[Question]"
+            "selector": "struct[Review]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "3b7b2b250ca9c4dfa40b6b7a5ba0d3b42199f809a297e643bce28fb9e372a2ec"
+          "value": "6f6dfabb0e0bc718ad74abbe596207c57ffdd3529da5ebeb703256cf279a7def"
         }
       ]
     },
@@ -247,14 +208,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
+              "location": "crates/trust-but-verify/tests/contracts.rs"
             },
-            "selector": "impl[Question/Criterion<Memory>]/fn[source_node_id]"
+            "selector": "impl[Review<O>/Criterion<Application>]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "235158d8eab1a97787f7bfc721bbe8e0b01508cb1394c308378e28c39d36d375"
+          "value": "422d409f3472f86aee66952d67d31ab31f1a046d31211452fa7e63cf11b82422"
         }
       ]
     },
@@ -272,6 +233,23 @@
         {
           "scheme": "habeas-input-v1",
           "value": "175458090f01e55132cdc9cb9c8bd93cec5ed4182b04e3c960912cb62dbe1c39"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
+            },
+            "selector": "fn[distinct_pages]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "1a1384d6f8edf12cba153e6cc3e732699e7cb106e2b5e5ed3656e30135dd2a19"
         }
       ]
     }

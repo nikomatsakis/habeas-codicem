@@ -1,7 +1,7 @@
 {
-  "example": "{cite}`requirements.sdk.graph.agent-harness.agent_config`\n{cite}`requirements.sdk.graph.agent-harness.with_agent`\n{cite}`requirements.sdk.validation-cache.with_agent`\n\nThis Bedrock configuration selects a model, AWS profile, and region for the\ndomain's cache:\n\n```rust,ignore\nuse trust_but_verify::agent::AgentConfig;\nuse trust_but_verify::agent::BedrockConfig;\nuse trust_but_verify::domain::ValidationCache;\n\nlet config = AgentConfig::Bedrock(\n    BedrockConfig::new(\"us.anthropic.claude-sonnet-5-5\".into())\n        .aws_profile(\"development\".into())\n        .region(\"us-east-1\".into()),\n);\nlet cache = ValidationCache::with_agent(config);\n```",
+  "example": "{cite}`requirements.sdk.graph.agent-harness.agent_config`\n{cite}`requirements.sdk.graph.agent-harness.with_agent`\n{cite}`requirements.sdk.validation-cache.with_agent`\n\nThis Bedrock configuration selects a model, AWS profile, and region for the\ndomain's cache:\n\n```rust,ignore\nuse trust_but_verify::agent::AgentConfig;\nuse trust_but_verify::agent::BedrockConfig;\nuse trust_but_verify::domain::ValidationCache;\n\nlet config = AgentConfig::Bedrock(\n    BedrockConfig::new(\"us.anthropic.claude-sonnet-5-5\".into())\n        .aws_profile(\"development\".into())\n        .region(\"us-east-1\".into()),\n);\nlet cache = ValidationCache::<AppDomain>::with_agent(config);\n```",
   "determination": true,
-  "rationale": "The example `requirements.sdk.graph.agent-harness.setup` is a concrete case. It builds a Bedrock `AgentConfig` with model `us.anthropic.claude-sonnet-5-5`, AWS profile `development` and region `us-east-1`. It passes that config to `ValidationCache::with_agent` and expects the cache to select that agent. The cited requirements add three things. The cache starts empty. Backend setup is deferred. The SDK does not persist the configuration.\n\nThe one `{test}` reference to the example is `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[bedrock_configuration_attaches_to_a_cache_without_being_persisted]`. It checks each outcome:\n- **Same inputs as the example:** the test builds the identical Bedrock config and calls `ValidationCache::with_agent(config.clone())`.\n- **Cache is empty and the agent is selected:** it asserts `outlines` is empty and `sources` is `None`. It asserts the cache holds an agent whose `config` equals the supplied Bedrock config. The clone-shared `Arc` pointer check (`Arc::ptr_eq`) shows the selection belongs to the domain's cache.\n- **Setup is deferred:** it runs `refresh_evidence` with the deterministic `Question(false)` criterion and gets a result without any Bedrock connection. The test does not check `provider.get().is_none()` itself. The sibling test `configured_agents_initialize_only_when_asked_and_report_setup_errors` makes that assertion for OpenAI and also shows setup errors surface only on an awaited ask.\n- **Nothing is persisted:** it serializes the stored evidence record. It asserts there is no `backend` key and that the text contains neither `development` nor `claude-sonnet`.\n\nTest helpers (`TestDomain`, `Question`, `Content`) are simple and consistent with these assertions.\n\nUnresolved question: no assertion checks that the `BedrockConfig` builder methods store the profile and region. That belongs to the `BedrockConfig` and `agent_config` requirements, not to this example's attach-to-cache outcomes. Config equality in the test would catch `with_agent` altering or dropping the config. I found no gap.",
+  "rationale": "The example `requirements.sdk.graph.agent-harness.setup` describes a concrete case. It builds an `AgentConfig::Bedrock` with model `us.anthropic.claude-sonnet-5-5`, AWS profile `development` and region `us-east-1`. It then passes that config to `ValidationCache::<AppDomain>::with_agent(config)`. The expected behavior is that the config selects the agent for the domain's cache. The cited requirements add that the cache starts empty and shares its agent with its clones. They also say the SDK does not persist the config.\n\nThe test is `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[bedrock_configuration_attaches_to_a_cache_without_being_persisted]`. It carries a `{test}` reference to the example.\n- **Same scenario as the example.** It builds the identical Bedrock config (same model, `.aws_profile(\"development\")`, `.region(\"us-east-1\")`). It attaches that config with `ValidationCache::with_agent(config.clone())`, and `TestDomain::cache` returns that cache.\n- **The config selects the agent.** `domain.cache().agent...backend == config` is checked with `assert_eq!`. The config is a derived `PartialEq` enum, so a model, profile or region that was dropped or altered would fail the comparison.\n- **The cache is empty.** `outlines` is asserted empty and `sources` is asserted `None`.\n- **Clones share the agent.** `Arc::ptr_eq` between the domain's agent and the cloned peer's agent confirms that requests through the cache and its clones use the same agent.\n- **The cache works in a criterion flow.** `validation::refresh_evidence` runs through the domain's cache and succeeds, with an asserted output of false.\n- **The config is not persisted.** The saved record is serialized. The test asserts it has no `backend` key and that its text contains neither `development` nor `claude-sonnet`.\n\nThe test covers every outcome the example states or cites. It also has `{test}` references to the cited `with_agent` requirements. I found no assertion that contradicts the example and no unacknowledged gap. The example's `{cite}` requirements are context only, and I did not reassess their implementation or tests.",
   "references": "7c7524ee8e51af918c33943dcb55e9936d8e326b278323071bdbeabdfe57c6a0",
   "inputs": [
     {
@@ -28,7 +28,7 @@
         "        .aws_profile(\"development\".into())",
         "        .region(\"us-east-1\".into()),",
         ");",
-        "let cache = ValidationCache::with_agent(config);",
+        "let cache = ValidationCache::<AppDomain>::with_agent(config);",
         "```",
         ":::"
       ]
@@ -57,6 +57,7 @@
         "Trait implementations",
         "",
         "```rust,ignore",
+        "impl<D: Domain> AgentSettings<D> for AgentConfig;",
         "impl Clone for AgentConfig;",
         "impl Debug for AgentConfig;",
         "impl<'de> Deserialize<'de> for AgentConfig;",
@@ -89,13 +90,18 @@
       "text": [
         ":::{req} with_agent",
         "",
-        "`ValidationCache::with_agent(config)` creates an empty cache and selects the",
-        "agent for requests made by criteria on this domain. The SDK defers backend",
-        "setup until a criterion awaits an agent request.",
+        "`ValidationCache::with_agent` accepts either a plain `AgentConfig` or an agent",
+        "configured with tools under {cite}`requirements.sdk.graph.agent-harness.with_tool`.",
+        "It creates an empty cache. Requests through the cache and its clones run that",
+        "agent with its registered tools. The SDK defers backend setup until a criterion",
+        "awaits an agent request.",
         "",
         "```rust,ignore",
-        "impl ValidationCache {",
-        "    pub fn with_agent(config: AgentConfig) -> Self;",
+        "impl<D: Domain> ValidationCache<D> {",
+        "    pub fn with_agent(config: impl AgentSettings<D>) -> Self",
+        "    where",
+        "        D::EdgeLabel: DeserializeOwned + JsonSchema + PartialEq,",
+        "        D::Error: Display;",
         "}",
         "```",
         ":::"
@@ -104,97 +110,17 @@
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[bedrock_configuration_attaches_to_a_cache_without_being_persisted]",
-      "hash": "42a29ce2797c29a324177f075bf3d94d9a8aba72099ee23b05af45ab1f237c08"
+      "hash": "ecadd592adeb3da6293afffc7a174c77ceac4f5cdcb5e716854950cc094faea8"
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
-      "item": "use@8c913bc191d3",
-      "hash": "8c913bc191d3eab9ee1f4951e52076be96ddee96148cdb6758f10bcd0e3702f5"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/configured.rs",
-      "item": "use@fdeaa17ec648",
-      "hash": "fdeaa17ec648f52e3dcb57f79376f24063a5fb11bf6bd7c4e58c765a8fcea3fc"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/configured.rs",
-      "item": "use@ccae971ec531",
-      "hash": "ccae971ec5313178c18ad2a05cbdaa14715b112aa6eff3adbbe0eaef7bcde7ae"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/configured.rs",
-      "item": "use@bb4ce3a132f3",
-      "hash": "bb4ce3a132f3c4bb6eca80167ee3878eeeb3b4c68fb9e1b6d8af5306f1a123a3"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/configured.rs",
-      "item": "use@97fe13368a3b",
-      "hash": "97fe13368a3bff6c91fe0e17f4cad58f39ba6b2de966360d5b200eaa8141f1de"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/configured.rs",
-      "item": "use@b49cd2172cef",
-      "hash": "b49cd2172cef8d8edfab8713edda8c3cbd89ccb1b084621f6eae860ca2e7f648"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/configured.rs",
-      "item": "use@ae28650edb42",
-      "hash": "ae28650edb426279725e0ce17aa894e8e0be5440573cbf57b3b9d71fbea44ba9"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/configured.rs",
-      "item": "use@2637953d6be1",
-      "hash": "2637953d6be1f12b89adedbab5e87674cefccf8a280f9049db725b46bbedfe50"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/configured.rs",
-      "item": "use@dd180aab84ff",
-      "hash": "dd180aab84ff621f33103beb86966af510f7cc9e184fe894208fe2eccd62123b"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/configured.rs",
-      "item": "struct[ConfiguredAgent]",
-      "hash": "6e56d70dded98fce30c939de46c8b7d2c16cc4a50ca6be9a930c4ef54efe3d99"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/configured.rs",
-      "item": "impl[ConfiguredAgent]",
-      "hash": "d900c4f13fcfd95bd4637a3bea4c04722dc5c457f0afaafd0c975904b380f890"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/configured.rs",
-      "item": "impl[ConfiguredAgent/Agent<D>]",
-      "hash": "ab3b24785218aa7ef7a98fe6212e1cee67bea81341c89751e854044887ee0b32"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/configured.rs",
-      "item": "impl[Arc<P>/CompletionProvider]",
-      "hash": "8b770b42ed302e1c6fe1573059d6a007f8bc66a849eb41405a03e93bec862dfe"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/configured.rs",
-      "item": "impl[Arc<T>/ToolFactory<D>]",
-      "hash": "76b8c6d0aee4dd7553315753c64b5ccec40a205f7d5c3d27be8eeb44f52716d0"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/configured.rs",
-      "item": "mod[tests]",
-      "hash": "da3339d0e6851faeb8c6853471ba12475b7011b8bdd22d212df9953523cfa52b"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/configured.rs",
-      "item": "mod[tests]/struct[TestDomain]",
-      "hash": "d9d831950c88420f44df9edd220bec2342147a75e7d6c0c41514ba393074406d"
+      "item": "mod[tests]/use@6dcbf24bddc5",
+      "hash": "6dcbf24bddc578190e7a8b22631c801d1c12144ccfb4e95aeaf47dfe44100c81"
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/impl[TestDomain/Domain]/fn[cache]",
-      "hash": "ac6817869507c0538b27032de9e9b533806b0775959bc36abd25afbf09f734b3"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/configured.rs",
-      "item": "mod[tests]/impl[Question/Criterion<TestDomain>]",
-      "hash": "762be84c2ee2706e0e1b910d1a730df7a734b3d24a2cf18469fbf980b72352be"
+      "hash": "f55be61b15d24bce92a1074f104b961fc5e28fdc3fed9aee575932a375d5832a"
     }
   ],
   "format_version": 1,
@@ -230,7 +156,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ca3fd259c22ec862a3f0f0038aef70da76836adb13cc5d8147c02a7e3290fd35"
+          "value": "82ed275c13bc919260aa9021172acaaeb3a6d5f5e2bc3d10c4d8d95d22fe4b8d"
         }
       ]
     },
@@ -241,7 +167,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "e7b31f9e904327fe339d7c22a7a5a8456b1f0da040790374ea7bfd9fdfedf0d2"
+          "value": "17c5ecc7bf1bbac6f2e6ec7ace266d14e705d525d103fa974d0230e0af6272dd"
         }
       ]
     },
@@ -263,7 +189,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "e331ad942f3d401f2b6d5693cd3aca610d7e652903330cc047cf1bf03b3566ed"
+          "value": "4214f86ab8fd6f95b6e9450fbb8ef01fdca90ea19ef4390ed1cdfbbcb7df207f"
         }
       ]
     },
@@ -280,7 +206,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "21d382e64b8faca1dad18f12240921af7dd41a247dc87050710629f75076aaad"
+          "value": "d0c488aa0779b9330d50b5aa4966fed709f04950c4c786fd9148a35675522d38"
         }
       ]
     },
@@ -292,267 +218,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/configured.rs"
             },
-            "selector": "use@8c913bc191d3"
+            "selector": "mod[tests]/use@6dcbf24bddc5"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "a6290a846770e90a6d64cff142635666d06c62591ec328307a573076b4121af2"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/configured.rs"
-            },
-            "selector": "use@fdeaa17ec648"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "1206b86d35e3d348f0b8eaae365e7f7e3d10c9c1443c68812f83b315de60d8d6"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/configured.rs"
-            },
-            "selector": "use@ccae971ec531"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "0212317c758a3af9be49d0f941dc8d3602a8e76ee7a2260fb4ca4c432122e4b0"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/configured.rs"
-            },
-            "selector": "use@bb4ce3a132f3"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "c637615ebacd55307b89e24efae60d961d383fe6252d3cc579c72bb2f8ca6cd7"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/configured.rs"
-            },
-            "selector": "use@97fe13368a3b"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "0c38f794fd34f867221798a71fc472a6a24049f0f375b93762ba9c586e285171"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/configured.rs"
-            },
-            "selector": "use@b49cd2172cef"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "69bca710f721b12919361b239ae308a0cbd6c20cc5cf3098b9c314301ec06abb"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/configured.rs"
-            },
-            "selector": "use@ae28650edb42"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "77924e4d5535ebf692c90680977f951c99280a7fc59c1eb55cb9d65ea7b5a1e6"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/configured.rs"
-            },
-            "selector": "use@2637953d6be1"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "a4658851292c33ffa251e30b37eed0dafc35db1b1b5800c9914afaa68ea8805c"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/configured.rs"
-            },
-            "selector": "use@dd180aab84ff"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "50cfce759f6a80f93aff2e9ed547c3a828e5bf0586b6f34653910e7cf1f454a8"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/configured.rs"
-            },
-            "selector": "struct[ConfiguredAgent]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "c5a56e6affdb636cf39d5749661aa1564acadb6b31681f7cd40ded50ffe96ce1"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/configured.rs"
-            },
-            "selector": "impl[ConfiguredAgent]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "438003c4ba5d10b169b138ddc19d54bf55c5fb7d714e3b5a516f6e447cedebbc"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/configured.rs"
-            },
-            "selector": "impl[ConfiguredAgent/Agent<D>]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "cb9ea17c405a04782ca16f6e96ff561858c34f15d94bd76fa8c566551f5a1725"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/configured.rs"
-            },
-            "selector": "impl[Arc<P>/CompletionProvider]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "c6f4f820d1b8a1cad76feca65dec33d27845557b94180ff92d4f74e3bfdb3c4c"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/configured.rs"
-            },
-            "selector": "impl[Arc<T>/ToolFactory<D>]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "d3ab376833819bb5889ccdd79cfde78c7d3684a21e012acb2454c68ddadfe703"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/configured.rs"
-            },
-            "selector": "mod[tests]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "e8712d299c381232b70f944d0a840143790bc13b3039766ef662c6dcdaa68004"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/configured.rs"
-            },
-            "selector": "mod[tests]/struct[TestDomain]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "576aea0013eb44a6d2c97b73b558f47f15eb57a151418eca52096986d693cb15"
+          "value": "7528743919a0e79c861e9f79894b2e30dd44ffb609707f4aa23d8506f22fefe1"
         }
       ]
     },
@@ -569,24 +240,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "8b49e0f8d1ba56cf353fe94bebee60dc87049e309d2eed1b157b2bbfabaac0fd"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/configured.rs"
-            },
-            "selector": "mod[tests]/impl[Question/Criterion<TestDomain>]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "48a25057bc91242396be2f9dba5f3742a81cbbbb3a27022e6a9a63009cc3533e"
+          "value": "ec053ce68c128b74c67506eb3f535bc6b6efc40c2798f2fc72d111767216f3c7"
         }
       ]
     }
