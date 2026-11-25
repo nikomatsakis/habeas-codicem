@@ -567,7 +567,7 @@ mod tests {
         std::fs::write(root.path().join("code.rs"), code).unwrap();
         let tools = ProjectSources {
             sources: Sources::new(root.path()).into(),
-            domain: project("").into(),
+            domain: project("fn item_4() {}").into(),
         };
         let mut session = SessionTools::new(tools.session());
         session.dispatch("list_sources", &json!({})).await.unwrap();
@@ -613,6 +613,14 @@ mod tests {
             assert_eq!(item["node"], format!("n{i}"));
             assert_eq!(item["kind"], if i == 0 { "" } else { "fn" });
         }
+        let context = ValidationContext::new(tools.domain.as_ref(), String::new());
+        let read = session.read_node(&context, &items[5]).unwrap();
+        let text: Value = serde_json::from_str(&read.text).unwrap();
+        assert_eq!(text["text"], "fn item_4() {}");
+        assert_eq!(
+            tools.domain.0.lock().unwrap().read_nodes,
+            ["code.rs#fn[item_4]"]
+        );
     }
 
     // {test}`requirements.sdk.graph.validation-context.list_sources.mcp`
