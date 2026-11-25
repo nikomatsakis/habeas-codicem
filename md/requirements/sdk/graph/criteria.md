@@ -31,7 +31,7 @@ Every {term}`requirements.sdk.graph.criteria.criterion` type implements
 pub trait Criterion<D: Domain>: Send + Sized {
     type Ok: Serialize + DeserializeOwned + Send;
 
-    fn source_node_id(&self) -> D::NodeId;
+    fn source_node_id(&self) -> NodeId<D>;
     fn criterion_path(&self) -> CriterionPath;
     fn version(&self) -> CriterionVersion;
     fn execute(
@@ -78,7 +78,7 @@ identify the requirement and review policy; `TestReview` describes the answer:
 /// Determine whether the requirement's tests cover its observable behavior
 /// and edge cases.
 struct BehavioralAdequacy {
-    requirement: HabeasNodeId,
+    requirement: NodeId<HabeasDomain>,
     review_policy: String,
 }
 
@@ -122,7 +122,7 @@ pub trait Criterion<D: Domain>: Send + Sized {
     // ...
 
     /// The node this question is about.
-    fn source_node_id(&self) -> D::NodeId;
+    fn source_node_id(&self) -> NodeId<D>;
 
     // ...
 }
@@ -139,7 +139,7 @@ A *criterion path* is an ordered sequence of string segments identifying a
 {term}`requirements.sdk.graph.criteria.source_node`.
 [`CriterionPath`](../../../rustdocs/trust_but_verify/graph/struct.CriterionPath.html)
 represents this path, while
-[`NodeId`](../../../rustdocs/trust_but_verify/domain/trait.Domain.html#associatedtype.NodeId)
+`NodeId<D>`
 and its stable
 {term}`requirements.sdk.graph.node_path` identify the source node.
 For example, a requirement might use `["text"]`, `["behavior"]`, and

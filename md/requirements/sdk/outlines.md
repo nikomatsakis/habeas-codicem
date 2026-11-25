@@ -2,7 +2,7 @@
 
 Use an outline to select a function, requirement, configuration entry, or other
 item from a file.
-[`OutlineId`](../../rustdocs/trust_but_verify/outline/struct.OutlineId.html)
+`OutlineData`
 identifies the item;
 [`OutlineContent`](../../rustdocs/trust_but_verify/outline/struct.OutlineContent.html) loads its
 contents and supplies the text and structural fingerprint used in a review.
@@ -34,14 +34,14 @@ items and how they are named and nested.
 An *item selector* identifies an item within a
 {term}`requirements.sdk.outlines.outline`, such as `mod[auth]/fn[check_token]`.
 The empty selector identifies the file root.
-[`OutlineId`](../../rustdocs/trust_but_verify/outline/struct.OutlineId.html) pairs the
+`OutlineData` pairs the
 selector with the file's path.
 :::
 
 :::{req} address_identity
 :test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
 
-`OutlineId` identifies a file and an item within it. Its path and selector
+`OutlineData` identifies a file and an item within it. Its path and selector
 alone determine its identity; equivalent addresses compare equally when
 reconstructed in another process. Constructing an address performs no file read. `root(path)` selects the whole
 file. Both `new(path, selector)` and the `selector` builder validate the selector
@@ -50,12 +50,12 @@ Selectors follow {cite}`requirements.sdk.outlines.selector_syntax`.
 
 ```rust,ignore
 #[non_exhaustive]
-pub struct OutlineId {
+pub struct OutlineData {
     pub path: PathBuf,
     pub selector: String,
 }
 
-impl OutlineId {
+impl OutlineData {
     pub fn root(path: impl Into<PathBuf>) -> Self;
     pub fn selector(self, selector: String) -> Result<Self, OutlineError>;
     pub fn new(
@@ -68,17 +68,18 @@ impl OutlineId {
 Trait implementations
 
 ```rust,ignore
-impl Clone for OutlineId;
-impl Debug for OutlineId;
-impl<'de> Deserialize<'de> for OutlineId;
-impl PartialEq for OutlineId;
-impl Serialize for OutlineId;
-impl Eq for OutlineId;
+impl Clone for OutlineData;
+impl Debug for OutlineData;
+impl<'de> Deserialize<'de> for OutlineData;
+impl PartialEq for OutlineData;
+impl Serialize for OutlineData;
+impl Eq for OutlineData;
+impl Hash for OutlineData;
 ```
 :::
 
 ```rust,ignore
-let function_id = OutlineId::root("src/auth.rs").selector("mod[auth]/fn[check_token]".into())?;
+let function_id = OutlineData::root("src/auth.rs").selector("mod[auth]/fn[check_token]".into())?;
 ```
 
 ## Parse an outline selector
@@ -239,31 +240,31 @@ pub struct OutlineContent { /* private fields */ }
 
 impl OutlineContent {
     pub fn from_path(
-        cache: &ValidationCache,
+        cache: &ValidationCache<impl Domain>,
         path: impl AsRef<Path>,
     ) -> Result<Self, OutlineError>;
     pub fn from_id(
-        cache: &ValidationCache,
-        id: &OutlineId,
+        cache: &ValidationCache<impl Domain>,
+        id: &OutlineData,
     ) -> Result<Self, OutlineError>;
     pub fn from_source(
-        cache: &ValidationCache,
+        cache: &ValidationCache<impl Domain>,
         filename: impl AsRef<Path>,
         source: Arc<str>,
     ) -> Result<Self, OutlineError>;
     pub fn from_path_with<L: OutlineLang>(
-        cache: &ValidationCache,
+        cache: &ValidationCache<impl Domain>,
         language: &L,
         path: impl AsRef<Path>,
     ) -> Result<Self, OutlineError>;
     pub fn from_source_with<L: OutlineLang>(
-        cache: &ValidationCache,
+        cache: &ValidationCache<impl Domain>,
         language: &L,
         filename: impl AsRef<Path>,
         source: Arc<str>,
     ) -> Result<Self, OutlineError>;
     pub fn select(&self, selector: &str) -> Result<Self, OutlineError>;
-    pub fn id(&self) -> &OutlineId;
+    pub fn id(&self) -> &OutlineData;
     pub fn text(&self) -> &str;
     pub fn outline(&self) -> &Outline;
     pub fn structural_hash(&self) -> &str;
@@ -281,7 +282,7 @@ impl NodeContents for OutlineContent;
 :::
 
 ```rust,ignore
-let cache = ValidationCache::new();
+let cache = ValidationCache::<AppDomain>::new();
 let file = OutlineContent::from_path(&cache, "src/auth.rs")?;
 let function = OutlineContent::from_id(&cache, &function_id)?;
 ```
@@ -298,7 +299,7 @@ use std::sync::Arc;
 impl OutlineContent {
     /// Outline supplied text without reading the named file.
     pub fn from_source(
-        cache: &ValidationCache,
+        cache: &ValidationCache<impl Domain>,
         filename: impl AsRef<Path>,
         source: Arc<str>,
     ) -> Result<Self, OutlineError>;
@@ -394,7 +395,7 @@ impl OutlineContent {
     pub fn select(&self, selector: &str) -> Result<Self, OutlineError>;
 
     /// Address of the selected item.
-    pub fn id(&self) -> &OutlineId;
+    pub fn id(&self) -> &OutlineData;
 
     /// Original selected text, including attached source, before redaction.
     pub fn text(&self) -> &str;
@@ -715,13 +716,13 @@ language's fingerprinting rules under
 ```rust,ignore
 impl OutlineContent {
     pub fn from_path_with<L: OutlineLang>(
-        cache: &ValidationCache,
+        cache: &ValidationCache<impl Domain>,
         language: &L,
         path: impl AsRef<Path>,
     ) -> Result<Self, OutlineError>;
 
     pub fn from_source_with<L: OutlineLang>(
-        cache: &ValidationCache,
+        cache: &ValidationCache<impl Domain>,
         language: &L,
         filename: impl AsRef<Path>,
         source: Arc<str>,

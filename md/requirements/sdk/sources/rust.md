@@ -105,7 +105,7 @@ Attributes attached to an item participate in that item's hash.
 use trust_but_verify::domain::NodeContents;
 use trust_but_verify::outline::OutlineContent;
 
-let cache = trust_but_verify::domain::ValidationCache::new();
+let cache = trust_but_verify::domain::ValidationCache::<AppDomain>::new();
 let select = |source: &str| {
     OutlineContent::from_source(&cache, "auth.rs", source.into())?
         .select("fn[check_token]")

@@ -18,7 +18,15 @@ documented TBV public API.
 
 - `crate trust_but_verify` — [SDK public interface](../sdk.md)
   - `mod agent` — [Choose an agent backend](graph/agent-harness.md#choose-an-agent-backend)
+    - `trait AgentSettings` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.AgentSettings)
+    - `struct AgentWithTools` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.AgentWithTools)
+      - `with_tool()`
+    - `trait Tool` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.Tool)
+      - `name()`
+      - `description()`
+      - `execute()`
     - `enum AgentConfig` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.agent_config) · [Choose an agent backend](graph/agent-harness.md#choose-an-agent-backend)
+      - `with_tool()` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.with_tool)
     - `enum OptionValue` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.OptionValue) · [Backend settings and credentials](graph/agent-harness.md#backend-settings-and-credentials)
     - `struct BedrockConfig` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.BedrockConfig) · [Choose an agent backend](graph/agent-harness.md#choose-an-agent-backend) · [Backend settings and credentials](graph/agent-harness.md#backend-settings-and-credentials)
       - `model`
@@ -65,7 +73,7 @@ documented TBV public API.
   - `mod domain` — [Define the application domain](../sdk.md#defining-the-application-domain)
     - `trait Domain` — [Declaration](../sdk.md#habeas-req-requirements.sdk.domain) · [Define the application domain](../sdk.md#defining-the-application-domain)
       - `Error`
-      - `NodeId`
+      - `NodeData` — [Declaration](graph.md#habeas-req-requirements.sdk.graph.NodeData)
       - `NodeContent`
       - `EdgeLabel`
       - `source_node()`
@@ -76,12 +84,15 @@ documented TBV public API.
       - `outgoing_edges()`
       - `load_evidence()`
       - `store_evidence()`
+    - `struct NodeId` — [Declaration](graph.md#habeas-req-requirements.sdk.graph.NodeId)
     - `trait NodeContents` — [Declaration](graph.md#habeas-req-requirements.sdk.graph.NodeContents) · [Read node contents](graph.md#read-node-contents) · [Format contents for an agent](graph.md#format-node-contents-for-an-agent)
       - `fingerprint()`
       - `format()`
     - `struct ValidationCache` — [Declaration](validation-cache.md#habeas-req-requirements.sdk.validation-cache.ValidationCache)
       - `new()` — [Declaration](validation-cache.md#habeas-req-requirements.sdk.validation-cache.new)
       - `with_sources()` — [Declaration](validation-cache.md#habeas-req-requirements.sdk.validation-cache.with_sources)
+      - `intern_node()` — [Declaration](validation-cache.md#habeas-req-requirements.sdk.validation-cache.intern_node)
+      - `node_data()` — [Declaration](validation-cache.md#habeas-req-requirements.sdk.validation-cache.node_data)
       - `with_agent()` — [Declaration](validation-cache.md#habeas-req-requirements.sdk.validation-cache.with_agent)
   - `mod graph` — [Graph nodes](graph.md) · [Graph edges](graph-edges.md)
     - `trait Criterion` — [Declaration](graph/criteria.md#habeas-req-requirements.sdk.graph.criteria.criterion_trait) · [Define a criterion](graph/criteria.md#define-a-criterion)
@@ -156,7 +167,7 @@ documented TBV public API.
       - `line`
       - `message`
       - `new()`
-    - `struct OutlineId` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.address_identity) · [Identify a file and item](outlines.md#identify-a-file-and-item)
+    - `struct OutlineData` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.address_identity) · [Identify a file and item](outlines.md#identify-a-file-and-item)
       - `path`
       - `selector`
       - `root()`

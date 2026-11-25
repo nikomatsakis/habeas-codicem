@@ -21,7 +21,7 @@ The source tools identify project files with project-relative `PathBuf` values.
 let file = std::path::PathBuf::from("src/auth.rs");
 ```
 
-An item within that file uses the path and selector in `OutlineId` under
+An item within that file uses the path and selector in `OutlineData` under
 {cite}`requirements.sdk.outlines.address_identity`.
 :::
 
@@ -86,8 +86,8 @@ pub struct SourceProject<D: Domain> { /* private fields */ }
 
 impl<D: Domain> SourceProject<D> {
     pub fn new(domain: D, sources: Sources) -> Self;
-    pub async fn search_text(&self, query: &TextQuery,) -> Result<SearchResults<SearchHit<D::NodeId>>, SourceError>;
-    pub async fn search_structure(&self, query: &StructuralQuery,) -> Result<SearchResults<SearchHit<D::NodeId>>, SourceError>;
+    pub async fn search_text(&self, query: &TextQuery,) -> Result<SearchResults<SearchHit<NodeId<D>>>, SourceError>;
+    pub async fn search_structure(&self, query: &StructuralQuery,) -> Result<SearchResults<SearchHit<NodeId<D>>>, SourceError>;
 }
 ```
 :::
@@ -242,26 +242,23 @@ The application maps discovered source items to its graph. For HC,
 :::{req} source_nodes
 :test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
 
-An application supporting tracked source inspection maps `OutlineId` to its
-graph's `NodeId`. The mapped node represents the requested path and selector;
-an unsupported or invalid address returns an error. The SDK reads the mapped
-node through the application's `Domain` interface.
+An application supporting tracked source inspection returns `Self::NodeData` for the requested path and selector. The SDK interns that data in the domain's cache to obtain `NodeId<Self>`. An unsupported or invalid address returns an error.
 
 ```rust,ignore
 pub trait Domain: Clone + Send + Sync {
     // ...
-    fn source_node(&self, item: &OutlineId) -> Result<Self::NodeId, SourceError> { ... }
+    fn source_node(&self, item: &OutlineData) -> Result<Self::NodeData, SourceError> { ... }
 }
 ```
 :::
 
-For a source node, HC's `Domain::node_content` resolves its `OutlineId` and
+For a source node, HC's `Domain::node_content` resolves its `OutlineData` and
 returns an `OutlineContent`. The returned value supplies its fingerprint and
 agent text through `NodeContents` under
 {cite}`requirements.sdk.outlines.node_contents`.
 
 :::{req} provider_observations
-The tracked source-read operation resolves the selected `OutlineId` through
+The tracked source-read operation resolves the selected `OutlineData` through
 the application's source-node mapping and reads that node through `Domain`.
 Successful reads delivered to the caller record that node's identity and the
 fingerprint of its supplied contents.
@@ -298,7 +295,7 @@ pages.
 flowchart TD
     Agent["SDK agent tools"] --> Context["Tracked inspection context"]
     Code["Deterministic criterion"] --> Context
-    Context --> Mapping["Application maps OutlineId to NodeId"]
+    Context --> Mapping["Domain supplies node data; SDK interns it"]
     Mapping --> Domain["Application Domain loads the selected node"]
     Domain --> Trace["SDK records contents and fingerprint"]
 ```
@@ -309,6 +306,6 @@ tracked read records the selected node.
 [Searching project sources](graph/search.md) explains how an agent can record
 an excerpt it used directly.
 
-[Source outlines](outlines.md) introduces `OutlineId`, `OutlineContent`, and
+[Source outlines](outlines.md) introduces `OutlineData`, `OutlineContent`, and
 `OutlineLang`. Its [language chapters](outlines.md#language-specific-rules)
 define the item kinds, selectors, and fingerprints for each language.

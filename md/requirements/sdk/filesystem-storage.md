@@ -14,7 +14,7 @@ The store implements `Send` and `Sync`. Its `load` and `store` futures are `Send
 
 `Record`, `Dependency`, and `Fingerprint` support Serde when their type
 parameters do. `Criterion::Ok` is always serializable; its JSON value is
-already in the record. Serialization bounds on node identities and edge labels
+already in the record. The SDK supplies `Record<D::NodeData, D::EdgeLabel>` under {cite}`requirements.sdk.graph.evidence.persisted_dependencies`. Serialization bounds on durable node data and edge labels
 apply when using this helper.
 :::
 

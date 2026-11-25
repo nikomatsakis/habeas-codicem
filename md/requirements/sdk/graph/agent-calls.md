@@ -6,7 +6,7 @@ returns an application-defined answer. A criterion starts the request with
 `cx.ask::<R>()`, adds context and inputs, then awaits an `R`.
 
 This chapter covers that caller-facing interface. [Agent harness](agent-harness.md)
-covers the configuration of SDK-supplied agents, their fixed tools, and how a
+covers the configuration of SDK-supplied agents, their built-in and domain tools, and how a
 structured submission becomes the answer.
 
 ## Compose reusable context
@@ -135,11 +135,11 @@ impl<'a, 'd, D: Domain, R, P> Ask<'a, 'd, D, R, P> {
 Trait implementations
 
 ```rust,ignore
-impl<'a, 'd, D: Domain, R> IntoFuture for Ask<'a, 'd, D, R, ContextPhase> where R: DeserializeOwned + JsonSchema + Send + 'a, D::Error: Display, D::NodeId: Serialize + DeserializeOwned + JsonSchema, D::EdgeLabel: DeserializeOwned + JsonSchema + PartialEq, 'd: 'a {
+impl<'a, 'd, D: Domain, R> IntoFuture for Ask<'a, 'd, D, R, ContextPhase> where R: DeserializeOwned + JsonSchema + Send + 'a, D::Error: Display, D::EdgeLabel: DeserializeOwned + JsonSchema + PartialEq, 'd: 'a {
     type Output = Result<R, ValidationError<<D as Domain>::Error>>;
     type IntoFuture = Pin<Box<dyn Future<Output = <Ask<'a, 'd, D, R, ContextPhase> as IntoFuture>::Output> + Send + 'a>>;
 }
-impl<'a, 'd, D: Domain, R> IntoFuture for Ask<'a, 'd, D, R, NodePhase> where R: DeserializeOwned + JsonSchema + Send + 'a, D::Error: Display, D::NodeId: Serialize + DeserializeOwned + JsonSchema, D::EdgeLabel: DeserializeOwned + JsonSchema + PartialEq, 'd: 'a {
+impl<'a, 'd, D: Domain, R> IntoFuture for Ask<'a, 'd, D, R, NodePhase> where R: DeserializeOwned + JsonSchema + Send + 'a, D::Error: Display, D::EdgeLabel: DeserializeOwned + JsonSchema + PartialEq, 'd: 'a {
     type Output = Result<R, ValidationError<<D as Domain>::Error>>;
     type IntoFuture = Pin<Box<dyn Future<Output = <Ask<'a, 'd, D, R, NodePhase> as IntoFuture>::Output> + Send + 'a>>;
 }

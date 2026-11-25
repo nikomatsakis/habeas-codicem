@@ -96,16 +96,16 @@ Keeps a typed output with its source, criterion, version, and observed dependenc
 
 `verify` constructs this value from the criterion's completed answer and
 execution trace. `load_evidence` reconstructs it from the selected saved record.
-Its node identities and edge labels keep their domain-defined types.
+Its dependencies use `NodeId<D>` handles from the current cache and domain-defined edge labels.
 
 ```rust,ignore
 pub struct Fingerprinted<D: Domain, O> { /* private fields */ }
 
 impl<D: Domain, O> Fingerprinted<D, O> {
-    pub fn source_node_id(&self) -> &D::NodeId;
+    pub fn source_node_id(&self) -> &NodeId<D>;
     pub fn criterion_path(&self) -> &CriterionPath;
     pub fn version(&self) -> Option<&CriterionVersion>;
-    pub fn dependencies(&self) -> &[Dependency<D::NodeId, D::EdgeLabel>];
+    pub fn dependencies(&self) -> &[Dependency<NodeId<D>, D::EdgeLabel>];
     pub fn output(&self) -> &O;
     pub fn into_output(self) -> O;
 }
@@ -130,19 +130,19 @@ pub trait Domain: Clone + Send + Sync {
     /// Ok(None) means absent; Err means loading failed.
     fn load_evidence(
         &self,
-        source: &Self::NodeId,
+        source: &NodeId<Self>,
         criterion: &CriterionPath,
     ) -> impl Future<Output = Result<
-        Option<Record<Self::NodeId, Self::EdgeLabel>>,
+        Option<Record<Self::NodeData, Self::EdgeLabel>>,
         Self::Error,
     >> + Send;
 
     /// Atomically replace only this source/criterion pair's complete record.
     fn store_evidence(
         &self,
-        source: &Self::NodeId,
+        source: &NodeId<Self>,
         criterion: &CriterionPath,
-        record: &Record<Self::NodeId, Self::EdgeLabel>,
+        record: &Record<Self::NodeData, Self::EdgeLabel>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     // ...
@@ -170,6 +170,17 @@ storage](../filesystem-storage.md) supplies a JSON-backed helper.
 
 The criterion's `Ok` type is serializable and deserializable. The storage
 interface uses `Record` to hold its encoded answer and input trace.
+
+:::{req} persisted_dependencies
+Before saving a record, the SDK replaces each dependency's `NodeId<D>` with the corresponding `D::NodeData`. When loading a record into an execution or checking it against a domain, the SDK interns each dependency's data in that domain's cache. Both conversions preserve the dependency kind, label, and observed fingerprint.
+:::
+
+:::{example} reassigned-handles
+{cite}`requirements.sdk.graph.evidence.persisted_dependencies`
+{cite}`requirements.sdk.graph.validation-context.snapshot`
+
+A first run assigns handle `7` to requirement `R` and records a query for its implementation edges. The next run assigns `7` to requirement `S` and `12` to `R`. Loading the record resolves its dependency to `12`. If `R` has the same implementation targets, their edge fingerprint still matches, even if their handles also changed. Removing an implementation target changes the fingerprint and makes the saved observation stale.
+:::
 
 :::{req} record
 :test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
@@ -415,7 +426,7 @@ impl<N, L> Record<N, L> {
         version: &CriterionVersion,
     ) -> Result<bool, D::Error>
     where
-        D: Domain<NodeId = N, EdgeLabel = L>;
+        D: Domain<NodeData = N, EdgeLabel = L>;
 }
 ```
 :::

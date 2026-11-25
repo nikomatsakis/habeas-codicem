@@ -34,7 +34,7 @@ Construct a context for a source node with an empty dependency list. `verify` do
 
 ```rust,ignore
 impl<'d, D: Domain> ValidationContext<'d, D> {
-    pub fn new(graph: &'d D, node: D::NodeId) -> Self;
+    pub fn new(graph: &'d D, node: NodeId<D>) -> Self;
 }
 ```
 :::
@@ -63,7 +63,7 @@ Borrow the identity of the source node being checked.
 
 ```rust,ignore
 impl<'d, D: Domain> ValidationContext<'d, D> {
-    pub fn node_id(&self) -> &D::NodeId;
+    pub fn node_id(&self) -> &NodeId<D>;
 }
 ```
 :::
@@ -78,7 +78,7 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
     pub fn successors(
         &self,
         label: &D::EdgeLabel,
-    ) -> Result<Vec<D::NodeId>, D::Error>
+    ) -> Result<Vec<NodeId<D>>, D::Error>
     where
         D::EdgeLabel: PartialEq;
 }
@@ -148,14 +148,14 @@ field and `T[]` is an array. A `next` field holds a continuation UUID issued by 
 ## Passing node identities to an agent
 
 :::{req} node_reference
-The agent harness serializes the current node, supplied input nodes, and node IDs in tool results using the domain's Serde representation of `D::NodeId`. A tool accepting a node ID deserializes the same JSON value. Its argument schema uses `D::NodeId`'s `JsonSchema` implementation. An invalid ID representation produces a tool error before the domain is queried.
+The agent harness uses the unsigned integer representation of `NodeId<D>` for the current node, supplied inputs, and nodes in tool results. Built-in tools accepting a node ID resolve that integer in the domain's cache. A malformed value or an unassigned integer produces a tool error before any graph read.
 
-For example, if a search hit contains `"node": {"Issue": 42}`, the agent can call `read_node({"node": {"Issue": 42}})` to read that issue.
+For example, if a search hit contains `"node": 7`, the agent can call `read_node({"node": 7})` to read the enclosing node.
 :::
 
 ## Reading the contents of a graph node
 
-Rust callers pass the application's `D::NodeId` to read its [contents](../graph.md#read-node-contents). The agent passes the node reference under {cite}`requirements.sdk.graph.validation-context.node_reference`.
+Rust callers pass a cached `NodeId<D>` to read its [contents](../graph.md#read-node-contents). The agent passes the node reference under {cite}`requirements.sdk.graph.validation-context.node_reference`.
 
 :::{req} ValidationContext.read
 :test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
@@ -164,7 +164,7 @@ Read a graph node and record the fingerprint of the returned contents under {cit
 
 ```rust,ignore
 impl<'d, D: Domain> ValidationContext<'d, D> {
-    pub fn read(&self, node: &D::NodeId) -> Result<D::NodeContent, D::Error>;
+    pub fn read(&self, node: &NodeId<D>) -> Result<D::NodeContent, D::Error>;
 }
 ```
 :::
@@ -178,7 +178,7 @@ Read a node once and return both its contents and their fingerprint. Record the 
 impl<'d, D: Domain> ValidationContext<'d, D> {
     pub fn read_snapshot(
         &self,
-        node: &D::NodeId,
+        node: &NodeId<D>,
     ) -> Result<Snapshot<D::NodeContent>, D::Error>;
 }
 ```
@@ -205,7 +205,7 @@ read_node({node: NodeId}) -> {text: string, next?: UUID}
 :::{req} read_node.behavior
 The Rust caller receives the node's complete `D::NodeContent` or the domain's read error.
 
-The tool asks the domain to read the supplied node ID, including when the ID first appears in the `read_node` call.
+The tool asks the domain to read the supplied node ID, including when an assigned ID first appears in the `read_node` call.
 Each page’s `text` contains the next portion of the node’s formatted contents. Formatting follows
 {cite}`requirements.sdk.graph.agent-calls.judge.rendering`.
 :::
@@ -242,9 +242,9 @@ Select targets from any supplied node by label, returning the target IDs and the
 impl<'d, D: Domain> ValidationContext<'d, D> {
     pub fn outgoing_edges(
         &self,
-        node: &D::NodeId,
+        node: &NodeId<D>,
         label: D::EdgeLabel,
-    ) -> Result<Snapshot<Vec<D::NodeId>>, D::Error>
+    ) -> Result<Snapshot<Vec<NodeId<D>>>, D::Error>
     where
         D::EdgeLabel: PartialEq;
 }
@@ -301,10 +301,10 @@ their target-set fingerprint, without another query.
 
 The public `trust_but_verify::graph::edge_fingerprint(graph, targets)` helper
 computes this `Fingerprint` from the domain and a slice of target node IDs.
-It fingerprints the set of distinct target identities under a versioned
+It fingerprints the set of distinct stable paths obtained from `Domain::node_path` under a versioned
 scheme, including when the set is empty. Changing
 order, duplicate edges, or another label's relationships leaves this fingerprint
-unchanged. Reading target contents is a separate observation;
+unchanged. Assigning different integers to the same targets in a fresh cache preserves the fingerprint. Reading target contents is a separate observation;
 `NodeContents::fingerprint` describes those contents under
 {cite}`requirements.sdk.graph.node_content.fingerprint`.
 
@@ -313,7 +313,7 @@ The returned vector preserves the graph's ordering and duplicates.
 ```rust,ignore
 pub fn edge_fingerprint<D: Domain>(
     graph: &D,
-    targets: &[D::NodeId],
+    targets: &[NodeId<D>],
 ) -> Fingerprint;
 ```
 :::
@@ -331,7 +331,7 @@ Resolve an outline item to its graph node, read the contents, and record the obs
 
 ```rust,ignore
 impl<D: Domain> ValidationContext<'_, D> where D::Error: From<SourceError> {
-    pub fn read_source(&self, item: &OutlineId) -> Result<D::NodeContent, D::Error>;
+    pub fn read_source(&self, item: &OutlineData) -> Result<D::NodeContent, D::Error>;
 }
 ```
 :::
@@ -341,7 +341,7 @@ Criterion code uses {cite}`requirements.sdk.graph.validation-context.ValidationC
 :::
 
 :::{req} read_source.behavior
-`Domain::source_node` maps the `OutlineId` into the graph. `Domain::node_content` returns that node’s contents. Mapping and read failures return errors. Agents use the node reference from discovery with `read_node`.
+The SDK interns the node data returned by `Domain::source_node` for the `OutlineData`. `Domain::node_content` returns that node’s contents. Mapping and read failures return errors. Agents use the node reference from discovery with `read_node`.
 :::
 
 :::{req} read_source.inputs
@@ -448,10 +448,10 @@ one more page of file nodes. This example shows one reference from each page.
 
 ```text
 list_sources({})
-→ {"files":[{"File":1}], "next":"71d27a0b-f65f-47e5-9aa2-750335b78897"}
+→ {"files":[1], "next":"71d27a0b-f65f-47e5-9aa2-750335b78897"}
 
 get_next_page({"uuid":"71d27a0b-f65f-47e5-9aa2-750335b78897"})
-→ {"files":[{"File":2}]}
+→ {"files":[2]}
 ```
 
 The second page has no `next`, so the listing is complete. The same call
@@ -504,7 +504,7 @@ Return a snapshot of the observations collected so far. Later reads continue to 
 
 ```rust,ignore
 impl<'d, D: Domain> ValidationContext<'d, D> {
-    pub fn dependencies(&self) -> Vec<Dependency<D::NodeId, D::EdgeLabel>>;
+    pub fn dependencies(&self) -> Vec<Dependency<NodeId<D>, D::EdgeLabel>>;
 }
 ```
 :::
@@ -512,7 +512,7 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
 :::{req} ValidationContext.finish
 :test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
 
-Build a storage record from the supplied criterion version, serialized output, and the dependencies collected so far. The caller can pass the record to its storage backend.
+Build a storage record from the supplied criterion version, serialized output, and the dependencies collected so far. Resolve their handles to durable node data under {cite}`requirements.sdk.graph.evidence.persisted_dependencies`. The caller can pass the record to its storage backend.
 
 ```rust,ignore
 impl<'d, D: Domain> ValidationContext<'d, D> {
@@ -520,7 +520,7 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
         &self,
         version: CriterionVersion,
         output: impl Serialize,
-    ) -> Result<Record<D::NodeId, D::EdgeLabel>, serde_json::Error>;
+    ) -> Result<Record<D::NodeData, D::EdgeLabel>, serde_json::Error>;
 }
 ```
 :::

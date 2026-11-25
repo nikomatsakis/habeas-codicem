@@ -7,16 +7,29 @@ records the inputs used to compute each answer.
 
 ## Supply data and validation policy
 
-HC's domain defines its `NodeId`, labeled relationships, `NodeContent`, and
-evidence storage. A simplified application model has these shapes; the
-particular variants and fields are illustrative:
+:::{req} graph_discovery
+HC creates one `HabeasDomain` with an empty graph and a validation cache. It scans source snapshots through that cache, discovers declarations and references, and populates the domain's graph. Reviews query the populated domain using the same cache. A reference and its declaration resolve to the same node in either discovery order.
+:::
+
+:::{example} implementation-edge
+{cite}`requirements.sdk.habeas.graph_discovery`
+
+When discovery finds ``// {impl}`requirements.auth.expiration` `` on `fn[check_token]` in `src/auth.rs`, it interns the requirement name and the source item's identity. HC adds the source node's handle to the requirement's implementation edges. Asking for those edges returns the handle that the criterion can pass to `read`.
+:::
+
+HC supplies durable node data, labeled relationships, node contents, and evidence storage. For example:
 
 ```rust,ignore
-enum HcNodeId {
-    Requirement(RequirementId),
+enum HabeasNodeData {
+    Requirement(String),
     Fixme(FixmeId),
-    Source(OutlineId),
+    Source(OutlineData),
     GithubIssue(IssueId),
+}
+
+struct RequirementData {
+    impl_edges: Vec<NodeId<HabeasDomain>>,
+    test_edges: Vec<NodeId<HabeasDomain>>,
 }
 
 enum HcNodeContent {
@@ -83,7 +96,7 @@ let result = verify(&hc_domain, review_criterion).await?;
 // HC interprets result.output() according to its validation policy.
 ```
 
-The SDK supplies the agent, fixed tools, paging,
+The SDK supplies the agent, built-in tools, paging,
 and structured submission. HC performs confirmation, assesses rationales, and
 combines answers inside its criteria and command policy. Those computations can
 make further `ask` requests with additional `Context` and tracked inputs.

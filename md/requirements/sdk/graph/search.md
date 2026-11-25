@@ -220,12 +220,12 @@ impl StructuralQuery {
 ```rust,ignore
 #[non_exhaustive]
 pub struct StructuralMatch {
-    pub node: OutlineId,
+    pub node: OutlineData,
     pub excerpt: String,
 }
 
 impl StructuralMatch {
-    pub fn new(node: OutlineId, excerpt: String) -> Self;
+    pub fn new(node: OutlineData, excerpt: String) -> Self;
 }
 ```
 :::
@@ -281,17 +281,17 @@ A domain that exposes project source uses outlines to address it. Its validation
 :::
 
 :::{req} enclosing_item
-For each {term}`requirements.sdk.graph.search.hit` in a text or structural search, locate the start of the match in the outline of the **same snapshot**. Select the innermost item containing that position. The item's project-relative file path and selector form its `OutlineId`. When no smaller item contains the position, use the file root (empty selector).
+For each {term}`requirements.sdk.graph.search.hit` in a text or structural search, locate the start of the match in the outline of the **same snapshot**. Select the innermost item containing that position. The item's project-relative file path and selector form its `OutlineData`. When no smaller item contains the position, use the file root (empty selector).
 :::
 
 :::{req} domain_node
-The Rust search operation calls `Domain::source_node(&self, item: &OutlineId)` to resolve the enclosing item's outline address to the application's `NodeId`. A mapping failure is a search error.
+The Rust search operation passes the enclosing `OutlineData` to `Domain::source_node`, then interns the returned node data to obtain `NodeId<D>`. A mapping failure is a search error.
 :::
 
 ### What Rust receives
 
 :::{req} occurrence
-Return one result per occurrence, including multiple matches on the same line or in the same item. Each result contains the enclosing `D::NodeId`, the exact matched text, and its file-relative `Span` in the retained UTF-8 source (zero-based byte offsets, end exclusive). `SourceProject::search_text` and `SourceProject::search_structure` return these hits. Rust callers can use the node ID to load the item's contents and choose their own presentation.
+Return one result per occurrence, including multiple matches on the same line or in the same item. Each result contains the enclosing `NodeId<D>`, the exact matched text, and its file-relative `Span` in the retained UTF-8 source (zero-based byte offsets, end exclusive). `SourceProject::search_text` and `SourceProject::search_structure` return these hits. Rust callers can use the node ID to load the item's contents and choose their own presentation.
 
 ```rust,ignore
 #[non_exhaustive]
@@ -327,13 +327,13 @@ A search for `hit` finds three occurrences on one line.
 const A: &str = "éhit"; const B: &str = "hit hit";
 ```
 
-Suppose this application's `NodeId` values for the two declarations are `Const(A)` and `Const(B)`. The Rust caller receives these three occurrences, in source order. The `é` occupies two bytes.
+Suppose the cache assigned handles `7` and `8` to `A` and `B`. The Rust caller receives these three occurrences, in source order. The `é` occupies two bytes.
 
 | Node ID | File byte span | Matched text |
 | --- | --- | --- |
-| `Const(A)` | `19..22` | `hit` |
-| `Const(B)` | `42..45` | `hit` |
-| `Const(B)` | `46..49` | `hit` |
+| `7` | `19..22` | `hit` |
+| `8` | `42..45` | `hit` |
+| `8` | `46..49` | `hit` |
 :::
 
 ### What the agent receives
@@ -363,8 +363,8 @@ For the same `hit` query, the agent receives one excerpt per declaration. After 
   "search_id": "11111111-1111-4111-8111-111111111111",
   "complete": true,
   "matches": [
-    {"tag": "1", "node": {"Const":"A"}, "excerpt": "const A: &str = \"éhit\";"},
-    {"tag": "2", "node": {"Const":"B"}, "excerpt": "const B: &str = \"hit hit\";"}
+    {"tag": "1", "node": 7, "excerpt": "const A: &str = \"éhit\";"},
+    {"tag": "2", "node": 8, "excerpt": "const B: &str = \"hit hit\";"}
   ]
 }
 ```
@@ -377,7 +377,7 @@ When it delivers a formatted page, the agent harness opens a [`finish_search`](#
 :::{example} selecting_an_excerpt
 {cite}`requirements.sdk.graph.search.agent_search_accounting`
 
-If the agent relies on the excerpt for `B`, it calls `finish_search({"search_id":"11111111-1111-4111-8111-111111111111","used":["2"]})`. The harness records one dependency on `Const(B)` even though the Rust search found two hits there. If the agent instead calls `read_node({"node":{"Const":"B"}})` and relies only on that full read, the read records its own dependency and the agent finishes the search page with `used: []`.
+If the agent relies on the excerpt for `B`, it calls `finish_search({"search_id":"11111111-1111-4111-8111-111111111111","used":["2"]})`. The harness records one dependency on `8` even though the Rust search found two hits there. If the agent instead calls `read_node({"node":8})` and relies only on that full read, the read records its own dependency and the agent finishes the search page with `used: []`.
 :::
 
 ### Show the declaration around separated hits
@@ -417,23 +417,23 @@ impl Runner {
 The first two windows overlap. Together they include the space between the calls and the newline after the second semicolon. The third window is separated by omitted source. The agent receives one entry for `run`.
 
 ```json
-{"tag":"1","node":{"Method":["Runner","run"]},"excerpt":"fn run() {...    hit(); hit();\n...    hit();\n...}"}
+{"tag":"1","node":9,"excerpt":"fn run() {...    hit(); hit();\n...    hit();\n...}"}
 ```
 
-`read_node({"node":{"Method":["Runner","run"]}})` reads the full function, including `cleanup();`.
+`read_node({"node":9})` reads the full function, including `cleanup();`.
 :::
 
 :::{example} utf8_window
 {cite}`requirements.sdk.graph.search.windows`
 {cite}`requirements.sdk.graph.search.omissions`
 
-A file-root item contains `éhit猫` and has no header or trailer. With `window_bytes: 2`, the agent receives `{"tag":"1","node":{"File":"fragment.rs"},"excerpt":"éhit..."}`. The two bytes before `hit` contain the entire `é`. The two bytes after it cover only part of `猫`, so the excerpt ends with the omission marker. With the default window, the excerpt is `éhit猫`.
+A file-root item contains `éhit猫` and has no header or trailer. With `window_bytes: 2`, the agent receives `{"tag":"1","node":10,"excerpt":"éhit..."}`. The two bytes before `hit` contain the entire `é`. The two bytes after it cover only part of `猫`, so the excerpt ends with the omission marker. With the default window, the excerpt is `éhit猫`.
 :::
 
 :::{example} file_root
 {cite}`requirements.sdk.graph.search.enclosing_item`
 
-A file contains only `needle` and its outline consists of the file root. Searching for `needle` returns `{"tag":"1","node":{"File":"fragment.rs"},"excerpt":"needle"}`. Reading `{"File":"fragment.rs"}` reads the file-root node.
+A file contains only `needle` and its outline consists of the file root. Searching for `needle` returns `{"tag":"1","node":10,"excerpt":"needle"}`. Reading `10` reads the file-root node.
 :::
 
 ## Accounting for search excerpts in an agent session

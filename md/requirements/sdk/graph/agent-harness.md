@@ -10,7 +10,8 @@ the SDK handles the model conversation and the inspection tools.
 
 An *agent harness* runs an agent request: it sends instructions and inputs to
 the configured model, executes requested tools, and obtains a structured answer.
-TBV supplies the harness and its tools. The application supplies
+TBV supplies the harness and its built-in tools. An application can register
+tools for its domain. It also supplies
 [`Context` values](../../../rustdocs/trust_but_verify/request/trait.Context.html),
 node contents, and
 the answer type.
@@ -56,6 +57,7 @@ pub enum AgentConfig {
 Trait implementations
 
 ```rust,ignore
+impl<D: Domain> AgentSettings<D> for AgentConfig;
 impl Clone for AgentConfig;
 impl Debug for AgentConfig;
 impl<'de> Deserialize<'de> for AgentConfig;
@@ -97,7 +99,7 @@ let config = AgentConfig::Bedrock(
         .aws_profile("development".into())
         .region("us-east-1".into()),
 );
-let cache = ValidationCache::with_agent(config);
+let cache = ValidationCache::<AppDomain>::with_agent(config);
 ```
 :::
 
@@ -348,12 +350,162 @@ The SDK supplies the inspection tools described in
 and contents interfaces; source tools invoke its source interfaces and
 source-node mapping.
 
-The SDK provides a fixed set of tools and their input-recording policy.
-Application-specific node kinds use the SDK's ordinary node-read tool.
+The SDK defines the built-in tools and their input-recording policy.
+`read_node` accepts every domain node kind.
 :::
 
 Source tools use the application's
 [source-node mapping](../sources.md#connect-source-items-to-graph-nodes).
+
+## Register a domain tool
+
+:::{definition} domain_tool
+:phrase: domain tool
+
+A *domain tool* is an operation an application makes available to the model
+under a name. Its Rust implementation receives typed arguments and the
+criterion's `ValidationContext` and returns a typed result.
+:::
+
+:::{req} Tool
+`trust_but_verify::agent::Tool` supplies the name and description shown to the
+model. `execute` can await work using the context of the current criterion.
+
+```rust,ignore
+pub trait Tool<D: Domain, A, R>: Send + Sync {
+    fn name(&self) -> &str;
+    fn description(&self) -> &str;
+    fn execute(&self, cx: &ValidationContext<'_, D>, args: A,)
+        -> impl Future<Output = R> + Send;
+}
+```
+:::
+
+:::{req} with_tool
+Calling `config.with_tool(Arc::new(tool))` configures an agent with that
+{term}`requirements.sdk.graph.agent-harness.domain_tool`. Each chained call adds
+one tool and preserves the preceding registrations. Every request run by this
+agent offers its registered tools alongside the built-in tools. Agents configured
+independently from the same backend settings have independent tool sets.
+
+An application can deserialize its backend settings as `AgentConfig`, attach
+its Rust tools, and pass the configured agent to `ValidationCache::with_agent`.
+A name collision with a built-in or another tool on the same agent fails the
+ask with `ValidationError::Agent` before the model is called.
+
+```rust,ignore
+impl AgentConfig {
+    pub fn with_tool<D: Domain, A: DeserializeOwned + JsonSchema + 'static, R: Serialize + 'static>(
+        self,
+        tool: Arc<impl Tool<D, A, R> + 'static>,
+    ) -> AgentWithTools<D>;
+}
+```
+:::
+
+```rust,ignore
+let cache = ValidationCache::with_agent(
+    config
+        .with_tool(Arc::new(LookupRequirements))
+        .with_tool(Arc::new(RunNamedQuery)),
+);
+```
+
+:::{req} AgentWithTools
+`AgentWithTools<D>` holds the backend settings and the tools that can execute on a
+`ValidationContext` for `D`. Each `with_tool` call returns the updated configuration.
+
+```rust,ignore
+pub struct AgentWithTools<D: Domain> { /* private fields */ }
+impl<D: Domain> AgentWithTools<D> {
+    pub fn with_tool<A: DeserializeOwned + JsonSchema + 'static, R: Serialize + 'static>(
+        self,
+        tool: Arc<impl Tool<D, A, R> + 'static>,
+    ) -> Self;
+}
+```
+
+Trait implementations
+
+```rust,ignore
+impl<D: Domain> AgentSettings<D> for AgentWithTools<D>;
+```
+:::
+
+:::{req} AgentSettings
+`AgentSettings<D>` identifies the configurations a domain can use in its cache.
+TBV implements this sealed trait for `AgentConfig` and `AgentWithTools<D>`.
+
+```rust,ignore
+pub trait AgentSettings<D: Domain>: Settings<D> { }
+```
+:::
+
+:::{req} domain_tool_dispatch
+The harness advertises the argument schema derived from `A`. It deserializes
+arguments as `A`, calls `execute` once for a valid call, and serializes `R` as
+the JSON tool result. If deserialization fails, the model receives a tool
+error and the tool body does not run. Node IDs in either direction follow
+{cite}`requirements.sdk.graph.validation-context.node_reference`.
+:::
+
+:::{req} domain_tool_inputs
+A tool's reads and edge inspections through its `ValidationContext` contribute
+to the same dependency trace as the criterion's own inspections. Returning a
+node ID adds no content dependency. Reading that node records its fingerprint
+under {cite}`requirements.sdk.graph.evidence.node_inputs`.
+:::
+
+:::{example} lookup_requirements
+{cite}`requirements.sdk.graph.agent-harness.Tool`
+{cite}`requirements.sdk.graph.agent-harness.with_tool`
+{cite}`requirements.sdk.graph.agent-harness.domain_tool_dispatch`
+{cite}`requirements.sdk.graph.agent-harness.domain_tool_inputs`
+
+Suppose a Habeas domain indexes requirement names. It registers a lookup tool
+and uses the index to discover candidates for a review.
+
+```rust,ignore
+#[derive(Deserialize, JsonSchema)]
+struct Lookup { pattern: String }
+
+struct LookupRequirements;
+
+impl<'d> Tool<HabeasDomain<'d>, Lookup, Vec<NodeId<HabeasDomain<'d>>>> for LookupRequirements {
+    fn name(&self) -> &str { "lookup_requirements" }
+    fn description(&self) -> &str { "Find requirement node IDs matching a name glob." }
+    async fn execute(&self, cx: &ValidationContext<'_, HabeasDomain<'d>>, args: Lookup)
+        -> Vec<NodeId<HabeasDomain<'d>>>
+    {
+        cx.graph().matching_requirement_ids(&args.pattern)
+    }
+}
+
+// During application setup, store this cache in the domain.
+let cache = ValidationCache::with_agent(config.with_tool(Arc::new(LookupRequirements)));
+```
+
+In a project with two matching requirements, the agent calls
+`lookup_requirements({"pattern":"requirements.sdk.*"})` and receives
+
+```json
+[6, 7]
+```
+
+Here `7` identifies `requirements.sdk.outlines` under {cite}`requirements.sdk.graph.validation-context.node_reference`. The agent calls `read_node({"node":7})`.
+For a domain that formats this requirement as a sentence, the reply is
+
+```json
+{"text":"An outline identifies the selectable items in a source file."}
+```
+
+These two calls contribute one evidence input containing the `requirements.sdk.outlines`
+node and the fingerprint of its delivered contents. If the lookup returns
+`[]`, discovery alone contributes zero inputs. A criterion whose answer depends
+on the complete set of matches can instead have the tool read a node representing
+the selection through `cx.read`. Its fingerprint then tracks changes to the set,
+including a first match for a previously empty selection.
+:::
 
 ## Submit a structured answer
 

@@ -29,7 +29,7 @@ to adopt it.
 
 The [language chapters](outlines.md#language-specific-rules) define each
 language's selectable items, selectors, comment rules, and hashing algorithms.
-The shared outline interface introduces `OutlineId`, `OutlineContent`, and
+The shared outline interface introduces `OutlineData`, `OutlineContent`, and
 `OutlineLang` without exposing parser grammars.
 
 ## Habeas Codicem application contracts
@@ -49,7 +49,7 @@ conversation, provider, filesystem, and search machinery private.
 | --- | --- | --- |
 | Agent configuration | Serializable `AgentConfig` and `ValidationCache::with_agent`; backend initialization happens when an ask is awaited. | Configuration loading, paths, environment overrides, and review instructions. |
 | File inspection | `Sources::new` selects the project directory for inspection and respects `.gitignore`. | HC's configuration and tracked-file rules. |
-| Source-node mapping | `Domain::source_node` and tracked reads through `Domain`; every delivered source read records its node snapshot. | Source addresses, node identities, and reference relationships. |
+| Source-node mapping | Interning the data supplied by `Domain::source_node` and tracking reads through `Domain`; every delivered source read records its node snapshot. | Source addresses, node identities, and reference relationships. |
 | Source outlines | Filename-based language selection, cheaply cloneable `OutlineLang`, and owned `OutlineContent` implementing `NodeContents`. | Choosing the source nodes needed for a review. |
 | Structural search | Optional `OutlineLang::search_structure`; outline-only languages return an unsupported-language error. | Choosing search rules for the question under review. |
 | Redaction | Fixed credential recognition in model-visible text and bundled structural hashes. | Explicit credential fields in Habeas configuration. |
