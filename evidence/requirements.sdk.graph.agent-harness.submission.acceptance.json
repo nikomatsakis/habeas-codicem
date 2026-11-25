@@ -1,7 +1,7 @@
 {
   "requirement": "The harness checks the submission count in a complete model response before\nchecking submission arguments. An otherwise valid submission while any search\npage is open returns a tool error listing every outstanding `search_id` and\ninstructing the agent to call `finish_search` before resubmitting. The request\nstays open and retains its submission reminder. Once all delivered searches\nare accounted for under {cite}`requirements.sdk.graph.search.finish_search.behavior`,\nexactly one `submit_result` call whose arguments are an object containing only\nthe `result` field supplies that field's value as the accepted answer and ends\nthe conversation. Other tool calls in that response are skipped.\nAssistant prose remains conversation text.",
   "determination": true,
-  "rationale": "I judge the tests adequate for `requirements.sdk.graph.agent-harness.submission.acceptance`. The requirement splits into the obligations below, and each has a marked test with assertions that enforce it.\n\n**1. The submission count is checked before the arguments.**\n- `count_is_checked_before_arguments_and_one_reminder_allows_recovery` sends one response containing `read_node`, `submit_result {}` and `submit_result {\"other\":true}`. Both submissions have invalid arguments, yet the harness treats this as a count violation. The test asserts that every one of the three calls gets an error result containing \"not run: invoke submit_result exactly once\". It also asserts that `read_node` did not run and that exactly one `Reminder:` appears. The next turn then succeeds.\n- `zero_and_multiple_submissions_share_one_reminder_and_a_second_violation_ends` covers zero and multiple submissions in every combination. It asserts one reminder and an error after a second violation. It also asserts that a count violation, then a clean tool turn, then a violation still ends, and that zero submissions followed by a valid one is accepted.\n\n**2. An otherwise valid submission while a search page is open returns a tool error that lists every outstanding `search_id`.**\n- `configured_agent_uses_domain_source_tools_in_independent_executions` opens two `search_text` pages on turns 3 and 4. On turn 5 the scripted agent submits a valid `{\"result\":true}`.\n- On turn 6 the test asserts that the delivered tool output contains \"Call finish_search for every open search_id\". It also asserts that both distinct ids appear in it.\n- The conversation continues rather than ending, so the submission was not accepted.\n\n**3. The request stays open and keeps its reminder.**\n- On turn 6 the scripted agent replies with prose only, which counts as zero submissions. Because the earlier rejection did not use up the reminder, the harness issues one. The test asserts that the turn-7 input contains \"Reminder: you MUST invoke submit_result exactly once\", and the conversation does not end.\n- The test does not exercise the case where a reminder was already consumed before the open-search rejection. The requirement's wording does not demand that case.\n\n**4. Once all pages are accounted for, exactly one `submit_result` supplies the value and ends the conversation.**\n- In the same test the agent closes the empty pages and the match page. This includes invalid-tag attempts that must not complete the page; those are covered by the `finish_search` requirements. The final `submit_result {\"result\":true}` is accepted, and `answer.output()` is true.\n- `supplied_openai_backend_runs_independent_calls_against_a_local_transport` shows acceptance end to end over a transport. It checks that the `submit_result` schema requires only `result`.\n- `one_submission_accepts_only_its_value_and_skips_other_calls_and_prose` sends prose, `read_node`, and `submit_result {false}` together. It asserts that the answer is `false`, that no node was read, that no dependency was recorded, and that exactly one request was made.\n\n**5. Other tool calls in that response are skipped, and assistant prose remains conversation text.**\n- `one_submission_accepts_only_its_value_and_skips_other_calls_and_prose` shows that the \"The answer is true.\" prose does not become the answer.\n- The same test asserts that the other tool call, `read_node`, was skipped.\n\n**Out of scope.**\n- Behaviour for a single submission with invalid arguments belongs to `requirements.sdk.graph.agent-harness.submission.invalid`. That requirement has its own marked tests, `typed_submission_references_resolve_and_invalid_results_are_agent_errors` and `submission_envelopes_require_one_result_field`.\n- `finish_search` accounting is cited context under `requirements.sdk.graph.search.finish_search.behavior`, and I did not reassess it.\n\nI found no unacknowledged gap.",
+  "rationale": "The reviewed tests cover each obligation in `requirements.sdk.graph.agent-harness.submission.acceptance`. I did not read the implementation; expected behaviour comes from the requirement text.\n\n**Count is checked before arguments**\n- `agent/tests.rs#fn[count_is_checked_before_arguments_and_one_reminder_allows_recovery]` sends a response with `read_node`, `submit_result {}` and `submit_result {\"other\":true}`. That is multiple submissions whose arguments are also invalid.\n  - It asserts that every call receives an error saying \"not run: invoke submit_result exactly once\". That is a count violation, not an argument error.\n  - It asserts that `read_node` was not executed, that one reminder is issued, and that a later single valid submission is accepted.\n- `agent/tests.rs#fn[zero_and_multiple_submissions_share_one_reminder_and_a_second_violation_ends]` covers zero and multiple submissions in every first/second-response combination. It asserts the single shared reminder and that a second violation ends the call. These assertions are for the reminder requirement; here they only support count-before-arguments.\n\n**Exactly one valid `submit_result` is accepted and ends the conversation**\n- `agent/tests.rs#fn[one_submission_accepts_only_its_value_and_skips_other_calls_and_prose]` sends prose saying \"The answer is true.\", a `read_node` call, and `submit_result {\"result\":false}`.\n  - It asserts that the accepted answer is `false`, taken from the submission and not from the prose.\n  - It asserts that `read_node` was skipped (no reads, no dependencies), and that only one provider request was made, so the conversation ended.\n  - This covers \"other tool calls skipped\" and \"assistant prose remains conversation text\".\n- `agent/configured.rs` has two end-to-end local-transport tests. They check the `submit_result` schema (a required `result` field only) and that a real `{\"result\":true}` submission ends each independent execution.\n- `agent/tests.rs#fn[typed_submission_references_resolve_and_invalid_results_are_agent_errors]` shows that a single call with a wrong type, a missing `result`, an unknown field, or an extra field is an agent error. It is marked for other requirements (`submission.invalid`, `submission.mcp`), not for `acceptance`. I treat that as covered by those requirements. The \"only the `result` field\" acceptance case is exercised by the positive tests above.\n\n**Open search pages block an otherwise valid submission**\n- `agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` opens two empty-result pages with two `search_text` calls, then submits a valid `{\"result\":true}` at turn 5. The scripted server's turn-6 handler checks the tool-error output. The output must contain \"Call finish_search for every open search_id\" and must contain both distinct `search_id`s.\n- The request stays open: the conversation continues past that error.\n- The reminder is retained. At turn 6 the script replies with prose, which is a zero-submission violation. The error did not use up the reminder, so that violation is not fatal. The turn-7 request carries \"Reminder: you MUST invoke submit_result exactly once\".\n- The test then closes both pages with `finish_search`. This includes a dependent-looking case: the first close is `used:[]`, and the invalid and unknown tag calls are rejected without closing the later page.\n- Only after all pages are closed does the final `submit_result {\"result\":true}` get accepted, and the test asserts the resulting answer and dependencies in both independent executions.\n\n**Delegated obligations**\nThe pass/fail semantics of `finish_search` itself belong to `requirements.sdk.graph.search.finish_search.behavior`, which is cited rather than reassessed here.\n\nNo uncovered obligation or unacknowledged gap was found.",
   "references": "3b0b642f13c4bbf9ace248b665752507d66011d1af244288b32e35917529cbd0",
   "inputs": [
     {
@@ -49,7 +49,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[supplied_openai_backend_runs_independent_calls_against_a_local_transport]",
-      "hash": "13b76dc6b9f1d21162c5442480f8d73009f3ea835205a07915951610b2d623d0"
+      "hash": "be2ea4292aed9ebefd85b91f462c906f37f6fe23e58f2a413c18a6d3e2d4ecae"
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
@@ -75,6 +75,11 @@
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[typed_submission_references_resolve_and_invalid_results_are_agent_errors]",
       "hash": "20633021bb32bb98b98bf76f8a7d79feb6bc302a3484a0a3d2cae9cab90a12e8"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "fn[retries_and_cut_off_tools_preserve_inputs_and_submission_skips_other_reads]",
+      "hash": "daf1025510aa6ff3425bf6085f4b806a0bdaa05d8b434b1790b513d066e0080e"
     }
   ],
   "format_version": 1,
@@ -138,7 +143,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ecba23f36041428dd996621a0412a0f5615ce642d4f3bc1ed68cc781c0c3a283"
+          "value": "2bf07459b5022bcff84af767218d5511776670b94e69e7446abd44455a3de024"
         }
       ]
     },
@@ -224,6 +229,23 @@
         {
           "scheme": "habeas-input-v1",
           "value": "09396e676877013d8a4dfec1748e45751258a0ee0510faa50f77df94b4b93bc6"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
+            },
+            "selector": "fn[retries_and_cut_off_tools_preserve_inputs_and_submission_skips_other_reads]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "aa4947087db8a470c9c41300dd204f72621516b50c44c1e172ade608de1c197f"
         }
       ]
     }

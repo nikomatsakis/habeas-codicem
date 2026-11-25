@@ -1,7 +1,7 @@
 {
   "requirement": "The returned vector preserves order and duplicates. The fingerprint describes\nthe set of stable target paths under {cite}`requirements.sdk.graph.validation-context.snapshot`.\n\nFollow edges with `label` from the node identified by `node`. The application's\n`D::EdgeLabel` supplies the JSON schema for `label`. Each entry in `targets` is a node reference under {cite}`requirements.sdk.graph.validation-context.node_reference` that the agent can pass directly to `read_node` or `outgoing_edges`.",
   "determination": true,
-  "rationale": "The reviewed tests adequately cover `requirements.sdk.graph.validation-context.outgoing_edges.behavior`. I did not read the implementation source. I only used the ripgrep snippets for `edge_fingerprint`.\n\nObligations and the tests that cover them:\n\n1. **The returned vector preserves order and duplicates.**\n   - `crates/trust-but-verify/src/graph/validation_tests.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]` stores edges as `(7,5),(7,3),(7,5)` and asserts `successors(&7) == [5,3,5]` and `outgoing_edges(&1,7).content == [5,3,5]`.\n   - `crates/trust-but-verify/src/agent/tests.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` asserts the tool result JSON is exactly `{\"targets\":[3,2,3]}`.\n\n2. **The fingerprint describes the set of stable target paths, under `snapshot`.**\n   - In `labeled_selections_track_only_target_membership_without_reading_contents`, the snapshot of `[5,3,5]` has the fingerprint `edge_fingerprint(&graph,&[3,5])`. So order and duplicates do not affect it.\n   - The same test asserts that `[3]` and `[3,5,9]` produce different fingerprints.\n   - The test also records the dependency, then checks `is_current` three ways:\n     - It stays current when a different label's edges change.\n     - It stays current when the same set is reordered or duplicated.\n     - It becomes stale when the target set changes.\n     - An empty target set is also covered.\n   - The agent test records `Dependency::OutgoingEdges(1,7,edge_fingerprint(&graph,&[2,3]))` for the returned `[3,2,3]`. This confirms the dependency uses the set, not the raw vector.\n   - The detailed path and scheme properties belong to the cited `requirements.sdk.graph.validation-context.snapshot`. They are tested in `tests/contracts.rs#fn[edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding]`. That test is not reassessed here.\n\n3. **Follow edges with `label` from the node identified by `node`.**\n   - The agent test uses labels 7 and 8 on node 1 and gets different results: `[3,2,3]` for label 7 and `[3]` for label 8.\n   - It also queries node 3, which has no edges, and records an empty-set fingerprint.\n   - The validation test queries node 9 through `ctx.outgoing_edges(&9,7)` and checks that the selection is recorded against node 9.\n\n4. **`D::EdgeLabel` supplies the JSON schema for `label`.**\n   - `crates/trust-but-verify/src/agent/tools.rs#mod[tests]/fn[nested_label_schema_references_resolve_from_the_tool_parameters_root]` checks that the `label` property takes its schema from the label type, including nested `$ref`s. It also checks that `label` is required and that a unit label gives a `null` type.\n   - `application_tools_preserve_graph_tools_in_the_same_conversation` calls the tool with a `null` label.\n\n5. **Each entry in `targets` is a node reference the agent can pass directly to `read_node` or `outgoing_edges`.**\n   - `application_tools_preserve_graph_tools_in_the_same_conversation` receives `{\"targets\":[2]}` from `outgoing_edges`. It then calls `read_node({\"node\":2})` and gets the content, so the target works directly as a `read_node` argument.\n   - The agent test queries `outgoing_edges` on node 3, a value taken from a previous result's targets.\n   - The agent test sends a malformed node `\"unknown\"`. The result is a tool error with no graph lookup and no dependency recorded. This covers the `node_reference` clause that the requirement cites.\n\nFailure cases are covered too. When delivery of the result fails, no dependency is recorded. When the domain's edge query fails, the dependency list is unchanged and `is_current` returns an error.\n\nI found no untested obligation. The tests carry `{test}` references to the subject.",
+  "rationale": "The reviewed tests adequately cover each obligation of `outgoing_edges.behavior`.\n\n- **Order and duplicates preserved.**\n  - `agent_edge_tools_record_selections_without_validating_targets` has the graph return `[3,2,3]` for node 1, label 7. It asserts the tool result is exactly `{\"targets\":[3,2,3]}`.\n  - `labeled_selections_track_only_target_membership_without_reading_contents` asserts that `successors` and `outgoing_edges` return `[5,3,5]` for edges inserted as `(7,5),(7,3),(7,5)`. That is the graph's order, with the duplicate kept.\n\n- **Fingerprint describes the distinct target set, not the order or duplicates.**\n  - The agent test asserts the recorded dependency is `Dependency::OutgoingEdges(1, 7, edge_fingerprint(&graph, &[2, 3]))`, even though the returned list was `[3,2,3]`.\n  - The validation test asserts `snapshot.fingerprint == edge_fingerprint(&[3,5])` for the returned `[5,3,5]`. It asserts `assert_ne!` for the changed sets `[3]` and `[3,5,9]`. It also asserts that a record stays current after the order and duplicates change, and stops being current when a target changes.\n  - Path-boundary encoding and versioning are checked by `edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding` in `tests/contracts.rs`. That belongs to the cited `snapshot` requirement, so I did not reassess it.\n\n- **Follows edges with the given `label` from the given node.**\n  - The agent test queries label 8 on node 1 and gets `[3]`, with a dependency fingerprint for `[3]`. Label 7 on node 1 gets `[3,2,3]`. The fixture asserts the label is 7 or 8 and returns different edges per label.\n  - The validation test inserts edges `(8,2)` and `(7,…)` for node 1. The empty-label record stays current when only label 8 changes.\n  - Querying a different node (`ctx.outgoing_edges(&9, 7)`, and node 3 in the agent test) is also covered. The resulting dependency records the queried node, label and fingerprint.\n\n- **Label schema from `D::EdgeLabel`.** `nested_label_schema_references_resolve_from_the_tool_parameters_root` checks that the label's schema is taken from the supplied label type, including nested `$ref` resolution, a `null` type for a unit label, and `required` of `[\"node\",\"label\"]`.\n\n- **Targets usable as node references.**\n  - In `application_tools_preserve_graph_tools_in_the_same_conversation`, the target `2` returned by `outgoing_edges` is passed to `read_node`. The test asserts the contents and the recorded `Dependency::Node(Node(2), …)`.\n  - In the agent edge test, the target `3` returned by label 8 is passed to `outgoing_edges`. The test asserts the resulting dependency `OutgoingEdges(3, 7, fingerprint of [])`.\n  - Invalid IDs are covered by the malformed `\"unknown\"` node case. It asserts an error result and no domain lookup. That obligation belongs to `node_reference`, which is cited here only as context.\n\n- **Error and edge cases.**\n  - An edge-listing failure (`fail_edges`) is asserted to return `Err(\"edges\")` and to leave the dependencies unchanged.\n  - A failed delivery records no dependency.\n  - An empty target set is covered.\n\nAll of these are marked with `{test}` references to the subject. I found no unacknowledged gap.",
   "references": "8afe199ce81b87a5b63ba662a762c24c42462ca0506b93f5a27496251d3ddddd",
   "inputs": [
     {
@@ -67,7 +67,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[agent_edge_tools_record_selections_without_validating_targets]",
-      "hash": "6c601f85dfcb850cca353964c11355eca0ec6bb3b53a7dff3ab7779d16d4be53"
+      "hash": "3752def53e59555536d6dc1ecdaf5eea8533cfaf80529339264b362d8ca838c0"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -116,11 +116,6 @@
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding]",
       "hash": "8a5faaddd5946b2cd70824e1f60bc7b99324a1809bc369ade72c2dec5001db73"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[ValidationContext<'d,%20D>]#2/fn[prepare_edges]",
-      "hash": "69aa7c41cf321790c2e0b8b755f8a73ef7fb8c35e5236e903fdbf903313cb372"
     }
   ],
   "format_version": 1,
@@ -195,7 +190,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "6e947b27759f115773258e7e196f83cd26e1fd9702061fad214ecaadeb717ebc"
+          "value": "82ca8d24ea5463f545e0d5a24d4597da02c0c6ae706b186e7a5e85260f66f6c0"
         }
       ]
     },
@@ -286,23 +281,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "7958cb0d8cca33b620ee02549f6499b6ad954a6d552d9b1bd018394d36599c57"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[prepare_edges]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "f3d6dfd262282480bb2d7222e75dad37c161948c72238d8b4db3f226cd34c7b0"
         }
       ]
     }

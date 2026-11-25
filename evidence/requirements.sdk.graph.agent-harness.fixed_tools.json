@@ -1,7 +1,7 @@
 {
   "requirement": "The SDK supplies the inspection tools described in\n[Validation context](validation-context.md). Graph tools invoke the application's graph\nand contents interfaces; source tools invoke its source interfaces and\nsource-node mapping.\n\nThe SDK provides a fixed set of tools and their input-recording policy.\nApplication-specific node kinds use the SDK's ordinary node-read tool.",
   "determination": true,
-  "rationale": "No gaps found. Each obligation of `fixed_tools` maps to a marked test with assertions.\n\n**Fixed tool set.**\n- `supplied_openai_backend_runs_independent_calls_against_a_local_transport` (`configured.rs`) checks the exact ordered tool names sent on the wire when no sources are attached: `read_node`, `outgoing_edges`, `get_next_page`, `submit_result`.\n- `default_tool_accepts_scalar_results_and_keeps_the_exact_prefix` (`tests.rs`) checks the same list at the provider-request level. It also checks the `get_next_page` schema.\n- `configured_agent_uses_domain_source_tools_in_independent_executions` (`configured.rs`) checks the exact list with sources attached. It adds `list_sources`, `outline_source`, `search_text`, `search_structure` and `finish_search`. It also checks that the `node` parameter of `read_node`, `outline_source` and `outgoing_edges` is an integer-id reference.\n\n**Graph tools invoke the graph and contents interfaces.**\n- `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` exercises `outgoing_edges`, `read_node` and `get_next_page` against a graph. It asserts the recorded edge and node-content observations.\n- It also covers the policy for undelivered results. A failed delivery records nothing, and a queued-contents delivery records its node.\n- `agent_edge_tools_record_selections_without_validating_targets` asserts that the graph's `outgoing_edges` is called exactly once. It also asserts the delivered target list and the recorded `OutgoingEdges` dependency. Malformed node IDs are rejected before any graph query. A failed delivery adds no input. A second label is recorded separately.\n- `queued_contents_and_graph_read_tools_redact_credentials_before_delivery` checks that node contents are delivered from the graph's contents and that the recorded fingerprint is of the original.\n\n**Source tools invoke the source interfaces and the source-node mapping.**\n- `source_tools_forward_arguments_and_present_discovery_and_read_results` drives `list_sources`, `search_text`, `search_structure`, `outline_source` and `read_source` against a recording provider. It asserts the exact arguments the provider receives, namely prefix, context and limit. It asserts the delivered shapes. It asserts that discovery records no dependencies and that reads record the mapped observation. It also asserts that provider errors surface.\n- `configured_agent_uses_domain_source_tools_in_independent_executions` runs end to end over the local transport. It uses `list_sources` and `read_node` on a source-mapped id. It asserts the delivered text is the mapped snapshot and not the disk contents. It exercises `search_text` and `finish_search`. It asserts the exact dependency list, which has the source-mapped nodes carrying outline fingerprints. It asserts that only the selected file was read, once per execution.\n- `structural_tags_select_only_the_original_enclosing_item` and `outline_continuations_keep_the_file_and_complete_ordered_items` (`project_sources.rs`) cover `search_structure`, `finish_search`, `outline_source` and `get_next_page`, including paging and which calls record dependencies.\n\n**Input-recording policy.** Discovery calls (list, search, outline, pages) record nothing. Reads and finished searches record node observations. These asserts appear across the tests above.\n\n**Application-specific node kinds use the ordinary node-read tool.** Domain node ids, including source-mapped ids, are read only through `read_node`. The tool list has no kind-specific read tool, and the tests read mapped source nodes through `read_node`.\n\nThe more detailed per-tool behavior, MCP schemas and input rules are covered by the refining requirements (`read_node.*`, `outgoing_edges.*`, `list_sources.*`, `pages.*` and others) and their own tests. They are not reassessed here. The umbrella obligation is covered, and no fixme acknowledgments exist or are needed.",
+  "rationale": "I judge the marked tests adequate for `requirements.sdk.graph.agent-harness.fixed_tools`. I did not read any implementation source. I read the sibling `validation-context` requirements, which the subject cites, to derive the expected tool behavior.\n\n**Obligations derived from the subject text:**\n1. The SDK supplies a fixed set of inspection tools, and application code does not change it.\n2. Graph tools invoke the application's graph and contents interfaces.\n3. Source tools invoke the source interfaces and the source-node mapping.\n4. The SDK applies a fixed input-recording policy: reads record on delivery, discovery records nothing, and selected search hits record.\n5. Application-specific node kinds use the ordinary `read_node` tool.\n\n**How the tests cover them:**\n- **Fixed set, graph only:**\n  - `agent/tests.rs#fn[default_tool_accepts_scalar_results_and_keeps_the_exact_prefix]` asserts the exact ordered tool names `read_node`, `outgoing_edges`, `get_next_page`, `submit_result`.\n  - It also asserts the `get_next_page` and `submit_result` schemas.\n  - The local-transport test `configured.rs#mod[tests]/fn[supplied_openai_backend_runs_independent_calls_against_a_local_transport]` asserts the same four tools on every wire request.\n- **Fixed set, with sources:**\n  - `configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` asserts the exact nine-tool list, adding `list_sources`, `outline_source`, `search_text`, `search_structure` and `finish_search`.\n  - It does so on the first request of both independent executions.\n  - It also checks the node-ID parameter schema for `read_node`, `outline_source` and `outgoing_edges`.\n- **Graph tools reach the domain:**\n  - `read_node` reads node contents. The `Memory` graph's `reads` list is asserted, and the formatted contents appear in the prompt.\n  - `agent_edge_tools_record_selections_without_validating_targets` shows `outgoing_edges` calling the domain's edge lookup. It asserts the lookup count and the returned `targets` `[3,2,3]`, so order and duplicates are preserved.\n  - It also checks the malformed-ID error, which leaves the lookup count at zero.\n  - `queued_contents_and_graph_read_tools_redact_credentials_before_delivery` checks delivered contents against the stored fingerprint.\n- **Source tools reach the source interfaces:**\n  - `agent/tests.rs#fn[source_tools_forward_arguments_and_present_discovery_and_read_results]` uses a recording `SourceProvider`.\n  - It asserts that `list_sources`, `search_text` and `search_structure` forward prefix, context, limit, pattern and rule.\n  - It also checks the result shapes, provider-error propagation and the outline.\n  - `project_sources.rs` tests cover structural tags, `finish_search`, and outline paging through `get_next_page`.\n- **Source-node mapping:**\n  - The configured source test reads a listed file node with `read_node` and gets `\"a source snapshot\"`, the domain's mapped content.\n  - The test asserts that the disk text does not appear.\n  - It asserts the resulting `Dependency::Node(TestNode{id:8…})` fingerprints from the outline content.\n  - It also checks that an unknown node ID is rejected.\n- **Recording policy:**\n  - `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` shows records appear only after a successful provider exchange. A failed delivery records nothing.\n  - Discovery results have empty `dependencies` in the source tests and in the outline continuation test.\n  - Only the `finish_search`-selected hits record, as the structural-tags test and the configured test's dependency list show.\n- **Application node kinds:** the tests use domain-specific ID types (`TestNode{id}`, `Node(n)`, `u8`) and reach them through `read_node` and `outgoing_edges` with the domain's Serde representation. The tool schemas are derived from the node ID type.\n\n**Gaps and exemptions:** I found no uncovered obligation, so no gap needs a counterexample. No `{fixme}` acknowledgments apply. `read_source` is not in the agent tool list, and the cited requirement says agents read mapped sources through `read_node`. That omission therefore does not conflict with the subject.",
   "references": "f4ee5d1041aba8580bbb03e3ce8a5f36e34ff867cd73b2cc4a9cb8f305ed639f",
   "inputs": [
     {
@@ -24,7 +24,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[supplied_openai_backend_runs_independent_calls_against_a_local_transport]",
-      "hash": "13b76dc6b9f1d21162c5442480f8d73009f3ea835205a07915951610b2d623d0"
+      "hash": "be2ea4292aed9ebefd85b91f462c906f37f6fe23e58f2a413c18a6d3e2d4ecae"
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
@@ -49,7 +49,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[agent_edge_tools_record_selections_without_validating_targets]",
-      "hash": "6c601f85dfcb850cca353964c11355eca0ec6bb3b53a7dff3ab7779d16d4be53"
+      "hash": "3752def53e59555536d6dc1ecdaf5eea8533cfaf80529339264b362d8ca838c0"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -67,29 +67,571 @@
       "hash": "4d23db061e025d47d10b644313820942fa2884f7da7ee95341803244b5c6682d"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/tools.rs",
-      "item": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[tools]",
-      "hash": "32228a8e6ca4276c9ad8890a2c745f2d2b5579c94102ebfb33f12992c7614be2"
+      "requirements": "requirements.sdk.graph.validation-context.*",
+      "matches": [
+        "requirements.sdk.graph.validation-context.ValidationContext",
+        "requirements.sdk.graph.validation-context.ValidationContext.ask",
+        "requirements.sdk.graph.validation-context.ValidationContext.dependencies",
+        "requirements.sdk.graph.validation-context.ValidationContext.finish",
+        "requirements.sdk.graph.validation-context.ValidationContext.graph",
+        "requirements.sdk.graph.validation-context.ValidationContext.new",
+        "requirements.sdk.graph.validation-context.ValidationContext.node_id",
+        "requirements.sdk.graph.validation-context.ValidationContext.outgoing_edges",
+        "requirements.sdk.graph.validation-context.ValidationContext.read",
+        "requirements.sdk.graph.validation-context.ValidationContext.read_snapshot",
+        "requirements.sdk.graph.validation-context.ValidationContext.read_source",
+        "requirements.sdk.graph.validation-context.ValidationContext.successors",
+        "requirements.sdk.graph.validation-context.list_sources.behavior",
+        "requirements.sdk.graph.validation-context.list_sources.fn",
+        "requirements.sdk.graph.validation-context.list_sources.inputs",
+        "requirements.sdk.graph.validation-context.list_sources.mcp",
+        "requirements.sdk.graph.validation-context.list_sources.mcp.description",
+        "requirements.sdk.graph.validation-context.node_reference",
+        "requirements.sdk.graph.validation-context.outgoing_edges.behavior",
+        "requirements.sdk.graph.validation-context.outgoing_edges.fn",
+        "requirements.sdk.graph.validation-context.outgoing_edges.inputs",
+        "requirements.sdk.graph.validation-context.outgoing_edges.mcp",
+        "requirements.sdk.graph.validation-context.outgoing_edges.mcp.description",
+        "requirements.sdk.graph.validation-context.outline_source.behavior",
+        "requirements.sdk.graph.validation-context.outline_source.fn",
+        "requirements.sdk.graph.validation-context.outline_source.inputs",
+        "requirements.sdk.graph.validation-context.outline_source.mcp",
+        "requirements.sdk.graph.validation-context.outline_source.mcp.description",
+        "requirements.sdk.graph.validation-context.pages.behavior",
+        "requirements.sdk.graph.validation-context.pages.inputs",
+        "requirements.sdk.graph.validation-context.pages.mcp",
+        "requirements.sdk.graph.validation-context.pages.mcp.description",
+        "requirements.sdk.graph.validation-context.read_node.behavior",
+        "requirements.sdk.graph.validation-context.read_node.fn",
+        "requirements.sdk.graph.validation-context.read_node.inputs",
+        "requirements.sdk.graph.validation-context.read_node.mcp",
+        "requirements.sdk.graph.validation-context.read_node.mcp.description",
+        "requirements.sdk.graph.validation-context.read_source.behavior",
+        "requirements.sdk.graph.validation-context.read_source.fn",
+        "requirements.sdk.graph.validation-context.read_source.inputs",
+        "requirements.sdk.graph.validation-context.root_inputs",
+        "requirements.sdk.graph.validation-context.shared_context",
+        "requirements.sdk.graph.validation-context.snapshot",
+        "requirements.sdk.graph.validation-context.tracked_inspection"
+      ],
+      "text": [
+        ":::{req} ValidationContext",
+        "",
+        "The SDK exposes the {term}`requirements.sdk.graph.validation-context.validation_context`",
+        "through `ValidationContext`. Criterion code can read graph nodes and source items, follow edges,",
+        "and call `ask` to dispatch an agent with a prompt. The agent can search project",
+        "files and use the same tracked reads as criterion code.",
+        "",
+        "`verify` creates a context for one execution. Each tracked read adds",
+        "the input’s identity and a fingerprint of its contents to the dependency list.",
+        "`verify` returns these dependencies with the answer. `refresh_evidence` uses",
+        "them to decide whether to rerun the criterion. [Searching project sources](search.md) explains",
+        "how the agent chooses which search excerpts to record.",
+        "",
+        "```rust,ignore",
+        "pub struct ValidationContext<'d, D: Domain> { /* private fields */ }",
+        "```",
+        ":::",
+        "",
+        ":::{req} ValidationContext.ask",
+        "",
+        "Start an agent request that will decode its submitted answer as `R`. Its graph tools share the dependency list used by direct reads under {cite}`requirements.sdk.graph.validation-context.shared_context`.",
+        "",
+        "```rust,ignore",
+        "impl<'d, D: Domain> ValidationContext<'d, D> {",
+        "    pub fn ask<R>(&self) -> Ask<'_, 'd, D, R, ContextPhase>",
+        "    where",
+        "        R: DeserializeOwned + JsonSchema + Send;",
+        "}",
+        "```",
+        ":::",
+        "",
+        ":::{req} ValidationContext.dependencies",
+        "",
+        "Return a snapshot of the observations collected so far. Later reads continue to contribute to this execution.",
+        "",
+        "```rust,ignore",
+        "impl<'d, D: Domain> ValidationContext<'d, D> {",
+        "    pub fn dependencies(&self) -> Vec<Dependency<D::NodeId, D::EdgeLabel>>;",
+        "}",
+        "```",
+        ":::",
+        "",
+        ":::{req} ValidationContext.finish",
+        "",
+        "Build a storage record from the supplied criterion version, serialized output, and the dependencies collected so far. The caller can pass the record to its storage backend.",
+        "",
+        "```rust,ignore",
+        "impl<'d, D: Domain> ValidationContext<'d, D> {",
+        "    pub fn finish(",
+        "        &self,",
+        "        version: CriterionVersion,",
+        "        output: impl Serialize,",
+        "    ) -> Result<Record<D::NodeId, D::EdgeLabel>, serde_json::Error>;",
+        "}",
+        "```",
+        ":::",
+        "",
+        ":::{req} ValidationContext.graph",
+        "",
+        "Borrow the application domain. Calls made directly on the domain bypass the context’s dependency tracking.",
+        "",
+        "```rust,ignore",
+        "impl<'d, D: Domain> ValidationContext<'d, D> {",
+        "    pub fn graph(&self) -> &'d D;",
+        "}",
+        "```",
+        ":::",
+        "",
+        ":::{req} ValidationContext.new",
+        "",
+        "Construct a context for a source node with an empty dependency list. `verify` does this for each execution.",
+        "",
+        "```rust,ignore",
+        "impl<'d, D: Domain> ValidationContext<'d, D> {",
+        "    pub fn new(graph: &'d D, node: D::NodeId) -> Self;",
+        "}",
+        "```",
+        ":::",
+        "",
+        ":::{req} ValidationContext.node_id",
+        "",
+        "Borrow the identity of the source node being checked.",
+        "",
+        "```rust,ignore",
+        "impl<'d, D: Domain> ValidationContext<'d, D> {",
+        "    pub fn node_id(&self) -> &D::NodeId;",
+        "}",
+        "```",
+        ":::",
+        "",
+        ":::{req} ValidationContext.outgoing_edges",
+        "",
+        "Select targets from any supplied node by label, returning the target IDs and the recorded target-set fingerprint under {cite}`requirements.sdk.graph.validation-context.outgoing_edges.inputs`.",
+        "",
+        "```rust,ignore",
+        "impl<'d, D: Domain> ValidationContext<'d, D> {",
+        "    pub fn outgoing_edges(",
+        "        &self,",
+        "        node: &D::NodeId,",
+        "        label: D::EdgeLabel,",
+        "    ) -> Result<Snapshot<Vec<D::NodeId>>, D::Error>",
+        "    where",
+        "        D::EdgeLabel: PartialEq;",
+        "}",
+        "```",
+        ":::",
+        "",
+        ":::{req} ValidationContext.read",
+        "",
+        "Read a graph node and record the fingerprint of the returned contents under {cite}`requirements.sdk.graph.validation-context.read_node.inputs`.",
+        "",
+        "```rust,ignore",
+        "impl<'d, D: Domain> ValidationContext<'d, D> {",
+        "    pub fn read(&self, node: &D::NodeId) -> Result<D::NodeContent, D::Error>;",
+        "}",
+        "```",
+        ":::",
+        "",
+        ":::{req} ValidationContext.read_snapshot",
+        "",
+        "Read a node once and return both its contents and their fingerprint. Record the same fingerprint in the dependency list.",
+        "",
+        "```rust,ignore",
+        "impl<'d, D: Domain> ValidationContext<'d, D> {",
+        "    pub fn read_snapshot(",
+        "        &self,",
+        "        node: &D::NodeId,",
+        "    ) -> Result<Snapshot<D::NodeContent>, D::Error>;",
+        "}",
+        "```",
+        ":::",
+        "",
+        ":::{req} ValidationContext.read_source",
+        "",
+        "Resolve an outline item to its graph node, read the contents, and record the observation under {cite}`requirements.sdk.graph.validation-context.read_source.inputs`.",
+        "",
+        "```rust,ignore",
+        "impl<D: Domain> ValidationContext<'_, D> where D::Error: From<SourceError> {",
+        "    pub fn read_source(&self, item: &OutlineId) -> Result<D::NodeContent, D::Error>;",
+        "}",
+        "```",
+        ":::",
+        "",
+        ":::{req} ValidationContext.successors",
+        "",
+        "Select targets of a labeled edge from the current source node. Record the target set even when it is empty. Reading a selected target records its contents separately.",
+        "",
+        "```rust,ignore",
+        "impl<'d, D: Domain> ValidationContext<'d, D> {",
+        "    pub fn successors(",
+        "        &self,",
+        "        label: &D::EdgeLabel,",
+        "    ) -> Result<Vec<D::NodeId>, D::Error>",
+        "    where",
+        "        D::EdgeLabel: PartialEq;",
+        "}",
+        "```",
+        ":::",
+        "",
+        ":::{req} list_sources.behavior",
+        "Each listed reference identifies a visible file. Follow `next` to retrieve further pages.",
+        ":::",
+        "",
+        ":::{req} list_sources.fn",
+        "```rust,ignore",
+        "impl Sources {",
+        "    // ...",
+        "",
+        "    /// List file identities within this scope.",
+        "    pub async fn list(&self, scope: &SourceScope) -> Result<Vec<PathBuf>, SourceError>;",
+        "",
+        "    // ...",
+        "}",
+        "```",
+        ":::",
+        "",
+        ":::{req} list_sources.inputs",
+        "The SDK's `list_sources` result is discovery and",
+        "records neither the returned identity set nor the files' contents as",
+        "evidence inputs. Adding or removing a listed file therefore does not by",
+        "itself invalidate the evidence. Subsequent tracked reads record their own",
+        "dependencies.",
+        ":::",
+        "",
+        ":::{req} list_sources.mcp",
+        "List visible file-root node references under {cite}`requirements.sdk.graph.validation-context.node_reference`.",
+        "",
+        "```text",
+        "list_sources({}) -> {files: NodeId[], next?: UUID}",
+        "```",
+        ":::",
+        "",
+        ":::{req} list_sources.mcp.description",
+        "> `List available project file nodes.`",
+        ":::",
+        "",
+        ":::{req} node_reference",
+        "The agent harness serializes the current node, supplied input nodes, and node IDs in tool results using the domain's Serde representation of `D::NodeId`. A tool accepting a node ID deserializes the same JSON value. Its argument schema uses `D::NodeId`'s `JsonSchema` implementation. An invalid ID representation produces a tool error before the domain is queried.",
+        "",
+        "For example, if a search hit contains `\"node\": {\"Issue\": 42}`, the agent can call `read_node({\"node\": {\"Issue\": 42}})` to read that issue.",
+        ":::",
+        "",
+        ":::{req} outgoing_edges.behavior",
+        "The returned vector preserves order and duplicates. The fingerprint describes",
+        "the set of stable target paths under {cite}`requirements.sdk.graph.validation-context.snapshot`.",
+        "",
+        "Follow edges with `label` from the node identified by `node`. The application's",
+        "`D::EdgeLabel` supplies the JSON schema for `label`. Each entry in `targets` is a node reference under {cite}`requirements.sdk.graph.validation-context.node_reference` that the agent can pass directly to `read_node` or `outgoing_edges`.",
+        ":::",
+        "",
+        ":::{req} outgoing_edges.fn",
+        "Criterion code uses {cite}`requirements.sdk.graph.validation-context.ValidationContext.outgoing_edges` for this operation.",
+        ":::",
+        "",
+        ":::{req} outgoing_edges.inputs",
+        "A successful edge selection records the source identity, the requested label,",
+        "and the fingerprint of the returned target identity set. Adding or removing an",
+        "identity from that set changes it, including adding the first identity to an",
+        "empty set. Reordering targets or repeating a target does not change it.",
+        "Changes to a target's contents do not affect this dependency: reading those",
+        "contents records a separate node dependency. These observations follow",
+        "{cite}`requirements.sdk.graph.evidence.inputs` and",
+        "{cite}`requirements.sdk.graph.evidence.checking_records`.",
+        "",
+        "`ValidationContext::outgoing_edges` records the selection when returning it.",
+        "The SDK agent records the prepared selection when delivered. A failed selection",
+        "records no successful observation.",
+        ":::",
+        "",
+        ":::{req} outgoing_edges.mcp",
+        "Give `outgoing_edges` a node ID and a label of the application’s",
+        "edge-label type. Each reference in `targets` can be used in a subsequent graph tool call.",
+        "",
+        "```text",
+        "outgoing_edges({node: NodeId, label: EdgeLabel}) -> {targets: NodeId[]}",
+        "```",
+        ":::",
+        "",
+        ":::{req} outgoing_edges.mcp.description",
+        "> `Inspect a known node's outgoing targets for the requested label, making those",
+        "> targets available to read_node.`",
+        ":::",
+        "",
+        ":::{req} outline_source.behavior",
+        "The outline uses the file snapshot retained by the domain’s cache. Each item includes its kind and a reference the agent can pass to `read_node`. Follow `next` to see more items.",
+        ":::",
+        "",
+        ":::{req} outline_source.fn",
+        "```rust,ignore",
+        "impl Sources {",
+        "    // ...",
+        "",
+        "    /// Outline one file snapshot.",
+        "    pub async fn parse(",
+        "        &self,",
+        "        path: impl AsRef<Path>,",
+        "    ) -> Result<OutlineContent, SourceError>;",
+        "",
+        "    // ...",
+        "}",
+        "```",
+        ":::",
+        "",
+        ":::{req} outline_source.inputs",
+        "The SDK's `outline_source` result is discovery and records no evidence inputs. Changes to",
+        "that outline alone do not invalidate the evidence. A subsequent tracked read",
+        "of a selected item records that item's contents and fingerprint.",
+        ":::",
+        "",
+        ":::{req} outline_source.mcp",
+        "Pass a listed file reference to obtain its selectable nodes.",
+        "",
+        "```text",
+        "outline_source({node: NodeId}) -> {node: NodeId, items: {node: NodeId, kind: string}[], next?: UUID}",
+        "```",
+        ":::",
+        "",
+        ":::{req} outline_source.mcp.description",
+        "> `Inspect the outline of a listed file node.`",
+        ":::",
+        "",
+        ":::{req} pages.behavior",
+        "Each page has the same result fields as the originating tool. Text reads return",
+        "successive portions of text. Listings, outlines, and searches return successive",
+        "arrays of whole entries in their original order. Only a page with a successor",
+        "includes `next`.",
+        "",
+        "Reusing a UUID returns the same page from the original snapshot, including the",
+        "same successor UUID if more remains. A malformed UUID, an unknown UUID, or a UUID",
+        "from another conversation returns a tool error under",
+        "{cite}`requirements.sdk.graph.agent-harness.tool_agent.isolation`.",
+        ":::",
+        "",
+        ":::{req} pages.inputs",
+        "A delivered read page records the dependencies retained by that page under",
+        "{cite}`requirements.sdk.graph.evidence.node_inputs`. Each continuation of a",
+        "node or mapped source read retains the original node identity and content",
+        "fingerprint; reading a later page does not observe a newer version. A change",
+        "to that node's fingerprint can invalidate the evidence even if it happens",
+        "between pages. Agent tools record on delivery. Discovery pages record no evidence",
+        "inputs, just like their initial result. Preparing an undelivered page records",
+        "no read.",
+        ":::",
+        "",
+        ":::{req} pages.mcp",
+        "Pass the `next` UUID exactly as returned by the previous page. The UUID",
+        "identifies the prepared result and determines the shape of the returned object.",
+        "",
+        "```text",
+        "get_next_page({uuid: UUID}) -> object",
+        "```",
+        ":::",
+        "",
+        ":::{req} pages.mcp.description",
+        "> `Pass the UUID from next to read the next page in the same format. When next",
+        "> is absent, this is the last page.`",
+        ":::",
+        "",
+        ":::{req} read_node.behavior",
+        "The Rust caller receives the node's complete `D::NodeContent` or the domain's read error.",
+        "",
+        "The tool asks the domain to read the supplied node ID, including when the ID first appears in the `read_node` call.",
+        "Each page’s `text` contains the next portion of the node’s formatted contents. Formatting follows",
+        "{cite}`requirements.sdk.graph.agent-calls.judge.rendering`.",
+        ":::",
+        "",
+        ":::{req} read_node.fn",
+        "Criterion code uses {cite}`requirements.sdk.graph.validation-context.ValidationContext.read` for this operation.",
+        ":::",
+        "",
+        ":::{req} read_node.inputs",
+        "A successful `ValidationContext::read` records the node's identity and the",
+        "fingerprint of the returned contents, under",
+        "{cite}`requirements.sdk.graph.evidence.node_inputs`. A failed read records no",
+        "successful observation. The evidence becomes stale when a later read of that",
+        "node has a different fingerprint; a failure to resolve it is reported by",
+        "{cite}`requirements.sdk.graph.evidence.checking_records`.",
+        "",
+        "For a Rust caller, the SDK records the fingerprint when `read` returns the",
+        "contents. For an agent, the harness puts a tool result in the next request to",
+        "the model and records the fingerprint once the provider responds successfully.",
+        "That successful exchange is *delivery*. For example, suppose the tool reads a",
+        "function that returns `3`, and someone changes it to return `4` before the",
+        "provider responds. The model saw the version that returns `3`, so the SDK",
+        "records the fingerprint it computed from that version. Reading the function",
+        "again at this point would record a fingerprint for code the model never saw.",
+        ":::",
+        "",
+        ":::{req} read_node.mcp",
+        "Give `read_node` the ID of a node. The result contains the node’s text. If more",
+        "text remains, pass `next` to `get_next_page`.",
+        "",
+        "```text",
+        "read_node({node: NodeId}) -> {text: string, next?: UUID}",
+        "```",
+        ":::",
+        "",
+        ":::{req} read_node.mcp.description",
+        "> `Read a graph node by its domain ID. Returns text and, when more remains, a next UUID. A",
+        "> delivered page records its enclosing node.`",
+        ":::",
+        "",
+        ":::{req} read_source.behavior",
+        "`Domain::source_node` maps the `OutlineId` into the graph. `Domain::node_content` returns that node’s contents. Mapping and read failures return errors. Agents use the node reference from discovery with `read_node`.",
+        ":::",
+        "",
+        ":::{req} read_source.fn",
+        "Criterion code uses {cite}`requirements.sdk.graph.validation-context.ValidationContext.read_source` for this operation.",
+        ":::",
+        "",
+        ":::{req} read_source.inputs",
+        "A successful source read records the mapped node's identity and the fingerprint",
+        "of the supplied contents under",
+        "{cite}`requirements.sdk.sources.provider_observations`. Direct tracked reads",
+        "record when returning the contents; agent reads record when delivering them.",
+        "Failures record no successful observation.",
+        "",
+        "The dependency becomes stale when that node's fingerprint changes. The source",
+        "mapping cannot return an untracked successful read. Calling the standalone",
+        "outline parser directly records no graph dependency; a tracked node read must",
+        "enclose its use when its contents contribute to an assessment.",
+        ":::",
+        "",
+        ":::{req} root_inputs",
+        "`node_id` identifies the criterion’s source node. `successors` returns the targets",
+        "of its matching edges in order, including duplicates. Labels match by equality. A change to the recorded target set makes prior",
+        "evidence stale, including adding an edge to an empty selection. Target contents",
+        "become dependencies through tracked reads or agent insertions. An edge selects a",
+        "related source; assessments of that target remain separate.",
+        ":::",
+        "",
+        ":::{req} shared_context",
+        "During one call to `verify`, direct reads by the criterion and",
+        "reads served by the SDK's agent tools record inputs in the same",
+        "`ValidationContext`. For example, if criterion code reads a test and the agent",
+        "then reads its helper, both node fingerprints accompany the returned answer.",
+        "A subsequent verification starts with an empty dependency list.",
+        ":::",
+        "",
+        ":::{req} snapshot",
+        "",
+        "For a tracked label-specific edge query, the SDK constructs a",
+        "{term}`requirements.sdk.graph.content_snapshot` from the returned targets and",
+        "their target-set fingerprint, without another query.",
+        "",
+        "The public `trust_but_verify::graph::edge_fingerprint(graph, targets)` helper",
+        "computes this `Fingerprint` from the domain and a slice of target node IDs.",
+        "It fingerprints the set of distinct target identities under a versioned",
+        "scheme, including when the set is empty. Changing",
+        "order, duplicate edges, or another label's relationships leaves this fingerprint",
+        "unchanged. Reading target contents is a separate observation;",
+        "`NodeContents::fingerprint` describes those contents under",
+        "{cite}`requirements.sdk.graph.node_content.fingerprint`.",
+        "",
+        "The returned vector preserves the graph's ordering and duplicates.",
+        "",
+        "```rust,ignore",
+        "pub fn edge_fingerprint<D: Domain>(",
+        "    graph: &D,",
+        "    targets: &[D::NodeId],",
+        ") -> Fingerprint;",
+        "```",
+        ":::",
+        "",
+        ":::{req} tracked_inspection",
+        "Criteria and their agents should use the SDK's context inspection",
+        "operations for information on which a judgment depends.",
+        "The context records successful node-content observations in the enclosing",
+        "validation's trace. The SDK makes no recording claim for arbitrary filesystem,",
+        "process, or network I/O outside that interface. Discovery-only results do not",
+        "count as full reads of the nodes they locate.",
+        ":::"
+      ]
     },
     {
-      "file": "md/requirements/sdk/graph/agent-harness.md",
-      "item": "section[Agent%20harness]/section[Run%20the%20supplied%20harness]/block@0d7e919843d1",
-      "hash": "7ed9f391ed63a4809d38a0e7d0f95e49f266772b3a9e49c6edee97e4bb3c2360"
+      "definition": "requirements.sdk.application_domain",
+      "text": [
+        "::::{definition} application_domain",
+        ":phrase: application domain",
+        "",
+        ":::{cite} requirements.sdk.domain",
+        "An *application domain* is the application's graph, node contents, and evidence",
+        "storage, made available together for criterion execution. In the SDK, it",
+        "implements [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html) to supply",
+        "its shared types, node and edge operations, and evidence persistence.",
+        ":::",
+        "::::"
+      ]
     },
     {
-      "file": "md/requirements/sdk/graph/agent-harness.md",
-      "item": "section[Agent%20harness]/section[Run%20the%20supplied%20harness]/block@0d7e919843d1/paragraph@a167466d2e38",
-      "hash": "a167466d2e3847d9a8f167ff49fa734a58a00574711ddb2649cc85c9ec01aa40"
+      "definition": "requirements.sdk.graph.content_snapshot",
+      "text": [
+        ":::{definition} content_snapshot",
+        ":phrase: snapshot",
+        "",
+        "A *snapshot* is the contents obtained by one observation, paired with the",
+        "{term}`requirements.sdk.graph.observation_fingerprint` of those",
+        "same contents. [`Snapshot<T>`](../../rustdocs/trust_but_verify/graph/struct.Snapshot.html)",
+        "represents that pair.",
+        ":::"
+      ]
     },
     {
-      "file": "md/requirements/sdk/graph/validation-context.md",
-      "item": "section[Validation%20context]/section[Reading%20a%20source%20item]/block@3078ce12f3a5",
-      "hash": "4e1804972115028e38b2fa55de7ca096e988726e02b935b13ccbef67641b733f"
+      "definition": "requirements.sdk.graph.criteria.criterion",
+      "text": [
+        ":::{definition} criterion",
+        ":phrase: criterion",
+        "",
+        "A *criterion* is a value describing a test to perform on a",
+        "{term}`requirements.sdk.graph.node`.",
+        "In the SDK, its type implements",
+        "[`Criterion<D>`](../../../rustdocs/trust_but_verify/graph/trait.Criterion.html) for the",
+        "{term}`requirements.sdk.application_domain`. Its",
+        "members describe the question's answer, identity, review rules, and execution.",
+        ":::"
+      ]
     },
     {
-      "file": "md/requirements/sdk/graph/validation-context.md",
-      "item": "section[Validation%20context]/section[Reading%20a%20source%20item]/block@a527ad07e39e",
-      "hash": "d60e063a156188cc0e6fe00ea48c0f312f0dba117395a91e94d3897a48063d94"
+      "definition": "requirements.sdk.graph.node",
+      "text": [
+        ":::{definition} node",
+        ":phrase: graph node",
+        "",
+        "A *graph node* is a thing identified in the application's graph, such as a",
+        "requirement, a function, a test, or an issue. The application's",
+        "[`Domain::NodeId`](../../rustdocs/trust_but_verify/domain/trait.Domain.html#associatedtype.NodeId)",
+        "identifies it; its contents and the criteria evaluated on it are separate from",
+        "that identity.",
+        ":::"
+      ]
+    },
+    {
+      "definition": "requirements.sdk.graph.observation_fingerprint",
+      "text": [
+        ":::{definition} observation_fingerprint",
+        ":phrase: fingerprint",
+        "",
+        "A *fingerprint* is a digest together with the scheme identifying how it was",
+        "computed, represented by",
+        "[`Fingerprint`](../../rustdocs/trust_but_verify/graph/struct.Fingerprint.html).",
+        "It describes an observation under those rules; it does not identify the node or",
+        "say whether a criterion's answer is favorable.",
+        "Both the scheme and digest participate in comparisons.",
+        ":::"
+      ]
+    },
+    {
+      "definition": "requirements.sdk.graph.validation-context.validation_context",
+      "text": [
+        ":::{definition} validation_context",
+        ":phrase: validation context",
+        "",
+        "A *validation context* gives a {term}`requirements.sdk.graph.criteria.criterion`",
+        "the tools to decide whether it is satisfied and records which inputs it uses",
+        "during a single execution. An agent called by the criterion shares that context.",
+        ":::"
+      ]
     }
   ],
   "format_version": 1,
@@ -142,7 +684,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ecba23f36041428dd996621a0412a0f5615ce642d4f3bc1ed68cc781c0c3a283"
+          "value": "2bf07459b5022bcff84af767218d5511776670b94e69e7446abd44455a3de024"
         }
       ]
     },
@@ -227,7 +769,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "6e947b27759f115773258e7e196f83cd26e1fd9702061fad214ecaadeb717ebc"
+          "value": "82ca8d24ea5463f545e0d5a24d4597da02c0c6ae706b186e7a5e85260f66f6c0"
         }
       ]
     },
@@ -285,85 +827,77 @@
     {
       "Node": [
         {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tools.rs"
-            },
-            "selector": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[tools]"
-          }
+          "RequirementSelection": "requirements.sdk.graph.validation-context.*"
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c9c7841e52cbbd594f32375e760bc8cce4711aa967e8dd665356634681e6480d"
+          "value": "7931d7ff2f5d06045db1f59c298237ba8b054a6cca3bbb1f72c71d7ed872ccf0"
         }
       ]
     },
     {
       "Node": [
         {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "md/requirements/sdk/graph/agent-harness.md"
-            },
-            "selector": "section[Agent%20harness]/section[Run%20the%20supplied%20harness]/block@0d7e919843d1"
-          }
+          "Definition": "requirements.sdk.application_domain"
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "328c4874b5157c4d0380cdac7229ed6c15776f62d84471796e02867e10b155f5"
+          "value": "1f3d0d387ce356e5b4cc0cc22d20543142b5dcd7352c1eb5e4dd8dd73b058a34"
         }
       ]
     },
     {
       "Node": [
         {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "md/requirements/sdk/graph/agent-harness.md"
-            },
-            "selector": "section[Agent%20harness]/section[Run%20the%20supplied%20harness]/block@0d7e919843d1/paragraph@a167466d2e38"
-          }
+          "Definition": "requirements.sdk.graph.content_snapshot"
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "da7f132b324a99034a1dcd28ed5081986359fa381741865df12061fea39ef845"
+          "value": "5aa09b76d8d5a4ffd843a021acf83411382731309243404d5cdd8be670316897"
         }
       ]
     },
     {
       "Node": [
         {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "md/requirements/sdk/graph/validation-context.md"
-            },
-            "selector": "section[Validation%20context]/section[Reading%20a%20source%20item]/block@3078ce12f3a5"
-          }
+          "Definition": "requirements.sdk.graph.criteria.criterion"
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "84d31b5318ae21cacd999d33b047d55cc1fc607e1c3a2f4912fae25fcbd24849"
+          "value": "ce135060049411121ee9cf88ce6fd97b151985f68bb28824a43122d09c669145"
         }
       ]
     },
     {
       "Node": [
         {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "md/requirements/sdk/graph/validation-context.md"
-            },
-            "selector": "section[Validation%20context]/section[Reading%20a%20source%20item]/block@a527ad07e39e"
-          }
+          "Definition": "requirements.sdk.graph.node"
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "edd027378d461e3b12c78d33aae3602bbcaf81f638aa785c046c916c779b07b9"
+          "value": "862ef204d825c389978fbfbb82bcfdd34db5f70c0220c619d4b8503fd3c88cbb"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Definition": "requirements.sdk.graph.observation_fingerprint"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "9fcff1854eb767707b8efdb4a3a1edb436b8e6992cf8da3f4ccfc486672a1cdd"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Definition": "requirements.sdk.graph.validation-context.validation_context"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "992e0077c5ed6555f1c587f1529b70afe2de80d7bf348c605a48c97e26250521"
         }
       ]
     }

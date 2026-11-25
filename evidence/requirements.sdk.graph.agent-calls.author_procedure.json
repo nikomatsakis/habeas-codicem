@@ -1,7 +1,7 @@
 {
   "requirement": "A `Criterion::execute` invocation receives one `Send + Sync`\n`ValidationContext<'d, D>` for `D: Domain`, with tracked `inspection(&self)`\nand the `ask(&self)` builder under\n{cite}`requirements.sdk.graph.agent-calls.judge`.\n\nEach awaited ask builder runs its own conversation and returns its own submitted\nanswer. The context combines delivered node contents, tool reads, direct\ninspection reads, and recorded edge selections into one dependency trace for\nthe criterion. It records the node identities and fingerprints of the supplied\ncontents. A later call that selects fewer nodes, or none, preserves earlier\ninputs. An unawaited builder contributes no\nagent-delivery dependencies.\n\nShared references support concurrent calls: builders, conversations, and\nsubmission state remain independent, while updates to the trace are synchronized.\nCalls can run concurrently without holding an exclusive context borrow across\nan agent interaction or locking the whole context for the conversation.\n\nThe same context supports deterministic criteria under\n{cite}`requirements.sdk.graph.criteria.deterministic_procedures`.",
   "determination": true,
-  "rationale": "I judged this from the supplied tests only. I did not request implementation source, because the supplied tests were enough to map each obligation. Together the tests cover each obligation in `requirements.sdk.graph.agent-calls.author_procedure`.\n\n- **`Send + Sync` context with `inspection` and `ask`:** `later_lighter_agent_calls_preserve_the_contexts_existing_trace` in `validation_tests.rs` calls `assert_send_sync(&ctx)`. The same test uses the direct `ctx.read` inspection and `ctx.ask()`. The `ask` builder's `Send` future is checked in `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` with `assert_send(&future)`.\n- **Each awaited ask runs its own conversation and returns its own answer:**\n  - `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` in `agent/tests.rs` runs two asks under a `Barrier(2)`. The barrier forces them to overlap. The test asserts that `alpha` and `beta` each return their own answer and that each conversation made 3 calls.\n  - `agent_executions_isolate_conversations_and_dependency_traces` repeats this through `verify_with_agent`.\n  - `shared_context_allows_independent_concurrent_agent_calls` does the same with a mock agent and a barrier, and asserts the answers 7 and 11.\n- **One combined trace of delivered contents, tool reads, direct reads and edge selections:**\n  - `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` asserts `OutgoingEdges` and `Node` dependencies. It also asserts that the recorded `Node` fingerprint is the full delivered content, and that `finish` returns the same dependencies.\n  - `later_lighter_agent_calls_preserve_the_contexts_existing_trace` asserts the exact ordered trace: a direct read, the edge selection, the delivered node, then another direct read.\n  - `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` asserts that the shared trace has 3 entries with the expected node ids and fingerprints.\n- **A later call selecting fewer nodes, or none, preserves earlier inputs:** `later_lighter_agent_calls_preserve_the_contexts_existing_trace` makes a later `.context(\"lighter\")` call that selects no nodes. It asserts that `ctx.dependencies()` equals the earlier trace and that `finish` returns it. Preservation after a later call that selects fewer but still some nodes is not tested separately. I did not treat that as a gap, because the none case already exercises the same preservation.\n- **An unawaited builder contributes no agent-delivery dependencies:**\n  - `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` drops a builder that queued node and successor selections. It asserts empty dependencies and no graph reads or selections.\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` asserts no agent request after a dropped builder.\n  - Failure paths add to this. A failed render leaves the trace empty, and an undelivered read is not recorded (`node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents`).\n- **Concurrent calls through a shared reference, independent state, synchronized trace updates:** The barrier-based concurrent tests would deadlock or time out if calls were serialized or held an exclusive borrow. They also check that both calls' dependencies land in the single trace.\n- **Deterministic criteria (cited `requirements.sdk.graph.criteria.deterministic_procedures`):** `deterministic_validation_uses_required_storage_without_an_agent` runs a criterion with no agent. It asserts the computed output and the recorded `Node` dependency.\n\nI found no unacknowledged gaps in the supplied tests. The remaining tests in the inputs (the `converse` retry test in `agent/tests.rs` and the authoring confirmation test in `src/authoring/sdk.rs`) are additional supporting evidence.",
+  "rationale": "The reviewed tests cover each obligation of `requirements.sdk.graph.agent-calls.author_procedure`.\n\n- **Send + Sync context, shared reference.** `later_lighter_agent_calls_preserve_the_contexts_existing_trace` in `validation_tests.rs` calls `assert_send_sync(&ctx)`. It also uses the context through `&self` for direct `read` calls and `ask` builders.\n- **Each awaited builder runs its own conversation and returns its own answer.**\n  - `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` runs two `ask::<String>()` builders under `futures::join!`. A two-party barrier forces the calls to overlap. It asserts the answers \"alpha\" and \"beta\" and 3 provider calls for each conversation.\n  - `agent_executions_isolate_conversations_and_dependency_traces` repeats this through `verify_with_agent`. It also checks that each criterion's stored dependencies contain only its own reads.\n  - `shared_context_allows_independent_concurrent_agent_calls` runs two concurrent asks on one shared context. It asserts distinct answers (7 and 11) and one trace entry.\n- **One combined dependency trace with node identities and fingerprints.**\n  - `later_lighter_agent_calls_preserve_the_contexts_existing_trace` asserts an ordered trace made of a direct read, an `OutgoingEdges` selection, a delivered node's contents and a second direct read. It also asserts that `finish` yields that same trace.\n  - `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` checks tool reads (`outgoing_edges`, `read_node`, `get_next_page`) as `Dependency::OutgoingEdges` and `Dependency::Node` with fingerprints, and checks that `finish` returns the same dependencies.\n  - The concurrent tool-agent test asserts that the trace holds the union of both conversations' reads, three entries in all.\n- **A later call selecting fewer nodes, or none, preserves earlier inputs.** In `later_lighter_agent_calls_preserve_the_contexts_existing_trace`, a later `ask().context(...)` with no node selection leaves `ctx.dependencies()` equal to the earlier `retained` trace.\n- **An unawaited builder contributes no agent-delivery dependencies.**\n  - `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` drops builders that queued current-node and successor contents. It asserts an empty trace and no graph reads or selections.\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` also drops a builder and checks that the agent receives no request.\n- **Failed or undelivered contents are not recorded.**\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` covers read, edge-selection and render failures. Each errors before the agent is invoked, and the render failure leaves an empty trace.\n  - `node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents` covers a tool-side failure. It asserts that the error reaches the agent and that no dependency is recorded.\n  - `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` covers a failed conversation that records nothing.\n- **Deterministic criteria (cited `requirements.sdk.graph.criteria.deterministic_procedures`).** `deterministic_validation_uses_required_storage_without_an_agent` runs a criterion with no agent. It records a node dependency and returns the computed result. It also asserts `NoAgentConfigured` when `ask` is attempted without an agent.\n- **Cited `judge` builder behaviour.** `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` asserts that the `ask` future is `Send`. It also covers awaiting with no contexts and no node insertions, and building without invoking an agent.\n\nThe text names `inspection(&self)`, but the source has no method with that name. Direct tracked reads are `read` and the tool reads, which the tests exercise. The details of inspection belong to the separately cited `requirements.sdk.graph.validation-context.tracked_inspection`, so I did not count this as a test gap.\n\nI found no unacknowledged gap and no required {fixme}.",
   "references": "ad194cff1390c4c869fee727b016d65db94000c6d04a431ac117b5a76d68b718",
   "inputs": [
     {
@@ -90,7 +90,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[deterministic_validation_uses_required_storage_without_an_agent]",
-      "hash": "b442efc8cdaf6a005467fae1b11fe34828c57e5f36cb157f13d47eccdf2f935f"
+      "hash": "8adbd538084947e9899638c5b0772991febdb2870fd90d8ccd938ccdb296fbee"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -131,16 +131,6 @@
       "file": "src/authoring/sdk.rs",
       "item": "mod[tests]/fn[confirmed_evidence_retains_reads_from_both_assessments_and_the_verifier]",
       "hash": "ff4d27bb2e75f1dab61287bfb7fbf50e1914f6ab4a7a0fb3e9efd926827d091d"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
-      "item": "fn[snapshots_record_exact_reads_and_retain_distinct_versions]",
-      "hash": "e16d8bde2ebe1934d47fd8e1d8254c9003090e435bb79ae9ee3e6f5cb0e80918"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[ValidationContext<'d,%20D>]#2",
-      "hash": "e1f302f5542f81727298004815dac94a9e88081675c70a269a9eac2dedacfd1b"
     }
   ],
   "format_version": 1,
@@ -266,7 +256,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "531b3d0f4b457cd2242766c749f35640e368f474b102121ef2669dc6b7353d95"
+          "value": "d6517d26c6710d8e74ad0b66821d462bd2d1cd0558e03162f386e90ca802eb27"
         }
       ]
     },
@@ -403,40 +393,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "2045e056e2a4deb792c79001ea04a87c08a0de4398e489d89349331450484834"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
-            },
-            "selector": "fn[snapshots_record_exact_reads_and_retain_distinct_versions]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "ec70f86b0d7d929559ae6e6d2fa54cf2e9c4ecf741b7b4b2ac6e7242812ac348"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "impl[ValidationContext<'d,%20D>]#2"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "f6bfe9f1678fe730dec04a0806061e5a98225314b463c40fba9c8c6eb3245790"
         }
       ]
     }
