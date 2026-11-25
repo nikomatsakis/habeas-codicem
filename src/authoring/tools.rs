@@ -386,31 +386,50 @@ fn read(
 fn outline(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<Listing> {
     check_keys(args, &["file"])?;
     let file = string(args, "file")?;
-    let parsed = sources.parse_file(file)?;
-    let parsed = parsed
-        .as_ref()
-        .as_ref()
-        .map_err(|error| io::Error::other(error.clone()))?;
-    Ok(Listing::array(outline_entries(&parsed.outline, 0)))
+    sources.access.file(&sources.root, Path::new(file))?;
+    let snapshot = sources
+        .outlines
+        .snapshot(&sources.root, file)
+        .map_err(io::Error::other)?;
+    let outline = snapshot.outline();
+    let items = crate::outline_items::OutlineItems::new(outline, snapshot.text());
+    // Configuration redaction can give anonymous items different evidence addresses.
+    let config = outline.items.iter().any(|i| i.selector.contains('@'))
+        && crate::redaction::is_configuration_file_for(
+            &snapshot.id().path,
+            crate::config::user_config_path().ok().as_deref(),
+        );
+    let legacy = config.then(|| sources.outlines.parse(&sources.root, file));
+    let evidence = legacy
+        .as_deref()
+        .map(Result::as_ref)
+        .transpose()
+        .map_err(|e| io::Error::other(e.clone()))?;
+    Ok(Listing::array(outline_entries(
+        outline, &items, evidence, 0,
+    )))
 }
 
-/// The outline entries for a node's children, nested by ancestry.
+/// Render names from the selector, including normalized and multipart names.
 // {impl}`requirements.authoring.outline_tool`
 // {impl}`requirements.authoring.no_line_numbers`
-fn outline_entries(outline: &crate::outline::Outline, parent: usize) -> Vec<Value> {
-    outline.nodes[parent]
-        .children
-        .iter()
-        .map(|child| {
-            let node = &outline.nodes[*child];
-            json!({
-                "item": node.selector,
-                "kind": node.kind,
-                "name": node.display_name(),
-                "children": outline_entries(outline, *child),
-            })
-        })
-        .collect()
+fn outline_entries(
+    outline: &trust_but_verify::outline::Outline,
+    items: &crate::outline_items::OutlineItems,
+    evidence: Option<&crate::inputs::ParsedSource>,
+    parent: usize,
+) -> Vec<Value> {
+    let mut entries = Vec::new();
+    for &child in items.children(parent) {
+        let item = &outline.items[child];
+        let selector = evidence.map_or(&item.selector, |p| &p.outline.nodes[child].selector);
+        let name = crate::outline_items::display_name(selector);
+        entries.push(json!({
+            "item": selector, "kind": item.kind, "name": name,
+            "children": outline_entries(outline, items, evidence, child),
+        }));
+    }
+    entries
 }
 
 // {impl}`requirements.authoring.file_discovery`
@@ -722,7 +741,7 @@ fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<
                     |found| {
                         let range = (line_offsets[line - 1] + found.start())
                             ..(line_offsets[line - 1] + found.end());
-                        let index = parsed.items.owner(&range);
+                        let index = parsed.outline.ownership.owner(&range);
                         nodes.add(index, line..=line, start..=end);
                         true
                     },
@@ -792,7 +811,8 @@ impl SearchNodes {
                 let mut first = node.source_start;
                 let mut last = node.byte_end;
                 for comment in parsed
-                    .items
+                    .outline
+                    .ownership
                     .comments
                     .iter()
                     .filter(|comment| comment.owner == index)
@@ -824,7 +844,7 @@ impl SearchNodes {
                 json!({
                     "file": file,
                     "item": node.selector,
-                    "kind": if index == 0 { "file" } else { node.kind },
+                    "kind": if index == 0 { "file" } else { node.kind.as_str() },
                     "lines": shown_lines,
                 })
             })
@@ -1177,7 +1197,7 @@ fn structural(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
             {
                 continue;
             }
-            let index = parsed.items.owner(&range);
+            let index = parsed.outline.ownership.owner(&range);
             nodes.add(index, first..=last, first..=last);
         }
         entries.extend(nodes.entries(&file, parsed));
@@ -3372,6 +3392,11 @@ mod tests {
             "/// Docs.\nstruct Thing;\n\nimpl Thing {\n    fn run(&self) {}\n}\n",
         )
         .unwrap();
+        fs::write(
+            root.path().join("src/trait_impl.rs"),
+            "impl Trait for Thing { fn run(&self) {} }\n",
+        )
+        .unwrap();
         fs::write(root.path().join("notes.txt"), "alpha\n\nbeta\n").unwrap();
         let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
         let outline = dispatch(&sources, "outline", &json!({"file":"src/lib.rs"})).unwrap();
@@ -3386,6 +3411,16 @@ mod tests {
             ])
         );
         assert!(!outline.result.to_string().contains("Docs"));
+        let implementation =
+            dispatch(&sources, "outline", &json!({"file":"src/trait_impl.rs"})).unwrap();
+        assert_eq!(
+            implementation.result,
+            json!([{
+                "item": "impl[Thing/Trait]", "kind": "impl", "name": "Thing/Trait", "children": [
+                    {"item": "impl[Thing/Trait]/fn[run]", "kind": "fn", "name": "run", "children": []}
+                ]
+            }])
+        );
         let plain = dispatch(&sources, "outline", &json!({"file":"notes.txt"})).unwrap();
         let entries = plain.result.as_array().unwrap();
         assert_eq!(entries.len(), 2);
@@ -4492,7 +4527,9 @@ mod tests {
         };
         let redacted = read(json!({"file": "src/lib.rs", "item": "fn[client]"}));
         assert!(redacted.to_string().contains("[REDACTED:"), "{redacted}");
-        assert_eq!(redacted["note"], REDACTION_NOTE);
+        let note = redacted["note"].as_str().unwrap();
+        assert!(note.contains("[REDACTED:<kind>] replaces credential-shaped text"));
+        assert!(note.contains("the original text is not available"));
         let plain = read(json!({"file": "src/lib.rs", "item": "fn[plain]"}));
         assert!(plain.get("note").is_none(), "{plain}");
         let search = dispatch_paged(

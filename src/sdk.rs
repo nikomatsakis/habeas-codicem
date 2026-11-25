@@ -701,7 +701,7 @@ mod tests {
             node: Some(crate::inputs::ResolvedNode {
                 path: root.path().join("missing.rs"),
                 index: 0,
-                kind: "fn",
+                kind: "fn".into(),
                 hash: "supplied-snapshot".into(),
             }),
         };

@@ -309,7 +309,9 @@ pub(crate) fn query_matches(
         });
         let line_of = |byte: usize| text[..byte].matches('\n').count() + 1;
         for range in ranges {
-            let Some(index) = owning_site(&parsed.items, &range, within_nodes.as_deref()) else {
+            let Some(index) =
+                owning_site(&parsed.outline.ownership, &range, within_nodes.as_deref())
+            else {
                 continue;
             };
             found.push(QueryMatch {

@@ -1181,7 +1181,7 @@ fn render_input(
                     "- File: <code>{}</code>\n- Selector: <code>{}</code>\n- Kind: <code>{}</code>\n",
                     escape_html(file),
                     escape_html(if item.is_empty() { "(root)" } else { item }),
-                    escape_html(node.kind)
+                    escape_html(&node.kind)
                 ));
             }
             for range in &resolved.ranges {

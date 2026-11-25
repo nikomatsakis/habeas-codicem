@@ -554,7 +554,7 @@ pub(crate) fn site_fixmes(
                 .as_ref()
                 .as_ref()
                 .ok()
-                .filter(|parsed| parsed.outline.profile.language.is_some())
+                .filter(|parsed| parsed.outline.language != "plain-text")
                 .map(|parsed| {
                     parsed.outline.nodes[parsed.reference_owner_at_line(reference.line)]
                         .selector

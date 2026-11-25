@@ -407,7 +407,8 @@ mod tests {
     #[test]
     fn comment_fences_close_within_one_comment_run() {
         let source = "// :::{cite} habeas:util\n// Exists for its caller.\n// :::\nfn a() {}\n\n// :::{cite} habeas:util\n// never closed here\n\n// :::\nfn b() {}\n/*\n * :::{impl} requirements.ready\n * Checks it.\n * :::\n */\nfn c() {}\n".to_owned();
-        let outline = crate::outline::parse(std::path::Path::new("lib.rs"), &source).unwrap();
+        use trust_but_verify::outline::{OutlineLang, languages::Rust};
+        let outline = Rust.outline(&source).unwrap();
         let fences = crate::evidence::ReferenceContexts::parse(
             &Default::default(),
             std::path::Path::new("lib.rs"),
@@ -418,11 +419,11 @@ mod tests {
         assert_eq!(fences[0].body, "Exists for its caller.");
         assert!(fences[0].closed);
         assert_eq!(fences[0].line, 1);
-        assert_eq!(outline.nodes[fences[0].owner.unwrap()].selector, "fn[a]");
+        assert_eq!(outline.items[fences[0].owner.unwrap()].selector, "fn[a]");
         assert!(!fences[1].closed, "a later run's fence does not close it");
         assert_eq!(fences[1].line, 6);
         assert_eq!(fences[2].kind, ReferenceKind::Impl);
         assert_eq!(fences[2].body, "Checks it.");
-        assert_eq!(outline.nodes[fences[2].owner.unwrap()].selector, "fn[c]");
+        assert_eq!(outline.items[fences[2].owner.unwrap()].selector, "fn[c]");
     }
 }

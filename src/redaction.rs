@@ -17,13 +17,19 @@ pub(crate) fn redact_lines(lines: &[String]) -> Vec<String> {
 
 /// HC's configuration recognition layered on the SDK's fixed secret rules.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct Redaction(SourceRedaction);
+pub(crate) struct Redaction {
+    inner: SourceRedaction,
+    pub(crate) has_configuration_regions: bool,
+}
 
 impl Redaction {
     /// Use generic source rules for a non-configuration observation.
     #[cfg(test)]
     pub(crate) fn of_text(source: &str) -> Self {
-        Self(SourceRedaction::of_text(source))
+        Self {
+            inner: SourceRedaction::of_text(source),
+            has_configuration_regions: false,
+        }
     }
 
     /// Apply HC configuration fields as well as the generic SDK rules.
@@ -35,11 +41,22 @@ impl Redaction {
     // {impl}`requirements.authoring.credentials`
     pub(crate) fn of_file_with_config(path: &Path, source: &str, user: Option<&Path>) -> Self {
         let generic = SourceRedaction::of_text(source);
-        Self(if is_configuration_file_for(path, user) {
-            generic.with_regions(configuration_regions(source))
+        let regions = if is_configuration_file_for(path, user) {
+            configuration_regions(source)
         } else {
-            generic
-        })
+            Vec::new()
+        };
+        if regions.is_empty() {
+            Self {
+                inner: generic,
+                has_configuration_regions: false,
+            }
+        } else {
+            Self {
+                inner: generic.with_regions(regions),
+                has_configuration_regions: true,
+            }
+        }
     }
 }
 
@@ -47,7 +64,7 @@ impl std::ops::Deref for Redaction {
     type Target = SourceRedaction;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.inner
     }
 }
 
@@ -76,7 +93,7 @@ pub struct CredentialField {
 
 /// Whether this is a Habeas configuration file or an alias of the supplied user file.
 // {cite}`habeas:util`
-fn is_configuration_file_for(path: &Path, user: Option<&Path>) -> bool {
+pub(crate) fn is_configuration_file_for(path: &Path, user: Option<&Path>) -> bool {
     if path.file_name().is_some_and(|name| name == "habeas.toml") {
         return true;
     }

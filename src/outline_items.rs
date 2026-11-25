@@ -75,6 +75,10 @@ impl OutlineItems {
         self.line_starts.partition_point(|start| *start <= byte)
     }
 
+    pub(crate) fn children(&self, item: usize) -> &[usize] {
+        &self.children[item]
+    }
+
     pub(crate) fn parent(&self, item: usize) -> Option<usize> {
         self.parents[item]
     }
@@ -105,6 +109,179 @@ pub(crate) fn for_file(
         trust_but_verify::outline::OutlineContent::from_source(cache, path, source.into())
             .map_err(|error| error.to_string())?;
     Ok(OutlineItems::new(contents.outline(), source))
+}
+
+/// Evidence addresses and inclusive source lines used by Habeas's line-based tools.
+/// Selectors, hashes and attachment ownership originate in the SDK outline.
+pub(crate) struct EvidenceOutline {
+    pub(crate) ownership: OutlineItems,
+    pub(crate) nodes: Vec<EvidenceItem>,
+    pub(crate) language: &'static str,
+}
+
+pub(crate) struct EvidenceItem {
+    pub(crate) selector: String,
+    pub(crate) kind: String,
+    pub(crate) structural_hash: String,
+    pub(crate) line_start: usize,
+    pub(crate) line_end: usize,
+    pub(crate) declaration_line: usize,
+    pub(crate) byte_start: usize,
+    pub(crate) byte_end: usize,
+    pub(crate) source_start: usize,
+    pub(crate) parent: Option<usize>,
+}
+
+/// Display the decoded name parts of the last segment in an SDK selector.
+pub(crate) fn display_name(selector: &str) -> Option<String> {
+    use trust_but_verify::outline::selector::{Label, parse_selector};
+    match parse_selector(selector)
+        .expect("validated outline selector")
+        .pop()?
+        .label
+    {
+        Label::Named(parts) => Some(parts.join("/")),
+        Label::Hash(_) => None,
+    }
+}
+
+impl EvidenceOutline {
+    pub(crate) fn new(
+        public: &Outline,
+        items: OutlineItems,
+        language: &'static str,
+        legacy: Option<&crate::outline::Outline>,
+    ) -> Self {
+        let nodes = public
+            .items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let mut start = item.span.start;
+                let mut end = item.span.end.saturating_sub(1).max(start);
+                for attachment in &item.attachments {
+                    start = start.min(attachment.span.start);
+                    end = end.max(attachment.span.end.saturating_sub(1));
+                }
+                let core = item.header_span.map_or(item.span.start, |span| span.start);
+                let old = legacy.map(|outline| &outline.nodes[index]);
+                EvidenceItem {
+                    selector: old.map_or(&item.selector, |n| &n.selector).clone(),
+                    structural_hash: old
+                        .map_or(&item.structural_hash, |n| &n.structural_hash)
+                        .clone(),
+                    kind: item.kind.clone(),
+                    line_start: old.map_or_else(|| items.line_at(start), |n| n.line_start),
+                    line_end: old.map_or_else(|| items.line_at(end), |n| n.line_end),
+                    declaration_line: old.map_or_else(
+                        || items.line_at(item.name_span.map_or(core, |s| s.start)),
+                        |n| n.declaration_line,
+                    ),
+                    byte_start: old.map_or(core, |n| n.byte_start),
+                    byte_end: item.span.end,
+                    source_start: item.span.start,
+                    parent: items.parent(index),
+                }
+            })
+            .collect();
+        Self {
+            nodes,
+            language,
+            ownership: items,
+        }
+    }
+
+    pub(crate) fn resolve(&self, selector: &str) -> Result<usize, String> {
+        use trust_but_verify::outline::selector::parse_selector;
+        let normalized = parse_selector(selector)
+            .map_err(|e| e.to_string())?
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("/");
+        self.nodes
+            .iter()
+            .position(|node| node.selector == normalized)
+            .ok_or_else(|| {
+                let first = format!("{normalized}#1");
+                if self.nodes.iter().any(|n| n.selector == first) {
+                    format!("outline selector {selector:?} is ambiguous; add a #N disambiguator")
+                } else {
+                    format!("no outline node matches {selector:?}")
+                }
+            })
+    }
+
+    fn innermost(&self, line: usize, comments: bool) -> Vec<usize> {
+        let items = &self.ownership;
+        if comments {
+            let owners: Vec<_> = items
+                .comments
+                .iter()
+                .filter(|c| c.lines.contains(&line))
+                .map(|c| c.owner)
+                .collect();
+            if !owners.is_empty() {
+                return owners;
+            }
+        }
+        let covers = |i: usize| (self.nodes[i].line_start..=self.nodes[i].line_end).contains(&line);
+        let mut stack = vec![0];
+        let mut found = Vec::new();
+        while let Some(index) = stack.pop() {
+            if !covers(index) {
+                continue;
+            }
+            let pending = stack.len();
+            stack.extend(
+                items
+                    .children(index)
+                    .iter()
+                    .rev()
+                    .copied()
+                    .filter(|&i| covers(i)),
+            );
+            if stack.len() == pending {
+                found.push(index);
+            }
+        }
+        found
+    }
+
+    // {impl}`requirements.references.outline_comments`
+    pub(crate) fn owner_at_line(&self, line: usize) -> usize {
+        let items = &self.ownership;
+        if let Some(c) = items.comments.iter().find(|c| c.lines.contains(&line)) {
+            return c.owner;
+        }
+        self.innermost(line, false)
+            .into_iter()
+            .min_by_key(|&i| {
+                let n = &self.nodes[i];
+                (n.line_end - n.line_start, n.byte_end - n.byte_start)
+            })
+            .unwrap_or(0)
+    }
+
+    // {impl}`requirements.ci.outline_inputs`
+    pub(crate) fn nodes_for_lines(
+        &self,
+        lines: impl IntoIterator<Item = usize>,
+        comments: bool,
+    ) -> Vec<usize> {
+        let selected: std::collections::BTreeSet<_> = lines
+            .into_iter()
+            .flat_map(|line| self.innermost(line, comments))
+            .collect();
+        selected
+            .iter()
+            .copied()
+            .filter(|&node| {
+                !std::iter::successors(self.ownership.parent(node), |&i| self.ownership.parent(i))
+                    .any(|i| selected.contains(&i))
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]

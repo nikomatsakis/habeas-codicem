@@ -235,7 +235,7 @@ pub(crate) fn citation_items(
             (item.clone(), ReviewKind::BookCommentary)
         } else {
             let item = match parsed.as_ref() {
-                Ok(parsed) if parsed.outline.profile.language.is_some() => {
+                Ok(parsed) if parsed.outline.language != "plain-text" => {
                     let index = parsed.reference_owner_at_line(reference.line);
                     parsed.outline.nodes[index].selector.clone()
                 }

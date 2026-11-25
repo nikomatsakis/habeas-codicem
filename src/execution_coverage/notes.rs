@@ -72,7 +72,7 @@ pub(super) fn pages(root: &Path, files: &BTreeSet<String>, index: &Path) -> Vec<
                             failures.push(format!("{file}: cannot resolve {}", item.item));
                             continue;
                         };
-                        if !(item.item.is_empty() || matches!(parsed.outline.nodes[node].kind, "fn" | "def" | "function" | "method"))
+                        if !(item.item.is_empty() || matches!(parsed.outline.nodes[node].kind.as_str(), "fn" | "def" | "function" | "method"))
                             || !item.citations.iter().any(|cite| cite.name == "habeas:coverage")
                         {
                             continue;
@@ -106,7 +106,8 @@ fn diagnostic(content: &mut String, error: &str) {
 
 pub(super) fn doc_comments(parsed: &ParsedSource, owner: usize) -> String {
     parsed
-        .items
+        .outline
+        .ownership
         .comments
         .iter()
         .filter(|comment| comment.owner == owner)

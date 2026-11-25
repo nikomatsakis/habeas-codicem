@@ -49,7 +49,10 @@ struct Function {
 
 // {impl}`requirements.test-coverage.check.scope`
 // {impl}`requirements.test-coverage.check.threshold`
-fn inventory(source: &str, outline: &crate::outline::Outline) -> io::Result<(Vec<Function>, bool)> {
+fn inventory(
+    source: &str,
+    outline: &trust_but_verify::outline::Outline,
+) -> io::Result<(Vec<Function>, bool)> {
     let mut parser = tree_sitter::Parser::new();
     parser
         .set_language(&tree_sitter_rust::LANGUAGE.into())
@@ -66,10 +69,15 @@ fn inventory(source: &str, outline: &crate::outline::Outline) -> io::Result<(Vec
     while let Some(node) = stack.pop() {
         match node.kind() {
             "function_item" if node.child_by_field_name("body").is_some() => {
+                let name = node
+                    .child_by_field_name("name")
+                    .ok_or_else(|| io::Error::other("function has no name"))?;
+                let name_span =
+                    trust_but_verify::outline::Span::new(name.start_byte(), name.end_byte());
                 let item = outline
-                    .nodes
+                    .items
                     .iter()
-                    .find(|item| item.kind == "fn" && item.byte_start == node.start_byte())
+                    .find(|item| item.kind == "fn" && item.name_span == Some(name_span))
                     .ok_or_else(|| io::Error::other("function has no source outline identity"))?;
                 let mut cursor = node.walk();
                 let keyword = node
@@ -320,12 +328,10 @@ pub(super) fn check_saved(root: &Path, saved: &book::SavedCoverage) -> io::Resul
             .map_err(io::Error::other)?
             .to_string_lossy()
             .into_owned();
-        let parsed = outlines.parse(root, &file);
-        let inventory = match parsed.as_ref() {
-            Ok(parsed) => inventory(&parsed.source, &parsed.outline)
-                .map_err(|error| format!("{file}: {error}")),
-            Err(error) => Err(error.clone()),
-        };
+        let inventory = outlines.snapshot(root, &file).and_then(|snapshot| {
+            inventory(snapshot.text(), snapshot.outline())
+                .map_err(|error| format!("{file}: {error}"))
+        });
         let inventory = match inventory {
             Ok(inventory) => Some(inventory),
             Err(error) => {
@@ -463,6 +469,7 @@ mod tests {
     };
     use serde_json::json;
     use std::fs;
+    use trust_but_verify::outline::{OutlineLang, languages::Rust};
 
     // {cite}`habeas:util`
     fn fixture(source: &str) -> tempfile::TempDir {
@@ -482,7 +489,7 @@ mod tests {
     // {cite}`habeas:util`
     fn process(root: &Path, lines: &[(u32, u64)], count: u64) -> Process {
         let source = fs::read_to_string(root.join("code.rs")).unwrap();
-        let parsed = crate::outline::parse(Path::new("code.rs"), &source).unwrap();
+        let parsed = Rust.outline(&source).unwrap();
         Process {
             pid: 1,
             profiles: vec!["profile.profraw".into()],
@@ -982,20 +989,17 @@ mod tests {
             result.text
         );
         assert!(!result.text.contains("fn[declaration]"));
-        let parsed = crate::outline::parse(
-            Path::new("fixture.rs"),
-            "struct S;\ntrait T { fn declaration(); }\n",
-        )
-        .unwrap();
+        let parsed = Rust
+            .outline("struct S;\ntrait T { fn declaration(); }\n")
+            .unwrap();
         assert!(
             inventory("struct S;\ntrait T { fn declaration(); }\n", &parsed)
                 .unwrap()
                 .1
         );
-        let parsed = crate::outline::parse(Path::new("fixture.rs"), "make_functions!();").unwrap();
+        let parsed = Rust.outline("make_functions!();").unwrap();
         assert!(!inventory("make_functions!();", &parsed).unwrap().1);
-        let parsed =
-            crate::outline::parse(Path::new("fixture.rs"), "#[derive(Clone)] struct S;").unwrap();
+        let parsed = Rust.outline("#[derive(Clone)] struct S;").unwrap();
         assert!(!inventory("#[derive(Clone)] struct S;", &parsed).unwrap().1);
     }
 

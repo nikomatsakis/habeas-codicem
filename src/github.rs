@@ -712,10 +712,13 @@ fn containing_item(
         );
     }
     if let Ok(parsed) = outlines.parse(&inspection.root, file).as_ref()
-        && parsed.outline.profile.language.is_some()
+        && parsed.outline.language != "plain-text"
     {
         let node = &parsed.outline.nodes[parsed.reference_owner_at_line(reference.line)];
-        if let (false, Some(name)) = (node.kind.is_empty(), node.display_name()) {
+        if let (false, Some(name)) = (
+            node.kind.is_empty(),
+            crate::outline_items::display_name(&node.selector),
+        ) {
             return (node.declaration_line, format!("{} {name}", node.kind));
         }
         if !node.kind.is_empty() {

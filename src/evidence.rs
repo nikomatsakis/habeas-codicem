@@ -1199,7 +1199,7 @@ pub(crate) fn fixme_acknowledgments<'a>(
             let file = display_path(root, &reference.file);
             let parsed = outlines.parse(root, &file);
             let parsed = parsed.as_ref().as_ref().map_err(Clone::clone)?;
-            let item = if parsed.outline.profile.language.is_some() {
+            let item = if parsed.outline.language != "plain-text" {
                 let index = parsed.reference_owner_at_line(reference.line);
                 parsed.outline.nodes[index].selector.as_str()
             } else {
@@ -1349,7 +1349,7 @@ pub(crate) fn reference_set_entries<'a>(
         let file = display_path(root, &reference.file);
         let parsed = outlines.parse(root, &file);
         let item = match parsed.as_ref() {
-            Ok(parsed) if parsed.outline.profile.language.is_some() => {
+            Ok(parsed) if parsed.outline.language != "plain-text" => {
                 let index = parsed.reference_owner_at_line(reference.line);
                 parsed.outline.nodes[index].selector.clone()
             }
