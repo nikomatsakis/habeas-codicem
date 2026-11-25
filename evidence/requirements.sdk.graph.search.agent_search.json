@@ -1,7 +1,7 @@
 {
   "requirement": "The agent's `search_text` and `search_structure` tools call the corresponding public Rust search operation. For the same query they format the occurrences returned by that call, using its node IDs, match spans, and completeness flag. They build excerpts from the retained snapshot in which the Rust operation found the hits.",
   "determination": true,
-  "rationale": "I judged this from the supplied test sources only. I did not request any implementation source.\n\n**Obligations derived from `requirements.sdk.graph.search.agent_search`:**\n1. The `search_text` and `search_structure` tools call the corresponding public Rust search operation.\n2. For the same query, the tools format the occurrences that call returns. That means using its node IDs, its match spans and its completeness flag.\n3. Excerpts are built from the retained snapshot in which the Rust operation found the hits.\n\n**Coverage by the tests, all in `crates/trust-but-verify/src/agent/project_sources.rs`:**\n- **`search_groups_exact_occurrences_and_records_the_selected_declaration`** (`search_text`)\n  - It runs the public `ProjectSources::search_text` on `hit`. It then dispatches the `search_text` tool for the same query.\n  - It compares the tool's `complete` flag and excerpts with that result. The tool output groups hits into node entries `n0` and `n1`.\n  - It checks that `read_node` on `n1` resolves to `results.matches[1].node`. It also checks that `finish_search` records the dependency on `code.rs#const[B]` with the fingerprint of `results.matches[1].item`.\n  - The excerpts come from spans `19..22`, `42..45` and `46..49`. The source includes a multibyte `é`, so span handling is exercised.\n- **`structural_tags_select_only_the_original_enclosing_item`** (`search_structure`)\n  - It calls the public `search_structure` on a query that hits two functions. It records the node IDs `code.rs#fn[one]` and `code.rs#fn[two]`, the spans `9..15` and `27..33`, and the text.\n  - The file is then overwritten, and the tool is dispatched for the same query. The test asserts `page[\"complete\"] == hits.complete`, two matches, and `excerpt == hit.text` for each. That shows the excerpts come from the retained snapshot, not the changed file.\n  - The `read_node` dependency uses `hits.matches[1].node`.\n  - A `limit` of 1 yields `complete == false`.\n  - After a further file change, `finish_search` still records the original `fn[two]` fingerprint.\n- **`search_obligations_follow_delivery_and_keep_the_original_snapshot`**\n  - A full result has `complete == true`.\n  - A capped result with `limit` 1 has `complete == false`.\n  - After the file is overwritten, paging via `get_next_page` still works, and `finish_search` yields the dependency with the original fingerprint.\n  - This confirms the retained-snapshot obligation for `search_text`.\n- **`separated_hit_windows_preserve_the_function_declaration`** checks that excerpts are built from the hit spans against the retained snapshot. It covers both a window of 4 and a window of 0. It asserts the exact excerpt, the full read text, and the selected node `runner.rs#impl[Runner]/fn[run]`. The file is overwritten between iterations, and the expected output still matches.\n\n**Conclusion:**\n- Each clause is mapped to a test that asserts it.\n- Both tools are covered.\n- Node IDs, spans, the completeness flag (both true and false) and snapshot retention are all exercised with assertions.\n- I found no plausible violating behavior that these tests would accept, and I found no marking gaps.",
+  "rationale": "I judged this from the supplied test source and did not request implementation source.\n\n**Obligations derived from `requirements.sdk.graph.search.agent_search`:**\n1. The agent's `search_text` and `search_structure` tools call the corresponding public Rust search operation.\n2. For the same query, the tools format the occurrences that call returns. They use its node IDs, match spans, and completeness flag.\n3. Excerpts are built from the retained snapshot in which the Rust operation found the hits. Later file changes must not alter them.\n\n**Coverage of text search**\n- `search_groups_exact_occurrences_and_records_the_selected_declaration` first calls the public `ProjectSources::search_text` and records its hits. Those hits have node IDs `code.rs#const[A]` and `code.rs#const[B]` and byte spans `19..22`, `42..45` and `46..49`. The spans fall after a multibyte `é`.\n  - It then dispatches the agent `search_text` tool for the same pattern. It asserts that `complete` is true and that the matches carry the same nodes (A, then B with its two hits grouped).\n  - It asserts that the excerpts are the exact span-derived declaration text.\n  - It asserts that finishing with tag \"2\" yields a `Dependency::Node` with the Rust result's fingerprint (`results.matches[1].item.fingerprint()`).\n- `separated_hit_windows_preserve_the_function_declaration` checks that excerpts built from the match spans and the `window_bytes` parameter (4 and 0) have the exact expected content. The node ID is `runner.rs#impl[Runner]/fn[run]`. It also checks that reading the node returns the full text.\n- `search_obligations_follow_delivery_and_keep_the_original_snapshot` overwrites the file after the search and before delivering the next page. It then checks that the dependency recorded on `finish_search` equals the fingerprint of the original outline node. This shows the retained snapshot is used rather than a re-read.\n- The same test checks the completeness flag: `complete` is true for the full result and false for `limit: 1`, where one match is returned.\n\n**Coverage of structural search**\n- `structural_tags_select_only_the_original_enclosing_item` calls the public `search_structure` first and records the node IDs (`code.rs#fn[one]` and `code.rs#fn[two]`), spans (`9..15` and `27..33`) and texts.\n  - It then overwrites the file. The agent `search_structure` tool must still return the same matches. Excerpts equal `hit.text`, and `complete` equals `hits.complete`.\n  - The tool still returns two matches after the file change. This shows it serves the retained snapshot.\n  - Afterwards the file is changed again. The dependency recorded on `finish_search` still equals the original `fn[two]` fingerprint.\n  - A limited call asserts `complete == false`.\n\n**Gaps considered and rejected:** I found none.\n- The agent tool results are checked against the Rust operation's results, or against fixed expected values built from them, for nodes, spans, excerpts and completeness. Both tools are covered.\n- Snapshot retention is covered after file mutation for both tools.\n- The limit case compares the agent's completeness flag with fixed values rather than a separate Rust call with the same limit. That still checks that the flag is propagated.\n- Each test carries a `{test}` reference to the requirement.\n\nThe tests adequately check the requirement.",
   "references": "60c05d78af4ab064217aac2f39da8ee3f1bde87e6114f4255f3a26b48c1c8ea2",
   "inputs": [
     {
@@ -23,17 +23,22 @@
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]",
-      "hash": "da52e5d29445d81df850442cffb8ee43ae843ea49b40bff56c1870b83581efef"
+      "hash": "c36ad720da7917dd5292319f01409250f9b6e9e2d06eab66bbea689be73026dc"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[search_groups_exact_occurrences_and_records_the_selected_declaration]",
-      "hash": "b6b3b6ec55facc5c6d6c143fc92ec6447a2b2a17e88d99ed3b72537be581f780"
+      "hash": "9151504fb7479a6162282555570a22974d911d3f14b0e4eea1f6bcaa09b05653"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[separated_hit_windows_preserve_the_function_declaration]",
-      "hash": "efc07d3bfde99cc618c49d4070fe26e4d095a8a651da42621cb1e8941685f284"
+      "hash": "5457d1bdd735f26c608884e6e0093e3d025332d508cfdce80027cd3af08e183d"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]",
+      "hash": "ad293e7b4bd7e3d82dbc0704a6daa18c3d8aa7ed71ae4150dd37b68aaea89c8a"
     }
   ],
   "format_version": 1,
@@ -103,7 +108,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "65764f2329ebafcd7cb42ec1b1263a2bb3ffcb018e1c69474a1a7b051df4b852"
+          "value": "a57b31f34187a7968bb9605b2ec0b51b6d343bafa0541cdf45cc9147304c95e0"
         }
       ]
     },
@@ -120,7 +125,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "e84c1773151e437814b4e8855d9b8b08b457a3e16a2a541f1b66563fea9e1100"
+          "value": "cff52a56b722ec925ccd2ae996ddf996f0ebd7fae14241fb816e8e6dc99e4cd2"
         }
       ]
     },
@@ -137,7 +142,24 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "dfde09aba02f2b917572a7465d7ae1f87321c02ff39729f327f1d27717e3fdf8"
+          "value": "485dca4d739451a302d2487fa2866ec10a3036a8ffd312cde0e25bf83d725d34"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "fbf8ee41c06147cb23caf890235eb7cb8085d938bba60086969bc483bd2f43f7"
         }
       ]
     }

@@ -1,7 +1,7 @@
 {
   "requirement": "Each awaited ask builder has independent conversation, paging, and submission\nstate. Calls in the same criterion contribute their delivered\ninputs to that criterion's shared trace under\n{cite}`requirements.sdk.graph.agent-calls.author_procedure`.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation in `requirements.sdk.graph.agent-harness.tool_agent.isolation`.\n\n**Obligations derived from the text**\n1. Each awaited ask builder has its own conversation.\n2. Each has its own paging state.\n3. Each has its own submission state.\n4. Calls in one criterion add their delivered inputs to one shared trace, under `author_procedure`. The cited `author_procedure` requirement is context only and is not reassessed here.\n\n**Mapping to tests**\n- `crates/trust-but-verify/src/agent/tests.rs#fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]` covers the conversation, paging and submission obligations, and the shared trace.\n  - It runs two builders at once with `futures::join!`. One reads the current node and the other reads successors.\n  - The provider `ParallelConversations` makes the two calls rendezvous on a barrier, so they overlap. Both use the same tool-call id, which would expose any state keyed only on that id.\n  - Conversation isolation: the provider asserts the history length is `2 + turn*2`. It also asserts the history contains its own contents and never the other call's contents.\n  - Paging isolation: on turn 1 each call fetches the next page with the uuid taken from its own conversation. The last delivered page must belong to that conversation.\n  - Submission isolation: alpha submits \"alpha\" and beta submits \"beta\". The test asserts the returned answers are `\"alpha\"` and `\"beta\"`. Each call made exactly 3 provider calls.\n  - Shared trace: `ctx.dependencies()` holds exactly three entries. They are `Node(1)`, `Node(2)` and the `OutgoingEdges` entry, so both calls contributed. The test also checks that `ctx.finish` returns the same dependencies.\n- `crates/trust-but-verify/src/agent/tests.rs#fn[graph_page_ids_from_a_populated_peer_conversation_are_rejected]` adds a second paging-isolation check across sequential asks.\n  - A page uuid from the first populated conversation is used in the second. The uuids are asserted to differ.\n  - The foreign uuid is rejected with an error tool result containing \"unknown page\".\n  - The second ask still submits correctly, so one conversation's page state cannot be reached from another.\n- `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[supplied_openai_backend_runs_independent_calls_against_a_local_transport]` adds end-to-end evidence over a real local HTTP transport.\n  - Two verifications make four requests in total.\n  - Each verification's first request carries no `function_call_output`. Its second request does carry one, and a source snapshot.\n  - So each call starts from a fresh conversation, and the second call does not inherit the first call's tool output.\n\n**Gaps**\nNone found. The unawaited-builder rule belongs to `author_procedure` and is not part of this subject. No {fixme} acknowledgments apply.",
+  "rationale": "The subject requires two things. First, each awaited ask builder has independent conversation, paging and submission state. Second, calls in one criterion contribute their delivered inputs to that criterion's shared trace.\n\n**Conversation, paging and submission isolation**\n- `crates/trust-but-verify/src/agent/tests.rs#fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]` runs two `ask` builders concurrently on one `ValidationContext`. A `Barrier(2)` inside the provider forces the two conversations to interleave. Each builder reads different node contents and uses its own context (`alpha` or `beta`).\n- The `ParallelConversations` provider asserts, on every turn:\n  - the chat history length is `2 + 2*turn`, so each conversation has its own history;\n  - the history contains its own contents marker and never the other conversation's marker;\n  - the last delivered page belongs to this conversation, even though both use the same tool call id `same-call-id`.\n- The fixture drives a `read_node` call, then a `get_next_page` call using the page UUID from its own history, then `submit_result`. This exercises independent paging.\n- The test asserts `alpha.unwrap() == \"alpha\"` and `beta.unwrap() == \"beta\"`. Each builder returns its own submitted answer, so submission state is independent. It also asserts that each conversation made exactly 3 calls.\n- `graph_page_ids_from_a_populated_peer_conversation_are_rejected` (same file) covers the paging boundary. A page UUID captured from one completed `ask` is replayed in a later `ask` on the same context. The test asserts the tool result `is_error` and contains \"unknown page\". The foreign id differs from the local id, and the later conversation still submits its own result.\n- `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[supplied_openai_backend_runs_independent_calls_against_a_local_transport]` checks the real transport path. On calls 0 and 2 the request input contains no `function_call_output`, so no history carries over from the earlier call. Calls 1 and 3 do contain a `function_call_output`. Each call also gets a fresh `submit_result` tool schema.\n\n**Shared trace**\n- The concurrent test asserts `ctx.dependencies()` has exactly 3 entries: `OutgoingEdges(Node(1), Label, …)`, `Node(1)` and `Node(2)`, each with its content fingerprint. These are the union of what the two calls delivered.\n- It also asserts that `ctx.finish(...)` yields the same dependency set.\n- The `agent_executions_isolate_conversations_and_dependency_traces` test, which is not marked for this requirement, adds separate-criterion trace isolation.\n\n**Reviewer finding**\nEvery obligation in the subject has a test with assertions that would catch history leakage, page leakage, cross-delivered submissions, and loss of inputs from the shared trace. I found no gaps.",
   "references": "0a144f4436c3dd4e0c7c2a254170eb3d2ac8315e6689f6039bd220c1dabbb4ba",
   "inputs": [
     {
@@ -51,7 +51,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[supplied_openai_backend_runs_independent_calls_against_a_local_transport]",
-      "hash": "ae8c3a9ea440c5d7cdf59ed8e239b748d9bf99d9680363c83eae6d8c1abca90b"
+      "hash": "13b76dc6b9f1d21162c5442480f8d73009f3ea835205a07915951610b2d623d0"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -61,17 +61,27 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[graph_page_ids_from_a_populated_peer_conversation_are_rejected]",
-      "hash": "19779c6c2a43055e98a32e00e048923c02a7360fa4860e6609cc8560d78e604b"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "impl[ParallelConversations/CompletionProvider]",
-      "hash": "8abaa1479a758567d6ba4803620fb0e887652a53232587b8aa71a5ba7e501575"
+      "hash": "1af179ac618437f57f2f2172bd347a4d244786af75ec9ae88947e70d63ee4333"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[distinct_pages]",
       "hash": "71b30a6c494353acecdeadc53d2f250a6e34cb8a697572bfa3cde2d13c5970cc"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "struct[ParallelConversations]",
+      "hash": "1bdc6269de579c6be8df018df323ddb04cde0b13d9464d994d5316e08bde0013"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "impl[ParallelConversations/CompletionProvider]",
+      "hash": "b1426a3b95ac786ea000ec2f1f8726669fb79c303a8e5fbf5123576add36da5e"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "fn[agent_executions_isolate_conversations_and_dependency_traces]",
+      "hash": "1a630ac3fb2283ca46e49986874acc76f61609770936a7ad10a4054a5c5fda31"
     }
   ],
   "format_version": 1,
@@ -135,7 +145,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1f220b45cabbaf14d0c7efabf1559ed3566e615186721d1c0958853f44ace4d2"
+          "value": "ecba23f36041428dd996621a0412a0f5615ce642d4f3bc1ed68cc781c0c3a283"
         }
       ]
     },
@@ -169,24 +179,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1f001d89f7ec8fc7ed5aa7e8766de622423682f753ce05b50ae39e3e54bb57a0"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "impl[ParallelConversations/CompletionProvider]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "005039d9331bcece755a83a8d8faecfd0354a3c7f5e89aea7c973bb96de75d69"
+          "value": "66be4f393b0e36bd7583d6a104600a639337cdbd160fa3adab6f3965b2f70047"
         }
       ]
     },
@@ -204,6 +197,57 @@
         {
           "scheme": "habeas-input-v1",
           "value": "1a1384d6f8edf12cba153e6cc3e732699e7cb106e2b5e5ed3656e30135dd2a19"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
+            },
+            "selector": "struct[ParallelConversations]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "1601adae4eac378372c98cae8e44733589f0de9db968066c903b15db0f410f3b"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
+            },
+            "selector": "impl[ParallelConversations/CompletionProvider]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "88b213a0b3e2c8e7546146e1d7101f197299ae8178e745a5ff04710d5e559af1"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
+            },
+            "selector": "fn[agent_executions_isolate_conversations_and_dependency_traces]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "23ffea656399fb60c3f6e42e7332e777b11812e6bd2e358619da20c1a5a7930a"
         }
       ]
     }

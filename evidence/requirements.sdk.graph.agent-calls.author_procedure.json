@@ -1,7 +1,7 @@
 {
   "requirement": "A `Criterion::execute` invocation receives one `Send + Sync`\n`ValidationContext<'d, D>` for `D: Domain`, with tracked `inspection(&self)`\nand the `ask(&self)` builder under\n{cite}`requirements.sdk.graph.agent-calls.judge`.\n\nEach awaited ask builder runs its own conversation and returns its own submitted\nanswer. The context combines delivered node contents, tool reads, direct\ninspection reads, and recorded edge selections into one dependency trace for\nthe criterion. It records the node identities and fingerprints of the supplied\ncontents. A later call that selects fewer nodes, or none, preserves earlier\ninputs. An unawaited builder contributes no\nagent-delivery dependencies.\n\nShared references support concurrent calls: builders, conversations, and\nsubmission state remain independent, while updates to the trace are synchronized.\nCalls can run concurrently without holding an exclusive context borrow across\nan agent interaction or locking the whole context for the conversation.\n\nThe same context supports deterministic criteria under\n{cite}`requirements.sdk.graph.criteria.deterministic_procedures`.",
   "determination": true,
-  "rationale": "I judged the subject only from the supplied test sources, and I did not request implementation source. I found no adequacy gap. Each obligation in `requirements.sdk.graph.agent-calls.author_procedure` maps to a test with relevant assertions:\n\n- **`Send + Sync` context with tracked inspection and `ask`.** `later_lighter_agent_calls_preserve_the_contexts_existing_trace` in `crates/trust-but-verify/src/graph/validation_tests.rs` calls `assert_send_sync(&ctx)`. It also uses `ctx.read` for direct inspection and `ctx.ask` on the same context. `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` asserts that the builder's future is `Send`.\n- **Each awaited builder runs its own conversation and returns its own answer.**\n  - `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` in `crates/trust-but-verify/src/agent/tests.rs` runs two asks concurrently, synchronized by a `Barrier` under a timeout. It asserts that each ask gets its own answer (\"alpha\" and \"beta\") and that each conversation made 3 calls.\n  - `agent_executions_isolate_conversations_and_dependency_traces` makes the same isolation checks through `verify_with_agent`.\n  - `shared_context_allows_independent_concurrent_agent_calls` runs two concurrent asks on one shared `&ctx` and asserts the distinct results 7 and 11.\n- **One combined dependency trace.**\n  - `later_lighter_agent_calls_preserve_the_contexts_existing_trace` asserts an exact ordered trace. It contains a direct read, an outgoing-edge selection, the delivered current-node contents, and a second direct read.\n  - `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` asserts that the tool-read `outgoing_edges` and `read_node` calls record an edge dependency and a node fingerprint.\n  - The concurrent test asserts that the union of both calls' dependencies appears in the context. It also asserts that `finish` yields the same dependencies.\n- **Node identities and fingerprints recorded.** These tests assert `Dependency::Node(id, fingerprint)` with the exact content fingerprint values.\n- **A later call selecting fewer nodes or none preserves earlier inputs.** In `later_lighter_agent_calls_preserve_the_contexts_existing_trace`, `ctx.ask().context(\"lighter\")` runs after the heavier call. The test asserts that `ctx.dependencies()` equals the earlier trace, and that the lighter request carried no node inputs.\n- **An unawaited builder contributes no agent-delivery dependencies.** `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` drops a builder that had queued contents and successors. It asserts empty dependencies, no graph reads and no edge selections. `queued_reads_selection_and_rendering_fail_before_agent_invocation` asserts that a dropped builder makes no agent request.\n- **Shared references, independent state, synchronized trace updates, no exclusive borrow held.** The concurrent tests use `futures::join!` on one `&ctx` and rely on the `Barrier`, so a conversation could not proceed unless both were in flight at once. The assertions on the merged trace check that concurrent updates are not lost.\n- **Deterministic criteria, cited via `requirements.sdk.graph.criteria.deterministic_procedures`.** `deterministic_validation_uses_required_storage_without_an_agent` runs a criterion with no agent configured. It asserts the computed result and rationale, and it asserts a recorded node dependency.\n\nThe remaining marked tests add supporting coverage for error recovery, retry and continuation, and confirmation evidence. Another test also asserts that failed asks record only delivered inputs. The subject does not require that, so it is not a gap. The acknowledgments list is empty, and I found no unacknowledged gap.",
+  "rationale": "I judged this from the supplied tests only. I did not request implementation source, because the supplied tests were enough to map each obligation. Together the tests cover each obligation in `requirements.sdk.graph.agent-calls.author_procedure`.\n\n- **`Send + Sync` context with `inspection` and `ask`:** `later_lighter_agent_calls_preserve_the_contexts_existing_trace` in `validation_tests.rs` calls `assert_send_sync(&ctx)`. The same test uses the direct `ctx.read` inspection and `ctx.ask()`. The `ask` builder's `Send` future is checked in `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` with `assert_send(&future)`.\n- **Each awaited ask runs its own conversation and returns its own answer:**\n  - `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` in `agent/tests.rs` runs two asks under a `Barrier(2)`. The barrier forces them to overlap. The test asserts that `alpha` and `beta` each return their own answer and that each conversation made 3 calls.\n  - `agent_executions_isolate_conversations_and_dependency_traces` repeats this through `verify_with_agent`.\n  - `shared_context_allows_independent_concurrent_agent_calls` does the same with a mock agent and a barrier, and asserts the answers 7 and 11.\n- **One combined trace of delivered contents, tool reads, direct reads and edge selections:**\n  - `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` asserts `OutgoingEdges` and `Node` dependencies. It also asserts that the recorded `Node` fingerprint is the full delivered content, and that `finish` returns the same dependencies.\n  - `later_lighter_agent_calls_preserve_the_contexts_existing_trace` asserts the exact ordered trace: a direct read, the edge selection, the delivered node, then another direct read.\n  - `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` asserts that the shared trace has 3 entries with the expected node ids and fingerprints.\n- **A later call selecting fewer nodes, or none, preserves earlier inputs:** `later_lighter_agent_calls_preserve_the_contexts_existing_trace` makes a later `.context(\"lighter\")` call that selects no nodes. It asserts that `ctx.dependencies()` equals the earlier trace and that `finish` returns it. Preservation after a later call that selects fewer but still some nodes is not tested separately. I did not treat that as a gap, because the none case already exercises the same preservation.\n- **An unawaited builder contributes no agent-delivery dependencies:**\n  - `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` drops a builder that queued node and successor selections. It asserts empty dependencies and no graph reads or selections.\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` asserts no agent request after a dropped builder.\n  - Failure paths add to this. A failed render leaves the trace empty, and an undelivered read is not recorded (`node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents`).\n- **Concurrent calls through a shared reference, independent state, synchronized trace updates:** The barrier-based concurrent tests would deadlock or time out if calls were serialized or held an exclusive borrow. They also check that both calls' dependencies land in the single trace.\n- **Deterministic criteria (cited `requirements.sdk.graph.criteria.deterministic_procedures`):** `deterministic_validation_uses_required_storage_without_an_agent` runs a criterion with no agent. It asserts the computed output and the recorded `Node` dependency.\n\nI found no unacknowledged gaps in the supplied tests. The remaining tests in the inputs (the `converse` retry test in `agent/tests.rs` and the authoring confirmation test in `src/authoring/sdk.rs`) are additional supporting evidence.",
   "references": "ad194cff1390c4c869fee727b016d65db94000c6d04a431ac117b5a76d68b718",
   "inputs": [
     {
@@ -85,7 +85,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]",
-      "hash": "498cecc4bd7050068780173bb72c04fea2cdef72fccbc0e391520546949e86de"
+      "hash": "78e16bd6b700e8c857faaae083630ff13d18c00aedb0954d61969f2374f072d5"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -95,7 +95,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents]",
-      "hash": "6135f22e245b94991aabe1d9d4bda5815cf40792f8e0f13bbf8acdcc6f00d859"
+      "hash": "8c23afe3f09b19754b3dca644e6067f6e623e914cc3796cf192841907c33d8fa"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -131,6 +131,16 @@
       "file": "src/authoring/sdk.rs",
       "item": "mod[tests]/fn[confirmed_evidence_retains_reads_from_both_assessments_and_the_verifier]",
       "hash": "ff4d27bb2e75f1dab61287bfb7fbf50e1914f6ab4a7a0fb3e9efd926827d091d"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "fn[snapshots_record_exact_reads_and_retain_distinct_versions]",
+      "hash": "e16d8bde2ebe1934d47fd8e1d8254c9003090e435bb79ae9ee3e6f5cb0e80918"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#2",
+      "hash": "e1f302f5542f81727298004815dac94a9e88081675c70a269a9eac2dedacfd1b"
     }
   ],
   "format_version": 1,
@@ -239,7 +249,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "fb22cdece2bc30197abd5fb4384dab4d846eeafba7b775cc4a9a7284b51e5d49"
+          "value": "720f54024df4ff4ca27b73cc47144d2b8cf370fbb4036f81a62aacab3480cf09"
         }
       ]
     },
@@ -273,7 +283,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "923673a90cad46cec5c4acec59d78d0c7ff799140fe9e99fed5f71000c665d37"
+          "value": "9203c1def067ef52be29119a893a1f0bc1d97cabec203118ca2bc8a520396540"
         }
       ]
     },
@@ -393,6 +403,40 @@
         {
           "scheme": "habeas-input-v1",
           "value": "2045e056e2a4deb792c79001ea04a87c08a0de4398e489d89349331450484834"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+            },
+            "selector": "fn[snapshots_record_exact_reads_and_retain_distinct_versions]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "ec70f86b0d7d929559ae6e6d2fa54cf2e9c4ecf741b7b4b2ac6e7242812ac348"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#2"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "f6bfe9f1678fe730dec04a0806061e5a98225314b463c40fba9c8c6eb3245790"
         }
       ]
     }

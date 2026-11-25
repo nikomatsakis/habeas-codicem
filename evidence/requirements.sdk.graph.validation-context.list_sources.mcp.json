@@ -1,7 +1,7 @@
 {
-  "requirement": "List visible file-root node references under {cite}`requirements.sdk.graph.validation-context.node_reference`.\n\n```text\nlist_sources({}) -> {files: string[], next?: UUID}\n```",
+  "requirement": "List visible file-root node references under {cite}`requirements.sdk.graph.validation-context.node_reference`.\n\n```text\nlist_sources({}) -> {files: NodeId[], next?: UUID}\n```",
   "determination": true,
-  "rationale": "The two marked tests adequately check `requirements.sdk.graph.validation-context.list_sources.mcp`. I did not read the implementation. I judged only against the requirement text and the supplied test source.\n\n**Obligations from the text**\n1. `list_sources` is a tool taking `{}`.\n2. It returns `{files: string[], next?: UUID}`.\n3. Each entry in `files` is a node reference under `requirements.sdk.graph.validation-context.node_reference`. That means an opaque string scoped to the conversation, which resolves to the same ID when a tool accepts it. An unknown reference produces a tool error.\n4. The list covers visible file-root nodes. What counts as visible is governed by the sibling `list_sources.behavior`. I confirmed that requirement has its own tests, including `source_defaults.rs#fn[gitignore_is_shared_by_all_operations_with_or_without_a_git_repository]`. Here I only check that the tool returns references for the files the source layer lists.\n\n**Test mapping**\n- `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` runs a full agent turn sequence over a local HTTP server.\n  - The fake model calls `list_sources` with `{}`. The test checks that the tool list the agent is given includes `list_sources`.\n  - The delivered listing parses as JSON. Every entry in `files` is a string starting with `n`, which is the opaque reference form.\n  - The test takes the reference at the index of `visible/selected.txt` and passes it to `read_node`. The result is the expected snapshot text, which shows the reference resolves to the same node. It does not leak the disk contents.\n  - `read_node` with `\"unknown\"` returns an error containing \"unknown node\", which covers the unknown-reference error.\n  - The loop runs twice with fresh state, so references are per-execution. The test also asserts that only `visible/selected.txt` is read from the `visible` directory.\n- `crates/trust-but-verify/src/agent/project_sources.rs#mod[tests]/fn[listing_continuations_return_complete_paths_from_the_original_listing]` creates 2000 files, which forces pagination.\n  - The first `list_sources({})` result has a string `next` and an array `files`.\n  - The test follows `next` through `get_next_page` until it is absent, then asserts the concatenated `files` equal `n0..n1999`.\n  - A file added after the first call does not appear, so continuations come from the original listing.\n  - The listing and its pages carry no dependencies.\n\n**Assessment**\nThe output shape, `next`, opaque references, resolution and unknown-reference error are each exercised with assertions. Visibility filtering is delegated to `list_sources.behavior`. I found no plausible requirement-violating behavior that these tests would accept. Possible gaps, such as a `next` value that is not a real UUID, are covered because the paging test needs `next` to work as a `get_next_page` argument.",
+  "rationale": "I judged this from the supplied test source only and did not request any implementation source.\n\n**Obligations derived from `list_sources.mcp`:**\n- The `list_sources({})` tool is exposed and takes an empty argument object.\n- Its result has the shape `{files: NodeId[], next?: UUID}`.\n- Each entry in `files` is a file-root node reference serialized as the domain's `D::NodeId` Serde form, per `requirements.sdk.graph.validation-context.node_reference`.\n- `next` is a UUID that continues the listing.\n- The tool takes no node argument, so the invalid-ID-before-query clause of `node_reference` does not apply to `list_sources`.\n\n**Test mapping:**\n- `agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` is marked `{test}` for this requirement.\n  - A mock model endpoint calls `list_sources` with `{}`. The test asserts that the tool list contains `list_sources`.\n  - It parses the tool output as JSON and asserts that every element of `files` is an object whose `id` is a u64. That is the domain `TestNode { id }` Serde form, so the entries are serialized NodeIds rather than paths.\n  - It then feeds `files[selected_index]` straight into `read_node`. This succeeds and returns the source snapshot, which shows the listed IDs round-trip as valid node references. The selected index is for a real file, so the assertion cannot pass on an empty list.\n  - The scenario runs twice, in independent executions, with the same assertions.\n- `agent/project_sources.rs#mod[tests]/fn[listing_continuations_return_complete_paths_from_the_original_listing]` is also marked `{test}`.\n  - It dispatches `list_sources` with `{}` over 2000 files. The assertions include `page[\"next\"].is_string()` for the `next` field.\n  - It follows `next` through `get_next_page` until the field is absent, and checks that the concatenated `files` equal the full expected list. Each expected entry is the NodeId form `name#`, and a file added after the first page is excluded.\n  - This exercises the `{files, next}` shape and the optional `next`: it is present when more pages remain and absent on the last page.\n\n**Out of scope:** visibility and ignore-file filtering belong to `list_sources.behavior`, and paging semantics belong to `pages.*`. Both tests also carry markers for those requirements.\n\n**Conclusion:** the output shape, the NodeId serialization, the empty-argument input, and the optional `next` are each exercised with concrete assertions. I found no gap.",
   "references": "fb1f3d5434a2f3a43a7b4921aea1f9bc735013ee175b4e39362ba3cd970d0147",
   "inputs": [
     {
@@ -14,7 +14,7 @@
         "List visible file-root node references under {cite}`requirements.sdk.graph.validation-context.node_reference`.",
         "",
         "```text",
-        "list_sources({}) -> {files: string[], next?: UUID}",
+        "list_sources({}) -> {files: NodeId[], next?: UUID}",
         "```",
         ":::"
       ]
@@ -26,82 +26,21 @@
       ],
       "text": [
         ":::{req} node_reference",
-        "The harness represents a domain `D::NodeId` to the agent as an opaque JSON string scoped to the conversation. It retains the IDs of the current node, supplied input nodes, and nodes introduced by tool results. Tools that return nodes give the agent references to those IDs. Tools that accept a node resolve its reference to the same ID. An unknown reference produces a tool error.",
+        "The agent harness serializes the current node, supplied input nodes, and node IDs in tool results using the domain's Serde representation of `D::NodeId`. A tool accepting a node ID deserializes the same JSON value. Its argument schema uses `D::NodeId`'s `JsonSchema` implementation. An invalid ID representation produces a tool error before the domain is queried.",
+        "",
+        "For example, if a search hit contains `\"node\": {\"Issue\": 42}`, the agent can call `read_node({\"node\": {\"Issue\": 42}})` to read that issue.",
         ":::"
       ]
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]",
-      "hash": "3935a069f4aabaece83dabc80e9611f38dee96e623e3ec8b08da353628c63959"
+      "hash": "0bb7522373cd58f5d22e38ffe891842f63791cfed89ef4b432977290ee60d79b"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[listing_continuations_return_complete_paths_from_the_original_listing]",
-      "hash": "43337c4646af2c0e04ea19bd894b1d62e94072322054596e08d16a90a9670008"
-    },
-    {
-      "requirements": "requirements.sdk.graph.validation-context.list_sources.*",
-      "matches": [
-        "requirements.sdk.graph.validation-context.list_sources.behavior",
-        "requirements.sdk.graph.validation-context.list_sources.fn",
-        "requirements.sdk.graph.validation-context.list_sources.inputs",
-        "requirements.sdk.graph.validation-context.list_sources.mcp",
-        "requirements.sdk.graph.validation-context.list_sources.mcp.description"
-      ],
-      "text": [
-        ":::{req} list_sources.behavior",
-        "Each listed reference identifies a visible file. Follow `next` to retrieve further pages.",
-        ":::",
-        "",
-        ":::{req} list_sources.fn",
-        "```rust,ignore",
-        "impl Sources {",
-        "    // ...",
-        "",
-        "    /// List file identities within this scope.",
-        "    pub async fn list(&self, scope: &SourceScope) -> Result<Vec<PathBuf>, SourceError>;",
-        "",
-        "    // ...",
-        "}",
-        "```",
-        ":::",
-        "",
-        ":::{req} list_sources.inputs",
-        "The SDK's `list_sources` result is discovery and",
-        "records neither the returned identity set nor the files' contents as",
-        "evidence inputs. Adding or removing a listed file therefore does not by",
-        "itself invalidate the evidence. Subsequent tracked reads record their own",
-        "dependencies.",
-        ":::",
-        "",
-        ":::{req} list_sources.mcp",
-        "List visible file-root node references under {cite}`requirements.sdk.graph.validation-context.node_reference`.",
-        "",
-        "```text",
-        "list_sources({}) -> {files: string[], next?: UUID}",
-        "```",
-        ":::",
-        "",
-        ":::{req} list_sources.mcp.description",
-        "> `List available project file nodes.`",
-        ":::"
-      ]
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
-      "item": "mod[tests]/fn[outline_tool_rejects_excluded_and_unreadable_sources_without_domain_reads]",
-      "hash": "ab7b081148eeac4c4d2745a1180b552e69078d70f8b596d46bac32102cb61c52"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
-      "item": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]",
-      "hash": "89cbd0c4a04ffd5e902b6e7459be3d1d39412bc5ec90623582dfc16e0eb14623"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
-      "item": "impl[Session<'_,%20D>/ToolSession<D>]/fn[definitions]",
-      "hash": "48a39fd65631654e64014481e8a34d664acaaeb7e896f4709fffdad054c6d34b"
+      "hash": "fd0c04dac9c2248e14c2751ff5b7fc028a8023e77af6ce3eb4ffcd634bdc76f9"
     }
   ],
   "format_version": 1,
@@ -137,7 +76,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f6392443a4abdf64f3ad24cb2ac8f1cd2aed678e4f6a33c1ef4c90a65f5a876a"
+          "value": "274c0fee5a6837c0d669cf1589a6548e6fb2ca273cc11f9ab845c06e9c5c3c72"
         }
       ]
     },
@@ -148,7 +87,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "b04d8c2e130aa9ca81012b9659c2583c632789465d920bd72335a73836f36c81"
+          "value": "2e7e926d54f43616b8c69e7803f6eb20e44454cb1f831924386500a8671610da"
         }
       ]
     },
@@ -165,7 +104,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "05e4b55913ed5198b780e5ae08fe7592cf79b6501711712dac65ba2a55caf7be"
+          "value": "ddfb05bf744a25743033a8955c799cba684adced37d4a9feb365c005373b64ac"
         }
       ]
     },
@@ -182,69 +121,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1f5367beecc46664ec3b448a9475c1841ef2a0b8d8fe31201fae731642f1ded4"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "RequirementSelection": "requirements.sdk.graph.validation-context.list_sources.*"
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "3b514aaddac143cb92093a7440db8adb27bf7409371e75a1b6c2954474ab5a48"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
-            },
-            "selector": "mod[tests]/fn[outline_tool_rejects_excluded_and_unreadable_sources_without_domain_reads]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "d20faf0184986d445b5244589f81a5862b5d2e09a4317362f434e218474ea548"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
-            },
-            "selector": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "bc91641c468d7a8582537d8f341165849b73dba4f76d13332bd040da85f16e63"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
-            },
-            "selector": "impl[Session<'_,%20D>/ToolSession<D>]/fn[definitions]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "f649a5716dc72fbf0d7a1e115367059822be35b91f0a5a2c879afb9e704a0810"
+          "value": "99dbd9632e7cd1b717dcdb96a245759a3300163671978f3567299478ffaa70d8"
         }
       ]
     }

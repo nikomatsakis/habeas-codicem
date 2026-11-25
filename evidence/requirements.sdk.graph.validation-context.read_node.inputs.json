@@ -1,7 +1,7 @@
 {
   "requirement": "A successful `ValidationContext::read` records the node's identity and the\nfingerprint of the returned contents, under\n{cite}`requirements.sdk.graph.evidence.node_inputs`. A failed read records no\nsuccessful observation. The evidence becomes stale when a later read of that\nnode has a different fingerprint; a failure to resolve it is reported by\n{cite}`requirements.sdk.graph.evidence.checking_records`.\n\nFor a Rust caller, the SDK records the fingerprint when `read` returns the\ncontents. For an agent, the harness puts a tool result in the next request to\nthe model and records the fingerprint once the provider responds successfully.\nThat successful exchange is *delivery*. For example, suppose the tool reads a\nfunction that returns `3`, and someone changes it to return `4` before the\nprovider responds. The model saw the version that returns `3`, so the SDK\nrecords the fingerprint it computed from that version. Reading the function\nagain at this point would record a fingerprint for code the model never saw.",
   "determination": true,
-  "rationale": "The marked tests cover each obligation in `read_node.inputs`.\n\n**Successful read records identity and fingerprint (Rust caller).**\n- `graph/validation_tests.rs#fn[snapshots_record_exact_reads_and_retain_distinct_versions]` checks that `read` and `read_snapshot` record `Dependency::Node(1, fp(\"before\"))`.\n- `fn[direct_reads_return_complete_unicode_contents_and_snapshots]` checks that the recorded fingerprint equals the full returned contents. Its inputs are an empty string and a long multi-byte string.\n\n**Failed read records nothing.**\n- In `fn[snapshots_record_exact_reads_and_retain_distinct_versions]`, `read(&2)` returns an error and the dependency list is unchanged.\n- In `fn[direct_reads_return_complete_unicode_contents_and_snapshots]`, a failed read leaves `dependencies()` empty.\n- In `agent/tests.rs#fn[node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents]`, the `read_node` tool fails to format contents. The tool result is delivered as an error and no dependency is recorded.\n\n**Different fingerprints on later reads, and staleness.**\n- `fn[snapshots_record_exact_reads_and_retain_distinct_versions]` reads the same node as \"before\" and then \"after\". It asserts that both observations are kept in order.\n- It then asserts that `is_current` is false against the changed graph, which is the staleness result.\n- Failure to resolve a recorded dependency is reported by `checking_records`. That requirement is cited and delegated, so it needs no test here.\n\n**Agent delivery semantics.**\n- In `fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]`, a successful `read_node` exchange records a `Dependency::Node` with the full contents' fingerprint.\n- In the same test, a `read_node` call followed by a provider failure (`None`, which the `Script` provider turns into an error) leaves `dependencies()` empty. This shows that a fingerprint is not recorded until the provider responds successfully.\n- With `contents_of_current_node`, only the successfully delivered initial contents are recorded (one dependency). The undelivered `read_node` result is not.\n- In `fn[graph_read_pages_retain_the_prepared_snapshot_after_contents_change]`, the `ChangingProvider` replaces the node contents while the request carrying the tool result is in flight. The test asserts that the recorded fingerprint is the original contents' and that the graph was read only once. This matches the requirement's example, where the model saw the old version and re-reading would record unseen code.\n- `fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]` checks that reads made through agents land in the recorded dependencies and in the finished record.\n\nAll of these tests carry a `{test}` reference to the subject, and their assertions enforce the expected outcomes. I found no unacknowledged gaps.",
+  "rationale": "The reviewed tests cover each obligation in `requirements.sdk.graph.validation-context.read_node.inputs`. I read only the supplied test sources and did not request implementation source.\n\n**Rust caller: a successful read records identity and fingerprint**\n- `snapshots_record_exact_reads_and_retain_distinct_versions` asserts that `read(&1)` records `Dependency::Node(1, fp(\"before\"))`.\n- `direct_reads_return_complete_unicode_contents_and_snapshots` asserts that `read_snapshot` records the fingerprint of the complete contents. It runs on an empty string and on a large multi-byte Unicode string.\n\n**Rust caller: a failed read records no successful observation**\n- In `snapshots_record_exact_reads_and_retain_distinct_versions`, `read(&2)` errors and the dependencies list is unchanged.\n- In `direct_reads_return_complete_unicode_contents_and_snapshots`, a failed context's `read(&9)` errors and its `dependencies()` stay empty.\n\n**Stale evidence when a later read has a different fingerprint**\n- `snapshots_record_exact_reads_and_retain_distinct_versions` reads the same node with different contents. It asserts that both observations are retained and that `is_current` is false.\n- `direct_reads_return_complete_unicode_contents_and_snapshots` changes the contents and asserts that `is_current` is false.\n- Resolution failures belong to the cited `checking_records` requirement and are out of scope here.\n\n**Agent delivery semantics**\n- `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` has a `read_node` tool call followed by a successful provider exchange. It asserts the recorded `Dependency::Node(Node(2), fingerprint)` with the full 18,000-character value. It also asserts that `finish` carries the same dependencies.\n- The same test has a `read_node` call followed by a provider failure (`None`). It asserts that `ctx.ask::<bool>().await` is an error and that `dependencies()` is empty. This shows that nothing is recorded before delivery succeeds.\n- `node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents` makes the tool read fail. It asserts that no dependency is recorded and that the error is delivered to the model as an error tool result. The run then recovers and submits.\n- `graph_read_pages_retain_the_prepared_snapshot_after_contents_change` matches the requirement's example (read, change before the provider responds). The provider swaps the node contents while the request that carries the tool result is in flight. The test asserts three things:\n  - The graph is read exactly once (`reads == [1]`).\n  - The recorded fingerprint value equals the original contents, not the replacement.\n  - The pages the model received reassemble to the original.\n  \n  This rules out recording a fingerprint for code the model never saw.\n- `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` checks that agent reads are recorded as `Dependency::Node` in the shared context and that `finish` preserves them.\n\n**Duplicate and distinct observations**\nIdentical observations are deduplicated and distinct fingerprints for the same identity are both kept. This follows from the dependency assertions in `snapshots_record_exact_reads_and_retain_distinct_versions`.\n\nI found no obligation without a test and no assertion that contradicts the requirement. All of these tests carry `{test}` references to the subject.",
   "references": "db9d1024d2ed9d588c253c85d8451f5022bb03c8d24833bd2a07b2e33063d1c7",
   "inputs": [
     {
@@ -84,17 +84,17 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]",
-      "hash": "498cecc4bd7050068780173bb72c04fea2cdef72fccbc0e391520546949e86de"
+      "hash": "78e16bd6b700e8c857faaae083630ff13d18c00aedb0954d61969f2374f072d5"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents]",
-      "hash": "6135f22e245b94991aabe1d9d4bda5815cf40792f8e0f13bbf8acdcc6f00d859"
+      "hash": "8c23afe3f09b19754b3dca644e6067f6e623e914cc3796cf192841907c33d8fa"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[graph_read_pages_retain_the_prepared_snapshot_after_contents_change]",
-      "hash": "066f5b9034c3f74c9c0b89be248e752d169fba0ed16269075d7edf9428de1fde"
+      "hash": "2ddabdf5cad1cccf01089f39e9e39d3badc593b3f63bd444c57e0481a3a2a8d3"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
@@ -105,11 +105,6 @@
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[direct_reads_return_complete_unicode_contents_and_snapshots]",
       "hash": "5f0d957ee788f0a58c3f691b8a364a15620ff2ebc04fc9e1564b75f5839d9ad3"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "impl[Script/CompletionProvider]",
-      "hash": "9ea0681b6735ecfccdc6e48a5fad5d2b51f4bb16ef354dcd6b62e6e48d60a26b"
     }
   ],
   "format_version": 1,
@@ -201,7 +196,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "fb22cdece2bc30197abd5fb4384dab4d846eeafba7b775cc4a9a7284b51e5d49"
+          "value": "720f54024df4ff4ca27b73cc47144d2b8cf370fbb4036f81a62aacab3480cf09"
         }
       ]
     },
@@ -218,7 +213,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "923673a90cad46cec5c4acec59d78d0c7ff799140fe9e99fed5f71000c665d37"
+          "value": "9203c1def067ef52be29119a893a1f0bc1d97cabec203118ca2bc8a520396540"
         }
       ]
     },
@@ -235,7 +230,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "73200c04bed3a08680cf37ed3b8a122ac26874c53e7ca43409216d6f1d06f061"
+          "value": "166d7810e08f887b0784af83678259e9d0ddd84469e5262d7705ea5d2c5adcbb"
         }
       ]
     },
@@ -270,23 +265,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "367e31cbe154e0f07daed7e836f5a20c58b2a35c9de5faa8b4e1059c3bab32a3"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "impl[Script/CompletionProvider]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "6c728100c67a932e09eb0209d35e97b1ea195374ecdde9acc5795a45def52096"
         }
       ]
     }

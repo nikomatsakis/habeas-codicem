@@ -1,7 +1,7 @@
 {
   "requirement": "A successful edge selection records the source identity, the requested label,\nand the fingerprint of the returned target identity set. Adding or removing an\nidentity from that set changes it, including adding the first identity to an\nempty set. Reordering targets or repeating a target does not change it.\nChanges to a target's contents do not affect this dependency: reading those\ncontents records a separate node dependency. These observations follow\n{cite}`requirements.sdk.graph.evidence.inputs` and\n{cite}`requirements.sdk.graph.evidence.checking_records`.\n\n`ValidationContext::outgoing_edges` records the selection when returning it.\nThe SDK agent records the prepared selection when delivered. A failed selection\nrecords no successful observation.",
   "determination": true,
-  "rationale": "The two {test} items together cover every obligation in the subject.\n\n**Recorded fields.**\n- `crates/trust-but-verify/src/graph/validation_tests.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]` asserts `Dependency::OutgoingEdges(source, label, fingerprint)` for an empty selection on a different node (9, label 7) and for a non-empty selection on node 1, label 7.\n- `crates/trust-but-verify/src/agent/tests.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` asserts the stored record's dependencies equal `OutgoingEdges(1, 7, edge_fingerprint(&[2, 3]))`.\n- The same agent test records two selections with different labels and sources (`(1, 8)` and `(3, 7)`). The first of these is delivered while the domain's label-7 list for node 1 is [3, 2, 3], which shows the label is part of the dependency.\n\n**Adding or removing an identity changes the fingerprint.**\n- The validation test saves a record against an empty label-7 selection. Adding label-8 edges leaves it current. Adding label-7 edges makes `is_current` return false, which covers adding the first identity to an empty set.\n- It asserts `snapshot.fingerprint` differs from the fingerprints of `[3]` (a removal) and `[3, 5, 9]` (an addition).\n- Replacing 5 with 6 makes `is_current` return false.\n- A pure removal is checked only through direct fingerprint inequality, not through `is_current`. That is sufficient, because the fingerprint is the compared value.\n\n**Reordering and repetition do not change it.** The raw content `[5, 3, 5]` is checked against the fingerprint of `[3, 5]`. After the domain edges are rewritten to `[3, 5]` in a different order, and unrelated label-8 edges are added, `is_current` is still true. The agent test returns [3, 2, 3] to the agent but records the fingerprint of `[2, 3]`.\n\n**Target contents are not part of the dependency.** The validation test asserts that `reads` is empty, so no node content is read. The agent test's `node_content` panics if it is called, so the edge-only records contain only edge dependencies.\n\n**When the selection is recorded.**\n- The validation test shows `outgoing_edges` and `successors` recording when they return successfully.\n- The agent test shows the SDK agent recording after successful delivery. Its stored dependencies match the loaded record.\n- A rejected unknown path records nothing and triggers no lookup.\n- A prepared selection whose delivery fails leaves `ctx.dependencies()` empty.\n\n**Failed selection.** With `fail_edges` set, `successors` returns an error and `dependencies()` is unchanged. `is_current` also surfaces the error, which matches `checking_records`.\n\nThe tests use `edge_fingerprint` as an oracle, so they depend on that function's distinctness. The `is_current` assertions check the behaviour independently, and the direct inequality assertions cover add and remove. I found no gaps.",
+  "rationale": "I judged the two supplied tests adequate for `requirements.sdk.graph.validation-context.outgoing_edges.inputs`. I did not request implementation source or the `edge_fingerprint` helper, so my reading rests on the supplied test text.\n\n**Obligations and the tests that cover them**\n\n- **Records source, label and target-set fingerprint.**\n  - `graph/validation_tests.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]` asserts `Dependency::OutgoingEdges(9, 7, fingerprint(empty))` for a source other than the context node.\n  - It asserts `OutgoingEdges(1, 7, fingerprint([3,5]))` for the context node's own selection.\n  - `agent/tests.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` asserts `OutgoingEdges(1,7,fp[2,3])` in both the stored and the reloaded record.\n  - The same test asserts `OutgoingEdges(1,8,fp[3])` and `OutgoingEdges(3,7,fp[])`. These cover a different label and a different source.\n- **Adding or removing an identity changes the fingerprint, including the first identity into an empty set.**\n  - The record taken with an empty set stops being current once edges 5, 3 and 5 are added (`!empty.is_current`).\n  - `assert_ne` checks `[3]` (a removal) and `[3,5,9]` (an addition) against the `[3,5]` fingerprint.\n  - A record for `[3,5]` becomes non-current when the edges change to `[3,6]`.\n- **Reordering or repeating a target does not change the fingerprint.**\n  - The returned content `[5,3,5]` carries fingerprint `edge_fingerprint([3,5])`.\n  - The `[3,5]` record stays current when the edges become `(7,3),(7,5)`.\n  - The agent test returns `[3,2,3]` to the model but records the fingerprint of `[2,3]`.\n- **Target content changes do not affect the dependency, and no content is read.**\n  - The unrelated label-8 edge `(8,99)` does not affect the label-7 record.\n  - `state.reads` is empty.\n  - In the agent test, `node_content` panics if it is called.\n  - Neither test edits a target's contents directly. The edge-dependency check never reads content, and a content read would trip these guards, so I did not count this as a gap.\n- **`ValidationContext::outgoing_edges` records on return.** The validation test calls it directly and checks the dependencies.\n- **The SDK agent records the prepared selection only when delivered.**\n  - The delivered tool result is asserted to be `{\"targets\":[3,2,3]}`, and the dependency is recorded.\n  - When delivery fails (the `None` script step), `graph.lookups == 1` and `ctx.dependencies()` is empty.\n- **A failed selection records no successful observation.**\n  - In the validation test, `fail_edges` makes `successors` return `Err(\"edges\")` and the dependencies stay unchanged.\n  - A malformed node ID in the agent test returns an error tool result, makes no graph lookup, and records nothing.\n  - `is_current` propagates the edge error.\n\nThe assertions check the required outcomes, and I found no plausible violating behavior that these tests would accept. The cited `evidence.inputs` and `evidence.checking_records` requirements are also exercised: the agent test stores and reloads records, and the validation test checks `is_current`.",
   "references": "6153330648d92f2fc2a2b9f09516405490513a9e931e5e9d7ef8dc191e11408a",
   "inputs": [
     {
@@ -88,17 +88,12 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[agent_edge_tools_record_selections_without_validating_targets]",
-      "hash": "4aec1a3ae9766eaefea30880e5fb653ecece5ca0575bdeb4a162d27d2c5507a2"
+      "hash": "6c601f85dfcb850cca353964c11355eca0ec6bb3b53a7dff3ab7779d16d4be53"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[labeled_selections_track_only_target_membership_without_reading_contents]",
       "hash": "700de848bf5305dbf1d7bd2affdaa5f3da9aa8554a178553e711fcd3447efa2f"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "fn[edge_fingerprint]",
-      "hash": "a8acf08ac9e9e98b8cd0bf17bc56e15e50a4c62822c4096970f0ef9cafade106"
     }
   ],
   "format_version": 1,
@@ -173,7 +168,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "04a4700c75293a217e2bf9cef55ad6584a1df12d7b3dc304824e9537c4457f93"
+          "value": "6e947b27759f115773258e7e196f83cd26e1fd9702061fad214ecaadeb717ebc"
         }
       ]
     },
@@ -191,23 +186,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "7ee7dfb9edfada22eb7f8b87a4a01b5600be604557561e3653cbdd9398c2d338"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
-            },
-            "selector": "fn[edge_fingerprint]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "cab53a4543a4d5ec1592b171799fc03844659659a2184b54dbe00d4c568a92ed"
         }
       ]
     }

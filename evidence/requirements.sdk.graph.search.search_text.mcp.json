@@ -1,7 +1,7 @@
 {
-  "requirement": "Give `search_text` a regular expression and an optional match limit. Set `window_bytes` to choose how much source to show on each side of a hit under {cite}`requirements.sdk.graph.search.windows`.\nUse the returned `search_id` and match tags when calling `finish_search`.\nFor the `instructions` field, see {cite}`requirements.sdk.graph.search.first_search.instructions`.\n\n```text\nsearch_text({pattern: string, window_bytes?: integer, limit?: integer})\n  -> {search_id: UUID, instructions?: string, next?: UUID, complete: boolean, matches: {tag: string, node: string, excerpt: string}[]}\n```",
+  "requirement": "Give `search_text` a regular expression and an optional match limit. Set `window_bytes` to choose how much source to show on each side of a hit under {cite}`requirements.sdk.graph.search.windows`.\nUse the returned `search_id` and match tags when calling `finish_search`.\nFor the `instructions` field, see {cite}`requirements.sdk.graph.search.first_search.instructions`.\n\n```text\nsearch_text({pattern: string, window_bytes?: integer, limit?: integer})\n  -> {search_id: UUID, instructions?: string, next?: UUID, complete: boolean, matches: {tag: string, node: NodeId, excerpt: string}[]}\n```",
   "determination": true,
-  "rationale": "The reviewed tests adequately check `requirements.sdk.graph.search.search_text.mcp`. I did not read any implementation source.\n\n**Obligations derived from the text**\n1. `search_text` takes `pattern` (required), `window_bytes` (optional) and `limit` (optional).\n2. `window_bytes` chooses how much source is shown around each hit. The window semantics are in the cited `requirements.sdk.graph.search.windows`. I checked only that the argument reaches the search.\n3. The result has the shape `{search_id: UUID, instructions?, next?, complete, matches: {tag, node, excerpt}[]}`.\n4. The returned `search_id` and tags are usable with `finish_search`.\n5. `instructions` is covered by the cited `first_search.instructions`, so it is context here.\n\n**Test coverage**\n- **Input schema.** `search_pages_return_every_original_match_in_order` asserts the exact `search_text` parameter schema:\n  - `pattern` is required.\n  - `window_bytes` is an integer with minimum 0 and default 128.\n  - `limit` is an integer with minimum 0.\n  - It also asserts that dispatch fails for a missing `pattern`, a string `limit`, and a negative `window_bytes`.\n- **Result shape.** The same test checks each page:\n  - `search_id` parses as a UUID.\n  - `complete` is true.\n  - `instructions` appears only on the first page.\n  - `next` chains the pages until none is left.\n  - Every match equals exactly `{node, excerpt, tag}`, with tags 1..n per page and the expected node and excerpt.\n  - Across all pages the matches come back in order and none are lost.\n- **`limit`.** `search_obligations_follow_delivery_and_keep_the_original_snapshot` calls `search_text` with `limit:1` and asserts one match with `complete == false`. An uncapped search returns `complete == true`.\n- **`finish_search` use.** The same test and `search_excerpts_redact_credentials_before_serialization_and_paging` close searches with the returned `search_id` and tags:\n  - They assert the dependency recorded for the chosen tag.\n  - They assert that unknown tags are rejected.\n  - They assert that an empty `used` list is accepted.\n- **`window_bytes` takes effect.** `search_excerpts_redact_credentials_before_serialization_and_paging` passes `window_bytes: 25000` for a hit at the start of a function whose body is about 18,000 bytes of padding. It requires the excerpt to equal the whole function. The 128-byte default would cut it short, so a tool that ignored `window_bytes` would fail.\n- **Invalid pattern.** `search_obligations_follow_delivery_and_keep_the_original_snapshot` asserts that a pattern that is not a valid regex, `(`, makes dispatch fail.\n\n**Delegated or context-only items**\n- The window clipping, UTF-8 boundary and merge rules belong to `requirements.sdk.graph.search.windows` and its own tests.\n- The content and first-delivery rule for `instructions` belong to `first_search.instructions`. The tests check it here anyway.\n\n**Gaps**\nAll the obligations the MCP requirement itself states have a test that exercises them and asserts the outcome. I found no marking gaps or missing scenarios.",
+  "rationale": "I judge the tests adequate for `requirements.sdk.graph.search.search_text.mcp`. The subject is the MCP contract of `search_text`: its inputs, its output shape, and its use with `finish_search`. I did not request implementation source. I read the four supplied tests.\n\n**Input schema and validation**\n- `search_pages_return_every_original_match_in_order` asserts the exact `search_text` parameter schema. `pattern` is a required string. `window_bytes` is an integer with minimum 0 and default 128. `limit` is an integer with minimum 0. Only `pattern` is required, so `window_bytes` and `limit` are optional.\n- The same test asserts that these calls are rejected: a missing pattern, a string `limit`, and a negative `window_bytes`.\n- `search_obligations_follow_delivery_and_keep_the_original_snapshot` asserts that an invalid regex (`\"(\"`) is rejected.\n\n**Output shape** `{search_id, instructions?, next?, complete, matches:{tag,node,excerpt}[]}`\n- `search_pages_return_every_original_match_in_order` checks each page for the following:\n  - `search_id` parses as a UUID.\n  - `complete` is true.\n  - `instructions` is present only on the first page.\n  - `next` is present and followed until the pages end.\n  - Every match entry equals `{node, excerpt, tag}` exactly, with `node` taken from the SDK result, the excerpt equal to the expected text, and tags `\"1\"`, `\"2\"`, … per page.\n- `search_obligations_follow_delivery_and_keep_the_original_snapshot` covers more of the shape:\n  - Tags within a page are unique.\n  - An empty result still carries `instructions`.\n  - A later search in the same session omits `instructions`.\n  - `limit:1` returns exactly one match and sets `complete` to false.\n  - Continuation pages omit `instructions`.\n\n**Use with `finish_search`**\n- `search_obligations_follow_delivery_and_keep_the_original_snapshot` finishes searches by `search_id` and match tags. It checks the resulting dependency, the unknown-tag error, and the repeated finish.\n- `search_excerpts_redact_credentials_before_serialization_and_paging` finishes with a returned tag and checks the node dependency.\n\n**`window_bytes` under the cited `requirements.sdk.graph.search.windows`**\n- `search_excerpts_redact_credentials_before_serialization_and_paging` passes `window_bytes: 25000` through the MCP tool.\n- The matched text is `fn chosen`, and the excerpt must equal the whole function, including about 18 KB of padding. That is far more than the default 128, so a `window_bytes` that was ignored or not forwarded would fail the test.\n- The window arithmetic itself (clipping, UTF-8 boundaries, merging overlapping windows) belongs to `windows`, which has its own review. It needs no test here.\n\n**`first_search.instructions`**\n- This is cited only. The instructions behavior is also checked in these tests, and I did not reassess it.\n\n**Marking**\n- All four tests carry `{test}` references to the subject.\n\nI found no obligation of the subject that these tests would let a violating implementation pass.",
   "references": "5d2dde26dbe4e43df2d851988e926b380ed92ba55caf9adf1b1ee6672e3fd71b",
   "inputs": [
     {
@@ -17,7 +17,7 @@
         "",
         "```text",
         "search_text({pattern: string, window_bytes?: integer, limit?: integer})",
-        "  -> {search_id: UUID, instructions?: string, next?: UUID, complete: boolean, matches: {tag: string, node: string, excerpt: string}[]}",
+        "  -> {search_id: UUID, instructions?: string, next?: UUID, complete: boolean, matches: {tag: string, node: NodeId, excerpt: string}[]}",
         "```",
         ":::"
       ]
@@ -59,7 +59,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[search_pages_return_every_original_match_in_order]",
-      "hash": "1f4787a81fe87359ef50e6088a6231b2d4eeee989293bfe2c972ec8b628abf68"
+      "hash": "7c7f7258f711c557e69010ea16fad1d7d4815bd22af7bc6ef82686ea92db3872"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
@@ -105,7 +105,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ad5b7a9da312448a5c6f3be83faa369b08fd9ecc2ee2b6096d38d3268f886293"
+          "value": "087e09ad6b3b6c3a5125098111474b218074c43c3856f688d60138e6587591e6"
         }
       ]
     },
@@ -161,7 +161,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "561f4bc585d8e9851657ee5ac81cf4defb5a24545b12bf658a93717a4bea3f12"
+          "value": "d65faf36f9b7f25e424c58d95ad95ecac736e0ce1591aac0f327489e1be9ef5d"
         }
       ]
     },

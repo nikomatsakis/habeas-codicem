@@ -1,7 +1,7 @@
 {
   "requirement": "The agent accounts for each delivered `search_structure` result under\n{cite}`requirements.sdk.graph.search.finish_search.inputs`, including an empty\nresult. A separate tracked read of a matched item records its own dependency.",
   "determination": true,
-  "rationale": "The tests cover each obligation in `search_structure.inputs`. I did not request implementation source.\n\n**Obligations derived from the subject**\n1. Every delivered `search_structure` result is accounted for under `finish_search.inputs`. Selected tags record the node identity and fingerprint from the snapshot that produced the excerpt, and an unselected excerpt adds nothing.\n2. An empty result is accounted for too. It becomes an outstanding search, and finishing it with `used: []` adds no dependency.\n3. A separate tracked read of a matched item records its own dependency.\n\n**Test mapping**\n- **Empty result is accounted for.**\n  - `mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]` sends an empty `search_structure` query on `peer`. It asserts `matches == []` and that `outstanding_searches()` equals the delivered `search_id`. It then calls `finish_search` with `used: []` and asserts that `dependencies` is empty.\n  - `fn[empty_structural_search_results_remain_discovery]` in `agent/tests.rs` asserts the delivery is `{\"complete\":true,\"matches\":[]}`. It also asserts no dependencies and that the observation callback was never invoked.\n- **Non-empty results add nothing at delivery.**\n  - The following tests assert that delivery carries no dependencies:\n    - `fn[structural_tags_select_only_the_original_enclosing_item]`\n    - `fn[search_excerpts_redact_credentials_before_serialization_and_paging]`\n    - `fn[source_tools_forward_arguments_and_present_discovery_and_read_results]`\n  - The last of these also checks that the observation callback is not called by discovery pages.\n- **A selected tag records the original snapshot.**\n  - `fn[structural_tags_select_only_the_original_enclosing_item]` replaces the file after the search and again before `finish_search`.\n  - It selects the tag for `code.rs#fn[two]`. It asserts the dependency is `Dependency::Node(\"code.rs#fn[two]\", fingerprint)`, where the fingerprint is that of the original `fn two` snapshot, not the changed file.\n  - It repeats the selection twice and gets the same dependency each time.\n  - It checks that `used: []` adds none, and that the match set alone adds none.\n  - It asserts that domain `reads == 1`.\n- **Redaction case.** `fn[search_excerpts_redact_credentials_before_serialization_and_paging]` runs `search_structure` and selects the tag. It asserts that exactly one node dependency is recorded, with the fingerprint of the original, unredacted source snapshot.\n- **Selection semantics shared with `finish_search`.**\n  - The first test, `fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]`, runs these through `search_text`. This is the same session and `finish_search` machinery.\n  - It checks that unknown tags make the call fail with an error. It checks that an invalid call preserves outstanding searches, since `outstanding_searches().len() == 2` still holds afterwards. It checks that repeated selection is idempotent. It checks that other sessions cannot finish the search.\n- **A separate tracked read records its own dependency.**\n  - `fn[structural_tags_select_only_the_original_enclosing_item]` calls `session.read_node` on a match and asserts a distinct `Dependency::Node`.\n  - `fn[cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input]` runs `search_structure` and then `read_source`. It asserts that exactly one dependency is recorded, from the read, and that a failing read adds none.\n\n**Residual notes**\n- No test finishes a `search_structure` result delivered through a `next` page. The shared paging and finish machinery is tested with `search_text`, and the requirement does not make structural paging a distinct case.\n- No gap is established, and there are no acknowledgments.",
+  "rationale": "The reviewed tests adequately check `requirements.sdk.graph.search.search_structure.inputs`. I did not request implementation source. The expected behavior comes from the requirement text.\n\n**Obligations derived from the text**\n1. Every delivered `search_structure` result, including an empty one, is accounted for under `finish_search.inputs`.\n   - Delivery makes the result an outstanding search.\n   - Closing it through `finish_search` records only the selected tags' dependencies, taken from the original snapshot.\n   - An empty `used` list adds nothing.\n2. A separate tracked read of a matched item records its own dependency. The search itself adds none.\n\nThe behavior of `finish_search` itself (repeat selection, invalid calls, snapshot preservation) belongs to the cited `finish_search.inputs`. I did not reassess it, but the tests below exercise it for structural results.\n\n**Test mapping**\n- **Empty result accounting:** `project_sources.rs#mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]` runs `search_structure` with `absent()`.\n  - It asserts `matches == []` and that the `instructions` text is present.\n  - It asserts `outstanding_searches()` equals exactly that `search_id`, so the empty result is tracked.\n  - Closing with `used: []` returns an empty `dependencies` list.\n- **Empty result stays discovery:** `tests.rs#fn[empty_structural_search_results_remain_discovery]` asserts the result is `{\"complete\":true,\"matches\":[]}`. It also asserts no dependencies and that the observation callback ran zero times.\n- **Non-empty result accounting and selection:** `project_sources.rs#mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]` covers the following.\n  - Deliveries from the session carry empty `dependencies`.\n  - Finishing with `used: []` adds none.\n  - Selecting the tag for `code.rs#fn[two]` twice yields exactly one `Dependency::Node` with the fingerprint from the original snapshot. The file was rewritten after the search, so this checks snapshot preservation.\n  - The domain `reads` count is 1, so the search and finish added no extra reads.\n  - A limited (incomplete) structural search is also delivered.\n- **Separate tracked read:** in the same test, `session.read_node` on a matched entry yields its own `Dependency::Node` with that node's fingerprint. This matches \"a separate tracked read records its own dependency\".\n- **Read after search in the agent loop:** `tests.rs#fn[cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input]` runs `search_structure`, then `outline_source`, then successful and failing `read_source` calls. Only the successful read's dependency is recorded, so the search added none.\n- **Provider-level behavior:** `tests.rs#fn[source_tools_forward_arguments_and_present_discovery_and_read_results]` asserts `search_structure` deliveries have empty dependencies and that paged discovery never invokes the observation callback.\n- **Redaction and selection:** `project_sources.rs#mod[tests]/fn[search_excerpts_redact_credentials_before_serialization_and_paging]` runs `search_structure`, selects its tag via `finish_search`, and asserts the recorded `Dependency::Node` fingerprint. The fingerprint is for the original, unredacted snapshot.\n\n**Conclusion**\nBoth obligations have tests with concrete assertions. The empty-result case is covered explicitly. I found no unacknowledged gap.",
   "references": "2c951eb114990fc9e6bda28bc2b1e84a084b6893085acf0f6bc080705b03ac81",
   "inputs": [
     {
@@ -40,7 +40,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]",
-      "hash": "da52e5d29445d81df850442cffb8ee43ae843ea49b40bff56c1870b83581efef"
+      "hash": "c36ad720da7917dd5292319f01409250f9b6e9e2d06eab66bbea689be73026dc"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
@@ -61,16 +61,6 @@
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[empty_structural_search_results_remain_discovery]",
       "hash": "f6fd7fc7b5fc640a35a3ad0ecdbc7459f0d8b588f41ae9b9d5abd3a8218de5de"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tools.rs",
-      "item": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[submit]",
-      "hash": "4816a1637670a890bf652ec819aba884aa88ab38931201492b4715090a116559"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/configured.rs",
-      "item": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]",
-      "hash": "3935a069f4aabaece83dabc80e9611f38dee96e623e3ec8b08da353628c63959"
     }
   ],
   "format_version": 1,
@@ -151,7 +141,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "65764f2329ebafcd7cb42ec1b1263a2bb3ffcb018e1c69474a1a7b051df4b852"
+          "value": "a57b31f34187a7968bb9605b2ec0b51b6d343bafa0541cdf45cc9147304c95e0"
         }
       ]
     },
@@ -220,40 +210,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "b9ac32a01f0cee60ad0331264092e2c361614cc8afd685e44341c354ddfb767a"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tools.rs"
-            },
-            "selector": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[submit]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "f9fbb92b5caf3dc5dea11457c4ff005f6e148605d4c27c5b63cc852a6f06eadf"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/configured.rs"
-            },
-            "selector": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "05e4b55913ed5198b780e5ae08fe7592cf79b6501711712dac65ba2a55caf7be"
         }
       ]
     }

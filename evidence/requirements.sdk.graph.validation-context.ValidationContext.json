@@ -1,7 +1,7 @@
 {
   "requirement": "The SDK exposes the {term}`requirements.sdk.graph.validation-context.validation_context`\nthrough `ValidationContext`. Criterion code can read graph nodes and source items, follow edges,\nand call `ask` to dispatch an agent with a prompt. The agent can search project\nfiles and use the same tracked reads as criterion code.\n\n`verify` creates a context for one execution. Each tracked read adds\nthe input’s identity and a fingerprint of its contents to the dependency list.\n`verify` returns these dependencies with the answer. `refresh_evidence` uses\nthem to decide whether to rerun the criterion. [Searching project sources](search.md) explains\nhow the agent chooses which search excerpts to record.\n\n```rust,ignore\npub struct ValidationContext<'d, D: Domain> { /* private fields */ }\n```",
   "determination": true,
-  "rationale": "The subject is an umbrella requirement. It says the SDK exposes the validation context as `ValidationContext`. It lists what the context lets criterion code do and what dependency tracking `verify` performs. The detailed read, source, edge and `ask` behaviors are in refining requirements with their own tests. Here I checked that the marked tests cover each clause of the subject's own text.\n\n- **Public `ValidationContext` type.** `tests/public_api.rs#fn[public_exports_match_the_appendix]` generates rustdoc and compares the exported items with the specified inventory.\n- **Read graph nodes and record a tracked input with identity and fingerprint.** `src/graph/validation_tests.rs#fn[snapshots_record_exact_reads_and_retain_distinct_versions]` does this.\n  - It asserts `Dependency::Node(1, fp(\"before\"))` and then a second entry for the changed contents.\n  - It asserts that `graph()` access and a failed read record nothing.\n  - It asserts that `finish` returns the dependencies, and that the record is no longer current after the contents change.\n- **Read source items.** `src/agent/project_sources.rs#mod[tests]/fn[direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns]` checks the following.\n  - Unsupported items and provider failures record no dependency.\n  - A successful read records `Dependency::Node(\"source-node\", fingerprint)`.\n  - `finish` followed by `is_current` is true, then false after the source text changes.\n- **Follow edges.**\n  - `src/agent/tests.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` asserts `Dependency::OutgoingEdges(node, label, fingerprint)` observations. It also covers unknown paths and failed delivery, which record nothing. It asserts the saved evidence matches the verified dependencies.\n  - `src/graph/validation_tests.rs#fn[concurrent_single_node_validations_keep_separate_traces]` covers criterion-side edge reads. It asserts both node and edge dependencies per execution.\n- **`ask` dispatches an agent that shares the context's tracked reads.** Two tests cover this.\n  - `src/agent/tests.rs#fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]` runs two concurrent `ask` calls on one context. It asserts the shared dependency list contains the node and edge inputs from the agent's tools. It also asserts that `finish` returns exactly those dependencies.\n  - `src/agent/tests.rs#fn[source_tools_keep_search_discovery_separate_from_delivered_source_reads]` has the agent call `search_text` and then `read_source`. Only the delivered read is recorded, with the fingerprint from the provider.\n- **`verify` creates a per-execution context and returns the dependencies with the answer.**\n  - `concurrent_single_node_validations_keep_separate_traces` asserts that three concurrent `verify` runs each return their own node and edge dependencies.\n  - The edge test asserts `saved.dependencies() == result.dependencies()`.\n- **`refresh_evidence` uses the dependencies to decide whether to rerun.** Dependency-currency checks are exercised through `is_current` in the snapshot and source tests. Reuse and rerun behavior of `refresh_evidence` has its own requirement, `requirements.sdk.graph.evidence.refresh_evidence`, with marked tests in `tests/contracts.rs`. It is not an obligation to retest here.\n- **Search-excerpt recording.** The subject delegates this to the linked search page, which has its own requirements.\n\nThe tests assert concrete dependency values and outcomes, not just execution. I found no obligation in the subject's text that lacks a test, so there are no gaps.",
+  "rationale": "The `ValidationContext` requirement is an overview. It sets these obligations:\n- The type is public.\n- Criterion code can read nodes, read source items, follow edges and call `ask`.\n- The agent can search project files and use the same tracked reads.\n- `verify` makes one context per execution.\n- Each tracked read records an identity and a content fingerprint.\n- `verify` returns those dependencies.\n- `refresh_evidence` uses them to decide whether to rerun.\n\nThe detailed per-method behaviour belongs to the refining `ValidationContext.*`, `read_node.*`, `outgoing_edges.*`, `read_source.*` and `pages.*` requirements. Those carry their own tests and reviews, so I did not reassess them here.\n\nMapping of the marked tests to the obligations:\n- **Public type.** `tests/public_api.rs#fn[public_exports_match_the_appendix]` compares the rustdoc export inventory with the specified exports.\n- **Node reads recorded with fingerprints.** `graph/validation_tests.rs#fn[snapshots_record_exact_reads_and_retain_distinct_versions]` asserts three things:\n  - Each `read` appends `Dependency::Node(id, fingerprint)`.\n  - A changed read adds a distinct dependency.\n  - A failed read adds none.\n\n  It also asserts that the finished record carries the same dependencies and that `is_current` turns false after the content changes.\n- **Source reads recorded only on success.** `agent/project_sources.rs#mod[tests]/fn[direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns]` covers these cases:\n  - Unsupported source items.\n  - A failed provider read.\n  - A successful read, which adds one dependency carrying the returned fingerprint.\n  - `finish`, followed by `is_current` being true and then false after the text changes.\n- **Edges.** `agent/tests.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` checks the agent's `outgoing_edges` tool. It asserts the recorded `OutgoingEdges` dependency and fingerprint, that a malformed node adds no dependency, that a failed delivery adds none, and that the saved record's dependencies equal the result's. `concurrent_single_node_validations_keep_separate_traces` records edges from criterion code through `verify`.\n- **`ask` with an agent sharing the context.** `agent/tests.rs#fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]` runs two `ask` calls on one context. It asserts that the reads land in the shared dependency list and that `finish` returns the same list.\n- **Agent can search project files and use the same tracked reads.** `agent/tests.rs#fn[source_tools_keep_search_discovery_separate_from_delivered_source_reads]` has the agent call `search_text` and then `read_source`. It asserts that exactly one dependency is recorded, from the delivered read and not from the search.\n- **`verify` makes one context per execution and returns dependencies.** `concurrent_single_node_validations_keep_separate_traces` runs three `verify` calls concurrently. It asserts that each stored record holds only its own node's content and edge dependencies.\n- **`refresh_evidence` uses the dependencies to decide on a rerun.** This is not marked to the subject, but the obligation is covered through the `is_current` assertions in the marked tests. Related tests also exercise reuse and re-evaluation on changed reads, for example `refresh_reuses_current_positive_negative_and_legacy_answers_without_saving`, `refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace`, and `deterministic_source_reads_reuse_saved_results`.\n\nI found no plausible violation of the overview text that these tests would accept. No `{fixme}` acknowledgments apply.",
   "references": "c1e130862562880e7c9c542f44a68c861c68ffcb1f3ed2118818968248df921a",
   "inputs": [
     {
@@ -42,7 +42,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[agent_edge_tools_record_selections_without_validating_targets]",
-      "hash": "4aec1a3ae9766eaefea30880e5fb653ecece5ca0575bdeb4a162d27d2c5507a2"
+      "hash": "6c601f85dfcb850cca353964c11355eca0ec6bb3b53a7dff3ab7779d16d4be53"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -119,6 +119,21 @@
         "during a single execution. An agent called by the criterion shares that context.",
         ":::"
       ]
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "mod[tests]/fn[deterministic_source_reads_reuse_saved_results]",
+      "hash": "77f693f67ac713db265fb65027f0ce179a4662cebc08e47cb309db1c11f6505e"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "fn[refresh_reuses_current_positive_negative_and_legacy_answers_without_saving]",
+      "hash": "dc11574d4cc4f6f1c497a23c87b0bf8d2af0fb15cb19b83324d929019a96c7bb"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "fn[refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace]",
+      "hash": "21ae2360f66a8508038937c8628b243045455aef92696ad31b155eb7cf64c994"
     }
   ],
   "format_version": 1,
@@ -205,7 +220,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "04a4700c75293a217e2bf9cef55ad6584a1df12d7b3dc304824e9537c4457f93"
+          "value": "6e947b27759f115773258e7e196f83cd26e1fd9702061fad214ecaadeb717ebc"
         }
       ]
     },
@@ -318,6 +333,57 @@
         {
           "scheme": "habeas-input-v1",
           "value": "992e0077c5ed6555f1c587f1529b70afe2de80d7bf348c605a48c97e26250521"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "mod[tests]/fn[deterministic_source_reads_reuse_saved_results]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "646392ef0bab535cbc98c502f1b652721315cd8e8e7ca655a205eee63c517e2c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/contracts.rs"
+            },
+            "selector": "fn[refresh_reuses_current_positive_negative_and_legacy_answers_without_saving]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "2a691cadc91c3066f38335e33f1c5ab79435be3a4a70baf0d2d21d36f41ba3c5"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/contracts.rs"
+            },
+            "selector": "fn[refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "1a5331399687f82437b9297b7a9199e58cc61856fe3af56a9f1c3d3bbbce4f83"
         }
       ]
     }

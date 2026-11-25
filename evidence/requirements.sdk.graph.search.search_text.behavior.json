@@ -1,7 +1,7 @@
 {
   "requirement": "The harness groups matching occurrences under {cite}`requirements.sdk.graph.search.group_hits` and renders each excerpt under {cite}`requirements.sdk.graph.search.windows`. Each entry's `node` is a reference under {cite}`requirements.sdk.graph.validation-context.node_reference`. `complete` reports whether the search exhausted its scope.",
   "determination": true,
-  "rationale": "The tests adequately check `requirements.sdk.graph.search.search_text.behavior`. The requirement has four obligations. The harness groups hits, renders excerpts under the windows rules, returns `node` as a node reference, and reports `complete`.\n\n- **Grouping (`group_hits`).** `project_sources.rs#mod[tests]/fn[search_groups_exact_occurrences_and_records_the_selected_declaration]` searches `\"hit\"` in a source with three occurrences: one in `const A` and two in `const B`.\n  - It asserts the raw matches (three hits in two items).\n  - It asserts that the harness page has exactly two entries, tagged \"1\" and \"2\". `const B` appears once, with both hits in one excerpt.\n  - It then finishes the search with `used:[\"2\"]` and asserts the dependency is the `code.rs#const[B]` declaration's fingerprint.\n  - `fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]` asserts that the tags on a multi-entry page are distinct and that the tags count toward `finish_search`.\n- **Excerpts (`windows`).** The first test asserts the exact excerpt text. Each excerpt is clipped to the enclosing item, and the two nearby hits in `const B` are emitted as one contiguous excerpt. The detailed window rules have their own marked tests, which are not marked as tests of the subject: `root_hits_clip_context_to_utf8_boundaries`, `default_windows_retain_128_bytes_on_each_side`, `touching_windows_keep_the_contiguous_source` and `separated_hit_windows_preserve_the_function_declaration`. I read these through search snippets, which show `window_bytes` going through the harness `search_text` dispatch. The windows requirement is cited context, so I did not reassess its tests.\n- **Node reference (`node_reference`).**\n  - The harness page asserts `node` values `\"n0\"` and `\"n1\"`, which are opaque strings rather than raw IDs.\n  - `session.read_node` on `matches[1]` resolves to the same ID as `results.matches[1].node`.\n  - The snapshot test asserts that `finish_search` records the expected node ID and fingerprint.\n  - The unknown-reference error belongs to `node_reference`'s own tests.\n- **`complete`.**\n  - `page[\"complete\"] == true` is asserted for a full search.\n  - In `fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]`, a search with `limit:1` returns one match and `complete == false`.\n  - `tests/source_defaults.rs#fn[scoped_text_results_keep_line_numbers_context_and_completeness]` checks both values at the provider level.\n  - `fn[source_reads_track_optional_dependencies_and_empty_searches_remain_discovery]` asserts the empty-result output `{\"complete\":true,\"matches\":[]}`.\n\nI found no uncovered obligation or weak assertion, and the acknowledgments list is empty.",
+  "rationale": "**Obligations.** `search_text.behavior` has four parts:\n- Hits are grouped per `group_hits`.\n- Excerpts are rendered per `windows`.\n- Each entry's `node` is a reference per `node_reference`.\n- `complete` reports whether the search exhausted its scope.\n\nThe cited requirements are context. I checked only that the tests apply them in this subject's case. I did not reassess their own tests.\n\n**Grouping, windows and node.** `search_groups_exact_occurrences_and_records_the_selected_declaration` in `project_sources.rs` runs `search_text` through the session tool on a source with three hits.\n- Two hits are in `const[B]` and one is in `const[A]`.\n- It asserts exactly two entries, one per enclosing item, with tags \"1\" and \"2\".\n- Each entry's `node` is asserted, e.g. `code.rs#const[A]`.\n- Each excerpt is asserted exactly.\n  - The `const[A]` excerpt contains a multibyte character and is clipped to the item span.\n  - The `const[B]` excerpt contains two nearby hits and is emitted once, contiguously, with the text between them.\n- The test checks the typed hit spans, including the byte offsets after the multibyte character.\n- It feeds the delivered entry to `read_node`, which shows the node reference is usable.\n- It asserts that `finish_search` with the tag \"2\" records the dependency on `code.rs#const[B]`.\n\n**`complete`.** `search_obligations_follow_delivery_and_keep_the_original_snapshot` covers both outcomes.\n- An uncapped search asserts `complete == true`.\n- A search with `limit: 1` returns one match and asserts `complete == false`.\n- Empty results and the first-page behavior are also exercised.\n- The same test checks that each paged entry has a distinct tag and that excerpts come from the original snapshot.\n\n`search_groups_exact_occurrences_and_records_the_selected_declaration` asserts `complete == true` for a normal search. `scoped_text_results_keep_line_numbers_context_and_completeness` checks completeness at the source-provider level. `gitignore_is_shared_by_all_operations_with_or_without_a_git_repository` also asserts `complete` on its search results.\n\n**Other tests.** The other marked tests in `agent/tests.rs` cover tool wiring and the fact that discovery is not recorded as a read. They support the subject but are not needed for adequacy.\n\n**Gaps.** I found none. A violation such as one entry per hit, a wrong node serialization, a wrong `complete` value, or unmerged or unclipped windows would fail the exact-equality assertions above.",
   "references": "35ddb619ad708105c6eb417f9b9df471c1716e799ab15e704a79978c6771527d",
   "inputs": [
     {
@@ -46,7 +46,9 @@
       ],
       "text": [
         ":::{req} node_reference",
-        "The harness represents a domain `D::NodeId` to the agent as an opaque JSON string scoped to the conversation. It retains the IDs of the current node, supplied input nodes, and nodes introduced by tool results. Tools that return nodes give the agent references to those IDs. Tools that accept a node resolve its reference to the same ID. An unknown reference produces a tool error.",
+        "The agent harness serializes the current node, supplied input nodes, and node IDs in tool results using the domain's Serde representation of `D::NodeId`. A tool accepting a node ID deserializes the same JSON value. Its argument schema uses `D::NodeId`'s `JsonSchema` implementation. An invalid ID representation produces a tool error before the domain is queried.",
+        "",
+        "For example, if a search hit contains `\"node\": {\"Issue\": 42}`, the agent can call `read_node({\"node\": {\"Issue\": 42}})` to read that issue.",
         ":::"
       ]
     },
@@ -58,7 +60,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[search_groups_exact_occurrences_and_records_the_selected_declaration]",
-      "hash": "b6b3b6ec55facc5c6d6c143fc92ec6447a2b2a17e88d99ed3b72537be581f780"
+      "hash": "9151504fb7479a6162282555570a22974d911d3f14b0e4eea1f6bcaa09b05653"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -89,21 +91,6 @@
       "file": "crates/trust-but-verify/tests/source_defaults.rs",
       "item": "fn[gitignore_is_shared_by_all_operations_with_or_without_a_git_repository]",
       "hash": "4b81c551483aed06169e522f0568156178713ded6d6c7a86c77ca34cac07aa5a"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
-      "item": "mod[tests]/fn[root_hits_clip_context_to_utf8_boundaries]",
-      "hash": "4115fa0e73f7b86368fcdc95b42eb5a4c29d759d0c33736bc53cd2450dc7c994"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
-      "item": "mod[tests]/fn[default_windows_retain_128_bytes_on_each_side]",
-      "hash": "c20dbf7b708cb20fb8c3529f16eba08c6f69b7c183ee1f43e1b8e90a76042e79"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
-      "item": "mod[tests]/fn[separated_hit_windows_preserve_the_function_declaration]",
-      "hash": "efc07d3bfde99cc618c49d4070fe26e4d095a8a651da42621cb1e8941685f284"
     }
   ],
   "format_version": 1,
@@ -172,7 +159,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "b04d8c2e130aa9ca81012b9659c2583c632789465d920bd72335a73836f36c81"
+          "value": "2e7e926d54f43616b8c69e7803f6eb20e44454cb1f831924386500a8671610da"
         }
       ]
     },
@@ -206,7 +193,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "e84c1773151e437814b4e8855d9b8b08b457a3e16a2a541f1b66563fea9e1100"
+          "value": "cff52a56b722ec925ccd2ae996ddf996f0ebd7fae14241fb816e8e6dc99e4cd2"
         }
       ]
     },
@@ -309,57 +296,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "9862829b8d3ac2612b2cb4cff3278d2a783f68cf2915d3d4bd36453eae4687a4"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
-            },
-            "selector": "mod[tests]/fn[root_hits_clip_context_to_utf8_boundaries]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "59d5c500fda05da8bbeb78e261b7e7de07ab38256844ce063d4fa7ba7516cbd8"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
-            },
-            "selector": "mod[tests]/fn[default_windows_retain_128_bytes_on_each_side]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "fa0ad3e7563e2958d78e735116c044622a7fb1736d0c0600e58f6b624ef1a289"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
-            },
-            "selector": "mod[tests]/fn[separated_hit_windows_preserve_the_function_declaration]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "dfde09aba02f2b917572a7465d7ae1f87321c02ff39729f327f1d27717e3fdf8"
         }
       ]
     }

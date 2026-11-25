@@ -1,7 +1,7 @@
 {
   "requirement": "Concurrent `verify` calls on the same domain keep separate dependency\nrecords and agent conversations, even for the same source node and criterion.",
   "determination": true,
-  "rationale": "**Obligations.** `requirements.sdk.graph.running-criteria.verify.concurrent` has two parts. Concurrent `verify` calls on one domain must keep (a) separate dependency records and (b) separate agent conversations. Both must hold even when the source node and criterion are the same.\n\n**Agent conversations and dependency records.** `crates/trust-but-verify/src/agent/tests.rs#fn[agent_executions_isolate_conversations_and_dependency_traces]` covers both parts.\n- It runs two `verify_with_agent` calls under `futures::join!` against one `Memory` graph. Both use the test `Question`, whose source node is `Node(1)` and whose `criterion_path` is always `[\"question\"]`. They differ only in the context string (`alpha` or `beta`) and in whether they read the current node or its successors. This is the \"same source node and criterion\" case.\n- The `ParallelConversations` provider holds both calls at a `Barrier` of 2, so the conversations really interleave. A 2-second timeout fails the test if the calls serialize.\n- On every turn the provider asserts:\n  - the history length is `2 + 2*turn`;\n  - the first message is the call's own system prompt;\n  - the history contains this call's page contents and never the other's;\n  - the last delivered page belongs to this call, although both use the same tool call ID.\n- The test asserts a call count of 3 for each conversation. It asserts the outputs `alpha` and `beta`.\n- After `store_evidence`, the saved dependencies are asserted exactly. Alpha has only `Node(1)` with its fingerprint. Beta has `OutgoingEdges(Node(1), Label, …)` plus `Node(2)`. A leak of dependency traces between executions would fail these equality assertions.\n- The final `load_evidence` shows the later store overwrote the earlier one, which fits a shared key.\n\n**Dependency records, same criterion, concurrent.** `crates/trust-but-verify/tests/contracts.rs#fn[concurrent_same_criterion_executions_keep_complete_independent_records]` joins two `validation::verify` calls on one `Application` domain, with the same node 1 and the same `behavior` criterion. They read different nodes (2 and 3) and run under a barrier with a 5-second timeout, so they must overlap.\n- It asserts that no records are stored before `store_evidence`.\n- After storing, the saved record must match one execution completely: its output, its version (`first-revision` or `second-revision`) and its dependency list (`Node(2)` with \"first input\", or `Node(3)` with \"second input\"). A mixed record fails.\n- It asserts that the domain ran 2 executions and 2 writes and holds one record.\n\n**Gaps.** Both tests carry `{test}` references to the subject. Every clause is exercised and asserted: separate dependency records, separate conversations, and the same-node/same-criterion condition. I found no gap.",
+  "rationale": "The tests adequately check `requirements.sdk.graph.running-criteria.verify.concurrent`.\n\nThe requirement has two obligations. Concurrent `verify` calls on one domain must keep separate dependency records, and they must keep separate agent conversations. Both must hold even when the source node and criterion are the same.\n\n**Agent conversations and dependency traces:** `crates/trust-but-verify/src/agent/tests.rs#fn[agent_executions_isolate_conversations_and_dependency_traces]`\n- It runs two `verify_with_agent` calls concurrently with `futures::join!` on one `Memory` graph.\n- Both calls use the `Question` criterion. Its `source_node_id` is always `Node(1)` and its `criterion_path` is always `[\"question\"]`. The two calls differ only in the agent context, `alpha` or `beta`. So this is the same source node and the same criterion.\n- The `ParallelConversations` provider uses a `Barrier(2)`, so the two conversations must be in flight at the same time. A 2-second timeout fails the test if either call blocks the other.\n- The provider asserts on every turn that the chat history length is `2 + turn*2`. It asserts the history contains only its own page contents and never the other conversation's. Both conversations use the tool call ID `same-call-id`, and the provider checks that the last delivered page belongs to its own conversation.\n- The test asserts three calls per conversation.\n- It stores the two results and loads the records. The `alpha` record has only the dependency on `Node(1)`. The `beta` record has the `OutgoingEdges` dependency on `Node(1)` plus the `Node(2)` content dependency. Neither record contains the other's dependencies.\n\n**Dependency records for the same source and criterion:** `crates/trust-but-verify/tests/contracts.rs#fn[concurrent_same_criterion_executions_keep_complete_independent_records]`\n- Two `Review` criteria share source `Node(1)` and criterion path `[\"behavior\"]`. They differ in revision, output and reads (`Node(2)` versus `Node(3)`).\n- A barrier forces the two executions to overlap, and a 5-second timeout fails the test if they wait on each other.\n- It asserts each result's output. It asserts that nothing is written during `verify`, and that `store_evidence` is run for both.\n- The saved record is then checked as a whole. Its output, version and dependencies must all come from the same execution. The expected dependencies are a single `Node(2)` fingerprint \"first input\" for `first` and a single `Node(3)` fingerprint \"second input\" for `second`. Dependencies from the other execution would fail the assertion.\n- It also asserts two executions, two writes and one record.\n\nTogether the tests cover both obligations and the \"same node and criterion\" condition. A bug that mixed dependency traces or conversation histories between concurrent calls would fail these assertions. Both tests carry `{test}` references to the subject, so there is no marking gap.",
   "references": "a3e904046faacd0e29b7a681bc3151d22aa775c6614cef3470f5c0caaba96651",
   "inputs": [
     {
@@ -29,8 +29,28 @@
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "fn[distinct_pages]",
+      "hash": "71b30a6c494353acecdeadc53d2f250a6e34cb8a697572bfa3cde2d13c5970cc"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "impl[Question/Criterion<Memory>]",
+      "hash": "1509e1be34254a10f4345b78252f623313b2d98ecdc78418b63a033d823e91e9"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "impl[Review<O>/Criterion<Application>]",
+      "hash": "80125238d6844df754be58fea7fc6f11ec8e35bfb8d1b7ca3637783d4fedb707"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "fn[verify]",
+      "hash": "f7a223411252d341db98d4df3fdeb16d515a968cd1d3bde482f6accab4a0edcd"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "impl[ParallelConversations/CompletionProvider]",
-      "hash": "8abaa1479a758567d6ba4803620fb0e887652a53232587b8aa71a5ba7e501575"
+      "hash": "b1426a3b95ac786ea000ec2f1f8726669fb79c303a8e5fbf5123576add36da5e"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -39,23 +59,13 @@
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "impl[Question/Criterion<Memory>]",
-      "hash": "1509e1be34254a10f4345b78252f623313b2d98ecdc78418b63a033d823e91e9"
+      "item": "impl[Question/Criterion<Memory>]/fn[source_node_id]",
+      "hash": "ad86bba2d5c315b8ec0f90605553d46a6c8589c902df9847d9e3ac34a02695d4"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "impl[Question/Criterion<Memory>]/fn[criterion_path]",
       "hash": "804d15dafcff81bf62b34819458238ccb9073ae21c016ffd5ab72af8d98667d3"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "struct[ParallelConversations]",
-      "hash": "1bdc6269de579c6be8df018df323ddb04cde0b13d9464d994d5316e08bde0013"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "struct[Review]",
-      "hash": "f446c3b083932a8584c9e149398756f344f85189baccc05253e635e24644c7d4"
     }
   ],
   "format_version": 1,
@@ -137,12 +147,80 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
+            "selector": "fn[distinct_pages]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "1a1384d6f8edf12cba153e6cc3e732699e7cb106e2b5e5ed3656e30135dd2a19"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
+            },
+            "selector": "impl[Question/Criterion<Memory>]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "875d78c14515ef5a67826a4fb06aa1bb2b4b5fc39383828a515671cfe0d70aa8"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/contracts.rs"
+            },
+            "selector": "impl[Review<O>/Criterion<Application>]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "ec4b506d81f1c1eb1ff7e707aae8846c8c7182cd67ef16e12eed86066915efdc"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "fn[verify]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "5ae3ece70472ddf1bec3c3361abb1714f3a20fb84b0717b84befd0a53ee3263e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
+            },
             "selector": "impl[ParallelConversations/CompletionProvider]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "005039d9331bcece755a83a8d8faecfd0354a3c7f5e89aea7c973bb96de75d69"
+          "value": "88b213a0b3e2c8e7546146e1d7101f197299ae8178e745a5ff04710d5e559af1"
         }
       ]
     },
@@ -171,12 +249,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
-            "selector": "impl[Question/Criterion<Memory>]"
+            "selector": "impl[Question/Criterion<Memory>]/fn[source_node_id]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "875d78c14515ef5a67826a4fb06aa1bb2b4b5fc39383828a515671cfe0d70aa8"
+          "value": "235158d8eab1a97787f7bfc721bbe8e0b01508cb1394c308378e28c39d36d375"
         }
       ]
     },
@@ -194,40 +272,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "175458090f01e55132cdc9cb9c8bd93cec5ed4182b04e3c960912cb62dbe1c39"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "struct[ParallelConversations]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "1601adae4eac378372c98cae8e44733589f0de9db968066c903b15db0f410f3b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "struct[Review]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "e3287dd47cc2350d178fc1b8a59049eec4730ab8531a44938f7b100a6cc60501"
         }
       ]
     }

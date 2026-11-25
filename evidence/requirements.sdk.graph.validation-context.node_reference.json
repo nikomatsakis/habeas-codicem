@@ -1,8 +1,8 @@
 {
-  "requirement": "The harness represents a domain `D::NodeId` to the agent as an opaque JSON string scoped to the conversation. It retains the IDs of the current node, supplied input nodes, and nodes introduced by tool results. Tools that return nodes give the agent references to those IDs. Tools that accept a node resolve its reference to the same ID. An unknown reference produces a tool error.",
+  "requirement": "The agent harness serializes the current node, supplied input nodes, and node IDs in tool results using the domain's Serde representation of `D::NodeId`. A tool accepting a node ID deserializes the same JSON value. Its argument schema uses `D::NodeId`'s `JsonSchema` implementation. An invalid ID representation produces a tool error before the domain is queried.\n\nFor example, if a search hit contains `\"node\": {\"Issue\": 42}`, the agent can call `read_node({\"node\": {\"Issue\": 42}})` to read that issue.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation in `node_reference`.\n\n**Opaque JSON string, scoped to the conversation**\n- `agent/project_sources.rs#mod[tests]/fn[node_references_resolve_only_within_their_conversation]` uses two separate `Pages` instances. The same reference string, `n0`, resolves to 20 in one and 10 in the other. A reference registered only in the first (`peer`) is an error in the second.\n- `agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` asserts that every file reference in the `list_sources` output is a string starting with `n`. Its `read_node` call on a reference returned by `list_sources` resolves to the right snapshot.\n- `agent/tests.rs#fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]` runs two concurrent conversations. Each reads its own node by reference, and neither conversation's history contains the other's contents.\n\n**Retained IDs: current node, supplied input nodes, nodes introduced by tool results**\n- In the concurrent test, the alpha conversation reads the current node as `n0` and gets its contents. The beta conversation, built with `contents_of_successors`, reads the supplied successor as `n1`. The dependencies include both Node(1) and Node(2).\n- `agent/tests.rs#fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]` calls `outgoing_edges` from `n0`. It then calls `read_node` on the returned `n1` in a later turn, which resolves to Node(2). The test asserts the resulting dependency.\n- `agent/tests.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` covers a second label's result. A node introduced by a tool result, `n1` (node 3), is then passed back to `outgoing_edges`. It resolves to the same ID, because the test asserts `OutgoingEdges(3, 7, …)`.\n- The configured source test reads nodes introduced by `list_sources` and by `search_text` results (`hit[\"node\"]`).\n\n**Tools that return nodes give references to those IDs**\n- The edge-tool test asserts the result `{\"targets\":[\"n1\",\"n2\",\"n1\"]}` for edges `[3,2,3]`. This shows that a repeated ID gets the same reference. In the second scenario `[3]` yields `[\"n1\"]`.\n- `agent/pages.rs#impl[Pages<N, L>]/fn[register]` is the implementation for this, and the tests exercise it through these results.\n\n**Tools that accept a node resolve its reference to the same ID**\n- The tests assert the resolved IDs through the recorded dependencies, as listed above.\n- `Pages::node` is also checked directly in the project_sources test.\n\n**An unknown reference produces a tool error**\n- The edge-tool test sends `outgoing_edges` with `node: \"unknown\"`. It asserts that `is_error` is true with the content \"unknown node reference\". It also asserts that no graph lookup happened and no dependency was recorded.\n- The configured source test sends `read_node` with `unknown` and asserts that the output contains \"unknown node\".\n- The project_sources test asserts that a reference from another conversation is an error.\n\nThese tests together exercise every clause with real assertions. I found no gap.",
-  "references": "770f92be066c77c650c0566bf962a5dd3f3dd85f4e43dac6c643e6a5d03acd32",
+  "rationale": "The reviewed tests cover each obligation in `requirements.sdk.graph.validation-context.node_reference`.\n\n**Serialization of the current node and supplied input nodes.**\n- `configured.rs#mod[tests]/fn[supplied_openai_backend_runs_independent_calls_against_a_local_transport]` inspects the prompt actually sent to the backend. It asserts `Current node: {\"id\":1}` and `Node: {\"id\":1}`. That is the domain's Serde form for a struct-shaped `NodeId`.\n\n**Serialization of node IDs in tool results.**\n- In `configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]`, every `list_sources` file entry has an integer `id`.\n- The same test takes a search hit's `node` value and passes it unchanged to `read_node`. The test's `unused.txt` step (turn 14) does exactly this, and it matches the requirement's own example.\n- `tests.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` asserts the `outgoing_edges` result is `{\"targets\":[3,2,3]}`. That is the `u8` Serde form.\n\n**Deserialization of the same JSON value.**\n- `read_node` is called with `{\"node\":{\"id\":1}}` in the OpenAI-transport test.\n- It is called with an ID taken from a listing in the source-tools test.\n- It is called with `Node(2)` in `tests.rs#fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]`.\n- `outgoing_edges` is called with `u8` IDs in the edge test.\n- `tests.rs#fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]` also exercises node-ID round trips, including successors.\n\n**Argument schema uses `D::NodeId`'s `JsonSchema`.**\n- The source-tools test asserts this for `read_node`, `outline_source` and `outgoing_edges`. The `node` property is a `$ref` to a schema with required `[\"id\"]` and `id` of type integer. That is the `JsonSchema` of the test's struct ID, not a generic value.\n\n**An invalid ID gives a tool error before the domain is queried.**\n- The edge test sends `outgoing_edges` with `\"unknown\"`. It asserts `is_error` and the message `invalid node ID: invalid type: string \"unknown\", expected u8`. It also asserts `lookups == 0` and no recorded dependencies, so the domain was not queried.\n- The source-tools test sends `read_node` with `\"unknown\"` and asserts the result contains `invalid node ID`.\n- I read the implementation only to check whether the tools share one parsing path. They do: `tools.rs#fn[node_argument]` produces the `invalid node ID` error. The `read_node` and `outgoing_edges` cases therefore exercise the same code that `outline_source` uses. The missing `outline_source` invalid-ID test and the missing \"domain not queried\" assertion for `read_node` do not leave a distinct behavior untested.\n\nNo gaps found, and no acknowledgments apply.",
+  "references": "1418933c5aa33548c4ee5b2989887136f7e28758c9084fb36d1589eb32a63e25",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.validation-context.node_reference",
@@ -11,24 +11,21 @@
       ],
       "text": [
         ":::{req} node_reference",
-        "The harness represents a domain `D::NodeId` to the agent as an opaque JSON string scoped to the conversation. It retains the IDs of the current node, supplied input nodes, and nodes introduced by tool results. Tools that return nodes give the agent references to those IDs. Tools that accept a node resolve its reference to the same ID. An unknown reference produces a tool error.",
+        "The agent harness serializes the current node, supplied input nodes, and node IDs in tool results using the domain's Serde representation of `D::NodeId`. A tool accepting a node ID deserializes the same JSON value. Its argument schema uses `D::NodeId`'s `JsonSchema` implementation. An invalid ID representation produces a tool error before the domain is queried.",
+        "",
+        "For example, if a search hit contains `\"node\": {\"Issue\": 42}`, the agent can call `read_node({\"node\": {\"Issue\": 42}})` to read that issue.",
         ":::"
       ]
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[supplied_openai_backend_runs_independent_calls_against_a_local_transport]",
-      "hash": "ae8c3a9ea440c5d7cdf59ed8e239b748d9bf99d9680363c83eae6d8c1abca90b"
+      "hash": "13b76dc6b9f1d21162c5442480f8d73009f3ea835205a07915951610b2d623d0"
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]",
-      "hash": "3935a069f4aabaece83dabc80e9611f38dee96e623e3ec8b08da353628c63959"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
-      "item": "mod[tests]/fn[node_references_resolve_only_within_their_conversation]",
-      "hash": "c0797a45f68b43aeaa6bc90e3b7784a7940e48d63d381d4b6754fda04ba5f6d8"
+      "hash": "0bb7522373cd58f5d22e38ffe891842f63791cfed89ef4b432977290ee60d79b"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -38,42 +35,17 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[agent_edge_tools_record_selections_without_validating_targets]",
-      "hash": "4aec1a3ae9766eaefea30880e5fb653ecece5ca0575bdeb4a162d27d2c5507a2"
+      "hash": "6c601f85dfcb850cca353964c11355eca0ec6bb3b53a7dff3ab7779d16d4be53"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]",
-      "hash": "498cecc4bd7050068780173bb72c04fea2cdef72fccbc0e391520546949e86de"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/pages.rs",
-      "item": "impl[Pages<N,%20L>]/fn[register]",
-      "hash": "f7615f7de2b529d2a344c7f39c3665ac0d0961e589c6aa9b308b9e763ac2f107"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/pages.rs",
-      "item": "impl[Pages<N,%20L>]/fn[node]",
-      "hash": "08798c042cb2e7528344818229fa110bb0a9474bddd46152b1b018eb01e03797"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "impl[ParallelConversations/CompletionProvider]",
-      "hash": "8abaa1479a758567d6ba4803620fb0e887652a53232587b8aa71a5ba7e501575"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "struct[ParallelConversations]",
-      "hash": "1bdc6269de579c6be8df018df323ddb04cde0b13d9464d994d5316e08bde0013"
+      "hash": "78e16bd6b700e8c857faaae083630ff13d18c00aedb0954d61969f2374f072d5"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tools.rs",
-      "item": "impl[SessionTools<'a,%20D>]/fn[read_node]",
-      "hash": "791ce69463422c3e74911ce57f4efe378d6b54c9a5bb005e349e2fe216e59290"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tools.rs",
-      "item": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[dispatch]",
-      "hash": "c5760158be9355d0240029762a2cc91d3d9aee73c057067fd3673395b8d3577f"
+      "item": "fn[node_argument]",
+      "hash": "f5eafa6df7cc9ff4f508e60df47af25c4844d580a4e9d566dcc306411262e666"
     }
   ],
   "format_version": 1,
@@ -86,7 +58,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "770f92be066c77c650c0566bf962a5dd3f3dd85f4e43dac6c643e6a5d03acd32"
+          "value": "1418933c5aa33548c4ee5b2989887136f7e28758c9084fb36d1589eb32a63e25"
         }
       ]
     },
@@ -98,7 +70,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "2659ff185c5e4babe0764baeb87d0ce8364a916fa9f171c5784d14bdbfa8b561"
+          "value": "b8a925a5df09dc8c1db7a903d02d06a9703f795b1d2995d2a59e43cb659a2243"
         }
       ]
     },
@@ -109,7 +81,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "b04d8c2e130aa9ca81012b9659c2583c632789465d920bd72335a73836f36c81"
+          "value": "2e7e926d54f43616b8c69e7803f6eb20e44454cb1f831924386500a8671610da"
         }
       ]
     },
@@ -126,7 +98,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1f220b45cabbaf14d0c7efabf1559ed3566e615186721d1c0958853f44ace4d2"
+          "value": "ecba23f36041428dd996621a0412a0f5615ce642d4f3bc1ed68cc781c0c3a283"
         }
       ]
     },
@@ -143,24 +115,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "05e4b55913ed5198b780e5ae08fe7592cf79b6501711712dac65ba2a55caf7be"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
-            },
-            "selector": "mod[tests]/fn[node_references_resolve_only_within_their_conversation]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "e7516220178aa2bec4f5080eaa2f9ec7ca47b588ca14fe89c38565260fd14301"
+          "value": "ddfb05bf744a25743033a8955c799cba684adced37d4a9feb365c005373b64ac"
         }
       ]
     },
@@ -194,7 +149,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "04a4700c75293a217e2bf9cef55ad6584a1df12d7b3dc304824e9537c4457f93"
+          "value": "6e947b27759f115773258e7e196f83cd26e1fd9702061fad214ecaadeb717ebc"
         }
       ]
     },
@@ -211,75 +166,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "fb22cdece2bc30197abd5fb4384dab4d846eeafba7b775cc4a9a7284b51e5d49"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/pages.rs"
-            },
-            "selector": "impl[Pages<N,%20L>]/fn[register]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "7fd328ace3806dbe97b741c9dfce7dd590c65bdbd6ecea28d94519eacbffe9f0"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/pages.rs"
-            },
-            "selector": "impl[Pages<N,%20L>]/fn[node]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "69dd540edf8d18082ddd50c6479d84e8f97657c52d7167785e678a97ba523a6a"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "impl[ParallelConversations/CompletionProvider]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "005039d9331bcece755a83a8d8faecfd0354a3c7f5e89aea7c973bb96de75d69"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "struct[ParallelConversations]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "1601adae4eac378372c98cae8e44733589f0de9db968066c903b15db0f410f3b"
+          "value": "720f54024df4ff4ca27b73cc47144d2b8cf370fbb4036f81a62aacab3480cf09"
         }
       ]
     },
@@ -291,29 +178,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/tools.rs"
             },
-            "selector": "impl[SessionTools<'a,%20D>]/fn[read_node]"
+            "selector": "fn[node_argument]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "97de59a040d620fe8cf2380a18f6091331d7db7e3acedf98afcf96549e17e8f5"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tools.rs"
-            },
-            "selector": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[dispatch]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "480f42ecdb3ce71c8ba4d0831cec74f044435285d95e599cbe619467b751d4b7"
+          "value": "2ddc27354ed6c468d4fcd14f01ca391e643220729d8d008c99c5bc807e9911c4"
         }
       ]
     }

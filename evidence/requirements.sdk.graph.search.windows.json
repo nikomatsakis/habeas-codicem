@@ -1,7 +1,7 @@
 {
   "requirement": "The agent's `search_text` tool accepts a nonnegative `window_bytes`, defaulting to 128. For a hit with byte span `[start, end)`, retain the hit and up to `window_bytes` of source immediately before `start` and after `end`. Clip the window to the enclosing item's span. Move a context boundary that splits a UTF-8 character inward to the nearest character boundary. With `window_bytes: 0`, only the hit spans and the available header and trailer contribute source to the excerpt.\n\nCompute windows for all hits in the item from the same snapshot. Where windows touch or overlap, emit the contiguous source once. This preserves each hit and the text between nearby hits, including whitespace and newlines.",
   "determination": true,
-  "rationale": "I judged this from the supplied test source only. I did not request implementation source. The five supplied `{test}` items together cover every obligation in `requirements.sdk.graph.search.windows`.\n\n**Default of 128 and the retained byte counts**\n- `default_windows_retain_128_bytes_on_each_side` builds a hit surrounded by 200 `a` bytes and 200 `z` bytes, with a 3-byte `猫` next to the hit on each side.\n- With no `window_bytes`, it expects exactly 128 bytes on each side (`猫` plus 125 `a`, and `猫` plus 125 `z`). That pins the default and would catch an off-by-one.\n- The same test passes `window_bytes: 1` and expects `...hit...`, so an explicit value is honoured.\n- `separated_hit_windows_preserve_the_function_declaration` uses `window_bytes: 4` and asserts the exact 4-byte context on each side of each hit.\n\n**Clipping to the enclosing item**\n- In `search_groups_exact_occurrences_and_records_the_selected_declaration`, the two constants are adjacent in one file and the default window is 128. The excerpts are only `const A: ...;` and `const B: ...;`, so context does not leak into the neighbouring item.\n- In `root_hits_clip_context_to_utf8_boundaries`, the default window is far larger than the root item, and the excerpt is exactly the whole source.\n\n**UTF-8 boundary adjustment**\n- In `default_windows_retain_128_bytes_on_each_side`, `window_bytes: 1` lands inside the 3-byte `猫` on both sides. The context is dropped entirely, giving `...hit...`.\n- In `root_hits_clip_context_to_utf8_boundaries`, `éhit猫` with `window_bytes: 2` expects `éhit...`. The leading `é` fits exactly, and the 2 bytes of `猫` that would split it are dropped.\n- Both the before and after sides are exercised.\n\n**`window_bytes: 0`**\n- In `separated_hit_windows_preserve_the_function_declaration`, the case `0` expects `fn run() {...hit...hit...hit...}`. Only the hit spans plus the header and trailer contribute source.\n\n**Merging touching and overlapping windows**\n- `touching_windows_keep_the_contiguous_source` calls `excerpt` on `\"  hit    hit  \"` with window 2. The two windows touch exactly, and the result must equal the full item text, so the shared source is emitted once and nothing is lost.\n- Overlap is exercised in `separated_hit_windows_preserve_the_function_declaration`. With window 4, the first two hits are merged into `    hit(); hit();\\n`. The gap preserves its whitespace and newline, and the separated third hit gets its own `...` segment.\n- The `hit hit` hits in `search_groups_exact_occurrences_and_records_the_selected_declaration` are merged under the default window.\n\n**Same snapshot**\n- `separated_hit_windows_preserve_the_function_declaration` rewrites the file on disk after the first iteration. The second iteration still returns the original excerpt and the original node text, so results come from one snapshot rather than a re-read.\n- This is a modest check, but the behaviour is hard to observe more directly.\n\n**Not treated as gaps**\n- The text says the tool \"accepts a nonnegative\" value. It does not state how a negative value is handled, so I did not require a test for that.\n\nI found no plausible violation of the stated obligations that these tests would accept.",
+  "rationale": "I judged this from the supplied test source only. I did not request any implementation source. The tests adequately cover each obligation in `requirements.sdk.graph.search.windows`.\n\n- **Default of 128 bytes, counted in bytes.** `default_windows_retain_128_bytes_on_each_side` uses 200 `a`s, `猫`, `hit`, `猫`, then 200 `z`s. With no `window_bytes`, the expected excerpt keeps 125 `a`s plus the 3-byte `猫` before the hit, and the same after it. That is exactly 128 bytes per side, so the test distinguishes bytes from characters and checks the default.\n- **Explicit `window_bytes`.** Explicit values are asserted in several tests: 1, 2, 4 and 0.\n- **Inward UTF-8 boundary adjustment.**\n  - In `default_windows_retain_128_bytes_on_each_side`, `window_bytes: 1` splits the 3-byte `猫` on both sides, and the expected excerpt is `...hit...`.\n  - In `root_hits_clip_context_to_utf8_boundaries`, `éhit猫` with `window_bytes: 2` keeps the whole `é` and drops the split `猫`, giving `éhit...`.\n  - Together these cover a split before the hit and a split after it.\n- **Clipping to the enclosing item.**\n  - In `search_groups_exact_occurrences_and_records_the_selected_declaration`, the default 128-byte window around the hits in `const A` and `const B` does not leak into the neighbouring constant. The excerpts are exactly each declaration.\n  - `root_hits_clip_context_to_utf8_boundaries` clips to the whole file root.\n  - `separated_hit_windows_preserve_the_function_declaration` clips to the nested `fn run` inside `impl Runner`.\n- **`window_bytes: 0`.** The same test with window 0 expects `fn run() {...hit...hit...hit...}`. Only the hit spans plus the header and trailer contribute source.\n- **Touching and overlapping windows.**\n  - `touching_windows_keep_the_contiguous_source` has two hits whose windows meet exactly at a byte boundary. The excerpt must equal the whole item text, so whitespace is preserved and nothing is duplicated.\n  - Overlap is covered by the `hit hit` constant under the default window.\n  - Overlap is also covered by `hit(); hit();` with window 4. There the expected excerpt keeps the gap and the newline and emits the shared source once.\n  - With window 0, non-touching hits stay separate, as expected.\n- **Same snapshot.** `separated_hit_windows_preserve_the_function_declaration` rewrites the file after each search. Both iterations still see the original item. The spans-over-one-item `excerpt` call in the touching test also computes all windows from one item text. The requirement does not define this clause in more detail, so I found no further scenario to require.\n\nI found no unasserted obligation and no marking gap, because all five tests carry `{test}` references to the subject. The requirement does not say what happens for a negative `window_bytes`, so the missing test for it is not a gap.",
   "references": "8a33590143a228b702f3729d388dbc8135cf8aeccf5fba562b14f4457d3b26ea",
   "inputs": [
     {
@@ -20,12 +20,12 @@
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[search_groups_exact_occurrences_and_records_the_selected_declaration]",
-      "hash": "b6b3b6ec55facc5c6d6c143fc92ec6447a2b2a17e88d99ed3b72537be581f780"
+      "hash": "9151504fb7479a6162282555570a22974d911d3f14b0e4eea1f6bcaa09b05653"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[root_hits_clip_context_to_utf8_boundaries]",
-      "hash": "4115fa0e73f7b86368fcdc95b42eb5a4c29d759d0c33736bc53cd2450dc7c994"
+      "hash": "53d90c1edf5f7c1aa1807b1ff3c334d55e12ed367ab059102127bd553127d4fb"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
@@ -40,7 +40,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[separated_hit_windows_preserve_the_function_declaration]",
-      "hash": "efc07d3bfde99cc618c49d4070fe26e4d095a8a651da42621cb1e8941685f284"
+      "hash": "5457d1bdd735f26c608884e6e0093e3d025332d508cfdce80027cd3af08e183d"
     }
   ],
   "format_version": 1,
@@ -93,7 +93,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "e84c1773151e437814b4e8855d9b8b08b457a3e16a2a541f1b66563fea9e1100"
+          "value": "cff52a56b722ec925ccd2ae996ddf996f0ebd7fae14241fb816e8e6dc99e4cd2"
         }
       ]
     },
@@ -110,7 +110,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "59d5c500fda05da8bbeb78e261b7e7de07ab38256844ce063d4fa7ba7516cbd8"
+          "value": "ab10fb3f3c8961efaddfdd8c1b720d4a959d9fc96512d4a06873dce333638c97"
         }
       ]
     },
@@ -161,7 +161,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "dfde09aba02f2b917572a7465d7ae1f87321c02ff39729f327f1d27717e3fdf8"
+          "value": "485dca4d739451a302d2487fa2866ec10a3036a8ffd312cde0e25bf83d725d34"
         }
       ]
     }
