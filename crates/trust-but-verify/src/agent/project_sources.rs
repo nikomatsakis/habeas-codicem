@@ -213,6 +213,7 @@ mod tests {
     // {test}`requirements.sdk.graph.validation-context.pages.behavior`
     // {test}`requirements.sdk.graph.search.search_text.mcp`
     #[tokio::test]
+    // {test}`requirements.sdk.graph.search.agent_search`
     async fn search_obligations_follow_delivery_and_keep_the_original_snapshot() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("source.txt");
@@ -822,6 +823,39 @@ mod tests {
             excerpt(&item, &[Span::new(2, 5), Span::new(9, 12)], 2),
             item.text()
         );
+    }
+
+    // {test}`requirements.sdk.graph.search.enclosing_item`
+    #[tokio::test]
+    async fn matches_crossing_item_boundaries_belong_to_the_item_at_the_start() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("pair.rs"), "fn a() {}   fn b() {}").unwrap();
+        let project = ProjectSources::new(project(""), Sources::new(root.path()));
+        for (pattern, expected) in [
+            ("   fn b", "pair.rs#"),
+            (r"\}   fn b", "pair.rs#fn[a]"),
+            ("fn b", "pair.rs#fn[b]"),
+        ] {
+            let hits = project
+                .search_text(&TextQuery::new(pattern.into()))
+                .await
+                .unwrap();
+            assert_eq!(hits.matches.len(), 1);
+            assert_eq!(hits.matches[0].node, expected);
+        }
+    }
+
+    // {test}`requirements.sdk.graph.validation-context.node_reference`
+    #[test]
+    fn node_references_resolve_only_within_their_conversation() {
+        let mut first = Pages::<u32, ()>::new();
+        let mut second = Pages::<u32, ()>::new();
+        let node = first.register(&20);
+        let peer = first.register(&30);
+        assert_eq!(second.register(&10), node);
+        assert_eq!(first.node(&json!({"node": node})).unwrap(), 20);
+        assert_eq!(second.node(&json!({"node": node})).unwrap(), 10);
+        assert!(second.node(&json!({"node": peer})).is_err());
     }
 
     // {test}`requirements.sdk.graph.search.domain_node`
