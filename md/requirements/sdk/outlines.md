@@ -228,8 +228,9 @@ observation.
 :::{req} parser
 :test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
 
-`OutlineContent::from_path` reads a file and returns its root contents.
-`from_id` reads the addressed file and selects the addressed item. Both infer
+`OutlineContent::from_path` returns the root contents for a file using the
+supplied [validation cache](validation-cache.md). `from_id` uses the same
+cached file and selects the addressed item. Both infer
 the language from the filename under
 {cite}`requirements.sdk.outlines.defaults`.
 
@@ -237,17 +238,26 @@ the language from the filename under
 pub struct OutlineContent { /* private fields */ }
 
 impl OutlineContent {
-    pub fn from_path(path: impl AsRef<Path>) -> Result<Self, OutlineError>;
-    pub fn from_id(id: &OutlineId) -> Result<Self, OutlineError>;
+    pub fn from_path(
+        cache: &ValidationCache,
+        path: impl AsRef<Path>,
+    ) -> Result<Self, OutlineError>;
+    pub fn from_id(
+        cache: &ValidationCache,
+        id: &OutlineId,
+    ) -> Result<Self, OutlineError>;
     pub fn from_source(
+        cache: &ValidationCache,
         filename: impl AsRef<Path>,
         source: Arc<str>,
     ) -> Result<Self, OutlineError>;
     pub fn from_path_with<L: OutlineLang>(
+        cache: &ValidationCache,
         language: &L,
         path: impl AsRef<Path>,
     ) -> Result<Self, OutlineError>;
     pub fn from_source_with<L: OutlineLang>(
+        cache: &ValidationCache,
         language: &L,
         filename: impl AsRef<Path>,
         source: Arc<str>,
@@ -271,8 +281,9 @@ impl NodeContents for OutlineContent;
 :::
 
 ```rust,ignore
-let file = OutlineContent::from_path("src/auth.rs")?;
-let function = OutlineContent::from_id(&function_id)?;
+let cache = ValidationCache::new();
+let file = OutlineContent::from_path(&cache, "src/auth.rs")?;
+let function = OutlineContent::from_id(&cache, &function_id)?;
 ```
 
 :::{req} parser.supplied_source
@@ -287,6 +298,7 @@ use std::sync::Arc;
 impl OutlineContent {
     /// Outline supplied text without reading the named file.
     pub fn from_source(
+        cache: &ValidationCache,
         filename: impl AsRef<Path>,
         source: Arc<str>,
     ) -> Result<Self, OutlineError>;
@@ -332,6 +344,38 @@ impl Eq for OutlineError;
 ```
 :::
 
+## Cache file outlines
+
+:::{req} outline_file
+
+`OutlineContent::from_path(cache, path)` obtains the file's root outline
+through the supplied cache. On the first lookup it reads the file and applies
+the default language selection and parse recovery rules.
+:::
+
+:::{req} outline_cache
+
+After the first successful lookup of a path, calls through the same cache or
+one of its clones return the retained snapshot without checking the file.
+:::
+
+:::{req} outline_cache.fresh
+
+A newly constructed validation cache reads the current file on its first lookup.
+:::
+
+:::{req} outline_cache.retry
+
+If the lookup fails, a later call for the same path retries it.
+:::
+
+:::{req} outline_file.lifetime
+
+The returned `OutlineContent` and its clones remain usable after the cache
+has been dropped. They share the snapshot described in
+{cite}`requirements.sdk.outlines.snapshot`.
+:::
+
 ## Select another item from the same snapshot
 
 :::{req} selection
@@ -359,7 +403,7 @@ impl OutlineContent {
 :::
 
 ```rust,ignore
-let file = OutlineContent::from_path("src/auth.rs")?;
+let file = OutlineContent::from_path(cache, "src/auth.rs")?;
 let function = file.select("mod[auth]/fn[check_token]")?;
 let module = file.select("mod[auth]")?;
 ```
@@ -494,7 +538,7 @@ impl Debug for OutlineItem;
 :::
 
 ```rust,ignore
-let file = OutlineContent::from_path("src/auth.rs")?;
+let file = OutlineContent::from_path(cache, "src/auth.rs")?;
 for item in &file.outline().items {
     println!("{}: {}", item.kind, item.selector);
 }
@@ -667,11 +711,13 @@ language's fingerprinting rules under
 ```rust,ignore
 impl OutlineContent {
     pub fn from_path_with<L: OutlineLang>(
+        cache: &ValidationCache,
         language: &L,
         path: impl AsRef<Path>,
     ) -> Result<Self, OutlineError>;
 
     pub fn from_source_with<L: OutlineLang>(
+        cache: &ValidationCache,
         language: &L,
         filename: impl AsRef<Path>,
         source: Arc<str>,
@@ -684,7 +730,7 @@ impl OutlineContent {
 use trust_but_verify::outline::languages::Rust;
 
 let language = Rust::default();
-let file = OutlineContent::from_path_with(&language, "generated.txt")?;
+let file = OutlineContent::from_path_with(cache, &language, "generated.txt")?;
 let function = file.select("fn[check_token]")?;
 ```
 
@@ -734,7 +780,7 @@ Both operations describe the source snapshot retained by the value.
 ```rust,ignore
 use trust_but_verify::domain::NodeContents;
 
-let contents = OutlineContent::from_id(&function_id)?;
+let contents = OutlineContent::from_id(cache, &function_id)?;
 let fingerprint = contents.fingerprint();
 let prompt_text = contents.format();
 ```

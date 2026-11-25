@@ -3,7 +3,7 @@
 An application defines a
 {term}`requirements.sdk.graph.criteria.criterion` to ask a question about a
 graph node. This chapter introduces the criterion's answer, identity, review
-rules, and execution method. [Validators](validators.md) explains how to run
+rules, and execution method. [Running criteria](running-criteria.md) explains how to run
 criterion values. [Agent calls](agent-calls.md) and
 [Validation context](validation-context.md) describe the context available during execution.
 
@@ -296,7 +296,7 @@ pub trait Criterion<D: Domain>: Send + Sized {
 
 An `Ok` value is the answer defined by
 {cite}`requirements.sdk.graph.criteria.criterion_trait.answer`.
-An `Err` value reports a [validation error](validators.md#habeas-req-requirements.sdk.graph.validators.ValidationError).
+An `Err` value reports a [validation error](running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.ValidationError).
 :::
 
 `ValidationContext` supplies the tools `execute` can use to decide whether the
@@ -330,7 +330,7 @@ async fn execute(
 ```
 
 The [`ask` builder](agent-calls.md#build-a-request) determines what is given to
-the [configured agent](agent-harness.md#configure-the-validators-agent):
+the [configured agent](agent-harness.md#choose-an-agent-backend):
 
 - [`context()`](agent-calls.md#compose-reusable-context) provides common context,
   including the question.
@@ -356,7 +356,7 @@ fingerprint of each input used during execution. Those fingerprints let the
 application check when the answer may be stale.
 
 {cite}`requirements.sdk.graph.agent-calls.judge.submission`
-{cite}`requirements.sdk.graph.validators.validate_node`
+{cite}`requirements.sdk.graph.running-criteria.validate_node`
 {cite}`requirements.sdk.graph.evidence.inputs`
 :::
 

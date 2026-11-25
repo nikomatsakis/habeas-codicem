@@ -61,8 +61,8 @@ selector: "fn[validate]".into() }` identifies a function.
 
 ## Give nodes a stable path
 
-The application chooses its `NodeId` type. The SDK uses a
-{term}`requirements.sdk.graph.node_path` to display node identities in diagnostics.
+The application chooses its `NodeId` type. Filesystem evidence storage uses the
+{term}`requirements.sdk.graph.node_path` to construct the path to saved evidence.
 
 :::{definition} node_path
 :phrase: node path
@@ -347,8 +347,9 @@ fingerprint and source text ready for the agent:
 use trust_but_verify::domain::NodeContents;
 use trust_but_verify::outline::OutlineContent;
 
+let cache = trust_but_verify::domain::ValidationCache::new();
 let select = |source: &str| {
-    OutlineContent::from_source("auth.rs", source.into())
+    OutlineContent::from_source(&cache, "auth.rs", source.into())
         .unwrap()
         .select("fn[check_token]")
         .unwrap()

@@ -30,9 +30,10 @@ flowchart TD
     Submit --> Answer["Typed answer returned to criterion"]
 ```
 
-## Configure the validator's agent
+## Choose an agent backend
 
-Choose the backend and model once when constructing the validator. All criteria
+Choose the backend and model when creating the domain's
+[validation cache](../validation-cache.md#configure-the-agent). All criteria
 run through the same SDK interface, regardless of which supported backend is
 selected.
 
@@ -71,54 +72,32 @@ preserves its settings.
 :::
 
 :::{req} with_agent
-The SDK configures a validator's supplied agent from an application-provided
-[`AgentConfig`](#habeas-req-requirements.sdk.graph.agent-harness.agent_config).
-It does not persist the agent configuration.
-
-```rust,ignore
-use trust_but_verify::agent::AgentConfig;
-use trust_but_verify::domain::Domain;
-use trust_but_verify::graph::validator::Validator;
-
-impl<D: Domain> Validator<D> {
-    // ...
-
-    /// Configure the SDK agent used by this validator's ask requests.
-    pub fn with_agent(self, config: AgentConfig) -> Self
-    where
-        D: 'static,
-        D::EdgeLabel: serde::de::DeserializeOwned + schemars::JsonSchema + PartialEq,
-        D::Error: std::fmt::Display;
-
-    // ...
-}
-```
-
-The label bounds let the fixed tools accept typed edge labels, and `Display`
-lets them report domain errors to the agent.
-Criteria obtain the configured agent through their `ValidationContext`.
-Constructing a validator without this configuration still permits deterministic
-criteria under {cite}`requirements.sdk.graph.criteria.deterministic_procedures`.
+Criteria obtain the agent selected by the domain's validation cache through
+their `ValidationContext`. The application supplies the configuration under
+{cite}`requirements.sdk.validation-cache.with_agent`. The SDK does not persist it.
+A cache created without an agent supports deterministic criteria under
+{cite}`requirements.sdk.graph.criteria.deterministic_procedures`.
 :::
 
 :::{example} setup
 {cite}`requirements.sdk.graph.agent-harness.agent_config`
 {cite}`requirements.sdk.graph.agent-harness.with_agent`
-{cite}`requirements.sdk.graph.validators.validator`
+{cite}`requirements.sdk.validation-cache.with_agent`
 
-Here `domain` supplies the application's graph, contents, and storage. This
-illustrative Bedrock configuration selects a model, AWS profile, and region:
+This Bedrock configuration selects a model, AWS profile, and region for the
+domain's cache:
 
 ```rust,ignore
 use trust_but_verify::agent::AgentConfig;
 use trust_but_verify::agent::BedrockConfig;
+use trust_but_verify::domain::ValidationCache;
 
 let config = AgentConfig::Bedrock(
     BedrockConfig::new("us.anthropic.claude-sonnet-5-5".into())
         .aws_profile("development".into())
         .region("us-east-1".into()),
 );
-let validator = Validator::new(domain).with_agent(config);
+let cache = ValidationCache::with_agent(config);
 ```
 :::
 

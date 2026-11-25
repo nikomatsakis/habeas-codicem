@@ -17,10 +17,10 @@ The `trust-but-verify` crate defines no Cargo features. Habeas uses only the
 documented TBV public API.
 
 - `crate trust_but_verify` — [SDK public interface](../sdk.md)
-  - `mod agent` — [Configure the validator’s agent](graph/agent-harness.md#configure-the-validators-agent)
-    - `enum AgentConfig` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.agent_config) · [Configure the validator’s agent](graph/agent-harness.md#configure-the-validators-agent)
+  - `mod agent` — [Choose an agent backend](graph/agent-harness.md#choose-an-agent-backend)
+    - `enum AgentConfig` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.agent_config) · [Choose an agent backend](graph/agent-harness.md#choose-an-agent-backend)
     - `enum OptionValue` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.OptionValue) · [Backend settings and credentials](graph/agent-harness.md#backend-settings-and-credentials)
-    - `struct BedrockConfig` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.BedrockConfig) · [Configure the validator’s agent](graph/agent-harness.md#configure-the-validators-agent) · [Backend settings and credentials](graph/agent-harness.md#backend-settings-and-credentials)
+    - `struct BedrockConfig` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.BedrockConfig) · [Choose an agent backend](graph/agent-harness.md#choose-an-agent-backend) · [Backend settings and credentials](graph/agent-harness.md#backend-settings-and-credentials)
       - `model`
       - `aws_profile`
       - `region`
@@ -37,7 +37,7 @@ documented TBV public API.
       - `session_token`
       - `new()`
       - `session_token()`
-    - `struct OllamaConfig` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.OllamaConfig) · [Configure the validator’s agent](graph/agent-harness.md#configure-the-validators-agent) · [Backend settings and credentials](graph/agent-harness.md#backend-settings-and-credentials)
+    - `struct OllamaConfig` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.OllamaConfig) · [Choose an agent backend](graph/agent-harness.md#choose-an-agent-backend) · [Backend settings and credentials](graph/agent-harness.md#backend-settings-and-credentials)
       - `model`
       - `endpoint`
       - `api_key_env`
@@ -48,7 +48,7 @@ documented TBV public API.
       - `api_key_env()`
       - `api_key()`
       - `option()`
-    - `struct OpenAiConfig` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.OpenAiConfig) · [Configure the validator’s agent](graph/agent-harness.md#configure-the-validators-agent) · [Backend settings and credentials](graph/agent-harness.md#backend-settings-and-credentials)
+    - `struct OpenAiConfig` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.OpenAiConfig) · [Choose an agent backend](graph/agent-harness.md#choose-an-agent-backend) · [Backend settings and credentials](graph/agent-harness.md#backend-settings-and-credentials)
       - `model`
       - `endpoint`
       - `api_key_env`
@@ -68,6 +68,8 @@ documented TBV public API.
       - `NodeId`
       - `NodeContent`
       - `EdgeLabel`
+      - `project_sources()`
+      - `cache()`
       - `node_path()`
       - `node_content()`
       - `outgoing_edges()`
@@ -78,6 +80,9 @@ documented TBV public API.
       - `format()`
     - `trait SourceNodes` — [Declaration](sources.md#habeas-req-requirements.sdk.sources.source_nodes) · [Map source items to graph nodes](sources.md#connect-source-items-to-graph-nodes)
       - `source_node()`
+    - `struct ValidationCache` — [Declaration](validation-cache.md#habeas-req-requirements.sdk.validation-cache.ValidationCache)
+      - `new()` — [Declaration](validation-cache.md#habeas-req-requirements.sdk.validation-cache.new)
+      - `with_agent()` — [Declaration](validation-cache.md#habeas-req-requirements.sdk.validation-cache.with_agent)
   - `mod graph` — [Graph nodes](graph.md) · [Graph edges](graph-edges.md)
     - `trait Criterion` — [Declaration](graph/criteria.md#habeas-req-requirements.sdk.graph.criteria.criterion_trait) · [Define a criterion](graph/criteria.md#define-a-criterion)
       - `Ok`
@@ -118,18 +123,13 @@ documented TBV public API.
       - `fingerprint`
       - `new()`
     - `enum Dependency` — [Declaration](graph/evidence.md#habeas-req-requirements.sdk.graph.evidence.dependencies) · [Record input dependencies](graph/evidence.md#remember-what-a-procedure-actually-reads)
-    - `enum ValidationError` — [Declaration](graph/validators.md#habeas-req-requirements.sdk.graph.validators.ValidationError) · [Validation failures](graph/validators.md#run-criteria-with-a-validator)
+    - `enum ValidationError` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.ValidationError) · [Execute a criterion](graph/running-criteria.md#execute-a-criterion)
     - `fn edge_fingerprint` — [Declaration](graph/validation-context.md#habeas-req-requirements.sdk.graph.validation-context.snapshot) · [Target-set fingerprint rules](graph/validation-context.md#selecting-a-nodes-outgoing-edges)
-    - `mod validator` — [Run criteria with a validator](graph/validators.md#run-criteria-with-a-validator)
-      - `struct Validator` — [Declaration](graph/validators.md#habeas-req-requirements.sdk.graph.validators.validator) · [Run criteria with a validator](graph/validators.md#run-criteria-with-a-validator)
-        - `new()` — [Declaration](graph/validators.md#habeas-req-requirements.sdk.graph.validators.validator.new)
-        - `with_agent()` — [Declaration](graph/validators.md#habeas-req-requirements.sdk.graph.validators.validator.with_agent)
-        - `refresh_evidence()` — [Declaration](graph/validators.md#habeas-req-requirements.sdk.graph.validators.validator.refresh_evidence)
-        - `load_evidence()` — [Declaration](graph/validators.md#habeas-req-requirements.sdk.graph.validators.validator.load_evidence)
-        - `check_inputs()` — [Declaration](graph/validators.md#habeas-req-requirements.sdk.graph.validators.validator.check_inputs)
-        - `verify()` — [Declaration](graph/validators.md#habeas-req-requirements.sdk.graph.validators.validator.verify)
-        - `store_evidence()` — [Declaration](graph/validators.md#habeas-req-requirements.sdk.graph.validators.validator.store_evidence)
-        - `with_sources()` — [Declaration](graph/validators.md#habeas-req-requirements.sdk.graph.validators.validator.with_sources)
+    - `fn refresh_evidence` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.refresh_evidence)
+    - `fn load_evidence` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.load_evidence)
+    - `fn check_inputs` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.check_inputs)
+    - `fn verify` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.verify)
+    - `fn store_evidence` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.store_evidence)
   - `mod outline` — [Source outlines](outlines.md)
     - `enum AttachmentKind` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.AttachmentKind) · [Inspect attachments](outlines.md#inspect-attachments)
     - `struct Outline` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.Outline) · [Inspect selectable items](outlines.md#inspect-selectable-items)
@@ -242,6 +242,8 @@ documented TBV public API.
     - `struct SourceScope` — [Declaration](graph/search.md#habeas-req-requirements.sdk.graph.search.source_scope) · [Choose a source scope](graph/search.md#choosing-a-source-scope)
       - `all()`
       - `under()`
+    - `struct SourceProject` — [Declaration](sources.md#habeas-req-requirements.sdk.sources.SourceProject)
+      - `new()`
     - `struct Sources` — [Declaration](sources.md#habeas-req-requirements.sdk.sources.Sources) · [Select the project directory](sources.md#select-the-project-directory)
       - `new()`
       - `list()`

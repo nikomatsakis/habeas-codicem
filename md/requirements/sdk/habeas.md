@@ -72,11 +72,13 @@ data and other application-defined values.
 HC's criterion types specify the questions. Its `Context` implementations
 supply the review instructions and conventions. HC loads SDK agent
 configuration through its own [configuration policy](../configuration.md),
-then constructs a validator:
+then uses `ValidationCache::with_agent(agent_config)` to create the domain’s
+cache. To run a review:
 
 ```rust,ignore
-let validator = Validator::new(hc_domain).with_agent(agent_config);
-let result = validator.verify(review_criterion).await?;
+use trust_but_verify::graph::verify;
+
+let result = verify(&hc_domain, review_criterion).await?;
 
 // HC interprets result.output() according to its validation policy.
 ```

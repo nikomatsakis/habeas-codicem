@@ -18,40 +18,39 @@ encoded answer, version, and dependencies for storage under that
 source/criterion key.
 :::
 
-`Validator::verify` returns a `Fingerprinted` containing the completed result and the
+`verify` returns a `Fingerprinted` containing the completed result and the
 observations captured during execution. The application calls `store_evidence`
 to save it, and `load_evidence` to retrieve a typed answer later. Storage is a
 required domain capability; the application chooses its backend.
 
 ## Refresh evidence
 
-`Validator::refresh_evidence` implements the usual reuse workflow. It loads a
+`refresh_evidence` implements the usual reuse workflow. It loads a
 previous answer, checks its criterion version and recorded inputs, and
 returns it when both still match. Otherwise it evaluates the criterion and
-saves the new answer. Its definition uses the granular methods described below:
+saves the new answer. Its definition uses the functions described below:
 
 :::{req} refresh_evidence
 ```rust,ignore
 use std::future::Future;
 
-// Method on Validator<D>.
 /// Reuse compatible, current evidence, or evaluate and save a new answer.
 /// Errors from loading, decoding, checking, execution, or saving propagate.
-pub fn refresh_evidence<V: Criterion<D>>(
-    &self,
+pub fn refresh_evidence<D: Domain, V: Criterion<D>>(
+    domain: &D,
     criterion: V,
 ) -> impl Future<Output = Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>>> + Send {
     async move {
-        if let Some(saved) = self.load_evidence(&criterion).await? {
+        if let Some(saved) = load_evidence(domain, &criterion).await? {
             if criterion.version().is_compatible_with(saved.version())
-                && self.check_inputs(&saved).map_err(ValidationError::Graph)?
+                && check_inputs(domain, &saved).map_err(ValidationError::Graph)?
             {
                 return Ok(saved);
             }
         }
 
-        let inputs = self.verify(criterion).await?;
-        self.store_evidence(&inputs).await?;
+        let inputs = verify(domain, criterion).await?;
+        store_evidence(domain, &inputs).await?;
         Ok(inputs)
     }
 }
@@ -62,7 +61,7 @@ and {cite}`requirements.sdk.graph.evidence.record.output`. Revision and input
 comparison follow
 {cite}`requirements.sdk.graph.evidence.checking_records.version_match` and
 {cite}`requirements.sdk.graph.evidence.checking_records`. Evaluation follows
-{cite}`requirements.sdk.graph.validators.validate_node`; saving follows
+{cite}`requirements.sdk.graph.running-criteria.validate_node`; saving follows
 {cite}`requirements.sdk.graph.evidence.store_evidence`.
 :::
 
@@ -71,11 +70,10 @@ record, an incompatible version, or changed inputs leads to a new evaluation.
 A load or decoding failure is reported even when the stored evidence is stale,
 as required by the loading contract.
 
-The helper packages this workflow; the individual methods remain available for
+The helper packages this workflow; the individual functions remain available for
 applications that need to inspect an old answer, force a new evaluation with
-`verify`, or decide when to save a result. Concurrent calls follow the validator's
-independent-execution policy; [storage](#look-up-a-source-and-criterion) provides
-atomic record replacement.
+`verify`, or decide when to save a result. Concurrent calls run independently. [Storage](#look-up-a-source-and-criterion)
+provides atomic record replacement.
 
 ## Keep the answer with its inputs
 
@@ -151,7 +149,7 @@ pub trait Domain: Clone + Send + Sync {
 }
 ```
 
-The validator passes the source identity and criterion path to both methods. The
+The SDK passes the source identity and criterion path to both methods. The
 key preserves both parts: source paths `["a"]` and `["a", "b"]` with criteria
 `["b", "c"]` and `["c"]` identify different records, even though flattening each
 pair would produce the same segments.
@@ -213,12 +211,12 @@ impl<N, L> Serialize for Record<N, L> where N: Serialize, L: Serialize;
 ## Encode and decode the answer
 
 :::{req} record.output
-`Validator::store_evidence` serializes the answer in `Fingerprinted` before passing
+`store_evidence` serializes the answer in `Fingerprinted` before passing
 the complete record to storage. A serialization failure returns
 `ValidationError::Output` and leaves the existing record unchanged. A storage
 failure returns `ValidationError::Graph`.
 
-`Validator::load_evidence` decodes a loaded record's output into the requested
+`load_evidence` decodes a loaded record's output into the requested
 `Criterion::Ok`. An output that cannot decode returns `ValidationError::Output`,
 including when the saved version or inputs are stale. Missing evidence returns
 `Ok(None)`; malformed stored records and storage failures return
@@ -329,11 +327,10 @@ The caller can then compare the version and inputs or inspect the answer.
 
 :::{req} check_node
 ```rust,ignore
-// Method on Validator<D>.
 /// Load this criterion's evidence and decode its answer as V::Ok.
 /// Ok(None) means no saved record exists.
-pub fn load_evidence<V: Criterion<D>>(
-    &self,
+pub fn load_evidence<D: Domain, V: Criterion<D>>(
+    domain: &D,
     criterion: &V,
 ) -> impl Future<Output = Result<Option<Fingerprinted<D, V::Ok>>, ValidationError<D::Error>>> + Send;
 ```
@@ -347,19 +344,18 @@ Version and input comparison are separate steps.
 
 :::{req} store_evidence
 ```rust,ignore
-// Method on Validator<D>.
 /// Encode the answer and atomically replace this source/criterion's record.
-pub fn store_evidence<O: serde::Serialize>(
-    &self,
+pub fn store_evidence<D: Domain, O: serde::Serialize>(
+    domain: &D,
     inputs: &Fingerprinted<D, O>,
 ) -> impl Future<Output = Result<(), ValidationError<D::Error>>> + Send;
 ```
 
-The method saves under the source identity and criterion path captured in
+The function saves under the source identity and criterion path captured in
 `Fingerprinted`, preserving its version, input trace, and completed answer. Encoding follows
 {cite}`requirements.sdk.graph.evidence.record.output`; atomic replacement follows
 {cite}`requirements.sdk.graph.evidence.evidence_storage`. The result type needs
-no `Sync` bound: the method encodes the answer and captures the record and
+no `Sync` bound: the function encodes the answer and captures the record and
 storage key before constructing the storage future.
 :::
 
@@ -376,7 +372,7 @@ also depends on compatibility with the criterion's current review-rule
 version, which is checked separately.
 :::
 
-`Validator::check_inputs` checks
+`check_inputs` checks
 {term}`requirements.sdk.graph.evidence.input_freshness`. It reads current
 contents and edge selections through the
 domain, computes their fingerprints, and compares them with the observations in
@@ -385,22 +381,21 @@ current criterion and decides which review rules remain compatible.
 
 :::{req} checking_records
 ```rust,ignore
-// Method on Validator<D>.
 /// Compare each recorded input with the current domain state.
 /// Return true when every fingerprint still matches, including an empty trace.
-pub fn check_inputs<O>(
-    &self,
+pub fn check_inputs<D: Domain, O>(
+    domain: &D,
     inputs: &Fingerprinted<D, O>,
 ) -> Result<bool, D::Error>;
 ```
 
-The method resolves the recorded dependencies through graph operations and
+The function resolves the recorded dependencies through graph operations and
 fingerprinting, comparing each with its saved observation. A fingerprint
 mismatch returns `Ok(false)` and permits an early return; it need not resolve
 later dependencies. An encountered dependency-resolution failure returns an
 error.
 
-The method observes the current state that the caller intends to inspect.
+The function observes the current state that the caller intends to inspect.
 Freshness checking has a separate observation scope from criterion execution.
 Checked observations enter the new trace when execution explicitly reads
 or delivers them.

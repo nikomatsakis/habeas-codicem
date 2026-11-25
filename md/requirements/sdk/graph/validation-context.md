@@ -16,10 +16,10 @@ through `ValidationContext`. Criterion code can read graph nodes and source item
 and call `ask` to dispatch an agent with a prompt. The agent can search project
 files and use the same tracked reads as criterion code.
 
-`Validator::verify` creates a context for one execution. Each tracked read adds
+`verify` creates a context for one execution. Each tracked read adds
 the input’s identity and a fingerprint of its contents to the dependency list.
-The validator returns these dependencies with the answer so it can detect changed
-inputs and rerun the criterion. [Searching project sources](search.md) explains
+`verify` returns these dependencies with the answer. `refresh_evidence` uses
+them to decide whether to rerun the criterion. [Searching project sources](search.md) explains
 how the agent chooses which search excerpts to record.
 
 ```rust,ignore
@@ -30,7 +30,7 @@ pub struct ValidationContext<'d, D: Domain> { /* private fields */ }
 :::{req} ValidationContext.new
 :test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
 
-Construct a context for a source node with an empty dependency list. `Validator::verify` does this for each execution.
+Construct a context for a source node with an empty dependency list. `verify` does this for each execution.
 
 ```rust,ignore
 impl<'d, D: Domain> ValidationContext<'d, D> {
@@ -118,7 +118,7 @@ The SDK's graph tools call the same inspection operations as criterion code.
 The shared context prepares reads and records observations.
 
 :::{req} shared_context
-During one call to `Validator::verify`, direct reads by the criterion and
+During one call to `verify`, direct reads by the criterion and
 reads served by the SDK's agent tools record inputs in the same
 `ValidationContext`. For example, if criterion code reads a test and the agent
 then reads its helper, both node fingerprints accompany the returned answer.
@@ -145,19 +145,17 @@ agent tool's name, JSON arguments, result shape, and the description sent to
 the model in Rig's `ToolDefinition`. `.behavior` describes what
 the caller receives, and `.inputs` specifies which observations enter evidence.
 In the signatures, `?` marks an optional
-field, `T[]` is an array, and `NodePath` is `{"segments": string[]}`. A `next` field holds a continuation UUID issued by the current conversation.
+field and `T[]` is an array. A `next` field holds a continuation UUID issued by the current conversation.
+
+## Passing node identities to an agent
+
+:::{req} node_reference
+The harness represents a domain `D::NodeId` to the agent as an opaque JSON string scoped to the conversation. It retains the IDs of the current node, supplied input nodes, and nodes introduced by tool results. Tools that return nodes give the agent references to those IDs. Tools that accept a node resolve its reference to the same ID. An unknown reference produces a tool error.
+:::
 
 ## Reading the contents of a graph node
 
-Use a node's identity to obtain its application-defined
-[contents](../graph.md#read-node-contents).
-
-Rust callers pass the application's `D::NodeId`. The agent sends a `NodePath`
-because `Domain` lets each application choose its own ID type and requires only
-the [forward conversion from ID to path](../graph.md#habeas-req-requirements.sdk.graph.node_path_method).
-The harness starts each conversation with the IDs of the current node and the
-nodes supplied as inputs. When the agent sends a path, the harness finds the
-known ID whose `Domain::node_path` equals it. An unknown path gives a tool error.
+Rust callers pass the application's `D::NodeId` to read its [contents](../graph.md#read-node-contents). The agent passes the node reference under {cite}`requirements.sdk.graph.validation-context.node_reference`.
 
 :::{req} ValidationContext.read
 :test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
@@ -191,11 +189,11 @@ Criterion code uses {cite}`requirements.sdk.graph.validation-context.ValidationC
 :::
 
 :::{req} read_node.mcp
-Give `read_node` the path of a known node. The result contains the node’s text. If more
+Give `read_node` the reference for a known node. The result contains the node’s text. If more
 text remains, pass `next` to `get_next_page`.
 
 ```text
-read_node({path: NodePath}) -> {text: string, next?: UUID}
+read_node({node: string}) -> {text: string, next?: UUID}
 ```
 :::
 
@@ -258,11 +256,11 @@ Criterion code uses {cite}`requirements.sdk.graph.validation-context.ValidationC
 :::
 
 :::{req} outgoing_edges.mcp
-Give `outgoing_edges` a known source path and a label of the application’s
-edge-label type. Each path in `targets` can be used in a subsequent graph tool call.
+Give `outgoing_edges` a known node reference and a label of the application’s
+edge-label type. Each reference in `targets` can be used in a subsequent graph tool call.
 
 ```text
-outgoing_edges({path: NodePath, label: EdgeLabel}) -> {targets: NodePath[]}
+outgoing_edges({node: string, label: EdgeLabel}) -> {targets: string[]}
 ```
 :::
 
@@ -275,11 +273,8 @@ outgoing_edges({path: NodePath, label: EdgeLabel}) -> {targets: NodePath[]}
 The returned vector preserves order and duplicates. The fingerprint describes
 the set of stable target paths under {cite}`requirements.sdk.graph.validation-context.snapshot`.
 
-Follow edges with `label` from the known source at `path`. The application's
-`D::EdgeLabel` supplies the JSON schema for `label`. The harness retains each
-target's `D::NodeId` and returns its `NodePath` to the agent. The agent can pass
-any path in `targets` directly to `read_node` or `outgoing_edges` in the same
-conversation.
+Follow edges with `label` from the node identified by `node`. The application's
+`D::EdgeLabel` supplies the JSON schema for `label`. Each entry in `targets` is a node reference under {cite}`requirements.sdk.graph.validation-context.node_reference` that the agent can pass directly to `read_node` or `outgoing_edges`.
 :::
 
 :::{req} outgoing_edges.inputs
@@ -306,8 +301,8 @@ their target-set fingerprint, without another query.
 
 The public `trust_but_verify::graph::edge_fingerprint(graph, targets)` helper
 computes this `Fingerprint` from the domain and a slice of target node IDs.
-It sorts and deduplicates the targets' `NodePath`s and hashes an unambiguous
-encoding under a versioned scheme, including when the set is empty. Changing
+It fingerprints the set of distinct target identities under a versioned
+scheme, including when the set is empty. Changing
 order, duplicate edges, or another label's relationships leaves this fingerprint
 unchanged. Reading target contents is a separate observation;
 `NodeContents::fingerprint` describes those contents under

@@ -16,8 +16,7 @@ be added one key at a time.
 The SDK’s public modules follow the interfaces introduced in these chapters.
 
 - `domain`: application data and the `Domain`, `NodeContents`, and `SourceNodes` traits.
-- `graph`: criterion definitions, graph observations, and evidence; `graph::validator`
-  runs criteria.
+- `graph`: criterion definitions, graph observations, evidence, and functions for running criteria.
 - `request`: `ValidationContext`, typed `Ask` builders, context values, and request phases.
 - `agent`: configuration for the supplied agents.
 - `sources`: project inspection, search queries, and their results.
@@ -151,6 +150,7 @@ pub trait Domain: Clone + Send + Sync {
     type NodeContent: NodeContents;
     type EdgeLabel: Clone + Send + Sync;
 
+    fn cache(&self) -> &ValidationCache;
     fn node_path(&self, node: &Self::NodeId) -> NodePath;
     fn node_content(
         &self,
@@ -172,6 +172,8 @@ pub trait Domain: Clone + Send + Sync {
         criterion: &CriterionPath,
         record: &Record<Self::NodeId, Self::EdgeLabel>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    fn project_sources(&self) -> Option<SourceProject<Self>> { ... }
 }
 ```
 :::
@@ -197,7 +199,8 @@ pub trait Domain: Clone + Send + Sync {
 :::
 
 Domains with mutable state commonly store it behind `Arc`, so cloned domains
-access the same graph and evidence storage.
+access the same graph and evidence storage. Each domain also supplies a
+[validation cache](sdk/validation-cache.md) through `Domain::cache`.
 
 ## SDK chapters
 
@@ -205,10 +208,11 @@ The chapters introduce each interface and the tools used with it:
 
 | Chapter | Purpose | Related traits and types |
 | --- | --- | --- |
+| [Validation cache](sdk/validation-cache.md) | Share source outlines and configure the agent when creating the domain. | `ValidationCache`, `Domain::cache` |
 | [Graph nodes](sdk/graph.md) | Node identities, stable paths, contents, and fingerprints. | [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html), [`NodeContents`](../rustdocs/trust_but_verify/domain/trait.NodeContents.html) |
 | [Graph edges](sdk/graph-edges.md) | Relationship labels and successor lookup. | [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html) |
 | [Criteria](sdk/graph/criteria.md) | Criterion types, completed answers, identity, review rules, and execution. | [`Criterion`](../rustdocs/trust_but_verify/graph/trait.Criterion.html) |
-| [Validators](sdk/graph/validators.md) | Constructing a validator and running criterion values. | [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html), [`Validator`](../rustdocs/trust_but_verify/graph/validator/struct.Validator.html) |
+| [Running criteria](sdk/graph/running-criteria.md) | Execute criteria and check or reuse saved evidence. | `verify`, `refresh_evidence` |
 | [Validation context](sdk/graph/validation-context.md) | Tools for evaluating a criterion and recording its inputs. | [`ValidationContext`](../rustdocs/trust_but_verify/request/struct.ValidationContext.html) |
 | [Agent calls](sdk/graph/agent-calls.md) | Prompt construction and typed answers. | [`Context`](../rustdocs/trust_but_verify/request/trait.Context.html), [`Ask`](../rustdocs/trust_but_verify/request/struct.Ask.html) |
 | [Agent harness](sdk/graph/agent-harness.md) | Agent configuration, fixed inspection tools, and structured submissions. | [`AgentConfig`](../rustdocs/trust_but_verify/agent/enum.AgentConfig.html) |

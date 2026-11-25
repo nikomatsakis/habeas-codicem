@@ -47,17 +47,17 @@ conversation, provider, filesystem, and search machinery private.
 
 | Capability | SDK interface | HC responsibility |
 | --- | --- | --- |
-| Agent configuration | Serializable `AgentConfig` and `Validator::with_agent`; backend initialization happens when an ask is awaited. | Configuration loading, paths, environment overrides, and review instructions. |
-| File inspection | `Sources::new` and `Validator::with_sources`, using the project directory and `.gitignore`. | HC's configuration and tracked-file rules. |
+| Agent configuration | Serializable `AgentConfig` and `ValidationCache::with_agent`; backend initialization happens when an ask is awaited. | Configuration loading, paths, environment overrides, and review instructions. |
+| File inspection | `Sources::new` selects the project directory for inspection and respects `.gitignore`. | HC's configuration and tracked-file rules. |
 | Source-node mapping | `SourceNodes::source_node` and tracked reads through `Domain`; every delivered source read records its node snapshot. | Source addresses, node identities, and reference relationships. |
 | Source outlines | Filename-based language selection, cheaply cloneable `OutlineLang`, and owned `OutlineContent` implementing `NodeContents`. | Choosing the source nodes needed for a review. |
 | Structural search | Optional `OutlineLang::search_structure`; outline-only languages return an unsupported-language error. | Choosing search rules for the question under review. |
 | Redaction | Fixed credential recognition in model-visible text and bundled structural hashes. | Explicit credential fields in Habeas configuration. |
 
 Domains without source-node mapping can still use graph inspection and
-deterministic criteria. Configured agent tools accept serializable edge labels
-with a JSON schema and report domain errors through `Display`; the exact bounds
-appear with `with_agent` and `with_sources`.
+deterministic criteria. Awaiting an agent request requires edge labels that implement
+`DeserializeOwned`, `JsonSchema`, and `PartialEq`, and domain errors that
+implement `Display`. See [agent calls](graph/agent-calls.md).
 
 ## HC integration work
 

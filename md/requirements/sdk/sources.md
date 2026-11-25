@@ -74,26 +74,23 @@ impl Sources {
 :::
 
 :::{req} provider.attachment
-A validator for a source-capable domain uses the supplied project directory
-for its fixed source inspection tools. Attach `Sources` once when constructing
-the validator; the domain supplies the mapping under
-{cite}`requirements.sdk.sources.source_nodes`.
+For a domain that implements `SourceNodes`, the agent’s source inspection tools
+use the supplied `Sources` to discover and search files in the project
+directory. The domain maps each selected item to a node under
+{cite}`requirements.sdk.sources.source_nodes`. A domain enables these tools by
+returning `Some(SourceProject::new(self.clone(), sources))` from
+`Domain::project_sources`. The default returns `None`.
+:::
+
+:::{req} SourceProject
+
+`SourceProject` supplies the project files and domain mapping for a single agent request.
 
 ```rust,ignore
-use trust_but_verify::domain::SourceNodes;
-use trust_but_verify::sources::Sources;
-use trust_but_verify::graph::validator::Validator;
+pub struct SourceProject<D: Domain> { /* private fields */ }
 
-impl<D: SourceNodes + 'static> Validator<D>
-where
-    D::EdgeLabel: serde::de::DeserializeOwned + schemars::JsonSchema + PartialEq,
-    D::Error: std::fmt::Display,
-{
-    // ...
-
-    pub fn with_sources(self, sources: Sources) -> Self;
-
-    // ...
+impl<D: SourceNodes> SourceProject<D> {
+    pub fn new(domain: D, sources: Sources) -> Self;
 }
 ```
 :::
