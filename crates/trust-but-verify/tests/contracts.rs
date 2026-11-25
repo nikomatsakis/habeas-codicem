@@ -1528,6 +1528,7 @@ fn edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding() 
     assert!(domain.0.lock().unwrap().reads.is_empty());
 }
 
+// {test}`requirements.sdk.validation-cache.ValidationCache`
 // {test}`requirements.sdk.validation-cache.shared_node_ids`
 // {test}`requirements.sdk.validation-cache.intern_node`
 // {test}`requirements.sdk.validation-cache.node_data`

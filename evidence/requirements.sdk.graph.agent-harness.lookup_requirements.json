@@ -1,7 +1,7 @@
 {
   "example": "{cite}`requirements.sdk.graph.agent-harness.Tool`\n{cite}`requirements.sdk.graph.agent-harness.with_tool`\n{cite}`requirements.sdk.graph.agent-harness.domain_tool_dispatch`\n{cite}`requirements.sdk.graph.agent-harness.domain_tool_inputs`\n\nSuppose a Habeas domain indexes requirement names. It registers a lookup tool\nand uses the index to discover candidates for a review.\n\n```rust,ignore\n#[derive(Deserialize, JsonSchema)]\nstruct Lookup { pattern: String }\n\nstruct LookupRequirements;\n\nimpl<'d> Tool<HabeasDomain<'d>, Lookup, Vec<NodeId<HabeasDomain<'d>>>> for LookupRequirements {\n    fn name(&self) -> &str { \"lookup_requirements\" }\n    fn description(&self) -> &str { \"Find requirement node IDs matching a name glob.\" }\n    async fn execute(&self, cx: &ValidationContext<'_, HabeasDomain<'d>>, args: Lookup)\n        -> Vec<NodeId<HabeasDomain<'d>>>\n    {\n        cx.graph().matching_requirement_ids(&args.pattern)\n    }\n}\n\n// During application setup, store this cache in the domain.\nlet cache = ValidationCache::with_agent(config.with_tool(Arc::new(LookupRequirements)));\n```\n\nIn a project with two matching requirements, the agent calls\n`lookup_requirements({\"pattern\":\"requirements.sdk.*\"})` and receives\n\n```json\n[6, 7]\n```\n\nHere `7` identifies `requirements.sdk.outlines` under {cite}`requirements.sdk.graph.validation-context.node_reference`. The agent calls `read_node({\"node\":7})`.\nFor a domain that formats this requirement as a sentence, the reply is\n\n```json\n{\"text\":\"An outline identifies the selectable items in a source file.\"}\n```\n\nThese two calls contribute one evidence input containing the `requirements.sdk.outlines`\nnode and the fingerprint of its delivered contents. If the lookup returns\n`[]`, discovery alone contributes zero inputs. A criterion whose answer depends\non the complete set of matches can instead have the tool read a node representing\nthe selection through `cx.read`. Its fingerprint then tracks changes to the set,\nincluding a first match for a previously empty selection.",
   "determination": true,
-  "rationale": "The example `lookup_requirements` describes a concrete case: a domain that registers a lookup tool, an agent that calls it with `requirements.sdk.*`, and a follow-up `read_node`. It states these expected outcomes:\n\n- The lookup returns node IDs.\n- The following read returns `{\"text\": ...}`.\n- The two calls produce exactly one evidence input, containing the outline node and its fingerprint.\n- An empty lookup contributes zero inputs.\n- A tool that reads a selection node through `cx.read` tracks changes to the set, including a first match for a previously empty selection.\n\nTwo {test} tests in `crates/trust-but-verify/src/agent/configured.rs` cover this. Both use the helpers `Lookup`, `ReadSelection`, `Inspect` and `LookupDomain`. I read all of them, and they match the example's tool and domain shape.\n\n**`registered_tools_use_the_current_context_and_ordinary_node_ids`**\n- It registers a `Lookup(\"lookup_requirements\")` tool through `with_tool`.\n- The tool's description is \"Find requirement node IDs matching a name glob.\", and the test asserts that description in the advertised tool list.\n- The test also asserts the advertised argument schema (`pattern` of type string).\n- The model calls `lookup_requirements({\"pattern\":\"requirements.sdk.*\"})`. The test asserts the tool output is `[1,2]`, which is a JSON array of node IDs. The IDs are 1 and 2 because the subject node is interned first. The tool also recorded the pattern exactly once.\n- A call with `{\"pattern\":false}` yields an \"invalid type\" tool error.\n- A call to `inspect` on node 2 returns the outline text. The dependency list is then exactly one `Dependency::Node(outline, fingerprint)` plus the edge inspection. Obtaining the IDs added no dependency of its own.\n- A second, independently configured agent offers `other` and not `lookup_requirements` or `inspect`.\n\n**`lookup_read_and_empty_selection_have_distinct_evidence`**\n- It runs `lookup_requirements` and then `read_node({\"node\":0})`. Node 0 is the outline node `requirements.sdk.outlines`.\n- It asserts the reply equals `{\"text\":\"An outline identifies the selectable items in a source file.\"}`, which is the example's reply.\n- It asserts the dependencies are exactly `[Dependency::Node(outline, fingerprint)]`, with the fingerprint taken from `node_content`. This checks \"one evidence input … and the fingerprint of its delivered contents\", and it shows the lookup added nothing beyond the read.\n- With an empty catalog, a lookup alone gives `output(4) == \"[]\"` and `dependencies().is_empty()`. This checks that discovery alone contributes zero inputs.\n- The `read_selection` tool reads a `LookupNode::Selection` through `cx.read`. The test finishes the record and shows `is_current` is true for the empty set. It is false once a first match appears (the `first` domain with one catalog entry). This checks that the fingerprint tracks changes to the set, including a first match for a previously empty selection.\n\nTogether the tests cover each outcome the example states, and their expected values come from the example. The cited requirements (`Tool`, `with_tool`, `domain_tool_dispatch`, `domain_tool_inputs`, `node_reference`) are exercised through the same flows. I found no gap, so no acknowledgments are needed.",
+  "rationale": "The example describes a concrete case with stated outcomes. Those outcomes are: a lookup tool registered with `with_tool`, a lookup returning node IDs, a `read_node` call returning `{\"text\": ...}`, one evidence input for the read node with its fingerprint, zero inputs when the lookup returns `[]`, and a `cx.read` of a selection node whose fingerprint tracks a first match. Two tests carry `{test}` references to `lookup_requirements`, and together they cover every outcome.\n\n**`registered_tools_use_the_current_context_and_ordinary_node_ids`**\n- It registers a `Lookup(\"lookup_requirements\")` tool with `with_tool`. The tool's description is \"Find requirement node IDs matching a name glob.\", and the test asserts that description and the `pattern` string schema.\n- The scripted model calls it with `{\"pattern\":\"requirements.sdk.*\"}`. The test asserts the tool output deserializes to `json!([1, 2])`, so the result is node IDs and not names.\n- A malformed call, `{\"pattern\":false}`, produces a tool error containing \"invalid type\". `lookup_calls` records only the valid pattern, so the tool body did not run for the bad call.\n- The dependency trace is exactly `[Node(outline, fingerprint), OutgoingEdges(...)]`. The two entries come from the agent's reads, and the trace has no entry for the other node the lookup returned. This shows that returning IDs adds no content dependency and that reads made through the tool join the criterion's trace.\n- The tool list contains the built-ins followed by the registered tools. A second, independently configured agent offers only `other`, which confirms the tool sets are independent.\n\n**`lookup_read_and_empty_selection_have_distinct_evidence`**\n- In the main scenario the agent calls lookup, then `read_node({\"node\":0})`, which is the outline node. The test asserts the reply equals `{\"text\":\"An outline identifies the selectable items in a source file.\"}`.\n- The dependencies are exactly one `Dependency::Node(outline, fingerprint)`, where the hash equals `node_content(...).fingerprint()`. The lookup, which returned two IDs, added nothing beyond the one node that was read.\n- With an empty catalog the lookup output is `\"[]\"`, asserted via `output(4)`, and `discovery.dependencies().is_empty()`. This covers \"discovery alone contributes zero inputs\".\n- The `read_selection` tool (`ReadSelection`) calls `cx.read` on a `LookupNode::Selection(pattern)` node. The test records and stores that evidence while the catalog is empty. A domain with one match then loads the record, and `!loaded.is_current(...)` holds. This shows the selection fingerprint tracks a first match for a previously empty selection. The same record is current in the empty domain, which rules out a trivially stale record.\n\n**Remaining differences from the example.** The example's literal IDs `[6, 7]` and `node` 7 differ from the test's `[1, 2]` and node 0. The example presents them as illustrative, and the tests assert the same structure. The test domain formats the node text through `node_content`, which matches the example's \"a domain that formats this requirement as a sentence\".\n\nI found no unasserted outcome and no acknowledged or unacknowledged gap.",
   "references": "910e4262db34c50aa8fd09b85f0048637488d8ffcf8ad345461853ae54233720",
   "inputs": [
     {
@@ -157,12 +157,12 @@
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[registered_tools_use_the_current_context_and_ordinary_node_ids]",
-      "hash": "491d130759eb67bad2060c138f3596f3d075defd87a6eecdbf1dcc2bac71cd9f"
+      "hash": "85ad9c3bd74d105232217e1130b0170a2fcf59d763c7dc88cd94c4e489ad3bdc"
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[lookup_read_and_empty_selection_have_distinct_evidence]",
-      "hash": "85349aac3c9e09cac4c42ec88e7601742f988d3ae2513fbcf9db40080ac2fa7f"
+      "hash": "e6af6ce41bd6022528c9309cde02a8589d2556b42808e565d13a3b28eb578057"
     },
     {
       "definition": "requirements.sdk.graph.agent-harness.domain_tool",
@@ -179,12 +179,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/impl[LookupDomain<'_>/Domain]",
-      "hash": "288b2ed3f01922b8c9e05e455540ab7770f0f0e5b52e701d8e3612f6d47bf69a"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/configured.rs",
-      "item": "mod[tests]/impl[Lookup/crate::agent::Tool<LookupDomain<'d>,%20Pattern,%20Vec<NodeId<LookupDomain<'d>>>>]",
-      "hash": "d4dd06d060985c9ad8d66ee12958c9ee78efa8b694e23d9a2b353f607c9bd592"
+      "hash": "8220757a1e462e479b86c305c07c2aecc73306f8a7bbb3337f80134de2fd2cbf"
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
@@ -193,13 +188,33 @@
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
-      "item": "mod[tests]/impl[Inspect/crate::agent::Tool<LookupDomain<'static>,%20InspectArgs,%20String>]",
-      "hash": "0c7fe5251a99fe3864bd310374fe18b8e9bd6a567f1ab2ffb820861b7ed9b07a"
+      "item": "mod[tests]/impl[Lookup/crate::agent::Tool<LookupDomain<'d>,%20Pattern,%20Vec<NodeId<LookupDomain<'d>>>>]",
+      "hash": "d4dd06d060985c9ad8d66ee12958c9ee78efa8b694e23d9a2b353f607c9bd592"
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
-      "item": "mod[tests]",
-      "hash": "617874da4ab75bb7f310e9fb7022fcbf94e017946155366f301da6371f9eff11"
+      "item": "mod[tests]/enum[LookupNode]",
+      "hash": "57829c2d85d98738f36c1baf32dc2e4025d439ec1d022656ef6824dc850f219f"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/impl[LookupDomain<'_>/Domain]/fn[node_content]",
+      "hash": "4ae161048171e16079f816444fd5065d4cfa34dd42f7a7043c544a0ba4c45fa3"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/impl[ReadSelection/crate::agent::Tool<LookupDomain<'_>,%20Pattern,%20String>]/fn[execute]",
+      "hash": "b179b3beced38c941866a3e94460cf7dd91e49f692d242db4294f8fc9b9485b0"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/impl[LookupDomain<'_>]/fn[matches]",
+      "hash": "bb968cd93fe0bd47cf90a14a00602d8ff2b33a04c061228fa62f7ec58654ed4d"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/impl[Inspect/crate::agent::Tool<LookupDomain<'static>,%20InspectArgs,%20String>]",
+      "hash": "0c7fe5251a99fe3864bd310374fe18b8e9bd6a567f1ab2ffb820861b7ed9b07a"
     }
   ],
   "format_version": 1,
@@ -307,7 +322,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ff5e3ca5534b54e0f5e24c9a19fc94683c7825231eab934d19e007ba23d09709"
+          "value": "e415ed6266b247a877167f2766e438cb79211c1c4b0ffd21b0f20a9f4965efd8"
         }
       ]
     },
@@ -324,7 +339,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "6e8673eb4cfb67832900f020cd9f38c09e44e65aeccdf1425f8d9ed3728b97b0"
+          "value": "ed9ea8739a082c2c580b9b6805975dc4b8164a3dc2349b52062feef335d4dc73"
         }
       ]
     },
@@ -352,24 +367,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1d8bde81b13ac38cf62b259ce37055f9a7b61ec8ce4180431195dab76abb77c9"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/configured.rs"
-            },
-            "selector": "mod[tests]/impl[Lookup/crate::agent::Tool<LookupDomain<'d>,%20Pattern,%20Vec<NodeId<LookupDomain<'d>>>>]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "3deb9000fce6bebd36e3a5c6b567bbb2ca449605220e815ecac440728296d1cc"
+          "value": "9703ce815262c8def4f60698f36b6b82d26a082be0022ea54d48b1dc35784064"
         }
       ]
     },
@@ -398,12 +396,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/configured.rs"
             },
-            "selector": "mod[tests]/impl[Inspect/crate::agent::Tool<LookupDomain<'static>,%20InspectArgs,%20String>]"
+            "selector": "mod[tests]/impl[Lookup/crate::agent::Tool<LookupDomain<'d>,%20Pattern,%20Vec<NodeId<LookupDomain<'d>>>>]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1ae0d94a89c47817592d5ab70730395c8ddc2ccb30664736bcfabe520090e733"
+          "value": "3deb9000fce6bebd36e3a5c6b567bbb2ca449605220e815ecac440728296d1cc"
         }
       ]
     },
@@ -415,12 +413,80 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/configured.rs"
             },
-            "selector": "mod[tests]"
+            "selector": "mod[tests]/enum[LookupNode]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "4af7f787fe78521423db97ee69cd235f69f18fd1d26003892ea5fc9c5ae6d843"
+          "value": "425a273adab018920cca0c4fd6fb0205c1bc1f6b1cfb26018b7029d6e4f84b80"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
+            },
+            "selector": "mod[tests]/impl[LookupDomain<'_>/Domain]/fn[node_content]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "981f70669c52e03164045585a81f1b7ff75ae96701d499d67d91d85c5560075c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
+            },
+            "selector": "mod[tests]/impl[ReadSelection/crate::agent::Tool<LookupDomain<'_>,%20Pattern,%20String>]/fn[execute]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "b4c158e6d93aa272fcecab09a870836d6c55cc8f2f374c7a352514a030b55514"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
+            },
+            "selector": "mod[tests]/impl[LookupDomain<'_>]/fn[matches]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "057eaee48a31cc802f942798bd80335cdc24343a7a6b22a2a801876f479c374f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
+            },
+            "selector": "mod[tests]/impl[Inspect/crate::agent::Tool<LookupDomain<'static>,%20InspectArgs,%20String>]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "1ae0d94a89c47817592d5ab70730395c8ddc2ccb30664736bcfabe520090e733"
         }
       ]
     }
