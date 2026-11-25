@@ -398,6 +398,11 @@ Render the union of the header, hit windows, and trailer in source order. Copy r
 The agent calls `search_text({"pattern":"hit","window_bytes":4})` on this source.
 
 ```rust
+# struct Runner;
+# fn setup() {}
+# fn hit() {}
+# fn cleanup() {}
+# fn finish() {}
 impl Runner {
     fn run() {
         setup();
