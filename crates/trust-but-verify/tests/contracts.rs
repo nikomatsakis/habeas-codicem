@@ -1552,6 +1552,10 @@ fn clones_interning_the_same_data_concurrently_get_one_handle() {
             .collect::<Vec<_>>()
     });
     assert!(ids.iter().all(|id| *id == ids[0]));
+    assert_eq!(
+        format!("{:?}", ids[0]),
+        serde_json::to_string(&ids[0]).unwrap()
+    );
     assert_eq!(cache.node_data(ids[0]).as_deref(), Some(&Node(42)));
     assert_ne!(cache.intern_node(Node(43)), ids[0]);
 }

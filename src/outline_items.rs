@@ -133,6 +133,7 @@ pub(crate) struct EvidenceItem {
 }
 
 /// Display the decoded name parts of the last segment in an SDK selector.
+// {impl}`requirements.authoring.outline_tool`
 pub(crate) fn display_name(selector: &str) -> Option<String> {
     use trust_but_verify::outline::selector::{Label, parse_selector};
     match parse_selector(selector)

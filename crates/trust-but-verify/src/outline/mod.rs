@@ -64,14 +64,6 @@ pub struct OutlineNode {
     pub identity_hash: String,
 }
 
-impl OutlineNode {
-    /// The name as displayed, with parts joined by `/`.
-    // {impl}`requirements.authoring.outline_tool`
-    pub fn display_name(&self) -> Option<String> {
-        self.name.as_ref().map(|parts| parts.join("/"))
-    }
-}
-
 /// One comment and the outline node it belongs to.
 #[derive(Clone, Debug)]
 // {impl}`requirements.references.outline_comments`

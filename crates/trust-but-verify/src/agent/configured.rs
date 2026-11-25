@@ -390,8 +390,12 @@ mod tests {
         pattern: String,
     }
 
+    type LookupRecords =
+        std::collections::HashMap<(NodePath, CriterionPath), Record<LookupNode, String>>;
+
     #[derive(Clone)]
     struct LookupDomain<'a> {
+        records: Arc<std::sync::Mutex<LookupRecords>>,
         lookup_calls: Arc<std::sync::Mutex<Vec<String>>>,
         catalog: &'a [&'a str],
         cache: crate::domain::ValidationCache<Self>,
@@ -427,17 +431,20 @@ mod tests {
         }
         async fn load_evidence(
             &self,
-            _: &NodeId<Self>,
-            _: &CriterionPath,
+            node: &NodeId<Self>,
+            criterion: &CriterionPath,
         ) -> Result<Option<Record<LookupNode, String>>, String> {
-            Ok(None)
+            let key = (self.node_path(node), criterion.clone());
+            Ok(self.records.lock().unwrap().get(&key).cloned())
         }
         async fn store_evidence(
             &self,
-            _: &NodeId<Self>,
-            _: &CriterionPath,
-            _: &Record<LookupNode, String>,
+            node: &NodeId<Self>,
+            criterion: &CriterionPath,
+            record: &Record<LookupNode, String>,
         ) -> Result<(), String> {
+            let key = (self.node_path(node), criterion.clone());
+            self.records.lock().unwrap().insert(key, record.clone());
             Ok(())
         }
     }
@@ -527,6 +534,7 @@ mod tests {
         let catalog: &[&str] = &["requirements.sdk.cache", "requirements.sdk.outlines"];
         let outline = LookupNode::Requirement(catalog[1].into());
         let domain = LookupDomain {
+            records: Default::default(),
             lookup_calls: Default::default(),
             catalog,
             cache: crate::domain::ValidationCache::with_agent(
@@ -549,6 +557,7 @@ mod tests {
         ));
         assert_eq!(*domain.lookup_calls.lock().unwrap(), ["requirements.sdk.*"]);
         let other = LookupDomain {
+            records: Default::default(),
             lookup_calls: Default::default(),
             catalog,
             cache: crate::domain::ValidationCache::with_agent(
@@ -669,6 +678,7 @@ mod tests {
             submit,
         ]);
         let domain = LookupDomain {
+            records: Default::default(),
             lookup_calls: Default::default(),
             catalog: &["requirements.sdk.cache", "requirements.sdk.outlines"],
             cache: crate::domain::ValidationCache::with_agent(
@@ -683,6 +693,7 @@ mod tests {
             matches!(&cx.dependencies()[..], [validation::Dependency::Node(node, hash)] if node == &domain.cache().intern_node(outline.clone()) && hash == &domain.node_content(node).unwrap().fingerprint())
         );
         let empty = LookupDomain {
+            records: Default::default(),
             lookup_calls: Default::default(),
             catalog: &[],
             cache: domain.cache.clone(),
@@ -695,12 +706,36 @@ mod tests {
         let version = CriterionVersion::new("v1");
         let record = tracked.finish(version.clone(), true).unwrap();
         assert!(record.is_current(&empty, &version).unwrap());
+        let criterion = CriterionPath::new(vec!["lookup".into()]);
+        empty
+            .store_evidence(tracked.node_id(), &criterion, &record)
+            .await
+            .unwrap();
         let first = LookupDomain {
+            records: empty.records.clone(),
             lookup_calls: Default::default(),
             catalog: &["requirements.sdk.cache"],
-            cache: domain.cache.clone(),
+            cache: Default::default(),
         };
-        assert!(!record.is_current(&first, &version).unwrap());
+        let other = first
+            .cache()
+            .intern_node(LookupNode::Requirement("requirements.sdk.cache".into()));
+        assert!(
+            first
+                .load_evidence(&other, &criterion)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let subject = first.cache().intern_node(outline);
+        assert_ne!(subject, *tracked.node_id());
+        let loaded = first
+            .load_evidence(&subject, &criterion)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.dependencies, record.dependencies);
+        assert!(!loaded.is_current(&first, &version).unwrap());
         let requests = server.join().unwrap();
         let output = |turn: usize| {
             requests[turn]["input"]
@@ -733,6 +768,7 @@ mod tests {
             ("submit_result", json!({"result":true})),
         ]);
         let domain = LookupDomain {
+            records: Default::default(),
             lookup_calls: Default::default(),
             catalog: &["requirements.sdk.outlines"],
             cache: crate::domain::ValidationCache::with_agent(backend.with_tool(Arc::new(Inspect))),
@@ -781,6 +817,7 @@ mod tests {
         let (backend, server) = local_backend(vec![]);
         for name in ["read_node", "lookup", "search_text"] {
             let domain = LookupDomain {
+                records: Default::default(),
                 lookup_calls: Default::default(),
                 catalog: &[],
                 cache: crate::domain::ValidationCache::with_agent(
