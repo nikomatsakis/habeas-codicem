@@ -209,12 +209,12 @@ impl StructuralQuery {
 // {cite}`habeas:util`
 #[non_exhaustive]
 pub struct StructuralMatch {
-    pub node: crate::outline::OutlineId,
+    pub node: crate::outline::OutlineData,
     pub excerpt: String,
 }
 
 impl StructuralMatch {
-    pub fn new(node: crate::outline::OutlineId, excerpt: String) -> Self {
+    pub fn new(node: crate::outline::OutlineData, excerpt: String) -> Self {
         Self { node, excerpt }
     }
 }

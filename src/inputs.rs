@@ -109,11 +109,13 @@ mod ownership_tests {
 }
 
 // {cite}`habeas:util`
+pub(crate) type SourceCache = trust_but_verify::domain::ValidationCache<crate::sdk::HabeasDomain>;
+
 /// Parsed outlines, cached per file for one validation or authoring run.
 /// Clones share entries populated by any caller in that run.
 #[derive(Default)]
 pub(crate) struct OutlineCache {
-    pub(crate) validation: trust_but_verify::domain::ValidationCache,
+    pub(crate) validation: SourceCache,
     files: Arc<Mutex<HashMap<PathBuf, Arc<Result<ParsedSource, String>>>>>,
     /// Content to parse in place of a file's, by project-relative path.
     overrides: Arc<HashMap<String, String>>,

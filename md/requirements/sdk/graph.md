@@ -67,7 +67,19 @@ selector: "fn[validate]".into() }` identifies a function.
 pub struct NodeId<D: Domain> { /* private fields */ }
 ```
 
-`NodeId<D>` implements `Copy`, `Clone`, `Debug`, `Eq`, `PartialEq`, `Hash`, `Serialize`, `Deserialize`, and `JsonSchema` for every `D: Domain`. Its JSON representation is an unsigned integer.
+`NodeId<D>` serializes as an unsigned integer. These implementations apply to every domain.
+
+```rust,ignore
+impl<D: Domain> Copy for NodeId<D>;
+impl<D: Domain> Clone for NodeId<D>;
+impl<D: Domain> Debug for NodeId<D>;
+impl<D: Domain> Eq for NodeId<D>;
+impl<D: Domain> PartialEq for NodeId<D>;
+impl<D: Domain> Hash for NodeId<D>;
+impl<D: Domain> Serialize for NodeId<D>;
+impl<'de, D: Domain> Deserialize<'de> for NodeId<D>;
+impl<D: Domain> JsonSchema for NodeId<D>;
+```
 :::
 
 ## Give nodes a stable path

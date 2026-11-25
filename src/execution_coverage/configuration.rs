@@ -327,6 +327,7 @@ mod tests {
                 .contains("profile.local.scripts")
         );
         for extra in [
+            "\n[[profile.local.scripts]]\nfilter = 'test(x)'\nrun-wrapper = 'habeas-coverage'\n",
             "\n[[profile.local.scripts]]\nfilter = 'test(x)'\nrun-wrapper = 'other'\n",
             "\n[[profile.local.scripts]]\nfilter = 'all()'\nplatform = 'cfg(unix)'\nrun-wrapper = 'habeas-coverage'\n",
             "\n[profile.local]\ninherits = 'local'\n",

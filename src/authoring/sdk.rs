@@ -1,18 +1,20 @@
 //! Habeas's review procedure and conversation policy on the SDK interfaces.
 
 use super::*;
+#[cfg(test)]
+use crate::inputs::OutlineCache;
 use crate::{
-    inputs::{InputSelector, OutlineCache, recorded_input},
+    inputs::{InputSelector, recorded_input},
     sdk::{HabeasDomain, HabeasEdgeLabel, HabeasNode, input_fingerprint},
 };
 use std::sync::{Arc, Mutex};
 use trust_but_verify::domain::Domain;
+#[cfg(test)]
 use trust_but_verify::domain::NodeContents;
+use trust_but_verify::domain::NodeId;
 use trust_but_verify::graph::Criterion;
 use trust_but_verify::graph::CriterionPath;
 use trust_but_verify::graph::CriterionVersion;
-use trust_but_verify::graph::Fingerprint;
-use trust_but_verify::graph::NodePath;
 use trust_but_verify::graph::ValidationError;
 use trust_but_verify::request::Agent;
 use trust_but_verify::request::AgentRequest;
@@ -44,157 +46,25 @@ enum Operation {
 }
 
 // {cite}`habeas:util`
-/// Immutable snapshots identify the contents used to assemble this review.
-#[derive(Clone)]
-struct ReviewGraph<'a> {
-    root: PathBuf,
-    node: HabeasNode,
-    definitions: std::collections::BTreeMap<String, crate::evidence::Declaration>,
-    outlines: OutlineCache,
-    mandatory: Vec<(HabeasNode, Value)>,
-    reference_set: String,
+struct ReviewState<'a> {
     system: String,
     operation: Operation,
-    conversation: Arc<Mutex<Option<(&'a mut AssessmentSources, &'a mut UsageLog)>>>,
-    // The public SDK reports an agent error as text. Preserve the provider's
-    // original error separately for Habeas's classification and batch policy.
-    agent_failure: Arc<Mutex<Option<io::Error>>>,
-}
-
-struct ReviewContent {
-    fingerprint: Fingerprint,
-    text: String,
-}
-impl NodeContents for ReviewContent {
-    // {impl}`requirements.sdk.graph.node_content.fingerprint`
-    fn fingerprint(&self) -> Fingerprint {
-        self.fingerprint.clone()
-    }
-    // {impl}`requirements.sdk.graph.node_content.format`
-    // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
-    fn format(&self) -> String {
-        self.text.clone()
-    }
-}
-
-// {impl}`requirements.sdk.domain`
-impl Domain for ReviewGraph<'_> {
-    fn source_node(
-        &self,
-        item: &trust_but_verify::outline::OutlineId,
-    ) -> Result<HabeasNode, trust_but_verify::sources::SourceError> {
-        self.domain().source_node(item)
-    }
-    fn cache(&self) -> &trust_but_verify::domain::ValidationCache {
-        &self.outlines.validation
-    }
-    type NodeId = HabeasNode;
-    type EdgeLabel = HabeasEdgeLabel;
-    type Error = io::Error;
-
-    // {cite}`habeas:util`
-    fn node_path(&self, node: &HabeasNode) -> NodePath {
-        self.domain().node_path(node)
-    }
-    // {cite}`habeas:util`
-    fn outgoing_edges(
-        &self,
-        node: &HabeasNode,
-        label: HabeasEdgeLabel,
-    ) -> io::Result<Vec<HabeasNode>> {
-        if node == &self.node && label == HabeasEdgeLabel::Mandatory {
-            Ok(self
-                .mandatory
-                .iter()
-                .filter(|(id, _)| id != node)
-                .map(|(id, _)| id.clone())
-                .collect())
-        } else {
-            self.domain().outgoing_edges(node, label)
-        }
-    }
-
-    // {impl}`requirements.sdk.graph.evidence.evidence_storage`
-    async fn load_evidence(
-        &self,
-        source: &HabeasNode,
-        criterion: &CriterionPath,
-    ) -> io::Result<Option<trust_but_verify::graph::Record<HabeasNode, HabeasEdgeLabel>>> {
-        self.domain().load_evidence(source, criterion).await
-    }
-
-    // {impl}`requirements.sdk.graph.evidence.evidence_storage`
-    async fn store_evidence(
-        &self,
-        source: &HabeasNode,
-        criterion: &CriterionPath,
-        record: &trust_but_verify::graph::Record<HabeasNode, HabeasEdgeLabel>,
-    ) -> io::Result<()> {
-        self.domain()
-            .store_evidence(source, criterion, record)
-            .await
-    }
-
-    type NodeContent = ReviewContent;
-
-    // {impl}`requirements.sdk.graph.node_content`
-    fn node_content(&self, node: &HabeasNode) -> io::Result<ReviewContent> {
-        let model = if matches!(node, HabeasNode::ReferenceSet(_)) {
-            json!({"reference_set": self.reference_set})
-        } else if let Some((_, input)) = self.mandatory.iter().find(|(id, _)| id == node) {
-            input.clone()
-        } else {
-            let selector = node.selector()?;
-            let contents = self.domain().node_content(node)?;
-            selector.to_model_input(&contents.resolved)
-        };
-        let fingerprint = if matches!(node, HabeasNode::ReferenceSet(_)) {
-            Fingerprint::new(
-                "habeas-reference-set-v1".into(),
-                model["reference_set"]
-                    .as_str()
-                    .expect("reference digest")
-                    .into(),
-            )
-        } else {
-            input_fingerprint(&model_recorded_input(&model))
-        };
-        let text = serde_json::to_string(&model).map_err(io::Error::other)?;
-        Ok(ReviewContent { fingerprint, text })
-    }
-}
-
-impl ReviewGraph<'_> {
-    // {cite}`habeas:util`
-    fn domain(&self) -> HabeasDomain<'_> {
-        HabeasDomain {
-            root: &self.root,
-            definitions: &self.definitions,
-            outlines: &self.outlines,
-        }
-    }
-}
-
-// {cite}`habeas:util`
-fn model_recorded_input(value: &Value) -> Value {
-    let mut value = value.clone();
-    if let Some(object) = value.as_object_mut() {
-        object.remove("github_issues");
-    }
-    recorded_input(&value)
+    conversation: Mutex<Option<(&'a mut AssessmentSources, &'a mut UsageLog)>>,
+    agent_failure: Mutex<Option<io::Error>>,
 }
 
 // {impl}`requirements.sdk.graph.criteria.criterion_trait`
 // {impl}`requirements.sdk.graph.agent-calls.procedures`
 // {impl}`requirements.authoring.mandatory_inputs`
-struct Review {
-    node: HabeasNode,
+struct Review<'a> {
+    state: Arc<ReviewState<'a>>,
+    node: NodeId<HabeasDomain>,
 }
 
-impl Criterion<ReviewGraph<'_>> for Review {
+impl Criterion<HabeasDomain> for Review<'_> {
     type Ok = Value;
 
-    fn source_node_id(&self) -> HabeasNode {
+    fn source_node_id(&self) -> NodeId<HabeasDomain> {
         self.node.clone()
     }
 
@@ -209,12 +79,21 @@ impl Criterion<ReviewGraph<'_>> for Review {
     // {cite}`habeas:util`
     async fn execute(
         self,
-        ctx: &mut ValidationContext<'_, ReviewGraph<'_>>,
+        ctx: &mut ValidationContext<'_, HabeasDomain>,
     ) -> Result<Self::Ok, ValidationError<io::Error>> {
-        let graph = ctx.graph();
-        if let HabeasNode::Requirement(id) = ctx.node_id() {
-            ctx.read(&HabeasNode::ReferenceSet(id.clone()))
-                .map_err(ValidationError::Graph)?;
+        let graph = &self.state;
+        let data = ctx
+            .graph()
+            .cache()
+            .node_data(*ctx.node_id())
+            .expect("review subject");
+        if let HabeasNode::Requirement(id) = data.as_ref() {
+            ctx.read(
+                &ctx.graph()
+                    .cache()
+                    .intern_node(HabeasNode::ReferenceSet(id.clone())),
+            )
+            .map_err(ValidationError::Graph)?;
         }
         match &graph.operation {
             Operation::Assess => {
@@ -222,7 +101,7 @@ impl Criterion<ReviewGraph<'_>> for Review {
                     .ask::<ReviewAnswer>()
                     .context(&graph.system)
                     .contents_of_current_node();
-                let answer = if matches!(ctx.node_id(), HabeasNode::Requirement(_)) {
+                let answer = if matches!(data.as_ref(), HabeasNode::Requirement(_)) {
                     request
                         .contents_of_successors(HabeasEdgeLabel::Mandatory)
                         .await?
@@ -249,7 +128,7 @@ impl Criterion<ReviewGraph<'_>> for Review {
                     .ask::<VerificationAnswer>()
                     .context(&graph.system)
                     .contents_of_current_node();
-                let answer = if matches!(ctx.node_id(), HabeasNode::Requirement(_)) {
+                let answer = if matches!(data.as_ref(), HabeasNode::Requirement(_)) {
                     request
                         .contents_of_successors(HabeasEdgeLabel::Mandatory)
                         .await?
@@ -266,25 +145,26 @@ impl Criterion<ReviewGraph<'_>> for Review {
 }
 
 // {cite}`habeas:util`
-struct ReviewAgent<P>(P);
+struct ReviewAgent<'a, P>(P, Arc<ReviewState<'a>>);
 
 // {impl}`requirements.sdk.graph.agent-calls.author_procedure`
 // {impl}`requirements.sdk.graph.agent-calls.judge.caching`
 // {impl}`requirements.sdk.graph.agent-calls.judge.submission`
-impl<P> Agent<ReviewGraph<'_>> for ReviewAgent<P>
+impl<P> Agent<HabeasDomain> for ReviewAgent<'_, P>
 where
     P: std::ops::Deref + Send + Sync,
     P::Target: CompletionProvider + Sized,
 {
     fn run<'a>(
         &'a self,
-        request: AgentRequest<HabeasNode>,
-        inspection: &'a ValidationContext<'_, ReviewGraph<'_>>,
+        request: AgentRequest<NodeId<HabeasDomain>>,
+        inspection: &'a ValidationContext<'_, HabeasDomain>,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Value, std::io::Error>> + Send + 'a>,
     > {
         Box::pin(async move {
-            let graph = inspection.graph();
+            let graph = &self.1;
+            let cache = inspection.graph().cache();
             // A short lease exchange protects ownership, never an interaction.
             let (sources, usage) = graph
                 .conversation
@@ -295,9 +175,12 @@ where
             let result = async {
                 let mut mandatory = sources.model_mandatory_inputs();
                 for input in &request.inputs {
-                    let rendered: Value =
+                    let mut rendered: Value =
                         serde_json::from_str(&input.text).map_err(io::Error::other)?;
-                    let selector = input.node.selector()?;
+                    let selector = cache
+                        .node_data(input.node)
+                        .expect("supplied node")
+                        .selector()?;
                     let target = mandatory
                         .iter_mut()
                         .find(|value| InputSelector::from_input(value).as_ref() == Some(&selector))
@@ -306,6 +189,9 @@ where
                                 "SDK selected an input outside this review's mandatory set",
                             )
                         })?;
+                    if let Some(issues) = target.get("github_issues") {
+                        rendered["github_issues"] = issues.clone();
+                    }
                     *target = rendered;
                 }
                 let mut prompt = match &graph.operation {
@@ -324,11 +210,16 @@ where
                         let input = recorded_input(input);
                         if let Some(selector) = InputSelector::from_input(&input) {
                             inspection.observe_read(
-                                HabeasNode::from(&selector),
+                                cache.intern_node(HabeasNode::from(&selector)),
                                 input_fingerprint(&input),
                             );
                             for supplied in &request.inputs {
-                                if supplied.node.selector().ok().as_ref() == Some(&selector) {
+                                if cache
+                                    .node_data(supplied.node)
+                                    .and_then(|data| data.selector().ok())
+                                    .as_ref()
+                                    == Some(&selector)
+                                {
                                     inspection.observe_read(
                                         supplied.node.clone(),
                                         supplied.fingerprint.clone(),
@@ -455,31 +346,9 @@ async fn run(
         },
     };
     let node = HabeasNode::review_subject(&subject);
-    let mut mandatory = sources
-        .model_mandatory_inputs()
-        .into_iter()
-        .filter_map(|input| {
-            InputSelector::from_input(&input).map(|selector| (HabeasNode::from(&selector), input))
-        })
-        .collect::<Vec<_>>();
-    // The reviewed source is also the current node for citation/site reviews.
-    if !matches!(node, HabeasNode::Requirement(_)) {
-        let selector = node.selector()?;
-        let input = mandatory
-            .iter()
-            .find(|(id, _)| id.selector().ok().as_ref() == Some(&selector))
-            .ok_or_else(|| io::Error::other("missing review subject input"))?
-            .1
-            .clone();
-        mandatory.push((node.clone(), input));
-    }
-    let graph = ReviewGraph {
-        root: sources.root.clone(),
-        node: node.clone(),
-        definitions: crate::evidence::load_definitions(&sources.root)?,
-        outlines: sources.outlines.clone(),
-        mandatory,
-        reference_set: sources.reference_set.clone(),
+    let graph = sources.domain.clone();
+    let node = graph.cache().intern_node(node);
+    let state = Arc::new(ReviewState {
         system: match &operation {
             Operation::Assess => initial_prompt(sources)?.system,
             Operation::Verify(judgment, rationale) => {
@@ -487,17 +356,20 @@ async fn run(
             }
         },
         operation,
-        conversation: Arc::new(Mutex::new(Some((sources, usage)))),
-        agent_failure: Arc::new(Mutex::new(None)),
+        conversation: Mutex::new(Some((sources, usage))),
+        agent_failure: Mutex::new(None),
+    });
+    let agent = ReviewAgent(provider, state.clone());
+    let review = Review {
+        node,
+        state: state.clone(),
     };
-    let agent = ReviewAgent(provider);
-    let review = Review { node };
     let verified =
         match trust_but_verify::agent_runtime::verify_with_agent(&graph, &agent, review).await {
             Ok(result) => result,
             Err(ValidationError::Graph(error)) => return Err(error),
             Err(ValidationError::Agent(message)) => {
-                return Err(graph
+                return Err(state
                     .agent_failure
                     .lock()
                     .expect("review error lock")
@@ -511,7 +383,24 @@ async fn run(
         };
     Ok(trust_but_verify::graph::Record::new(
         verified.version().cloned(),
-        verified.dependencies().to_vec(),
+        verified
+            .dependencies()
+            .iter()
+            .map(|dep| {
+                use trust_but_verify::graph::Dependency;
+                match dep {
+                    Dependency::Node(id, fp) => Dependency::Node(
+                        (*graph.cache().node_data(*id).unwrap()).clone(),
+                        fp.clone(),
+                    ),
+                    Dependency::OutgoingEdges(id, label, fp) => Dependency::OutgoingEdges(
+                        (*graph.cache().node_data(*id).unwrap()).clone(),
+                        label.clone(),
+                        fp.clone(),
+                    ),
+                }
+            })
+            .collect(),
         verified.into_output(),
     ))
 }
@@ -525,27 +414,24 @@ mod tests {
     };
     use std::collections::VecDeque;
 
+    // {test}`requirements.sdk.habeas.graph_discovery`
+    // {test}`requirements.sdk.habeas.implementation-edge`
     // {test}`requirements.sdk.graph.node_path_method`
     // {test}`requirements.sdk.graph.domain_types`
     // {test}`requirements.sdk.graph.validation-context.tracked_inspection`
     #[test]
-    fn review_graph_delegates_unprepared_sources_and_paths_to_the_domain() {
+    fn domain_shares_discovery_snapshots_with_tracked_reads() {
         let root = inputs::tests::project();
-        fs::write(root.path().join("src/lib.rs"), "fn helper() { call(); }\n").unwrap();
+        fs::write(
+            root.path().join("src/lib.rs"),
+            "// {impl}`requirements.ready`\nfn helper() { call(); }\n",
+        )
+        .unwrap();
         let subject =
             HabeasNode::Requirement(crate::sdk::RequirementId("requirements.ready".into()));
-        let graph = ReviewGraph {
-            root: root.path().into(),
-            node: subject.clone(),
-            definitions: crate::evidence::load_definitions(root.path()).unwrap(),
-            outlines: OutlineCache::default(),
-            mandatory: vec![],
-            reference_set: "fixture".into(),
-            system: "fixture".into(),
-            operation: Operation::Assess,
-            conversation: Arc::new(Mutex::new(None)),
-            agent_failure: Arc::new(Mutex::new(None)),
-        };
+        let graph = HabeasDomain::discover(root.path()).unwrap();
+        let outlines = graph.outlines.clone();
+        let subject = graph.cache().intern_node(subject);
         assert_eq!(
             graph.node_path(&subject).segments(),
             ["requirement", "requirements.ready"]
@@ -555,10 +441,24 @@ mod tests {
             item: "fn[helper]".into(),
         };
         let item =
-            trust_but_verify::outline::OutlineId::new("src/lib.rs", "fn[helper]".into()).unwrap();
+            trust_but_verify::outline::OutlineData::new("src/lib.rs", "fn[helper]".into()).unwrap();
         let source = graph.source_node(&item).unwrap();
         assert_eq!(source, HabeasNode::from(&selector));
-        assert!(std::ptr::eq(graph.cache(), graph.domain().cache()));
+        let source = graph.cache().intern_node(source);
+        assert_eq!(
+            graph
+                .outgoing_edges(&subject, HabeasEdgeLabel::Implements)
+                .unwrap(),
+            [source]
+        );
+        let path = root.path().join("src/lib.rs");
+        let snapshot =
+            trust_but_verify::outline::OutlineContent::from_path(graph.cache(), &path).unwrap();
+        fs::write(&path, "fn edited() {}").unwrap();
+        let reread =
+            trust_but_verify::outline::OutlineContent::from_path(&outlines.validation, &path)
+                .unwrap();
+        assert_eq!(snapshot.text(), reread.text());
         assert_eq!(
             graph.node_path(&source).segments(),
             ["source", "repo", "src/lib.rs", "fn[helper]"]
@@ -568,7 +468,11 @@ mod tests {
         let delivered = inspection.read(&source).unwrap();
         assert_eq!(
             serde_json::from_str::<Value>(&delivered.format()).unwrap(),
-            selector.to_model_input(&graph.domain().node_content(&source).unwrap().resolved)
+            selector.to_model_input(
+                &selector
+                    .resolve(&graph.root, &graph.definitions, &graph.outlines)
+                    .unwrap()
+            )
         );
         assert!(delivered.format().contains("call();"));
         assert_eq!(
@@ -588,7 +492,11 @@ mod tests {
             file: "src/lib.rs".into(),
             item: "fn[missing]".into(),
         });
-        assert!(inspection.read(&missing).is_err());
+        assert!(
+            inspection
+                .read(&graph.cache().intern_node(missing))
+                .is_err()
+        );
         assert_eq!(inspection.dependencies().len(), 1);
     }
 
@@ -602,7 +510,7 @@ mod tests {
     // {test}`requirements.sdk.graph.evidence.evidence_storage`
     // {test}`requirements.sdk.habeas.evidence_format.loading`
     #[tokio::test]
-    async fn review_graph_persists_and_reuses_a_negative_validation_through_the_sdk() {
+    async fn domain_persists_and_reuses_a_negative_validation_through_the_sdk() {
         use trust_but_verify::graph as validation;
 
         let root = inputs::tests::project();
@@ -610,32 +518,24 @@ mod tests {
         let mut sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
         let mut usage = UsageLog::start(state.path(), root.path(), "requirements.ready").unwrap();
         let node = HabeasNode::Requirement(crate::sdk::RequirementId("requirements.ready".into()));
-        let graph = ReviewGraph {
-            root: root.path().into(),
-            node: node.clone(),
-            definitions: crate::evidence::load_definitions(root.path()).unwrap(),
-            outlines: sources.outlines.clone(),
-            mandatory: sources
-                .model_mandatory_inputs()
-                .into_iter()
-                .map(|input| {
-                    let selector = InputSelector::from_input(&input).unwrap();
-                    (HabeasNode::from(&selector), input)
-                })
-                .collect(),
-            reference_set: sources.reference_set.clone(),
+        let graph = sources.domain.clone();
+        let state = Arc::new(ReviewState {
             system: initial_prompt(&sources).unwrap().system,
             operation: Operation::Assess,
-            conversation: Arc::new(Mutex::new(Some((&mut sources, &mut usage)))),
-            agent_failure: Arc::new(Mutex::new(None)),
-        };
+            conversation: Mutex::new(Some((&mut sources, &mut usage))),
+            agent_failure: Mutex::new(None),
+        });
         let provider = Arc::new(script(vec![(
             "submit_judgment",
             json!({"determination":false,"rationale":"The readiness case is missing."}),
         )]));
-        let agent = Arc::new(ReviewAgent(provider.clone()));
-        let review = || Review { node: node.clone() };
+        let agent = Arc::new(ReviewAgent(provider.clone(), state.clone()));
         let path = node.evidence_path(root.path()).unwrap();
+        let node = graph.cache().intern_node(node);
+        let review = || Review {
+            node,
+            state: state.clone(),
+        };
         assert_eq!(review().source_node_id(), node);
         assert_eq!(review().criterion_path().segments(), ["review"]);
         assert_eq!(review().version().as_str(), crate::sdk::REVIEW_VERSION);
@@ -812,11 +712,7 @@ mod tests {
         );
         let definitions = crate::evidence::load_definitions(root.path()).unwrap();
         let outlines = OutlineCache::default();
-        let graph = HabeasDomain {
-            root: root.path(),
-            definitions: &definitions,
-            outlines: &outlines,
-        };
+        let graph = HabeasDomain::new(root.path(), &definitions, &outlines);
         assert!(
             !record
                 .is_current(&graph, &crate::sdk::review_version())
@@ -995,11 +891,7 @@ mod tests {
             };
             let definitions = crate::evidence::load_definitions(root.path()).unwrap();
             let outlines = crate::inputs::OutlineCache::default();
-            let graph = HabeasDomain {
-                root: root.path(),
-                definitions: &definitions,
-                outlines: &outlines,
-            };
+            let graph = HabeasDomain::new(root.path(), &definitions, &outlines);
             let decoded = crate::evidence_format::decode(&old, &node).unwrap();
             for version in ["*", crate::sdk::REVIEW_VERSION] {
                 let mut native = crate::evidence_format::encode(&decoded).unwrap();
@@ -1011,7 +903,10 @@ mod tests {
                 assert_eq!(findings(), legacy_findings, "{label}");
                 let before = fs::read(&path).unwrap();
                 let loaded = graph
-                    .load_evidence(&node, &crate::sdk::review_criterion())
+                    .load_evidence(
+                        &graph.cache().intern_node(node.clone()),
+                        &crate::sdk::review_criterion(),
+                    )
                     .await
                     .unwrap()
                     .unwrap();
@@ -1050,7 +945,10 @@ mod tests {
                 let before = fs::read(&path).unwrap();
                 assert!(
                     graph
-                        .load_evidence(&node, &crate::sdk::review_criterion())
+                        .load_evidence(
+                            &graph.cache().intern_node(node.clone()),
+                            &crate::sdk::review_criterion()
+                        )
                         .await
                         .is_err()
                 );
@@ -1131,7 +1029,10 @@ mod tests {
                 let before = fs::read(&path).unwrap();
                 assert!(
                     graph
-                        .load_evidence(&node, &crate::sdk::review_criterion())
+                        .load_evidence(
+                            &graph.cache().intern_node(node.clone()),
+                            &crate::sdk::review_criterion()
+                        )
                         .await
                         .unwrap()
                         .is_some()
@@ -1148,7 +1049,10 @@ mod tests {
                 let before = fs::read(&path).unwrap();
                 assert!(
                     graph
-                        .load_evidence(&node, &crate::sdk::review_criterion())
+                        .load_evidence(
+                            &graph.cache().intern_node(node.clone()),
+                            &crate::sdk::review_criterion()
+                        )
                         .await
                         .is_err()
                 );
@@ -1168,7 +1072,10 @@ mod tests {
                 assert_eq!(findings().len(), 1, "{label}: {:?}", findings());
                 assert!(
                     graph
-                        .load_evidence(&node, &crate::sdk::review_criterion())
+                        .load_evidence(
+                            &graph.cache().intern_node(node.clone()),
+                            &crate::sdk::review_criterion()
+                        )
                         .await
                         .is_err()
                 );
@@ -1176,14 +1083,20 @@ mod tests {
             fs::write(&path, b"malformed JSON").unwrap();
             assert!(
                 graph
-                    .load_evidence(&node, &crate::sdk::review_criterion())
+                    .load_evidence(
+                        &graph.cache().intern_node(node.clone()),
+                        &crate::sdk::review_criterion()
+                    )
                     .await
                     .is_err()
             );
             assert_eq!(fs::read(&path).unwrap(), b"malformed JSON");
             crate::evidence_format::write_atomic(&path, &old).unwrap();
             let loaded = graph
-                .load_evidence(&node, &crate::sdk::review_criterion())
+                .load_evidence(
+                    &graph.cache().intern_node(node.clone()),
+                    &crate::sdk::review_criterion(),
+                )
                 .await
                 .unwrap()
                 .unwrap();

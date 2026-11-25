@@ -156,15 +156,25 @@ impl AuthoringSubject {
 
     /// Prepares the subject's sources and mandatory inputs.
     // {impl}`requirements.authoring.mandatory_inputs`
+    #[cfg(test)]
     fn sources(&self, root: &Path) -> io::Result<AssessmentSources> {
+        self.domain_sources(crate::sdk::HabeasDomain::discover(root)?)
+    }
+
+    fn domain_sources(&self, domain: crate::sdk::HabeasDomain) -> io::Result<AssessmentSources> {
         match self {
-            Self::Definition(name) => AssessmentSources::prepare(root, name),
-            Self::Citation { file, item } => AssessmentSources::prepare_citation(root, file, item),
+            Self::Definition(name) => {
+                let github = crate::github::GithubIssues::from_env(&domain.root);
+                AssessmentSources::prepare_with_context(domain, name, github)
+            }
+            Self::Citation { file, item } => {
+                AssessmentSources::prepare_citation(domain, file, item)
+            }
             Self::Site {
                 requirement,
                 file,
                 item,
-            } => AssessmentSources::prepare_site(root, requirement, file, item),
+            } => AssessmentSources::prepare_site(domain, requirement, file, item),
         }
     }
 }
@@ -356,17 +366,22 @@ fn usage_state_root(root: &Path) -> io::Result<PathBuf> {
 // {impl}`requirements.authoring.policy`
 // {impl}`requirements.authoring.provider_backoff`
 pub(crate) async fn prepare_assessment(
-    root: &Path,
+    domain: crate::sdk::HabeasDomain,
     subject: &AuthoringSubject,
     config: &ResolvedAuthoringConfig,
     policy: AssessmentPolicy,
     mut cancellation: watch::Receiver<Option<&'static str>>,
     first_request_finished: Option<Box<dyn FnOnce() + Send>>,
 ) -> io::Result<PendingAssessment> {
-    let root = fs::canonicalize(root)?;
+    let root = domain.root.clone();
     let state = usage_state_root(&root)?;
     let mut usage = UsageLog::start(&state, &root, &subject.label())?;
-    usage.record.subject_kind = subject.kind_noun(&root).map(str::to_owned);
+    usage.record.subject_kind = match subject {
+        AuthoringSubject::Definition(name) => domain.definitions.get(name).map(|d| d.kind.noun()),
+        AuthoringSubject::Citation { .. } => Some("citation review"),
+        AuthoringSubject::Site { .. } => Some("site review"),
+    }
+    .map(str::to_owned);
     usage.save()?;
     if let Some(finished) = first_request_finished {
         usage.on_first_request(finished);
@@ -379,7 +394,7 @@ pub(crate) async fn prepare_assessment(
                 cancellation.borrow().unwrap_or("evidence authoring cancelled"),
             ))
         }
-        result = configured_record(&root, subject, config, policy, &mut usage) => result,
+        result = configured_record(domain, subject, config, policy, &mut usage) => result,
         signal = tokio::signal::ctrl_c() => {
             match signal {
                 Ok(()) => Err(io::Error::new(io::ErrorKind::Interrupted, "evidence authoring cancelled")),
@@ -450,8 +465,14 @@ async fn configured_assessment(
     let config = config::resolve_authoring(root, selection)?;
     let policy = config.effective_policy(policy);
     let parsed = AuthoringSubject::parse(subject);
-    let (determination, evidence) =
-        configured_record(root, &parsed, &config, policy, usage).await?;
+    let (determination, evidence) = configured_record(
+        crate::sdk::HabeasDomain::discover(root)?,
+        &parsed,
+        &config,
+        policy,
+        usage,
+    )
+    .await?;
     let json = format!("{}\n", serde_json::to_string_pretty(&evidence)?);
     let evidence_path = match output {
         EvidenceOutput::File => {
@@ -491,7 +512,7 @@ async fn configured_assessment(
 // {impl}`requirements.authoring.read_denial.mandatory`
 // {impl}`requirements.authoring.adaptive`
 async fn configured_record(
-    root: &Path,
+    domain: crate::sdk::HabeasDomain,
     subject: &AuthoringSubject,
     config: &ResolvedAuthoringConfig,
     policy: AssessmentPolicy,
@@ -504,7 +525,9 @@ async fn configured_record(
     usage.record.policy = Some(policy.name());
     // Mandatory inputs are prepared, and an unreadable one reported, before
     // connecting to the provider.
-    let sources = subject.sources(root)?;
+    let project_root = domain.root.clone();
+    let root = project_root.as_ref();
+    let sources = subject.domain_sources(domain)?;
     if matches!(&config.backend, config::BackendConfig::Openai(openai) if openai.model() == "adaptive")
     {
         return adaptive::assess(root, subject, config, sources, usage, policy).await;
@@ -557,7 +580,7 @@ async fn assess_subject(
         return Ok(first);
     }
     let mut log = followup_log(state, root, subject, usage, "second assessment")?;
-    let result = match followup_sources(root, subject, &mut log) {
+    let result = match followup_sources(&sources.domain, subject, &mut log) {
         Ok(mut sources) => assess(provider, &mut sources, &mut log).await,
         Err(error) => Err(error),
     };
@@ -584,7 +607,7 @@ async fn assess_subject(
     let less_kind = describe(&less);
     let less_rationale = less.1["rationale"].as_str().unwrap_or_default().to_owned();
     let mut log = followup_log(state, root, subject, usage, "verification")?;
-    let result = match followup_sources(root, subject, &mut log) {
+    let result = match followup_sources(&sources.domain, subject, &mut log) {
         Ok(mut sources) => {
             verify(
                 provider,
@@ -742,11 +765,11 @@ fn followup_log(
 // {cite}`habeas:util`
 /// Fresh sources for an independent conversation, recorded in its usage.
 fn followup_sources(
-    root: &Path,
+    domain: &crate::sdk::HabeasDomain,
     subject: &AuthoringSubject,
     usage: &mut UsageLog,
 ) -> io::Result<AssessmentSources> {
-    let sources = subject.sources(root)?;
+    let sources = subject.domain_sources(domain.clone())?;
     usage.record.subject_kind = Some(sources.subject_kind.noun().into());
     usage.prepared("mandatory", sources.mandatory_inputs());
     usage.save()?;
@@ -4194,11 +4217,9 @@ mod tests {
                 .remove(&("src/lib.rs".into(), "fn[helper]".into()))
                 .unwrap();
         crate::citations::validate_review(
-            project.path(),
+            &crate::sdk::HabeasDomain::new(project.path(), &definitions, &outlines),
             &item.review_path(),
             &item,
-            &definitions,
-            &outlines,
             &mut errors,
         );
         assert!(
@@ -4288,11 +4309,13 @@ mod tests {
         let validate = |current: &crate::citations::CitationItem| {
             let mut errors = Vec::new();
             crate::citations::validate_review(
-                project.path(),
+                &crate::sdk::HabeasDomain::new(
+                    project.path(),
+                    &definitions,
+                    &crate::inputs::OutlineCache::default(),
+                ),
                 &current.review_path(),
                 current,
-                &definitions,
-                &crate::inputs::OutlineCache::default(),
                 &mut errors,
             );
             errors
@@ -4336,10 +4359,12 @@ mod tests {
         let mut errors = Vec::new();
         let references = crate::evidence::collect_references(project.path(), &mut errors);
         crate::citations::validate(
-            project.path(),
-            &definitions,
+            &crate::sdk::HabeasDomain::new(
+                project.path(),
+                &definitions,
+                &crate::inputs::OutlineCache::default(),
+            ),
             &references,
-            &crate::inputs::OutlineCache::default(),
             &[path],
             &mut errors,
             &mut |_| {},
@@ -5077,6 +5102,15 @@ no_match:
         assert_eq!(record["item"], "fn[check_two]");
         assert_eq!(record["queries"], json!(["checkers"]));
         assert_eq!(record["applies"], true);
+        let outside_scope = RecordingProvider::new(vec![(
+            "submit_judgment",
+            json!({"applies": false, "determination": true, "rationale": "Outside scope."}),
+        )]);
+        let mut sources = subject.sources(root).unwrap();
+        let (_, outside_record) = assess(&outside_scope, &mut sources, &mut usage)
+            .await
+            .unwrap();
+        assert_eq!(outside_record["applies"], false);
         assert_eq!(
             record["fixmes"],
             json!([{"item": "fn[check_two]", "commentary": "Panics."}])
@@ -5438,11 +5472,7 @@ no_match:
         fs::remove_file(root.path().join("src/details.txt")).unwrap();
         fs::write(root.path().join("md/requirements.md"), declaration).unwrap();
         let definitions = crate::evidence::load_definitions(root.path()).unwrap();
-        let domain = crate::sdk::HabeasDomain {
-            root: root.path(),
-            definitions: &definitions,
-            outlines: &sources.outlines,
-        };
+        let domain = crate::sdk::HabeasDomain::new(root.path(), &definitions, &sources.outlines);
         let entries = domain
             .reference_entries(&crate::sdk::RequirementId("requirements.ready".into()))
             .unwrap();
@@ -5501,11 +5531,7 @@ no_match:
                 .any(|input| input["item"] == "fn[api]")
         );
         let definitions = crate::evidence::load_definitions(root.path()).unwrap();
-        let domain = crate::sdk::HabeasDomain {
-            root: root.path(),
-            definitions: &definitions,
-            outlines: &tested.outlines,
-        };
+        let domain = crate::sdk::HabeasDomain::new(root.path(), &definitions, &tested.outlines);
         assert_eq!(
             tested.reference_set,
             crate::evidence::digest_entries(

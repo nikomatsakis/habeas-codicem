@@ -1,4 +1,4 @@
-use trust_but_verify::outline::OutlineId;
+use trust_but_verify::outline::OutlineData;
 
 // {test}`requirements.sdk.graph.search.TextMatch`
 // {test}`requirements.sdk.graph.search.SearchResults`
@@ -18,7 +18,7 @@ fn callers_can_construct_complete_and_partial_search_results() {
     assert_eq!(found.line, 7);
     assert_eq!(found.excerpt, "fn example() {}");
 
-    let address = OutlineId::new(path, "fn[example]".into()).unwrap();
+    let address = OutlineData::new(path, "fn[example]".into()).unwrap();
     let found = StructuralMatch::new(address.clone(), "example".into());
     let complete = SearchResults::new(vec![found], true);
     assert!(complete.complete);
@@ -33,13 +33,13 @@ fn callers_can_construct_complete_and_partial_search_results() {
 fn outline_addresses_validate_selectors_without_reading_paths() {
     let path = std::path::PathBuf::from("opaque/../é?key");
     for selector in ["", "fn[kept]", "mod[a%2Fb]/fn[kept]"] {
-        let address = OutlineId::new(path.clone(), selector.into()).unwrap();
+        let address = OutlineData::new(path.clone(), selector.into()).unwrap();
         assert_eq!(address.path, path);
         assert_eq!(address.selector, selector);
     }
     for selector in ["fn[missing", "fn[bad%ZZ]", "/fn[kept]"] {
         assert!(
-            OutlineId::new(path.clone(), selector.into()).is_err(),
+            OutlineData::new(path.clone(), selector.into()).is_err(),
             "{selector}"
         );
     }

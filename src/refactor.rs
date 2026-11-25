@@ -847,30 +847,45 @@ fn rewrite_sdk_dependencies(
             dependency
         {
             let node = HabeasNode::Requirement(id.clone());
-            let before = HabeasDomain {
-                root: &states.root,
-                definitions: &states.definitions_back,
-                outlines: &states.outlines_back,
-            };
+            let before = HabeasDomain::new(
+                &states.root,
+                &states.definitions_back,
+                &states.outlines_back,
+            );
             let targets = before
-                .outgoing_edges(&node, label.clone())
+                .outgoing_edges(&before.cache().intern_node(node.clone()), label.clone())
                 .map_err(|error| error.to_string())?
                 .iter()
-                .map(|target| states.mappings.sdk_node(target, true))
+                .map(|target| {
+                    states
+                        .mappings
+                        .sdk_node(&before.cache().node_data(*target).unwrap(), true)
+                })
                 .collect::<Vec<_>>();
-            if trust_but_verify::graph::edge_fingerprint(&before, &targets) != *fingerprint {
+            if trust_but_verify::graph::edge_fingerprint(
+                &before,
+                &targets
+                    .iter()
+                    .map(|t| before.cache().intern_node(t.clone()))
+                    .collect::<Vec<_>>(),
+            ) != *fingerprint
+            {
                 return Err(format!("SDK edge observation for {node:?} changed"));
             }
             let mapped_id =
                 RequirementId(states.mappings.name(&id.0).unwrap_or_else(|| id.0.clone()));
-            let after = HabeasDomain {
-                root: &states.root,
-                definitions: &states.definitions_post,
-                outlines: &states.outlines_post,
-            };
+            let after = HabeasDomain::new(
+                &states.root,
+                &states.definitions_post,
+                &states.outlines_post,
+            );
             let targets = targets
                 .iter()
-                .map(|target| states.mappings.sdk_node(target, false))
+                .map(|target| {
+                    after
+                        .cache()
+                        .intern_node(states.mappings.sdk_node(target, false))
+                })
                 .collect::<Vec<_>>();
             *fingerprint = trust_but_verify::graph::edge_fingerprint(&after, &targets);
             *id = mapped_id;

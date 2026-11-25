@@ -97,7 +97,7 @@ impl OutlineItems {
 }
 
 pub(crate) fn for_file(
-    cache: &trust_but_verify::domain::ValidationCache,
+    cache: &crate::inputs::SourceCache,
     path: &std::path::Path,
     source: &str,
 ) -> Result<OutlineItems, String> {

@@ -368,7 +368,7 @@ fn owning_site(
 /// violation query's matches only inside a site of its `within` query in
 /// the same snippet. A snippet that does not parse is an error.
 pub(crate) fn snippet_matches(
-    cache: &trust_but_verify::domain::ValidationCache,
+    cache: &crate::inputs::SourceCache,
     language: &str,
     rule: &StructuralRule,
     site_rule: Option<&StructuralRule>,

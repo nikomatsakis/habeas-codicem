@@ -1,9 +1,10 @@
 //! Fixed project tools; every delivered source read has a domain observation.
 use super::{Pages, ToolDelivery, ToolFactory, ToolSession};
 use crate::domain::NodeContents;
+use crate::domain::NodeId;
 
 use crate::graph::Dependency;
-use crate::outline::OutlineId;
+use crate::outline::OutlineData;
 use crate::sources::SourceScope;
 
 use crate::sources::StructuralQuery;
@@ -14,6 +15,20 @@ use serde_json::{Value, json};
 use std::io;
 
 use crate::sources::SourceProject as ProjectSources;
+
+const LIST_SOURCES: &str = "list_sources";
+const OUTLINE_SOURCE: &str = "outline_source";
+const SEARCH_TEXT: &str = "search_text";
+const SEARCH_STRUCTURE: &str = "search_structure";
+const FINISH_SEARCH: &str = "finish_search";
+
+pub(super) const TOOL_NAMES: &[&str] = &[
+    LIST_SOURCES,
+    OUTLINE_SOURCE,
+    SEARCH_TEXT,
+    SEARCH_STRUCTURE,
+    FINISH_SEARCH,
+];
 
 // {impl}`requirements.sdk.graph.search.windows`
 // {impl}`requirements.sdk.graph.search.omissions`
@@ -90,7 +105,7 @@ mod tests {
     }
 
     #[derive(Clone)]
-    struct Project(Arc<Mutex<State>>, crate::domain::ValidationCache);
+    struct Project(Arc<Mutex<State>>, crate::domain::ValidationCache<Self>);
 
     struct Content(String);
     impl NodeContents for Content {
@@ -102,7 +117,7 @@ mod tests {
         }
     }
     impl Domain for Project {
-        fn source_node(&self, item: &OutlineId) -> Result<String, crate::sources::SourceError> {
+        fn source_node(&self, item: &OutlineData) -> Result<String, crate::sources::SourceError> {
             let path = item.path.to_str().unwrap();
             if path == "unknown.txt" || item.selector == "line[unknown]" {
                 return Err(crate::sources::SourceError::Invalid(
@@ -115,22 +130,24 @@ mod tests {
             Ok(format!("{path}#{}", item.selector))
         }
 
-        fn cache(&self) -> &crate::domain::ValidationCache {
+        fn cache(&self) -> &crate::domain::ValidationCache<Self> {
             &self.1
         }
         type Error = io::Error;
-        type NodeId = String;
+        type NodeData = String;
         type NodeContent = Content;
         type EdgeLabel = ();
         // :::{cite} habeas:coverage
-        // Source-tool tests publish OutlineId addresses and retain mapped NodeIds
+        // Source-tool tests publish OutlineData addresses and retain mapped NodeIds
         // directly in dependencies. This required Domain method is unused in
         // those flows; stable-path and filesystem-storage tests use other domains.
         // :::
-        fn node_path(&self, id: &String) -> NodePath {
+        fn node_path(&self, id: &NodeId<Self>) -> NodePath {
+            let id = &*self.cache().node_data(*id).unwrap();
             NodePath::new(vec![id.clone()])
         }
-        fn node_content(&self, node: &String) -> io::Result<Content> {
+        fn node_content(&self, node: &NodeId<Self>) -> io::Result<Content> {
+            let node = &*self.cache().node_data(*node).unwrap();
             let mut state = self.0.lock().unwrap();
             state.reads += 1;
             state.read_nodes.push(node.clone());
@@ -142,19 +159,19 @@ mod tests {
         // :::{cite} habeas:coverage
         // This source-only fixture has no graph edges; graph-selection regressions use other fixtures.
         // :::
-        fn outgoing_edges(&self, _: &String, _: ()) -> io::Result<Vec<String>> {
+        fn outgoing_edges(&self, _: &NodeId<Self>, _: ()) -> io::Result<Vec<NodeId<Self>>> {
             Ok(Vec::new())
         }
         async fn load_evidence(
             &self,
-            _: &String,
+            _: &NodeId<Self>,
             _: &CriterionPath,
         ) -> io::Result<Option<Record<String>>> {
             Ok(self.0.lock().unwrap().record.clone())
         }
         async fn store_evidence(
             &self,
-            _: &String,
+            _: &NodeId<Self>,
             _: &CriterionPath,
             record: &Record<String>,
         ) -> io::Result<()> {
@@ -162,11 +179,11 @@ mod tests {
             Ok(())
         }
     }
-    struct ReadSource;
+    struct ReadSource(NodeId<Project>);
     impl Criterion<Project> for ReadSource {
         type Ok = String;
-        fn source_node_id(&self) -> String {
-            "source-node".into()
+        fn source_node_id(&self) -> NodeId<Project> {
+            self.0
         }
         fn criterion_path(&self) -> CriterionPath {
             CriterionPath::new(vec!["read".into()])
@@ -178,7 +195,7 @@ mod tests {
             self,
             cx: &mut ValidationContext<'_, Project>,
         ) -> Result<String, ValidationError<io::Error>> {
-            cx.read_source(&OutlineId {
+            cx.read_source(&OutlineData {
                 path: "source.txt".into(),
                 selector: String::new(),
             })
@@ -381,7 +398,10 @@ mod tests {
             let closed = session.dispatch("finish_search", &selected).await.unwrap();
             assert_eq!(
                 closed.dependencies,
-                [Dependency::Node(expected_id.clone(), expected.clone())]
+                [Dependency::Node(
+                    tools.domain.cache().intern_node(expected_id.clone()),
+                    expected.clone()
+                )]
             );
         }
         session
@@ -496,11 +516,19 @@ mod tests {
         assert_eq!(
             hits.matches
                 .iter()
-                .map(|h| (h.node.as_str(), h.span.start..h.span.end, h.text.as_str()))
+                .map(|h| (h.node, h.span.start..h.span.end, h.text.as_str()))
                 .collect::<Vec<_>>(),
             [
-                ("code.rs#fn[one]", 9..15, "call()"),
-                ("code.rs#fn[two]", 27..33, "call()")
+                (
+                    domain.cache().intern_node("code.rs#fn[one]".into()),
+                    9..15,
+                    "call()"
+                ),
+                (
+                    domain.cache().intern_node("code.rs#fn[two]".into()),
+                    27..33,
+                    "call()"
+                )
             ]
         );
         assert!(session.outstanding_searches().is_empty());
@@ -522,7 +550,7 @@ mod tests {
         for (hit, entry) in hits.matches.iter().zip(matches) {
             assert_eq!(entry["excerpt"], hit.text);
         }
-        let context = ValidationContext::new(&domain, String::new());
+        let context = ValidationContext::new(&domain, domain.cache().intern_node(String::new()));
         let read = session.read_node(&context, &matches[1]).unwrap();
         assert_eq!(
             read.dependencies,
@@ -533,7 +561,7 @@ mod tests {
         );
         let tag = &matches
             .iter()
-            .find(|m| m["node"] == "code.rs#fn[two]")
+            .find(|m| m["node"] == json!(hits.matches[1].node))
             .unwrap()["tag"];
         let expected = crate::outline::OutlineContent::from_path(domain.cache(), &code)
             .unwrap()
@@ -557,7 +585,10 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 selected.dependencies,
-                [Dependency::Node("code.rs#fn[two]".into(), expected.clone())]
+                [Dependency::Node(
+                    domain.cache().intern_node("code.rs#fn[two]".into()),
+                    expected.clone()
+                )]
             );
         }
         assert_eq!(domain.0.lock().unwrap().reads, 1);
@@ -584,12 +615,18 @@ mod tests {
         let mut session = SessionTools::new(tools.session());
         session.dispatch("list_sources", &json!({})).await.unwrap();
         let mut delivery = session
-            .dispatch("outline_source", &json!({"node":"code.rs#"}))
+            .dispatch(
+                "outline_source",
+                &json!({"node":tools.domain.cache().intern_node("code.rs#".into())}),
+            )
             .await
             .unwrap();
         std::fs::write(root.path().join("code.rs"), "fn changed() {}").unwrap();
         let again = session
-            .dispatch("outline_source", &json!({"node":"code.rs#"}))
+            .dispatch(
+                "outline_source",
+                &json!({"node":tools.domain.cache().intern_node("code.rs#".into())}),
+            )
             .await
             .unwrap();
         let first: Value = serde_json::from_str(&delivery.text).unwrap();
@@ -608,7 +645,10 @@ mod tests {
         loop {
             let page: Value = serde_json::from_str(&delivery.text).unwrap();
             assert!(delivery.dependencies.is_empty());
-            assert_eq!(page["node"], "code.rs#");
+            assert_eq!(
+                page["node"],
+                json!(tools.domain.cache().intern_node("code.rs#".into()))
+            );
             let chunk = page["items"].as_array().unwrap();
             assert!(!chunk.is_empty());
             items.extend(chunk.iter().cloned());
@@ -624,15 +664,18 @@ mod tests {
         for (i, item) in items.iter().enumerate() {
             assert_eq!(
                 item["node"],
-                if i == 0 {
+                json!(tools.domain.cache().intern_node(if i == 0 {
                     "code.rs#".into()
                 } else {
                     format!("code.rs#fn[{}]", names[i - 1])
-                }
+                }))
             );
             assert_eq!(item["kind"], if i == 0 { "" } else { "fn" });
         }
-        let context = ValidationContext::new(tools.domain.as_ref(), String::new());
+        let context = ValidationContext::new(
+            tools.domain.as_ref(),
+            tools.domain.as_ref().cache().intern_node(String::new()),
+        );
         let read = session.read_node(&context, &items[5]).unwrap();
         let text: Value = serde_json::from_str(&read.text).unwrap();
         assert_eq!(text["text"], "fn item_4() {}");
@@ -667,7 +710,9 @@ mod tests {
         std::fs::write(root.path().join("added.rs"), "").unwrap();
         let mut files = Vec::new();
         loop {
-            files.extend(serde_json::from_value::<Vec<String>>(page["files"].take()).unwrap());
+            files.extend(
+                serde_json::from_value::<Vec<NodeId<Project>>>(page["files"].take()).unwrap(),
+            );
             let Some(uuid) = page.get("next") else { break };
             let delivery = session
                 .dispatch("get_next_page", &json!({"uuid":uuid}))
@@ -680,7 +725,7 @@ mod tests {
             files,
             expected
                 .iter()
-                .map(|file| format!("{file}#"))
+                .map(|file| tools.domain.cache().intern_node(format!("{file}#")))
                 .collect::<Vec<_>>()
         );
     }
@@ -711,12 +756,33 @@ mod tests {
             results
                 .matches
                 .iter()
-                .map(|h| (h.node.as_str(), h.span.start..h.span.end, h.text.as_str()))
+                .map(|h| (h.node, h.span.start..h.span.end, h.text.as_str()))
                 .collect::<Vec<_>>(),
             [
-                ("code.rs#const[A]", 19..22, "hit"),
-                ("code.rs#const[B]", 42..45, "hit"),
-                ("code.rs#const[B]", 46..49, "hit")
+                (
+                    project
+                        .domain
+                        .cache()
+                        .intern_node("code.rs#const[A]".into()),
+                    19..22,
+                    "hit"
+                ),
+                (
+                    project
+                        .domain
+                        .cache()
+                        .intern_node("code.rs#const[B]".into()),
+                    42..45,
+                    "hit"
+                ),
+                (
+                    project
+                        .domain
+                        .cache()
+                        .intern_node("code.rs#const[B]".into()),
+                    46..49,
+                    "hit"
+                )
             ]
         );
         let mut session = SessionTools::new(project.session());
@@ -730,11 +796,14 @@ mod tests {
         assert_eq!(
             page["matches"],
             json!([
-                {"tag":"1", "node":"code.rs#const[A]", "excerpt":"const A: &str = \"éhit\";"},
-                {"tag":"2", "node":"code.rs#const[B]", "excerpt":"const B: &str = \"hit hit\";"}
+                {"tag":"1", "node":results.matches[0].node, "excerpt":"const A: &str = \"éhit\";"},
+                {"tag":"2", "node":results.matches[1].node, "excerpt":"const B: &str = \"hit hit\";"}
             ])
         );
-        let context = ValidationContext::new(project.domain.as_ref(), String::new());
+        let context = ValidationContext::new(
+            project.domain.as_ref(),
+            project.domain.as_ref().cache().intern_node(String::new()),
+        );
         let read = session.read_node(&context, &page["matches"][1]).unwrap();
         assert_eq!(
             read.dependencies,
@@ -761,7 +830,10 @@ mod tests {
         assert_eq!(
             finished.dependencies,
             [Dependency::Node(
-                "code.rs#const[B]".into(),
+                project
+                    .domain
+                    .cache()
+                    .intern_node("code.rs#const[B]".into()),
                 results.matches[1].item.fingerprint()
             )]
         );
@@ -784,8 +856,14 @@ mod tests {
                 .search_text(&TextQuery::new(pattern.into()))
                 .await
                 .unwrap();
-            assert_eq!(hits.matches[0].node, "fragment.rs#");
-            let cx = ValidationContext::new(project.domain.as_ref(), String::new());
+            assert_eq!(
+                hits.matches[0].node,
+                project.domain.cache().intern_node("fragment.rs#".into())
+            );
+            let cx = ValidationContext::new(
+                project.domain.as_ref(),
+                project.domain.as_ref().cache().intern_node(String::new()),
+            );
             let mut session = SessionTools::new(project.session());
             for (args, expected) in [
                 (json!({"pattern":pattern, "window_bytes":2}), small),
@@ -795,7 +873,7 @@ mod tests {
                 let page: Value = serde_json::from_str(&result.text).unwrap();
                 assert_eq!(
                     page["matches"],
-                    json!([{"tag":"1", "node":"fragment.rs#", "excerpt":expected}])
+                    json!([{"tag":"1", "node":hits.matches[0].node, "excerpt":expected}])
                 );
                 let read = session.read_node(&cx, &page["matches"][0]).unwrap();
                 let payload: Value = serde_json::from_str(&read.text).unwrap();
@@ -863,7 +941,10 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(hits.matches.len(), 1);
-            assert_eq!(hits.matches[0].node, expected);
+            assert_eq!(
+                hits.matches[0].node,
+                project.domain.cache().intern_node(expected.into())
+            );
         }
     }
 
@@ -934,7 +1015,10 @@ mod tests {
         std::fs::write(&path, code).unwrap();
         let full = &code[code.find("fn run").unwrap()..code.rfind("\n}").unwrap()];
         let project = ProjectSources::new(project(full), Sources::new(root.path()));
-        let context = ValidationContext::new(project.domain.as_ref(), String::new());
+        let context = ValidationContext::new(
+            project.domain.as_ref(),
+            project.domain.as_ref().cache().intern_node(String::new()),
+        );
         let mut session = SessionTools::new(project.session());
         for (window, expected) in [
             (4, "fn run() {...    hit(); hit();\n...    hit();\n...}"),
@@ -950,7 +1034,7 @@ mod tests {
             let page: Value = serde_json::from_str(&page.text).unwrap();
             assert_eq!(
                 page["matches"],
-                json!([{"tag":"1", "node":"runner.rs#impl[Runner]/fn[run]", "excerpt":expected}])
+                json!([{"tag":"1", "node":project.domain.cache().intern_node("runner.rs#impl[Runner]/fn[run]".into()), "excerpt":expected}])
             );
             let read = session.read_node(&context, &page["matches"][0]).unwrap();
             let read: Value = serde_json::from_str(&read.text).unwrap();
@@ -974,25 +1058,34 @@ mod tests {
         });
         let mut domain = domain;
         domain.1 = crate::domain::ValidationCache::with_agent(config);
-        let first = validation::refresh_evidence(&domain, ReadSource)
-            .await
-            .unwrap();
+        let first = validation::refresh_evidence(
+            &domain,
+            ReadSource(domain.cache().intern_node("source-node".into())),
+        )
+        .await
+        .unwrap();
         assert_eq!(first.output(), "first");
         assert_eq!(
             first.dependencies(),
             &[Dependency::Node(
-                "source-node".into(),
+                domain.cache().intern_node("source-node".into()),
                 Content("first".into()).fingerprint()
             )]
         );
-        let saved = validation::refresh_evidence(&domain, ReadSource)
-            .await
-            .unwrap();
+        let saved = validation::refresh_evidence(
+            &domain,
+            ReadSource(domain.cache().intern_node("source-node".into())),
+        )
+        .await
+        .unwrap();
         assert_eq!(saved.output(), "first");
         domain.0.lock().unwrap().text = "second".into();
-        let changed = validation::refresh_evidence(&domain, ReadSource)
-            .await
-            .unwrap();
+        let changed = validation::refresh_evidence(
+            &domain,
+            ReadSource(domain.cache().intern_node("source-node".into())),
+        )
+        .await
+        .unwrap();
         assert_eq!(changed.output(), "second");
     }
 
@@ -1006,11 +1099,12 @@ mod tests {
     #[test]
     fn direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns() {
         let domain = project("prepared contents");
-        let inspection = ValidationContext::new(&domain, ReadSource.source_node_id());
-        let supported = OutlineId::new("source.txt", String::new()).unwrap();
+        let inspection =
+            ValidationContext::new(&domain, domain.cache().intern_node("source-node".into()));
+        let supported = OutlineData::new("source.txt", String::new()).unwrap();
         for address in [
-            OutlineId::new("unknown.txt", String::new()).unwrap(),
-            OutlineId::new("source.txt", "line[unknown]".into()).unwrap(),
+            OutlineData::new("unknown.txt", String::new()).unwrap(),
+            OutlineData::new("source.txt", "line[unknown]".into()).unwrap(),
         ] {
             let error = inspection.read_source(&address).err().unwrap();
             assert!(error.to_string().contains("unsupported source item"));
@@ -1028,7 +1122,7 @@ mod tests {
         assert_eq!(
             inspection.dependencies(),
             [Dependency::Node(
-                "source-node".into(),
+                domain.cache().intern_node("source-node".into()),
                 returned.fingerprint()
             )]
         );
@@ -1132,7 +1226,7 @@ mod tests {
             assert_eq!(
                 selected.dependencies,
                 [Dependency::Node(
-                    format!("code.rs#{selector}"),
+                    domain.cache().intern_node(format!("code.rs#{selector}")),
                     snapshot.fingerprint()
                 )]
             );
@@ -1179,7 +1273,7 @@ mod tests {
         assert!(allowed.dependencies.is_empty());
         let outline: Value = serde_json::from_str(&allowed.text).unwrap();
         assert_eq!(&outline["node"], reference);
-        assert!(outline["items"][0]["node"].is_string());
+        assert!(outline["items"][0]["node"].is_u64());
         assert_eq!(outline["items"].as_array().unwrap().len(), 3);
         for args in [
             json!({"path":"ignored.txt"}),
@@ -1206,7 +1300,7 @@ mod tests {
             .await
             .unwrap();
         let outline: Value = serde_json::from_str(&recovered.text).unwrap();
-        assert!(outline["items"][0]["node"].is_string());
+        assert!(outline["items"][0]["node"].is_u64());
         assert_eq!(domain.0.lock().unwrap().reads, 0);
     }
 }
@@ -1214,11 +1308,10 @@ mod tests {
 impl<D: crate::domain::Domain> ToolFactory<D> for ProjectSources<D>
 where
     D::Error: std::fmt::Display,
-    D::NodeId: serde::Serialize + serde::de::DeserializeOwned + schemars::JsonSchema,
 {
     fn session<'a>(&'a self) -> Box<dyn ToolSession<D> + 'a>
     where
-        D::NodeId: 'a,
+        NodeId<D>: 'a,
         D::EdgeLabel: 'a,
     {
         Box::new(Session {
@@ -1236,7 +1329,6 @@ struct Session<'a, D: crate::domain::Domain> {
 impl<D: crate::domain::Domain> ToolSession<D> for Session<'_, D>
 where
     D::Error: std::fmt::Display,
-    D::NodeId: serde::Serialize + serde::de::DeserializeOwned + schemars::JsonSchema,
 {
     // {impl}`requirements.sdk.graph.validation-context.list_sources.mcp`
     // {impl}`requirements.sdk.graph.validation-context.list_sources.mcp.description`
@@ -1250,12 +1342,12 @@ where
     // {impl}`requirements.sdk.graph.search.finish_search.mcp.description`
     fn definitions(&self) -> io::Result<Vec<ToolDefinition>> {
         [
-            json!({"name":"list_sources","description":"List available project file nodes.", "parameters":{"type":"object","properties":{}}}),
-            json!({"name":"outline_source","description":"Inspect the outline of a listed file node.","parameters":super::tools::node_parameters::<D::NodeId>(None)}),
-            json!({"name":"search_text","description":"Find regular-expression matches in available files. Read selected nodes separately.","parameters":{"type":"object","required":["pattern"],"properties":{"pattern":{"type":"string"},"window_bytes":{"type":"integer","minimum":0,"default":128},"limit":{"type":"integer","minimum":0}}}}),
-            json!({"name":"search_structure","description":"Find structural matches in available files. Read selected nodes separately.","parameters":{"type":"object","required":["language","rule"],"properties":{"language":{"type":"string"},"rule":{"type":"object"},"limit":{"type":"integer","minimum":0}}}}),
+            json!({"name":LIST_SOURCES,"description":"List available project file nodes.", "parameters":{"type":"object","properties":{}}}),
+            json!({"name":OUTLINE_SOURCE,"description":"Inspect the outline of a listed file node.","parameters":super::tools::node_parameters::<NodeId<D>>(None)}),
+            json!({"name":SEARCH_TEXT,"description":"Find regular-expression matches in available files. Read selected nodes separately.","parameters":{"type":"object","required":["pattern"],"properties":{"pattern":{"type":"string"},"window_bytes":{"type":"integer","minimum":0,"default":128},"limit":{"type":"integer","minimum":0}}}}),
+            json!({"name":SEARCH_STRUCTURE,"description":"Find structural matches in available files. Read selected nodes separately.","parameters":{"type":"object","required":["language","rule"],"properties":{"language":{"type":"string"},"rule":{"type":"object"},"limit":{"type":"integer","minimum":0}}}}),
         json!({
-            "name":"finish_search",
+            "name":FINISH_SEARCH,
             "description":"Close a delivered search and record dependencies for snippets you used to justify your conclusion without an additional source read. search_id is the result's UUID and used is an array of its short entry tags, e.g. {\"search_id\":\"11111111-1111-4111-8111-111111111111\",\"used\":[\"1\"]}. Entries whose source you also read may be omitted; including them is harmless. Use used:[] when no entries qualify, including an empty search. Every delivered search must be finished before submission. The result is {search_id, finished:true}; no additional source is delivered.",
             "parameters":{"type":"object","properties":{
                 "search_id":{"type":"string","format":"uuid"},
@@ -1289,8 +1381,8 @@ where
         &'a mut self,
         name: &'a str,
         args: &'a Value,
-        pages: &'a mut Pages<D::NodeId, D::EdgeLabel>,
-    ) -> BoxFuture<'a, io::Result<ToolDelivery<D::NodeId, D::EdgeLabel>>> {
+        pages: &'a mut Pages<NodeId<D>, D::EdgeLabel>,
+    ) -> BoxFuture<'a, io::Result<ToolDelivery<NodeId<D>, D::EdgeLabel>>> {
         Box::pin(async move {
             let string = |key: &str| -> io::Result<&str> {
                 args[key]
@@ -1312,7 +1404,7 @@ where
             let scope = SourceScope::all();
             let limit = optional_number("limit")?;
             let (metadata, field, contents) = match name {
-                "list_sources" => {
+                LIST_SOURCES => {
                     let mut files = Vec::new();
                     for path in self
                         .tools
@@ -1321,11 +1413,12 @@ where
                         .await
                         .map_err(io::Error::other)?
                     {
-                        let id = OutlineId::root(&path);
+                        let id = OutlineData::root(&path);
                         let node = self
                             .tools
                             .domain
                             .source_node(&id)
+                            .map(|data| self.tools.domain.cache().intern_node(data))
                             .map_err(io::Error::other)?;
                         let reference = serde_json::to_value(&node)?;
                         self.files.insert(reference.clone(), path);
@@ -1333,8 +1426,9 @@ where
                     }
                     (json!({}), "files", json!(files))
                 }
-                "outline_source" => {
-                    let node: D::NodeId = super::tools::node_argument(args)?;
+                OUTLINE_SOURCE => {
+                    let node: NodeId<D> =
+                        super::tools::node_argument(self.tools.domain.as_ref(), args)?;
                     let id = serde_json::to_value(node)?;
                     let path = self
                         .files
@@ -1355,7 +1449,7 @@ where
                             .map_err(io::Error::other)?;
                     let mut items = Vec::new();
                     for item in &contents.outline().items {
-                        let id = OutlineId {
+                        let id = OutlineData {
                             path: path.clone(),
                             selector: item.selector.clone(),
                         };
@@ -1363,13 +1457,14 @@ where
                             .tools
                             .domain
                             .source_node(&id)
+                            .map(|data| self.tools.domain.cache().intern_node(data))
                             .map_err(io::Error::other)?;
                         items.push(json!({"node":serde_json::to_value(&node)?,"kind":item.kind}));
                     }
                     (json!({"node":id}), "items", json!(items))
                 }
-                "finish_search" => return pages.finish_search(args),
-                "search_text" => {
+                FINISH_SEARCH => return pages.finish_search(args),
+                SEARCH_TEXT => {
                     let window = optional_number("window_bytes")?.unwrap_or(128);
                     let mut query = TextQuery::new(string("pattern")?.to_owned());
                     query.limit = limit;
@@ -1379,7 +1474,7 @@ where
                         .await
                         .map_err(io::Error::other)?;
                     let mut groups = Vec::<(
-                        crate::sources::SearchHit<D::NodeId>,
+                        crate::sources::SearchHit<NodeId<D>>,
                         Vec<crate::outline::Span>,
                     )>::new();
                     let mut indices = std::collections::HashMap::new();
@@ -1415,7 +1510,7 @@ where
                         pages.search(crate::sources::SearchResults::new(entries, found.complete))
                     );
                 }
-                "search_structure" => {
+                SEARCH_STRUCTURE => {
                     let rule = args["rule"]
                         .as_object()
                         .ok_or_else(|| io::Error::other("rule must be an object"))?

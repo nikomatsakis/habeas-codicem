@@ -330,7 +330,7 @@ pub(crate) fn discover(
 /// `no_match` snippet none.
 // {impl}`requirements.ci.errors`
 fn validate_queries<'a>(
-    cache: &trust_but_verify::domain::ValidationCache,
+    cache: &crate::inputs::SourceCache,
     name: &str,
     declaration: &Declaration,
     queries: &'a [DeclaredQuery],
@@ -586,15 +586,14 @@ fn same_fixmes(recorded: &[SiteFixme], current: &[SiteFixme]) -> bool {
 #[allow(clippy::too_many_arguments)]
 // {impl}`requirements.references.site_review`
 pub(crate) fn validate(
-    root: &Path,
-    definitions: &BTreeMap<String, Declaration>,
+    domain: &crate::sdk::HabeasDomain,
     references: &[SourceReference],
     sites: &Sites,
-    outlines: &OutlineCache,
     files: &[PathBuf],
     errors: &mut Vec<String>,
     progress: &mut impl FnMut(InspectionProgress),
 ) {
+    let root = domain.root.as_ref();
     let total = sites.values().map(Vec::len).sum::<usize>() + files.len();
     let mut completed = 0;
     let mut advance = |progress: &mut dyn FnMut(InspectionProgress)| {
@@ -611,7 +610,7 @@ pub(crate) fn validate(
         let path = site.review_path();
         expected.insert(root.join(&path));
         if root.join(&path).exists() {
-            validate_review(root, &path, site, definitions, references, outlines, errors);
+            validate_review(domain, &path, site, references, errors);
         } else {
             errors.push(format!(
                 "{path}: missing site review of {} for {} {} at {}:{}",
@@ -639,14 +638,15 @@ pub(crate) fn validate(
 // {impl}`requirements.ci.errors`
 // {impl}`requirements.references.site_review`
 fn validate_review(
-    root: &Path,
+    domain: &crate::sdk::HabeasDomain,
     label: &str,
     site: &SiteItem,
-    definitions: &BTreeMap<String, Declaration>,
     references: &[SourceReference],
-    outlines: &OutlineCache,
     errors: &mut Vec<String>,
 ) {
+    let root = domain.root.as_ref();
+    let definitions = domain.definitions.as_ref();
+    let outlines = &domain.outlines;
     let content = match fs::read_to_string(root.join(label)) {
         Ok(content) => content,
         Err(error) => {
@@ -667,11 +667,6 @@ fn validate_review(
             file: site.file.clone(),
             item: site.item.clone(),
         });
-    let domain = crate::sdk::HabeasDomain {
-        root,
-        definitions,
-        outlines,
-    };
     let native = value.clone();
     let value = match crate::evidence_format::view(&value) {
         Ok(value) => value,

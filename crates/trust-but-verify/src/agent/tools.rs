@@ -1,6 +1,7 @@
 use super::*;
 use crate::domain::Domain;
 use crate::domain::NodeContents;
+use crate::domain::NodeId;
 use crate::graph::Dependency;
 
 use crate::procedure::Agent;
@@ -25,13 +26,13 @@ pub trait ToolSession<D: Domain>: Send {
         &'a mut self,
         name: &'a str,
         arguments: &'a Value,
-        pages: &'a mut Pages<D::NodeId, D::EdgeLabel>,
-    ) -> BoxFuture<'a, io::Result<ToolDelivery<D::NodeId, D::EdgeLabel>>>;
+        pages: &'a mut Pages<NodeId<D>, D::EdgeLabel>,
+    ) -> BoxFuture<'a, io::Result<ToolDelivery<NodeId<D>, D::EdgeLabel>>>;
 }
 
 pub(super) struct SessionTools<'a, D: Domain> {
     pub(super) extra: Box<dyn ToolSession<D> + 'a>,
-    pages: Pages<D::NodeId, D::EdgeLabel>,
+    pages: Pages<NodeId<D>, D::EdgeLabel>,
 }
 
 impl<'a, D: Domain> SessionTools<'a, D> {
@@ -52,12 +53,11 @@ impl<'a, D: Domain> SessionTools<'a, D> {
         &mut self,
         inspection: &ValidationContext<'_, D>,
         arguments: &Value,
-    ) -> io::Result<ToolDelivery<D::NodeId, D::EdgeLabel>>
+    ) -> io::Result<ToolDelivery<NodeId<D>, D::EdgeLabel>>
     where
         D::Error: std::fmt::Display,
-        D::NodeId: serde::de::DeserializeOwned,
     {
-        let node = node_argument(arguments)?;
+        let node = node_argument(inspection.graph(), arguments)?;
         let snapshot = inspection
             .prepare_read(&node)
             .map_err(|error| io::Error::other(error.to_string()))?;
@@ -72,7 +72,7 @@ impl<'a, D: Domain> SessionTools<'a, D> {
         &mut self,
         name: &str,
         args: &Value,
-    ) -> io::Result<ToolDelivery<D::NodeId, D::EdgeLabel>> {
+    ) -> io::Result<ToolDelivery<NodeId<D>, D::EdgeLabel>> {
         if name == "get_next_page" {
             return self.pages.get(args);
         }
@@ -85,7 +85,7 @@ pub trait ToolFactory<D: Domain>: Send + Sync {
     // {cite}`habeas:util`
     fn session<'a>(&'a self) -> Box<dyn ToolSession<D> + 'a>
     where
-        D::NodeId: 'a,
+        NodeId<D>: 'a,
         D::EdgeLabel: 'a;
 }
 
@@ -95,7 +95,7 @@ impl<D: Domain> ToolFactory<D> for NoTools {
     // {cite}`habeas:util`
     fn session<'a>(&'a self) -> Box<dyn ToolSession<D> + 'a>
     where
-        D::NodeId: 'a,
+        NodeId<D>: 'a,
         D::EdgeLabel: 'a,
     {
         Box::new(NoTools)
@@ -111,8 +111,8 @@ impl<D: Domain> ToolSession<D> for NoTools {
         &'a mut self,
         name: &'a str,
         _: &'a Value,
-        _: &'a mut Pages<D::NodeId, D::EdgeLabel>,
-    ) -> BoxFuture<'a, io::Result<ToolDelivery<D::NodeId, D::EdgeLabel>>> {
+        _: &'a mut Pages<NodeId<D>, D::EdgeLabel>,
+    ) -> BoxFuture<'a, io::Result<ToolDelivery<NodeId<D>, D::EdgeLabel>>> {
         Box::pin(async move { Err(io::Error::other(format!("unknown tool {name:?}"))) })
     }
 }
@@ -151,7 +151,6 @@ impl<P, T> ToolAgent<P, T> {
 impl<D, P, T> Agent<D> for ToolAgent<P, T>
 where
     D: Domain,
-    D::NodeId: serde::Serialize + serde::de::DeserializeOwned + schemars::JsonSchema,
     D::EdgeLabel: serde::de::DeserializeOwned + schemars::JsonSchema + PartialEq,
     D::Error: std::fmt::Display,
     P: CompletionProvider,
@@ -161,9 +160,26 @@ where
     // {impl}`requirements.sdk.graph.agent-harness.submission`
     fn run<'a>(
         &'a self,
-        request: AgentRequest<D::NodeId>,
+        request: AgentRequest<NodeId<D>>,
         inspection: &'a ValidationContext<'_, D>,
     ) -> BoxFuture<'a, Result<Value, std::io::Error>> {
+        self.run_with_domain_tools(request, inspection, &[])
+    }
+}
+
+impl<P: CompletionProvider, T> ToolAgent<P, T> {
+    pub(super) fn run_with_domain_tools<'a, D>(
+        &'a self,
+        request: AgentRequest<NodeId<D>>,
+        inspection: &'a ValidationContext<'_, D>,
+        domain_tools: &'a [std::sync::Arc<dyn crate::agent::RegisteredTool<D>>],
+    ) -> BoxFuture<'a, io::Result<Value>>
+    where
+        D: Domain,
+        D::EdgeLabel: serde::de::DeserializeOwned + schemars::JsonSchema + PartialEq,
+        D::Error: std::fmt::Display,
+        T: ToolFactory<D>,
+    {
         Box::pin(async move {
             let submit = request.submission_name.clone();
             let tools = SessionTools::new(self.tools.session());
@@ -190,6 +206,7 @@ where
             }
             let mut session = GraphSession {
                 inspection,
+                domain_tools,
                 tools,
                 pending,
                 parameters,
@@ -208,15 +225,15 @@ where
 // {impl}`requirements.sdk.graph.validation-context.shared_context`
 struct GraphSession<'a, 'd, D: Domain> {
     inspection: &'a ValidationContext<'d, D>,
+    domain_tools: &'a [std::sync::Arc<dyn crate::agent::RegisteredTool<D>>],
     tools: SessionTools<'a, D>,
-    pending: Vec<Dependency<D::NodeId, D::EdgeLabel>>,
+    pending: Vec<Dependency<NodeId<D>, D::EdgeLabel>>,
     parameters: Value,
 }
 
 impl<D> Conversation for GraphSession<'_, '_, D>
 where
     D: Domain,
-    D::NodeId: serde::Serialize + serde::de::DeserializeOwned + schemars::JsonSchema,
     D::EdgeLabel: serde::de::DeserializeOwned + schemars::JsonSchema + PartialEq,
     D::Error: std::fmt::Display,
 {
@@ -234,15 +251,32 @@ where
     fn tools(&self) -> io::Result<Vec<ToolDefinition>> {
         let mut tools: Vec<ToolDefinition> = [
             json!({"name":"read_node","description":"Read a graph node by its domain ID. Returns text and, when more remains, a next UUID. A delivered page records its enclosing node.",
-                "parameters":node_parameters::<D::NodeId>(None)}),
+                "parameters":node_parameters::<NodeId<D>>(None)}),
             json!({"name":"outgoing_edges","description":"Inspect a known node's outgoing targets for the requested label, making those targets available to read_node.",
-                "parameters":node_parameters::<D::NodeId>(Some(schemars::SchemaGenerator::subschema_for::<D::EdgeLabel>))}),
+                "parameters":node_parameters::<NodeId<D>>(Some(schemars::SchemaGenerator::subschema_for::<D::EdgeLabel>))}),
             json!({"name":"get_next_page","description":"Pass the UUID from next to read the next page in the same format. When next is absent, this is the last page.",
                 "parameters":{"type":"object","required":["uuid"],"properties":{"uuid":{"type":"string","format":"uuid"}}}}),
             json!({"name":"submit_result","description":"Finish by submitting your structured result in result. Exactly one accepted submission ends this call.",
                 "parameters":self.parameters}),
         ].into_iter().map(|tool| serde_json::from_value(tool).map_err(io::Error::other)).collect::<io::Result<_>>()?;
         tools.extend(self.tools.extra.definitions()?);
+        if self.domain_tools.is_empty() {
+            return Ok(tools);
+        }
+        let mut names: std::collections::HashSet<&str> =
+            tools.iter().map(|tool| tool.name.as_str()).collect();
+        names.extend(project_sources::TOOL_NAMES.iter().copied());
+        for tool in self.domain_tools {
+            if !names.insert(tool.name()) {
+                return Err(io::Error::other(format!(
+                    "duplicate agent tool name: {}",
+                    tool.name()
+                )));
+            }
+        }
+        for tool in self.domain_tools {
+            tools.push(tool.definition()?);
+        }
         Ok(tools)
     }
     // {cite}`habeas:util`
@@ -275,7 +309,7 @@ where
                 Ok(delivery.text)
             }
             "outgoing_edges" => {
-                let node = node_argument(arguments)?;
+                let node = node_argument(self.inspection.graph(), arguments)?;
                 let label: D::EdgeLabel =
                     serde_json::from_value(arguments["label"].clone()).map_err(io::Error::other)?;
                 let snapshot = self
@@ -288,6 +322,10 @@ where
                 Ok(json!({"targets":targets}).to_string())
             }
             _ => {
+                // {impl}`requirements.sdk.graph.agent-harness.domain_tool_inputs`
+                if let Some(tool) = self.domain_tools.iter().find(|tool| tool.name() == name) {
+                    return tool.call(self.inspection, arguments).await;
+                }
                 let delivery = self.tools.dispatch(name, arguments).await?;
                 self.pending.extend(delivery.dependencies);
                 Ok(delivery.text)
@@ -365,12 +403,17 @@ mod submission_tests {
 }
 
 // {impl}`requirements.sdk.graph.validation-context.node_reference`
-pub(super) fn node_argument<N: serde::de::DeserializeOwned>(args: &Value) -> io::Result<N> {
+pub(super) fn node_argument<D: Domain>(domain: &D, args: &Value) -> io::Result<NodeId<D>> {
     let node = args
         .get("node")
         .ok_or_else(|| io::Error::other("missing node ID"))?;
-    serde_json::from_value(node.clone())
-        .map_err(|err| io::Error::other(format!("invalid node ID: {err}")))
+    let id = serde_json::from_value(node.clone())
+        .map_err(|err| io::Error::other(format!("invalid node ID: {err}")))?;
+    domain
+        .cache()
+        .node_data(id)
+        .ok_or_else(|| io::Error::other("unassigned node ID"))?;
+    Ok(id)
 }
 
 // {impl}`requirements.sdk.graph.validation-context.node_reference`

@@ -151,6 +151,9 @@ async fn run_batch(
         .into_iter()
         .map(|subject| (assessment_kind(&inspection, &subject), subject))
         .collect::<Vec<_>>();
+    let mut domain =
+        crate::sdk::HabeasDomain::new(&root, &inspection.definitions, &inspection.outlines);
+    domain.populate_graph()?;
     let mut warmup = CacheWarmup::default();
     let (warmed, mut warmed_kinds) = tokio::sync::mpsc::unbounded_channel();
     let mut tasks = JoinSet::new();
@@ -170,7 +173,7 @@ async fn run_batch(
             let Some((kind, subject, warms)) = warmup.next(&mut subjects) else {
                 break;
             };
-            let root = root.clone();
+            let domain = domain.clone();
             let config = config.clone();
             let cancellation = cancellation.clone();
             let cancel = cancel.clone();
@@ -182,7 +185,7 @@ async fn run_batch(
             });
             tasks.spawn(async move {
                 let result = prepare_assessment(
-                    &root,
+                    domain,
                     &subject,
                     &config,
                     policy,

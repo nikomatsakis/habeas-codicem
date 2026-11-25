@@ -1,5 +1,7 @@
 //! Configure the SDK's supplied Bedrock, OpenAI, and Ollama agents.
 
+#[cfg(test)]
+use crate::domain::NodeId;
 use rig_core::{
     completion::{CompletionRequest, CompletionResponse, FinishReason, ToolDefinition},
     message::{Message, ToolResultContent, turn_failure},
@@ -30,7 +32,6 @@ pub mod providers;
 mod sources;
 #[path = "agent/tools.rs"]
 mod tools;
-use crate::agent::AgentConfig;
 #[cfg(test)]
 use crate::agent::{BedrockConfig, OllamaConfig, OptionValue};
 #[doc(hidden)]
@@ -72,13 +73,13 @@ where
     F: Fn(
             &crate::resource::OutlineId,
             &crate::source_engine::ParsedSource,
-        ) -> Result<Option<crate::graph::Dependency<D::NodeId, D::EdgeLabel>>, String>
+        ) -> Result<Option<crate::graph::Dependency<NodeId<D>, D::EdgeLabel>>, String>
         + Send
         + Sync,
 {
     fn session<'a>(&'a self) -> Box<dyn ToolSession<D> + 'a>
     where
-        D::NodeId: 'a,
+        NodeId<D>: 'a,
         D::EdgeLabel: 'a,
     {
         self.inner.session()

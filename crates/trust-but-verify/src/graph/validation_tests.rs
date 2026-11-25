@@ -1,5 +1,6 @@
 use crate::domain::Domain;
 use crate::domain::NodeContents;
+use crate::domain::NodeId;
 use crate::graph as validation;
 use crate::graph::*;
 use crate::request::Agent;
@@ -49,7 +50,7 @@ struct State {
 
 #[derive(Clone, Default)]
 struct Memory {
-    cache: crate::domain::ValidationCache,
+    cache: crate::domain::ValidationCache<Self>,
     state: Arc<Mutex<State>>,
     read_in_callback: bool,
     edges_in_callback: bool,
@@ -76,18 +77,24 @@ impl NodeContents for Content {
 }
 
 impl Domain for Memory {
-    fn cache(&self) -> &crate::domain::ValidationCache {
+    fn cache(&self) -> &crate::domain::ValidationCache<Self> {
         &self.cache
     }
-    type NodeId = u8;
+    type NodeData = u8;
     type EdgeLabel = u8;
 
     type Error = &'static str;
 
-    fn node_path(&self, node: &u8) -> NodePath {
+    fn node_path(&self, node: &NodeId<Self>) -> NodePath {
+        let node = &*self.cache().node_data(*node).unwrap();
         NodePath::new(vec![node.to_string()])
     }
-    fn outgoing_edges(&self, node: &u8, label: u8) -> Result<Vec<u8>, Self::Error> {
+    fn outgoing_edges(
+        &self,
+        node: &NodeId<Self>,
+        label: u8,
+    ) -> Result<Vec<NodeId<Self>>, Self::Error> {
+        let node = &*self.cache().node_data(*node).unwrap();
         let mut state = self.state.lock().unwrap();
         state.selections.push(*node);
         if state.fail_edges == Some(*node) {
@@ -99,13 +106,14 @@ impl Domain for Memory {
             .into_iter()
             .flatten()
             .filter(|(kind, _)| *kind == label)
-            .map(|(_, target)| *target)
+            .map(|(_, target)| self.cache().intern_node(*target))
             .collect())
     }
 
     type NodeContent = Content;
 
-    fn node_content(&self, node: &u8) -> Result<Content, Self::Error> {
+    fn node_content(&self, node: &NodeId<Self>) -> Result<Content, Self::Error> {
+        let node = &*self.cache().node_data(*node).unwrap();
         let mut state = self.state.lock().unwrap();
         state.reads.push(*node);
         if state.fail_read {
@@ -124,9 +132,10 @@ impl Domain for Memory {
 
     async fn load_evidence(
         &self,
-        node: &u8,
+        node: &NodeId<Self>,
         _: &CriterionPath,
     ) -> Result<Option<Record<u8, u8>>, Self::Error> {
+        let node = &*self.cache().node_data(*node).unwrap();
         let state = self.state.lock().unwrap();
         if state.fail_load {
             return Err("load");
@@ -135,10 +144,11 @@ impl Domain for Memory {
     }
     async fn store_evidence(
         &self,
-        node: &u8,
+        node: &NodeId<Self>,
         _: &CriterionPath,
         record: &Record<u8, u8>,
     ) -> Result<(), Self::Error> {
+        let node = &*self.cache().node_data(*node).unwrap();
         let mut state = self.state.lock().unwrap();
         if state.fail_store {
             return Err("store");
@@ -149,12 +159,12 @@ impl Domain for Memory {
 }
 
 struct Review {
-    node: u8,
+    node: NodeId<Memory>,
     revision: &'static str,
 }
 impl Criterion<Memory> for Review {
     type Ok = Assessment<()>;
-    fn source_node_id(&self) -> u8 {
+    fn source_node_id(&self) -> NodeId<Memory> {
         self.node
     }
     fn criterion_path(&self) -> CriterionPath {
@@ -179,7 +189,7 @@ impl Memory {
     where
         'd: 'a,
     {
-        let node = *ctx.node_id();
+        let node = *self.cache().node_data(*ctx.node_id()).unwrap();
         self.state.lock().unwrap().started.push(node);
         let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
         self.peak.fetch_max(active, Ordering::SeqCst);
@@ -187,7 +197,7 @@ impl Memory {
             tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         }
         if self.read_in_callback {
-            ctx.read(&node).map_err(ValidationError::Graph)?;
+            ctx.read(ctx.node_id()).map_err(ValidationError::Graph)?;
         }
         if self.edges_in_callback {
             ctx.successors(&1).map_err(ValidationError::Graph)?;
@@ -208,6 +218,37 @@ impl Memory {
             metadata: (),
         })
     }
+}
+
+// {test}`requirements.sdk.graph.validation-context.shared_context`
+#[tokio::test]
+async fn a_second_verification_starts_with_an_empty_trace() {
+    let mut graph = Memory {
+        read_in_callback: true,
+        ..Memory::default()
+    };
+    graph
+        .state
+        .lock()
+        .unwrap()
+        .contents
+        .insert(1, "subject".into());
+    let node = graph.cache().intern_node(1);
+    let review = || Review {
+        node,
+        revision: "v1",
+    };
+    let first = validation::verify(&graph, review()).await.unwrap();
+    assert_eq!(
+        first.dependencies(),
+        &[Dependency::Node(
+            graph.cache().intern_node(1),
+            fp("subject")
+        )]
+    );
+    graph.read_in_callback = false;
+    let second = validation::verify(&graph, review()).await.unwrap();
+    assert!(second.dependencies().is_empty());
 }
 
 // {test}`requirements.sdk.graph.evidence.checking_records`
@@ -236,8 +277,9 @@ async fn historical_freshness_reads_do_not_enter_the_replacement_trace() {
             ),
         );
     }
+    let node = graph.cache().intern_node(1);
     let review = || Review {
-        node: 1,
+        node,
         revision: "v1",
     };
     let old = validation::load_evidence(&graph, &review())
@@ -281,7 +323,7 @@ async fn runner_does_not_store_a_missing_agent_error_and_supports_intermediate_c
         validation::verify(
             &graph,
             Review {
-                node: 1,
+                node: graph.cache().intern_node(1),
                 revision: "v1"
             }
         )
@@ -299,7 +341,7 @@ async fn runner_does_not_store_a_missing_agent_error_and_supports_intermediate_c
         &graph,
         agent.as_ref(),
         Review {
-            node: 1,
+            node: graph.cache().intern_node(1),
             revision: "v1",
         },
     )
@@ -329,7 +371,7 @@ struct MockAgent {
 impl Agent<Memory> for MockAgent {
     fn run<'a>(
         &'a self,
-        request: AgentRequest<u8>,
+        request: AgentRequest<NodeId<Memory>>,
         inspection: &'a ValidationContext<'_, Memory>,
     ) -> BoxFuture<'a, Result<Value, std::io::Error>> {
         Box::pin(async move {
@@ -351,7 +393,12 @@ impl Agent<Memory> for MockAgent {
                 request
                     .inputs
                     .into_iter()
-                    .map(|input| (input.node, input.text))
+                    .map(|input| {
+                        (
+                            *inspection.graph().cache().node_data(input.node).unwrap(),
+                            input.text,
+                        )
+                    })
                     .collect(),
                 request.result_schema,
             ));
@@ -391,15 +438,31 @@ fn snapshots_record_exact_reads_and_retain_distinct_versions() {
         .unwrap()
         .contents
         .insert(1, "before".into());
-    let inspection = ValidationContext::new(&graph, 1);
+    let inspection = ValidationContext::new(&graph, graph.cache().intern_node(1));
     assert!(std::ptr::eq(inspection.graph(), &graph));
-    assert_eq!(inspection.graph().node_content(&1).unwrap().0, "before");
+    assert_eq!(
+        inspection
+            .graph()
+            .node_content(&graph.cache().intern_node(1))
+            .unwrap()
+            .0,
+        "before"
+    );
     assert!(inspection.dependencies().is_empty());
     graph.state.lock().unwrap().reads.clear();
-    assert_eq!(inspection.read(&1).unwrap().0, "before");
+    assert_eq!(
+        inspection
+            .read(&inspection.graph().cache().intern_node(1))
+            .unwrap()
+            .0,
+        "before"
+    );
     let earlier = inspection.dependencies();
     assert_eq!(
-        inspection.read_snapshot(&1).unwrap().fingerprint,
+        inspection
+            .read_snapshot(&inspection.graph().cache().intern_node(1))
+            .unwrap()
+            .fingerprint,
         fp("before")
     );
     graph
@@ -408,14 +471,27 @@ fn snapshots_record_exact_reads_and_retain_distinct_versions() {
         .unwrap()
         .contents
         .insert(1, "after".into());
-    assert_eq!(inspection.read(&1).unwrap().0, "after");
-    assert_eq!(earlier, [Dependency::Node(1, fp("before"))]);
-    assert!(inspection.read(&2).is_err());
+    assert_eq!(
+        inspection
+            .read(&inspection.graph().cache().intern_node(1))
+            .unwrap()
+            .0,
+        "after"
+    );
+    assert_eq!(
+        earlier,
+        [Dependency::Node(graph.cache().intern_node(1), fp("before"))]
+    );
+    assert!(
+        inspection
+            .read(&inspection.graph().cache().intern_node(2))
+            .is_err()
+    );
     assert_eq!(
         inspection.dependencies(),
         vec![
-            Dependency::Node(1, fp("before")),
-            Dependency::Node(1, fp("after"))
+            Dependency::Node(graph.cache().intern_node(1), fp("before")),
+            Dependency::Node(graph.cache().intern_node(1), fp("after"))
         ]
     );
     assert_eq!(graph.state.lock().unwrap().reads, vec![1, 1, 1, 2]);
@@ -468,7 +544,11 @@ fn a_matching_dependency_does_not_hide_a_later_changed_dependency() {
             state.edges.insert(1, vec![(7, 2)]);
         }
         let later = if edge_dependency {
-            Dependency::OutgoingEdges(1, 7, edge_fingerprint(&graph, &[2]))
+            Dependency::OutgoingEdges(
+                1,
+                7,
+                edge_fingerprint(&graph, &[graph.cache().intern_node(2)]),
+            )
         } else {
             Dependency::Node(2, fp("second"))
         };
@@ -626,17 +706,20 @@ fn wildcard_versions_still_check_inputs_and_errors() {
 // {test}`requirements.sdk.graph.validation-context.ValidationContext.successors`
 // {test}`requirements.sdk.graph.validation-context.ValidationContext.outgoing_edges`
 // {test}`requirements.sdk.graph.validation-context.ValidationContext.new`
+// {test}`requirements.sdk.graph.validation-context.ValidationContext.finish`
 #[test]
 fn labeled_selections_track_only_target_membership_without_reading_contents() {
     let graph = Memory::default();
-    let ctx = ValidationContext::new(&graph, 1);
-    assert_eq!(ctx.node_id(), &1);
-    let other = ctx.outgoing_edges(&9, 7).unwrap();
+    let ctx = ValidationContext::new(&graph, graph.cache().intern_node(1));
+    assert_eq!(ctx.node_id(), &graph.cache().intern_node(1));
+    let other = ctx
+        .outgoing_edges(&ctx.graph().cache().intern_node(9), 7)
+        .unwrap();
     assert!(other.content.is_empty());
     assert_eq!(
         ctx.dependencies(),
         [Dependency::OutgoingEdges(
-            9,
+            graph.cache().intern_node(9),
             7,
             edge_fingerprint(&graph, &[])
         )]
@@ -668,15 +751,38 @@ fn labeled_selections_track_only_target_membership_without_reading_contents() {
             .is_current(&graph, &CriterionVersion::new("v1"))
             .unwrap()
     );
-    let selected = ValidationContext::new(&graph, 1);
-    assert_eq!(selected.successors(&7).unwrap(), [5, 3, 5]);
+    let selected = ValidationContext::new(&graph, graph.cache().intern_node(1));
+    assert_eq!(
+        selected.successors(&7).unwrap(),
+        [5, 3, 5].map(|n| graph.cache().intern_node(n))
+    );
     graph.state.lock().unwrap().selections.clear();
-    let snapshot = selected.outgoing_edges(&1, 7).unwrap();
+    let snapshot = selected
+        .outgoing_edges(&selected.graph().cache().intern_node(1), 7)
+        .unwrap();
     assert_eq!(graph.state.lock().unwrap().selections, [1]);
-    assert_eq!(snapshot.content, [5, 3, 5]);
-    assert_eq!(snapshot.fingerprint, edge_fingerprint(&graph, &[3, 5]));
+    assert_eq!(
+        snapshot.content,
+        [5, 3, 5].map(|n| graph.cache().intern_node(n))
+    );
+    assert_eq!(
+        snapshot.fingerprint,
+        edge_fingerprint(
+            &graph,
+            &[graph.cache().intern_node(3), graph.cache().intern_node(5)]
+        )
+    );
     for changed in [vec![3], vec![3, 5, 9]] {
-        assert_ne!(snapshot.fingerprint, edge_fingerprint(&graph, &changed));
+        assert_ne!(
+            snapshot.fingerprint,
+            edge_fingerprint(
+                &graph,
+                &changed
+                    .into_iter()
+                    .map(|n| graph.cache().intern_node(n))
+                    .collect::<Vec<_>>()
+            )
+        );
     }
     selected.successors(&7).unwrap();
     let record = selected
@@ -687,7 +793,10 @@ fn labeled_selections_track_only_target_membership_without_reading_contents() {
         [Dependency::OutgoingEdges(
             1,
             7,
-            edge_fingerprint(&graph, &[3, 5])
+            edge_fingerprint(
+                &graph,
+                &[graph.cache().intern_node(3), graph.cache().intern_node(5)]
+            )
         )]
     );
     graph
@@ -738,7 +847,7 @@ fn labeled_selections_track_only_target_membership_without_reading_contents() {
 async fn caller_reuses_negative_answers_and_compares_revisions_explicitly() {
     let graph = Memory::default();
     let review = || Review {
-        node: 9,
+        node: graph.cache().intern_node(9),
         revision: "v1",
     };
     let value = validation::verify(&graph, review()).await.unwrap();
@@ -763,7 +872,7 @@ async fn caller_reuses_negative_answers_and_compares_revisions_explicitly() {
         validation::load_evidence(
             &graph,
             &Review {
-                node: 8,
+                node: graph.cache().intern_node(8),
                 revision: "v1"
             }
         )
@@ -772,7 +881,7 @@ async fn caller_reuses_negative_answers_and_compares_revisions_explicitly() {
         .is_none()
     );
     let v2 = Review {
-        node: 9,
+        node: graph.cache().intern_node(9),
         revision: "v2",
     };
     let old = validation::load_evidence(&graph, &v2)
@@ -805,7 +914,7 @@ async fn caller_reuses_negative_answers_and_compares_revisions_explicitly() {
     let legacy = validation::load_evidence(
         &graph,
         &Review {
-            node: 9,
+            node: graph.cache().intern_node(9),
             revision: "v2",
         },
     )
@@ -831,7 +940,7 @@ async fn resolution_storage_and_callback_errors_are_not_judgments() {
         validation::load_evidence(
             &graph,
             &Review {
-                node: 1,
+                node: graph.cache().intern_node(1),
                 revision: "v1"
             }
         )
@@ -841,7 +950,7 @@ async fn resolution_storage_and_callback_errors_are_not_judgments() {
     let value = validation::verify(
         &graph,
         Review {
-            node: 1,
+            node: graph.cache().intern_node(1),
             revision: "v1",
         },
     )
@@ -861,7 +970,7 @@ async fn resolution_storage_and_callback_errors_are_not_judgments() {
         validation::verify(
             &graph,
             Review {
-                node: 1,
+                node: graph.cache().intern_node(1),
                 revision: "v1"
             }
         )
@@ -879,7 +988,7 @@ async fn resolution_storage_and_callback_errors_are_not_judgments() {
 async fn dropped_builders_and_missing_agents_do_not_resolve_queued_inputs() {
     let graph = Memory::default();
     graph.state.lock().unwrap().fail_edges = Some(1);
-    let ctx = ValidationContext::new(&graph, 1);
+    let ctx = ValidationContext::new(&graph, graph.cache().intern_node(1));
     drop(
         ctx.ask::<Answer>()
             .contents_of_current_node()
@@ -919,7 +1028,7 @@ async fn explicit_insertions_preserve_order_repetition_and_selection_snapshots()
         state.edges.insert(1, vec![(7, 3), (8, 99), (7, 2), (7, 3)]);
     }
     let agent = MockAgent::default();
-    let ctx = ValidationContext::with_agent(&graph, 1, &agent);
+    let ctx = ValidationContext::with_agent(&graph, graph.cache().intern_node(1), &agent);
     let future = ctx
         .ask::<Answer>()
         .context(String::from("question"))
@@ -948,10 +1057,17 @@ async fn explicit_insertions_preserve_order_repetition_and_selection_snapshots()
     assert_eq!(
         ctx.dependencies(),
         vec![
-            Dependency::OutgoingEdges(1, 7, edge_fingerprint(&graph, &[2, 3])),
-            Dependency::Node(1, fp("subject")),
-            Dependency::Node(3, fp("implementation")),
-            Dependency::Node(2, fp("test")),
+            Dependency::OutgoingEdges(
+                graph.cache().intern_node(1),
+                7,
+                edge_fingerprint(
+                    &graph,
+                    &[graph.cache().intern_node(2), graph.cache().intern_node(3)]
+                )
+            ),
+            Dependency::Node(graph.cache().intern_node(1), fp("subject")),
+            Dependency::Node(graph.cache().intern_node(3), fp("implementation")),
+            Dependency::Node(graph.cache().intern_node(2), fp("test")),
         ]
     );
 }
@@ -976,7 +1092,7 @@ impl Context for CountingContext {
 async fn contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text() {
     let graph = Memory::default();
     let agent = MockAgent::default();
-    let ctx = ValidationContext::with_agent(&graph, 1, &agent);
+    let ctx = ValidationContext::with_agent(&graph, graph.cache().intern_node(1), &agent);
     let renders = Rc::new(Cell::new(0));
     let mut context = CountingContext {
         renders: renders.clone(),
@@ -1048,7 +1164,7 @@ async fn string_and_str_contexts_deliver_identical_prefixes_and_fingerprints() {
         state.edges.insert(1, vec![(7, 2)]);
     }
     let agent = MockAgent::default();
-    let ctx = ValidationContext::with_agent(&graph, 1, &agent);
+    let ctx = ValidationContext::with_agent(&graph, graph.cache().intern_node(1), &agent);
     for text in ["", "héllo\0\n\npolicy"] {
         ctx.ask::<Answer>().context(text.to_owned()).await.unwrap();
         ctx.ask::<Answer>().context(text).await.unwrap();
@@ -1094,7 +1210,7 @@ async fn string_and_str_contexts_deliver_identical_prefixes_and_fingerprints() {
         .contents_of_successors(7)
         .await
         .unwrap();
-    ValidationContext::with_agent(&graph, 2, &agent)
+    ValidationContext::with_agent(&graph, graph.cache().intern_node(2), &agent)
         .ask::<Answer>()
         .context("short-lived")
         .await
@@ -1299,7 +1415,7 @@ async fn shared_context_allows_independent_concurrent_agent_calls() {
         prefix_result: true,
         ..MockAgent::default()
     };
-    let ctx = ValidationContext::with_agent(&graph, 1, &agent);
+    let ctx = ValidationContext::with_agent(&graph, graph.cache().intern_node(1), &agent);
     let (first, second) = tokio::time::timeout(std::time::Duration::from_secs(1), async {
         futures::join!(
             ctx.ask::<Answer>().contents_of_current_node().into_future(),
@@ -1313,7 +1429,13 @@ async fn shared_context_allows_independent_concurrent_agent_calls() {
     assert_eq!(first.unwrap().n, 7);
     assert_eq!(second.unwrap().n, 11);
     assert_eq!(agent.requests.lock().unwrap().len(), 2);
-    assert_eq!(ctx.dependencies(), vec![Dependency::Node(1, fp("subject"))]);
+    assert_eq!(
+        ctx.dependencies(),
+        vec![Dependency::Node(
+            graph.cache().intern_node(1),
+            fp("subject")
+        )]
+    );
 }
 
 // {test}`requirements.sdk.domain`
@@ -1329,25 +1451,35 @@ async fn later_lighter_agent_calls_preserve_the_contexts_existing_trace() {
         (3, "direct after".into()),
     ]);
     let agent = MockAgent::default();
-    let ctx = ValidationContext::with_agent(&graph, 1, &agent);
+    let ctx = ValidationContext::with_agent(&graph, graph.cache().intern_node(1), &agent);
     fn assert_send_sync<T: Send + Sync>(_: &T) {}
     assert_send_sync(&ctx);
-    assert_eq!(ctx.read(&2).unwrap().0, "direct before");
+    assert_eq!(
+        ctx.read(&ctx.graph().cache().intern_node(2)).unwrap().0,
+        "direct before"
+    );
     let _: Answer = ctx
         .ask()
         .contents_of_current_node()
         .contents_of_successors(7)
         .await
         .unwrap();
-    assert_eq!(ctx.read(&3).unwrap().0, "direct after");
+    assert_eq!(
+        ctx.read(&ctx.graph().cache().intern_node(3)).unwrap().0,
+        "direct after"
+    );
     let retained = ctx.dependencies();
     assert_eq!(
         retained,
         vec![
-            Dependency::Node(2, fp("direct before")),
-            Dependency::OutgoingEdges(1, 7, edge_fingerprint(&graph, &[])),
-            Dependency::Node(1, fp("retained")),
-            Dependency::Node(3, fp("direct after")),
+            Dependency::Node(graph.cache().intern_node(2), fp("direct before")),
+            Dependency::OutgoingEdges(
+                graph.cache().intern_node(1),
+                7,
+                edge_fingerprint(&graph, &[])
+            ),
+            Dependency::Node(graph.cache().intern_node(1), fp("retained")),
+            Dependency::Node(graph.cache().intern_node(3), fp("direct after")),
         ]
     );
     assert_eq!(graph.state.lock().unwrap().reads, [2, 1, 3]);
@@ -1365,7 +1497,7 @@ async fn later_lighter_agent_calls_preserve_the_contexts_existing_trace() {
         )
         .unwrap()
         .dependencies,
-        retained
+        crate::graph::persist_dependencies(&graph, &retained)
     );
 }
 
@@ -1395,21 +1527,21 @@ async fn concurrent_single_node_validations_keep_separate_traces() {
         validation::verify(
             &graph,
             Review {
-                node: 1,
+                node: graph.cache().intern_node(1),
                 revision: "v1"
             }
         ),
         validation::verify(
             &graph,
             Review {
-                node: 2,
+                node: graph.cache().intern_node(2),
                 revision: "v1"
             }
         ),
         validation::verify(
             &graph,
             Review {
-                node: 3,
+                node: graph.cache().intern_node(3),
                 revision: "v1"
             }
         ),
@@ -1437,7 +1569,11 @@ async fn concurrent_single_node_validations_keep_separate_traces() {
             record.dependencies,
             vec![
                 Dependency::Node(*node, fp(format!("node {node}"))),
-                Dependency::OutgoingEdges(*node, 1, edge_fingerprint(&graph, &[99])),
+                Dependency::OutgoingEdges(
+                    *node,
+                    1,
+                    edge_fingerprint(&graph, &[graph.cache().intern_node(99)])
+                ),
             ]
         );
     }
@@ -1463,7 +1599,7 @@ async fn invalid_typed_submission_is_an_agent_error() {
         invalid: true,
         ..MockAgent::default()
     };
-    let ctx = ValidationContext::with_agent(&graph, 1, &agent);
+    let ctx = ValidationContext::with_agent(&graph, graph.cache().intern_node(1), &agent);
     assert!(matches!(
         ctx.ask::<Answer>().await,
         Err(ValidationError::Agent(_))
@@ -1473,7 +1609,7 @@ async fn invalid_typed_submission_is_an_agent_error() {
             &graph,
             &agent,
             Review {
-                node: 1,
+                node: graph.cache().intern_node(1),
                 revision: "v1"
             }
         )
@@ -1490,11 +1626,11 @@ async fn invalid_typed_submission_is_an_agent_error() {
 // {test}`requirements.sdk.graph.running-criteria.validate_node.errors`
 #[tokio::test]
 async fn criterion_decode_errors_are_execution_errors_and_false_is_a_completed_answer() {
-    struct ParseAnswer;
+    struct ParseAnswer(NodeId<Memory>);
     impl Criterion<Memory> for ParseAnswer {
         type Ok = bool;
-        fn source_node_id(&self) -> u8 {
-            1
+        fn source_node_id(&self) -> NodeId<Memory> {
+            self.0
         }
         fn criterion_path(&self) -> CriterionPath {
             CriterionPath::new(vec!["parsed-answer".into()])
@@ -1506,7 +1642,7 @@ async fn criterion_decode_errors_are_execution_errors_and_false_is_a_completed_a
             self,
             cx: &mut ValidationContext<'_, Memory>,
         ) -> Result<bool, ValidationError<&'static str>> {
-            let contents = cx.read(&1).map_err(ValidationError::Graph)?;
+            let contents = cx.read(cx.node_id()).map_err(ValidationError::Graph)?;
             serde_json::from_str(&contents.format()).map_err(ValidationError::Output)
         }
     }
@@ -1517,7 +1653,10 @@ async fn criterion_decode_errors_are_execution_errors_and_false_is_a_completed_a
         .unwrap()
         .contents
         .insert(1, "not JSON".into());
-    let error = validation::verify(&graph, ParseAnswer).await.err().unwrap();
+    let error = validation::verify(&graph, ParseAnswer(graph.cache().intern_node(1)))
+        .await
+        .err()
+        .unwrap();
     assert!(matches!(error, ValidationError::Output(error) if error.is_syntax()));
     assert!(graph.state.lock().unwrap().records.is_empty());
 
@@ -1527,9 +1666,14 @@ async fn criterion_decode_errors_are_execution_errors_and_false_is_a_completed_a
         .unwrap()
         .contents
         .insert(1, "false".into());
-    let answer = validation::verify(&graph, ParseAnswer).await.unwrap();
+    let answer = validation::verify(&graph, ParseAnswer(graph.cache().intern_node(1)))
+        .await
+        .unwrap();
     assert!(!answer.output());
-    assert_eq!(answer.dependencies(), &[Dependency::Node(1, fp("false"))]);
+    assert_eq!(
+        answer.dependencies(),
+        &[Dependency::Node(graph.cache().intern_node(1), fp("false"))]
+    );
     validation::store_evidence(&graph, &answer).await.unwrap();
     assert_eq!(graph.state.lock().unwrap().records[&1].output, json!(false));
 }
@@ -1581,18 +1725,18 @@ fn agent_errors_expose_the_agreed_string_payload() {
 async fn queued_reads_selection_and_rendering_fail_before_agent_invocation() {
     let graph = Memory::default();
     let agent = MockAgent::default();
-    let ctx = ValidationContext::with_agent(&graph, 1, &agent);
+    let ctx = ValidationContext::with_agent(&graph, graph.cache().intern_node(1), &agent);
     drop(ctx.ask::<Answer>().contents_of_current_node());
     assert!(agent.requests.lock().unwrap().is_empty());
     for edges in [vec![], vec![(8, 99)]] {
         graph.state.lock().unwrap().edges.insert(1, edges.clone());
-        let ctx = ValidationContext::with_agent(&graph, 1, &agent);
+        let ctx = ValidationContext::with_agent(&graph, graph.cache().intern_node(1), &agent);
         ctx.ask::<Answer>().contents_of_successors(7).await.unwrap();
         assert!(graph.state.lock().unwrap().reads.is_empty());
         assert_eq!(
             ctx.dependencies(),
             vec![Dependency::OutgoingEdges(
-                1,
+                graph.cache().intern_node(1),
                 7,
                 edge_fingerprint(&graph, &[])
             )]
@@ -1618,7 +1762,7 @@ async fn queued_reads_selection_and_rendering_fail_before_agent_invocation() {
         .contents
         .insert(1, "root".into());
     graph.state.lock().unwrap().fail_prepare = true;
-    let ctx = ValidationContext::with_agent(&graph, 1, &agent);
+    let ctx = ValidationContext::with_agent(&graph, graph.cache().intern_node(1), &agent);
     assert!(matches!(
         ctx.ask::<Answer>().contents_of_current_node().await,
         Err(ValidationError::Graph("render"))
@@ -1647,15 +1791,22 @@ fn direct_reads_return_complete_unicode_contents_and_snapshots() {
             .unwrap()
             .contents
             .insert(1, original.clone());
-        let inspection = ValidationContext::new(&graph, 1);
-        let snapshot = inspection.read_snapshot(&1).unwrap();
+        let inspection = ValidationContext::new(&graph, graph.cache().intern_node(1));
+        let snapshot = inspection
+            .read_snapshot(&inspection.graph().cache().intern_node(1))
+            .unwrap();
         assert_eq!(snapshot.content.format(), original);
         assert_eq!(snapshot.fingerprint, fp(original.clone()));
         assert_eq!(
             inspection.dependencies(),
-            vec![Dependency::Node(1, fp(original.clone()))]
+            vec![Dependency::Node(
+                graph.cache().intern_node(1),
+                fp(original.clone())
+            )]
         );
-        let contents = inspection.read(&1).unwrap();
+        let contents = inspection
+            .read(&inspection.graph().cache().intern_node(1))
+            .unwrap();
         assert_eq!(contents.format(), original);
         graph
             .state
@@ -1674,8 +1825,13 @@ fn direct_reads_return_complete_unicode_contents_and_snapshots() {
                 .is_current(&graph, &CriterionVersion::new("v1"))
                 .unwrap()
         );
-        let failed = ValidationContext::new(&graph, 1);
-        assert_eq!(failed.read(&9).unwrap_err(), "missing");
+        let failed = ValidationContext::new(&graph, graph.cache().intern_node(1));
+        assert_eq!(
+            failed
+                .read(&failed.graph().cache().intern_node(9))
+                .unwrap_err(),
+            "missing"
+        );
         assert!(failed.dependencies().is_empty());
     }
 }
@@ -1686,7 +1842,7 @@ fn direct_reads_return_complete_unicode_contents_and_snapshots() {
 // {test}`requirements.sdk.graph.domain_types`
 #[tokio::test]
 async fn enum_node_ids_distinguish_requirements_and_source_items_in_one_domain() {
-    #[derive(Clone, Debug, PartialEq, Eq)]
+    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
     enum ReviewNodeId {
         Requirement(Vec<String>),
         Source { file: String, selector: String },
@@ -1694,18 +1850,19 @@ async fn enum_node_ids_distinguish_requirements_and_source_items_in_one_domain()
     #[derive(Clone, Default)]
     struct ReviewDomain(
         Arc<Mutex<Vec<(ReviewNodeId, CriterionPath, Record<ReviewNodeId>)>>>,
-        crate::domain::ValidationCache,
+        crate::domain::ValidationCache<Self>,
     );
     impl Domain for ReviewDomain {
-        fn cache(&self) -> &crate::domain::ValidationCache {
+        fn cache(&self) -> &crate::domain::ValidationCache<Self> {
             &self.1
         }
         type Error = &'static str;
-        type NodeId = ReviewNodeId;
+        type NodeData = ReviewNodeId;
         type NodeContent = Content;
         type EdgeLabel = ();
 
-        fn node_path(&self, node: &ReviewNodeId) -> NodePath {
+        fn node_path(&self, node: &NodeId<Self>) -> NodePath {
+            let node = &*self.cache().node_data(*node).unwrap();
             NodePath::new(match node {
                 ReviewNodeId::Requirement(parts) => {
                     let mut path = vec!["requirement".into()];
@@ -1717,7 +1874,8 @@ async fn enum_node_ids_distinguish_requirements_and_source_items_in_one_domain()
                 }
             })
         }
-        fn node_content(&self, node: &ReviewNodeId) -> Result<Content, Self::Error> {
+        fn node_content(&self, node: &NodeId<Self>) -> Result<Content, Self::Error> {
+            let node = &*self.cache().node_data(*node).unwrap();
             Ok(Content(match node {
                 ReviewNodeId::Requirement(_) => "The domain defines its shared error type.".into(),
                 ReviewNodeId::Source { .. } => "fn validate() {}".into(),
@@ -1725,22 +1883,27 @@ async fn enum_node_ids_distinguish_requirements_and_source_items_in_one_domain()
         }
         fn outgoing_edges(
             &self,
-            node: &ReviewNodeId,
+            node: &NodeId<Self>,
             _: (),
-        ) -> Result<Vec<ReviewNodeId>, Self::Error> {
-            Ok(match node {
+        ) -> Result<Vec<NodeId<Self>>, Self::Error> {
+            let node = &*self.cache().node_data(*node).unwrap();
+            Ok((match node {
                 ReviewNodeId::Requirement(_) => vec![ReviewNodeId::Source {
                     file: "src/lib.rs".into(),
                     selector: "fn[validate]".into(),
                 }],
                 ReviewNodeId::Source { .. } => vec![],
             })
+            .into_iter()
+            .map(|data| self.cache().intern_node(data))
+            .collect())
         }
         async fn load_evidence(
             &self,
-            node: &ReviewNodeId,
+            node: &NodeId<Self>,
             criterion: &CriterionPath,
         ) -> Result<Option<Record<ReviewNodeId>>, Self::Error> {
+            let node = &*self.cache().node_data(*node).unwrap();
             Ok(self
                 .0
                 .lock()
@@ -1751,10 +1914,11 @@ async fn enum_node_ids_distinguish_requirements_and_source_items_in_one_domain()
         }
         async fn store_evidence(
             &self,
-            node: &ReviewNodeId,
+            node: &NodeId<Self>,
             criterion: &CriterionPath,
             record: &Record<ReviewNodeId>,
         ) -> Result<(), Self::Error> {
+            let node = &*self.cache().node_data(*node).unwrap();
             self.0
                 .lock()
                 .unwrap()
@@ -1770,35 +1934,57 @@ async fn enum_node_ids_distinguish_requirements_and_source_items_in_one_domain()
     let domain = ReviewDomain::default();
     assert!(domain.project_sources().is_none());
     let hierarchical = ReviewNodeId::Requirement(vec!["a".into(), "b".into(), "c".into()]);
-    let path = Domain::node_path(&domain, &hierarchical);
+    let fresh = ReviewDomain::default();
+    let path = Domain::node_path(&domain, &domain.cache().intern_node(hierarchical.clone()));
     assert_eq!(path.segments(), ["requirement", "a", "b", "c"]);
-    assert_eq!(path, Domain::node_path(&domain, &hierarchical));
     assert_eq!(
         path,
-        Domain::node_path(&ReviewDomain::default(), &hierarchical)
+        Domain::node_path(&domain, &fresh.cache().intern_node(hierarchical.clone()))
+    );
+    assert_eq!(
+        path,
+        Domain::node_path(&fresh, &fresh.cache().intern_node(hierarchical.clone()))
     );
 
     assert_ne!(requirement, source);
     assert_eq!(
-        domain.node_path(&requirement).segments(),
+        domain
+            .node_path(&domain.cache().intern_node(requirement.clone()))
+            .segments(),
         ["requirement", "sdk", "errors"]
     );
     assert_eq!(
-        domain.node_path(&source).segments(),
+        domain
+            .node_path(&domain.cache().intern_node(source.clone()))
+            .segments(),
         ["source", "src/lib.rs", "fn[validate]"]
     );
     assert_eq!(
-        domain.outgoing_edges(&requirement, ()).unwrap(),
-        [source.clone()]
+        domain
+            .outgoing_edges(&domain.cache().intern_node(requirement.clone()), ())
+            .unwrap(),
+        [domain.cache().intern_node(source.clone())]
     );
-    assert!(domain.outgoing_edges(&source, ()).unwrap().is_empty());
-    let inspection = ValidationContext::new(&domain, requirement.clone());
+    assert!(
+        domain
+            .outgoing_edges(&domain.cache().intern_node(source.clone()), ())
+            .unwrap()
+            .is_empty()
+    );
+    let inspection =
+        ValidationContext::new(&domain, domain.cache().intern_node(requirement.clone()));
     assert_eq!(
-        inspection.read(&requirement).unwrap().format(),
+        inspection
+            .read(&inspection.graph().cache().intern_node(requirement.clone()))
+            .unwrap()
+            .format(),
         "The domain defines its shared error type."
     );
     assert_eq!(
-        inspection.read(&source).unwrap().format(),
+        inspection
+            .read(&inspection.graph().cache().intern_node(source.clone()))
+            .unwrap()
+            .format(),
         "fn validate() {}"
     );
     let record = inspection
@@ -1811,18 +1997,22 @@ async fn enum_node_ids_distinguish_requirements_and_source_items_in_one_domain()
     let criterion = CriterionPath::new(vec!["implementation".into()]);
     assert!(
         domain
-            .load_evidence(&requirement, &criterion)
+            .load_evidence(&domain.cache().intern_node(requirement.clone()), &criterion)
             .await
             .unwrap()
             .is_none()
     );
     domain
-        .store_evidence(&requirement, &criterion, &record)
+        .store_evidence(
+            &domain.cache().intern_node(requirement.clone()),
+            &criterion,
+            &record,
+        )
         .await
         .unwrap();
     assert_eq!(
         domain
-            .load_evidence(&requirement, &criterion)
+            .load_evidence(&domain.cache().intern_node(requirement.clone()), &criterion)
             .await
             .unwrap()
             .unwrap()
@@ -1831,7 +2021,7 @@ async fn enum_node_ids_distinguish_requirements_and_source_items_in_one_domain()
     );
     assert!(
         domain
-            .load_evidence(&source, &criterion)
+            .load_evidence(&domain.cache().intern_node(source.clone()), &criterion)
             .await
             .unwrap()
             .is_none()

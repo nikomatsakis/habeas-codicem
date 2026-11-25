@@ -106,7 +106,7 @@ fn specified_exports() -> (Exports, BTreeMap<String, DeclarationLink<'static>>) 
                 );
                 let name = item.get(2).unwrap().as_str();
                 if let Some(target) = item.get(3) {
-                    let method = name.strip_suffix("()").expect("linked method name");
+                    let method = name.strip_suffix("()").unwrap_or(name);
                     let (chapter, requirement) = declaration_target(target.as_str());
                     linked_methods.push((method, chapter, requirement));
                 }
@@ -398,7 +398,23 @@ fn check_declaration(
                 .lines()
                 .any(|line| !line.is_empty() && !line.starts_with(':'))
         );
-        assert!(signature.starts_with("impl") && signature.contains(&format!("pub fn {method}")));
+        if link.members.contains(&format!("{method}()")) {
+            assert!(
+                signature.starts_with("impl") && signature.contains(&format!("pub fn {method}"))
+            );
+        } else {
+            let prefix = format!("type {method}:");
+            let associated_type = signature
+                .lines()
+                .map(str::trim)
+                .find(|line| line.starts_with(&prefix))
+                .expect("associated type declaration");
+            assert!(
+                normalize(&declaration).contains(&normalize(associated_type)),
+                "Linked declaration differs for {id}::{method}"
+            );
+            continue;
+        }
         declaration.push('\n');
         declaration.push_str(signature);
     }

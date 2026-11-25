@@ -301,14 +301,15 @@ pub(crate) fn same_citations(recorded: &[Citation], current: &[Citation]) -> boo
 // {impl}`requirements.ci.determination`
 // {impl}`requirements.ci.errors`
 pub(crate) fn validate(
-    root: &Path,
-    definitions: &BTreeMap<String, Declaration>,
+    domain: &crate::sdk::HabeasDomain,
     references: &[SourceReference],
-    outlines: &OutlineCache,
     files: &[PathBuf],
     errors: &mut Vec<String>,
     progress: &mut impl FnMut(InspectionProgress),
 ) {
+    let root = domain.root.as_ref();
+    let definitions = domain.definitions.as_ref();
+    let outlines = &domain.outlines;
     progress(InspectionProgress {
         stage: CITATION_STAGE,
         completed: 0,
@@ -331,7 +332,7 @@ pub(crate) fn validate(
         let path = item.review_path();
         expected.insert(root.join(&path));
         if root.join(&path).exists() {
-            validate_review(root, &path, item, definitions, outlines, errors);
+            validate_review(domain, &path, item, errors);
         } else {
             errors.push(format!(
                 "{path}: missing citation review for {} {} at {}:{}",
@@ -357,13 +358,14 @@ pub(crate) fn validate(
 /// Validates one review file against its current item.
 // {impl}`requirements.ci.errors`
 pub(crate) fn validate_review(
-    root: &Path,
+    domain: &crate::sdk::HabeasDomain,
     label: &str,
     item: &CitationItem,
-    definitions: &BTreeMap<String, Declaration>,
-    outlines: &OutlineCache,
     errors: &mut Vec<String>,
 ) {
+    let root = domain.root.as_ref();
+    let definitions = domain.definitions.as_ref();
+    let outlines = &domain.outlines;
     let content = match fs::read_to_string(root.join(label)) {
         Ok(content) => content,
         Err(error) => {
@@ -383,11 +385,6 @@ pub(crate) fn validate_review(
             file: item.file.clone(),
             item: item.item.clone(),
         });
-    let domain = crate::sdk::HabeasDomain {
-        root,
-        definitions,
-        outlines,
-    };
     let native = value.clone();
     let value = match crate::evidence_format::view(&value) {
         Ok(value) => value,

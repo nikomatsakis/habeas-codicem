@@ -1,3 +1,5 @@
+use trust_but_verify::domain::NodeId;
+use trust_but_verify::domain::ValidationCache;
 use trust_but_verify::{
     domain::{Domain, NodeContents},
     graph::{CriterionPath, Fingerprint, NodePath, Record},
@@ -5,10 +7,7 @@ use trust_but_verify::{
 };
 
 #[derive(Clone)]
-pub struct StoredGraph(
-    pub FileEvidenceStorage,
-    pub trust_but_verify::domain::ValidationCache,
-);
+pub struct StoredGraph(pub FileEvidenceStorage, pub ValidationCache<Self>);
 
 pub enum UnreadContents {}
 impl NodeContents for UnreadContents {
@@ -31,15 +30,16 @@ impl NodeContents for UnreadContents {
 }
 
 impl Domain for StoredGraph {
-    fn cache(&self) -> &trust_but_verify::domain::ValidationCache {
+    fn cache(&self) -> &ValidationCache<Self> {
         &self.1
     }
-    type NodeId = String;
+    type NodeData = String;
     type EdgeLabel = ();
 
     type Error = FileStorageError;
 
-    fn node_path(&self, node: &String) -> NodePath {
+    fn node_path(&self, node: &NodeId<Self>) -> NodePath {
+        let node = &*self.cache().node_data(*node).unwrap();
         NodePath::new(vec!["consumer".into(), node.clone()])
     }
     // :::{cite} habeas:coverage
@@ -48,20 +48,20 @@ impl Domain for StoredGraph {
     // an unwanted graph access, which this guard rejects. Traversal fixtures
     // separately exercise edge discovery.
     // :::
-    fn outgoing_edges(&self, _: &String, _: ()) -> Result<Vec<String>, Self::Error> {
+    fn outgoing_edges(&self, _: &NodeId<Self>, _: ()) -> Result<Vec<NodeId<Self>>, Self::Error> {
         panic!("storage operations must not discover graph edges")
     }
 
     async fn load_evidence(
         &self,
-        node: &String,
+        node: &NodeId<Self>,
         criterion: &CriterionPath,
     ) -> Result<Option<Record<String>>, Self::Error> {
         self.0.load(&self.node_path(node), criterion).await
     }
     async fn store_evidence(
         &self,
-        node: &String,
+        node: &NodeId<Self>,
         criterion: &CriterionPath,
         record: &Record<String>,
     ) -> Result<(), Self::Error> {
@@ -76,7 +76,7 @@ impl Domain for StoredGraph {
     // this guard would violate the no-content-read invariant of the test.
     // Other graph fixtures exercise content resolution.
     // :::
-    fn node_content(&self, _: &String) -> Result<UnreadContents, Self::Error> {
+    fn node_content(&self, _: &NodeId<Self>) -> Result<UnreadContents, Self::Error> {
         panic!("storage operations must not read graph contents")
     }
 }

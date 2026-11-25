@@ -331,7 +331,10 @@ Resolve an outline item to its graph node, read the contents, and record the obs
 
 ```rust,ignore
 impl<D: Domain> ValidationContext<'_, D> where D::Error: From<SourceError> {
-    pub fn read_source(&self, item: &OutlineData) -> Result<D::NodeContent, D::Error>;
+    pub fn read_source(
+        &self,
+        item: &OutlineData,
+    ) -> Result<D::NodeContent, D::Error>;
 }
 ```
 :::

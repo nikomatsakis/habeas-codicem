@@ -2,6 +2,7 @@
 
 use crate::domain::Domain;
 use crate::domain::NodeContents;
+use crate::domain::NodeId;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::future::Future;
@@ -187,12 +188,12 @@ impl<N, L> Record<N, L> {
     // {impl}`requirements.sdk.graph.evidence.checking_records`
     pub fn is_current<D>(&self, graph: &D, version: &CriterionVersion) -> Result<bool, D::Error>
     where
-        D: Domain<NodeId = N, EdgeLabel = L>,
+        D: Domain<NodeData = N, EdgeLabel = L>,
     {
         if !version.is_compatible_with(self.version.as_ref()) {
             return Ok(false);
         }
-        dependencies_are_current(graph, &self.dependencies)
+        dependencies_are_current(graph, &restore_dependencies(graph, &self.dependencies))
     }
 }
 
@@ -209,7 +210,7 @@ impl<N, L> Record<N, L> {
 ///
 /// ```compile_fail,E0616
 /// use trust_but_verify::{domain::Domain, graph::{CriterionPath, Fingerprinted}};
-/// fn change_source<D: Domain>(answer: &mut Fingerprinted<D, bool>, source: D::NodeId) {
+/// fn change_source<D: Domain>(answer: &mut Fingerprinted<D, bool>, source: trust_but_verify::domain::NodeId<D>) {
 ///     answer.source = source;
 /// }
 /// ```
@@ -237,17 +238,17 @@ impl<N, L> Record<N, L> {
 // {test}`requirements.sdk.graph.evidence.inputs`
 // {impl}`requirements.sdk.graph.evidence.inputs`
 pub struct Fingerprinted<D: Domain, O> {
-    source: D::NodeId,
+    source: NodeId<D>,
     criterion: CriterionPath,
     version: Option<CriterionVersion>,
-    dependencies: Vec<Dependency<D::NodeId, D::EdgeLabel>>,
+    dependencies: Vec<Dependency<NodeId<D>, D::EdgeLabel>>,
     output: O,
 }
 
 // {impl}`requirements.sdk.graph.evidence.inputs`
 impl<D: Domain, O> Fingerprinted<D, O> {
     /// The source node this answer concerns.
-    pub fn source_node_id(&self) -> &D::NodeId {
+    pub fn source_node_id(&self) -> &NodeId<D> {
         &self.source
     }
 
@@ -262,7 +263,7 @@ impl<D: Domain, O> Fingerprinted<D, O> {
     }
 
     /// Recorded node-content and successor-set observations.
-    pub fn dependencies(&self) -> &[Dependency<D::NodeId, D::EdgeLabel>] {
+    pub fn dependencies(&self) -> &[Dependency<NodeId<D>, D::EdgeLabel>] {
         &self.dependencies
     }
 
@@ -317,7 +318,7 @@ pub trait Criterion<D: Domain>: Send + Sized {
 
     /// The node this question is about.
     // {impl}`requirements.sdk.graph.criteria.criterion_trait.source_node_id`
-    fn source_node_id(&self) -> D::NodeId;
+    fn source_node_id(&self) -> NodeId<D>;
     /// Identify this question within the source node's saved evidence.
     // {impl}`requirements.sdk.graph.criteria.criterion_path`
     fn criterion_path(&self) -> CriterionPath;
@@ -384,7 +385,7 @@ pub fn load_evidence<D: Domain, V: Criterion<D>>(
             source: node,
             criterion: criterion_path,
             version: record.version,
-            dependencies: record.dependencies,
+            dependencies: restore_dependencies(domain, &record.dependencies),
             output,
         }))
     }
@@ -407,6 +408,7 @@ pub fn check_inputs<D: Domain, O>(
 /// Execute the criterion and return its completed answer and observed inputs.
 // {impl}`requirements.sdk.graph.running-criteria.verify`
 // {impl}`requirements.sdk.graph.running-criteria.verify.concurrent`
+// {impl}`requirements.sdk.graph.validation-context.shared_context`
 pub fn verify<D: Domain, V: Criterion<D>>(
     domain: &D,
     criterion: V,
@@ -446,10 +448,10 @@ pub fn store_evidence<D: Domain, O: Serialize>(
     // Encode before constructing the future: O needs no Sync or Clone.
     let encoded = serde_json::to_value(&inputs.output).map(|output| Record {
         version: inputs.version.clone(),
-        dependencies: inputs.dependencies.clone(),
+        dependencies: persist_dependencies(domain, &inputs.dependencies),
         output,
     });
-    let node = inputs.source.clone();
+    let node = inputs.source;
     let criterion_path = inputs.criterion.clone();
     async move {
         let record = encoded.map_err(ValidationError::Output)?;
@@ -460,9 +462,47 @@ pub fn store_evidence<D: Domain, O: Serialize>(
     }
 }
 
+// {impl}`requirements.sdk.graph.evidence.persisted_dependencies`
+fn map_dependencies<N, M, L: Clone>(
+    dependencies: &[Dependency<N, L>],
+    mut map: impl FnMut(&N) -> M,
+) -> Vec<Dependency<M, L>> {
+    dependencies
+        .iter()
+        .map(|dependency| match dependency {
+            Dependency::Node(node, fingerprint) => Dependency::Node(map(node), fingerprint.clone()),
+            Dependency::OutgoingEdges(node, label, fingerprint) => {
+                Dependency::OutgoingEdges(map(node), label.clone(), fingerprint.clone())
+            }
+        })
+        .collect()
+}
+
+fn restore_dependencies<D: Domain>(
+    domain: &D,
+    dependencies: &[Dependency<D::NodeData, D::EdgeLabel>],
+) -> Vec<Dependency<NodeId<D>, D::EdgeLabel>> {
+    map_dependencies(dependencies, |data| {
+        domain.cache().intern_node(data.clone())
+    })
+}
+
+pub(crate) fn persist_dependencies<D: Domain>(
+    domain: &D,
+    dependencies: &[Dependency<NodeId<D>, D::EdgeLabel>],
+) -> Vec<Dependency<D::NodeData, D::EdgeLabel>> {
+    map_dependencies(dependencies, |id| {
+        (*domain
+            .cache()
+            .node_data(*id)
+            .expect("dependency belongs to this cache"))
+        .clone()
+    })
+}
+
 fn dependencies_are_current<D: Domain>(
     graph: &D,
-    dependencies: &[Dependency<D::NodeId, D::EdgeLabel>],
+    dependencies: &[Dependency<NodeId<D>, D::EdgeLabel>],
 ) -> Result<bool, D::Error> {
     for dependency in dependencies {
         let (current, previous) = match dependency {
@@ -486,7 +526,7 @@ fn dependencies_are_current<D: Domain>(
 /// JSON encodes segment boundaries and Unicode unambiguously; ordering and
 /// duplicate edges do not affect membership. Empty selections have a digest too.
 // {impl}`requirements.sdk.graph.validation-context.snapshot`
-pub fn edge_fingerprint<D: Domain>(graph: &D, targets: &[D::NodeId]) -> Fingerprint {
+pub fn edge_fingerprint<D: Domain>(graph: &D, targets: &[NodeId<D>]) -> Fingerprint {
     let mut paths = targets
         .iter()
         .map(|node| graph.node_path(node).segments)

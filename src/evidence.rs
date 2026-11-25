@@ -152,11 +152,18 @@ pub(crate) struct InspectionProgress {
 // {impl}`requirements.ci.book_source`
 // {impl}`requirements.ci.definition_errors`
 pub(crate) fn load_definitions(root: &Path) -> io::Result<BTreeMap<String, Declaration>> {
+    load_definition_snapshots(root, &OutlineCache::default())
+}
+
+pub(crate) fn load_definition_snapshots(
+    root: &Path,
+    outlines: &OutlineCache,
+) -> io::Result<BTreeMap<String, Declaration>> {
     let root = fs::canonicalize(root)?;
     // Any failure aborts, so this is not a validation site.
     let mut failures = Vec::new();
     let md_root = book_source_dir(&root, &mut failures);
-    let definitions = collect_definitions(&root, &md_root, &mut failures);
+    let definitions = collect_definitions(&root, &md_root, outlines, &mut failures);
     if failures.is_empty() {
         Ok(definitions)
     } else {
@@ -201,7 +208,8 @@ pub(crate) fn inspect_repository_with_progress(
         errors.push(error.to_string());
     }
     let md_root = book_source_dir(&root, &mut errors);
-    let definitions = collect_definitions(&root, &md_root, &mut errors);
+    let outlines = OutlineCache::default();
+    let definitions = collect_definitions(&root, &md_root, &outlines, &mut errors);
     let mut discovery_errors = errors.clone();
     // {impl}`requirements.test-coverage.setup.validation`
     // {impl}`requirements.test-coverage.setup.validation.static`
@@ -215,7 +223,7 @@ pub(crate) fn inspect_repository_with_progress(
         Vec::new()
     };
     let mut present = BTreeSet::new();
-    let outlines = OutlineCache::default();
+    let domain = crate::sdk::HabeasDomain::new(&root, &definitions, &outlines);
     // Citation reviews are validated against their source items below.
     let (review_files, ordinary_files): (Vec<_>, Vec<_>) = evidence_files
         .iter()
@@ -256,7 +264,7 @@ pub(crate) fn inspect_repository_with_progress(
         } else {
             errors.push(format!("{label}: no matching requirement or example"));
         }
-        validate_evidence_file(&root, file, expected, &definitions, &outlines, &mut errors);
+        validate_evidence_file(&domain, file, expected, &mut errors);
     }
     progress(InspectionProgress {
         stage: "evidence files",
@@ -315,20 +323,16 @@ pub(crate) fn inspect_repository_with_progress(
         &mut progress,
     );
     crate::citations::validate(
-        &root,
-        &definitions,
+        &domain,
         &references,
-        &outlines,
         &review_files,
         &mut errors,
         &mut progress,
     );
     crate::sites::validate(
-        &root,
-        &definitions,
+        &domain,
         &references,
         &sites,
-        &outlines,
         &site_files,
         &mut errors,
         &mut progress,
@@ -435,6 +439,7 @@ pub(crate) fn book_source_dir(root: &Path, errors: &mut Vec<String>) -> PathBuf 
 fn collect_definitions(
     root: &Path,
     md_root: &Path,
+    outlines: &OutlineCache,
     errors: &mut Vec<String>,
 ) -> BTreeMap<String, Declaration> {
     let mut definitions = BTreeMap::new();
@@ -448,13 +453,16 @@ fn collect_definitions(
         }
 
         let label = display_path(root, &file);
-        let content = match fs::read_to_string(&file) {
-            Ok(content) => content,
-            Err(error) => {
-                errors.push(format!("{label}: cannot read chapter: {error}"));
-                continue;
-            }
-        };
+        let snapshot =
+            match trust_but_verify::outline::OutlineContent::from_path(&outlines.validation, &file)
+            {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    errors.push(format!("{label}: cannot read chapter: {error}"));
+                    continue;
+                }
+            };
+        let content = snapshot.text();
         let namespace = chapter_namespace(relative);
         let blocks = definition_blocks(&content);
         crate::sites::validate_query_placement(&label, &content, &blocks, errors);
@@ -665,13 +673,14 @@ pub(crate) fn files_with_extension(
 // {impl}`requirements.ci.errors`
 // {impl}`requirements.ci.outcomes`
 fn validate_evidence_file(
-    root: &Path,
+    domain: &crate::sdk::HabeasDomain,
     path: &Path,
     expected: Option<&Declaration>,
-    definitions: &BTreeMap<String, Declaration>,
-    outlines: &OutlineCache,
     errors: &mut Vec<String>,
 ) {
+    let root = domain.root.as_ref();
+    let definitions = domain.definitions.as_ref();
+    let outlines = &domain.outlines;
     let label = display_path(root, path);
     let content = match fs::read_to_string(path) {
         Ok(content) => content,
@@ -693,11 +702,6 @@ fn validate_evidence_file(
             .to_string_lossy()
             .into_owned(),
     ));
-    let domain = crate::sdk::HabeasDomain {
-        root,
-        definitions,
-        outlines,
-    };
     let native = value.clone();
     let value = match crate::evidence_format::view(&value) {
         Ok(value) => value,
@@ -1425,7 +1429,8 @@ pub fn reference_set_digest_for(root: &Path, name: &str) -> io::Result<String> {
     // this definition's reference set.
     let mut ignored = Vec::new();
     let md_root = book_source_dir(&root, &mut ignored);
-    let definitions = collect_definitions(&root, &md_root, &mut ignored);
+    let outlines = OutlineCache::default();
+    let definitions = collect_definitions(&root, &md_root, &outlines, &mut ignored);
     let definition = definitions
         .get(name)
         .filter(|definition| definition.kind != DefinitionKind::Term)
@@ -1438,7 +1443,6 @@ pub fn reference_set_digest_for(root: &Path, name: &str) -> io::Result<String> {
     // A discovery failure aborts, so this is not a validation site.
     let mut failures = Vec::new();
     let files = discovered_files(&root, &mut failures);
-    let outlines = OutlineCache::default();
     let references = collect_references_with_progress(
         &outlines.validation,
         &root,
@@ -1960,7 +1964,7 @@ pub(crate) fn untracked_reference_files(root: &Path) -> io::Result<Vec<PathBuf>>
     let root = fs::canonicalize(root)?;
     let md_root = book_source_dir(&root, &mut Vec::new());
     let untracked = crate::authoring::access::load_discovery_sources(&root)?.untracked()?;
-    let cache = trust_but_verify::domain::ValidationCache::new();
+    let cache = crate::inputs::SourceCache::new();
     Ok(untracked
         .into_iter()
         .filter(|file| {
@@ -1976,7 +1980,7 @@ pub(crate) fn untracked_reference_files(root: &Path) -> io::Result<Vec<PathBuf>>
 
 // {impl}`requirements.ci.errors`
 pub(crate) fn collect_references_with_progress(
-    cache: &trust_but_verify::domain::ValidationCache,
+    cache: &crate::inputs::SourceCache,
     root: &Path,
     files: &[PathBuf],
     errors: &mut Vec<String>,
@@ -2035,11 +2039,7 @@ pub(crate) enum ReferenceContexts {
 }
 
 impl ReferenceContexts {
-    pub(crate) fn parse(
-        cache: &trust_but_verify::domain::ValidationCache,
-        file: &Path,
-        content: &str,
-    ) -> Self {
+    pub(crate) fn parse(cache: &crate::inputs::SourceCache, file: &Path, content: &str) -> Self {
         let profile = crate::outline::profile_for_path(file);
         if profile.language.is_none() || profile.name == "markdown" {
             return Self::Text {
@@ -2082,7 +2082,7 @@ impl ReferenceContexts {
 
 // {impl}`requirements.references.reference_contexts`
 pub(crate) fn file_references(
-    cache: &trust_but_verify::domain::ValidationCache,
+    cache: &crate::inputs::SourceCache,
     file: &Path,
     content: &str,
     in_book: bool,

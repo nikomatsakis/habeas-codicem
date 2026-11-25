@@ -207,7 +207,7 @@ pub mod defaults {
                 let node = &parsed.outline.nodes[innermost_node(&parsed.outline, text, &range)];
                 matches.push(map(
                     StructuralMatch {
-                        node: crate::outline::OutlineId {
+                        node: crate::outline::OutlineData {
                             path: PathBuf::from(&id.location),
                             selector: node.selector.clone(),
                         },

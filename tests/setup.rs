@@ -155,10 +155,13 @@ fn coverage_setup_preserves_custom_index_and_preflights_conflicts() {
         !advises_setup(&session_start(root, root)),
         "setup requires no separate coverage chapter"
     );
-    assert!(
-        fs::read_to_string(root.join("md/custom.md"))
-            .unwrap()
-            .starts_with("A custom report.")
+    assert_eq!(
+        fs::read_to_string(root.join("md/custom.md")).unwrap(),
+        "A custom report.\n\n:::{coverage-index}\n:::\n"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("md/SUMMARY.md")).unwrap(),
+        "# Summary\n\n- [Custom](custom.md)\n"
     );
     let temp = fixture();
     let root = temp.path();

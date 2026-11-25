@@ -5,6 +5,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use trust_but_verify::domain::Domain;
+use trust_but_verify::domain::NodeId;
 use trust_but_verify::graph as validation;
 use trust_but_verify::graph::*;
 use trust_but_verify::request::ValidationContext;
@@ -433,11 +434,11 @@ fn concurrent_readers_only_observe_complete_records_from_competing_writes() {
 mod stored_graph;
 use stored_graph::StoredGraph;
 
-struct StoredReview<'a>(&'a AtomicUsize);
+struct StoredReview<'a>(&'a AtomicUsize, NodeId<StoredGraph>);
 impl Criterion<StoredGraph> for StoredReview<'_> {
     type Ok = String;
-    fn source_node_id(&self) -> String {
-        "opaque/é".into()
+    fn source_node_id(&self) -> NodeId<StoredGraph> {
+        self.1
     }
     fn criterion_path(&self) -> CriterionPath {
         CriterionPath::new(vec!["review".into()])
@@ -464,13 +465,18 @@ async fn malformed_records_are_storage_errors_and_bad_outputs_are_output_errors(
     let graph = StoredGraph(FileEvidenceStorage::new(temp.path()), Default::default());
     assert!(graph.project_sources().is_none());
     let executions = AtomicUsize::new(0);
-    let value = validation::verify(&graph, StoredReview(&executions))
-        .await
-        .unwrap();
+    let value = validation::verify(
+        &graph,
+        StoredReview(&executions, graph.cache().intern_node("opaque/é".into())),
+    )
+    .await
+    .unwrap();
     assert_eq!(value.output(), "completed answer");
     validation::store_evidence(&graph, &value).await.unwrap();
-    let source = StoredReview(&executions).source_node_id();
-    let criterion = StoredReview(&executions).criterion_path();
+    let source =
+        StoredReview(&executions, graph.cache().intern_node("opaque/é".into())).source_node_id();
+    let criterion =
+        StoredReview(&executions, graph.cache().intern_node("opaque/é".into())).criterion_path();
     let path = graph.0.record_path(&graph.node_path(&source), &criterion);
     let mut saved = graph
         .load_evidence(&source, &criterion)
@@ -479,7 +485,11 @@ async fn malformed_records_are_storage_errors_and_bad_outputs_are_output_errors(
         .unwrap();
     std::fs::write(&path, "not JSON").unwrap();
     assert!(matches!(
-        validation::load_evidence(&graph, &StoredReview(&executions)).await,
+        validation::load_evidence(
+            &graph,
+            &StoredReview(&executions, graph.cache().intern_node("opaque/é".into()))
+        )
+        .await,
         Err(ValidationError::Graph(FileStorageError::Json(_)))
     ));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "not JSON");
@@ -492,13 +502,20 @@ async fn malformed_records_are_storage_errors_and_bad_outputs_are_output_errors(
         .unwrap();
     let before = std::fs::read(&path).unwrap();
     assert!(matches!(
-        validation::load_evidence(&graph, &StoredReview(&executions)).await,
+        validation::load_evidence(
+            &graph,
+            &StoredReview(&executions, graph.cache().intern_node("opaque/é".into()))
+        )
+        .await,
         Err(ValidationError::Output(_))
     ));
     assert_eq!(std::fs::read(&path).unwrap(), before);
-    let value = validation::verify(&graph, StoredReview(&executions))
-        .await
-        .unwrap();
+    let value = validation::verify(
+        &graph,
+        StoredReview(&executions, graph.cache().intern_node("opaque/é".into())),
+    )
+    .await
+    .unwrap();
     assert_eq!(value.output(), "completed answer");
     assert_eq!(executions.load(Ordering::SeqCst), 2);
     assert_eq!(std::fs::read(&path).unwrap(), before);
@@ -515,7 +532,7 @@ async fn consumer_delegates_evidence_storage_using_only_the_requested_nodes_path
         FileEvidenceStorage::new(temp.path().join("new")),
         Default::default(),
     );
-    let node = "opaque/é".to_string();
+    let node = graph.cache().intern_node("opaque/é".into());
     assert!(
         graph
             .load_evidence(&node, &criterion())
@@ -537,7 +554,7 @@ async fn consumer_delegates_evidence_storage_using_only_the_requested_nodes_path
     assert_eq!(loaded.output, record.output);
     assert!(
         graph
-            .load_evidence(&"other".into(), &criterion())
+            .load_evidence(&graph.cache().intern_node("other".into()), &criterion())
             .await
             .unwrap()
             .is_none()

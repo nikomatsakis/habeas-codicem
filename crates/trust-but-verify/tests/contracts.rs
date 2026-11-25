@@ -7,6 +7,8 @@ use std::{
 };
 use trust_but_verify::domain::Domain;
 use trust_but_verify::domain::NodeContents;
+use trust_but_verify::domain::NodeId;
+use trust_but_verify::domain::ValidationCache;
 use trust_but_verify::graph as validation;
 use trust_but_verify::graph::*;
 use trust_but_verify::request::ValidationContext;
@@ -32,7 +34,7 @@ fn domain_without_project_sources_leaves_source_tools_disabled() {
 fn domain_clones_share_the_first_successful_outline_for_each_path() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("lib.rs");
-    let cache = trust_but_verify::domain::ValidationCache::new();
+    let cache = ValidationCache::<Application>::new();
     assert!(trust_but_verify::outline::OutlineContent::from_path(&cache, &path).is_err());
 
     let original = "fn first() {}\nfn incomplete(\n";
@@ -66,7 +68,7 @@ fn domain_clones_share_the_first_successful_outline_for_each_path() {
             .text(),
         "fn other() {}"
     );
-    let id = trust_but_verify::outline::OutlineId::new(&path, "fn[first]".into()).unwrap();
+    let id = trust_but_verify::outline::OutlineData::new(&path, "fn[first]".into()).unwrap();
     let selected = trust_but_verify::outline::OutlineContent::from_id(peer.cache(), &id).unwrap();
     assert_eq!(selected.text(), "fn first() {}");
     let cached = trust_but_verify::outline::OutlineContent::from_path(peer.cache(), &path).unwrap();
@@ -98,7 +100,7 @@ fn callers_can_pair_content_with_its_fingerprint() {
 
 // Opaque graph identities and contents deliberately do not implement Serde,
 // Hash, or Display. Only completed answers need serialization.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Node(u8);
 struct Content(String);
 impl NodeContents for Content {
@@ -133,24 +135,30 @@ struct State {
 struct Application(
     Arc<Mutex<State>>,
     BTreeMap<u8, NodePath>,
-    trust_but_verify::domain::ValidationCache,
+    ValidationCache<Self>,
 );
 
 impl Domain for Application {
-    fn cache(&self) -> &trust_but_verify::domain::ValidationCache {
+    fn cache(&self) -> &ValidationCache<Self> {
         &self.2
     }
-    type NodeId = Node;
+    type NodeData = Node;
     type EdgeLabel = u8;
     type Error = &'static str;
 
-    fn node_path(&self, node: &Node) -> NodePath {
+    fn node_path(&self, node: &NodeId<Self>) -> NodePath {
+        let node = &*self.cache().node_data(*node).unwrap();
         self.1
             .get(&node.0)
             .cloned()
             .unwrap_or_else(|| NodePath::new(vec!["application".into(), node.0.to_string()]))
     }
-    fn outgoing_edges(&self, node: &Node, label: u8) -> Result<Vec<Node>, Self::Error> {
+    fn outgoing_edges(
+        &self,
+        node: &NodeId<Self>,
+        label: u8,
+    ) -> Result<Vec<NodeId<Self>>, Self::Error> {
+        let node = &*self.cache().node_data(*node).unwrap();
         let state = self.0.lock().unwrap();
         if state.fail_edges {
             return Err("edges");
@@ -159,12 +167,16 @@ impl Domain for Application {
             .edges
             .get(&(node.0, label))
             .cloned()
-            .unwrap_or_default())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|node| self.cache().intern_node(node))
+            .collect())
     }
 
     type NodeContent = Content;
 
-    fn node_content(&self, node: &Node) -> Result<Content, Self::Error> {
+    fn node_content(&self, node: &NodeId<Self>) -> Result<Content, Self::Error> {
+        let node = &*self.cache().node_data(*node).unwrap();
         let mut state = self.0.lock().unwrap();
         state.reads.push(node.0);
         if state.fail_read {
@@ -180,9 +192,10 @@ impl Domain for Application {
 
     async fn load_evidence(
         &self,
-        node: &Node,
+        node: &NodeId<Self>,
         criterion: &CriterionPath,
     ) -> Result<Option<Record<Node, u8>>, Self::Error> {
+        let node = &*self.cache().node_data(*node).unwrap();
         let state = self.0.lock().unwrap();
         if state.fail_load {
             return Err("load");
@@ -195,10 +208,11 @@ impl Domain for Application {
     }
     async fn store_evidence(
         &self,
-        node: &Node,
+        node: &NodeId<Self>,
         criterion: &CriterionPath,
         record: &Record<Node, u8>,
     ) -> Result<(), Self::Error> {
+        let node = &*self.cache().node_data(*node).unwrap();
         let mut state = self.0.lock().unwrap();
         if state.fail_store {
             return Err("store");
@@ -214,9 +228,29 @@ impl Domain for Application {
     }
 }
 
+fn durable_inputs(
+    domain: &Application,
+    inputs: &[Dependency<NodeId<Application>, u8>],
+) -> Vec<Dependency<Node, u8>> {
+    inputs
+        .iter()
+        .map(|entry| match entry {
+            Dependency::Node(id, fp) => Dependency::Node(
+                (*domain.cache().node_data(*id).unwrap()).clone(),
+                fp.clone(),
+            ),
+            Dependency::OutgoingEdges(id, label, fp) => Dependency::OutgoingEdges(
+                (*domain.cache().node_data(*id).unwrap()).clone(),
+                *label,
+                fp.clone(),
+            ),
+        })
+        .collect()
+}
+
 // Cell makes validation values Send but not Sync, exercising the public bounds.
 struct Review<O> {
-    source: Node,
+    source: NodeId<Application>,
     criterion: CriterionPath,
     revision: String,
     output: O,
@@ -227,9 +261,9 @@ struct Review<O> {
     descriptor_reads: Cell<usize>,
 }
 impl<O> Review<O> {
-    fn new(criterion: &[&str], output: O) -> Self {
+    fn new(domain: &Application, criterion: &[&str], output: O) -> Self {
         Self {
-            source: Node(1),
+            source: domain.cache().intern_node(Node(1)),
             criterion: path(criterion),
             revision: "v1".into(),
             output,
@@ -243,7 +277,7 @@ impl<O> Review<O> {
 }
 impl<O: Serialize + serde::de::DeserializeOwned + Send> Criterion<Application> for Review<O> {
     type Ok = O;
-    fn source_node_id(&self) -> Node {
+    fn source_node_id(&self) -> NodeId<Application> {
         self.descriptor_reads.set(self.descriptor_reads.get() + 1);
         self.source.clone()
     }
@@ -262,7 +296,8 @@ impl<O: Serialize + serde::de::DeserializeOwned + Send> Criterion<Application> f
             barrier.wait().await;
         }
         for node in &self.reads {
-            cx.read(node).map_err(ValidationError::Graph)?;
+            cx.read(&cx.graph().cache().intern_node(node.clone()))
+                .map_err(ValidationError::Graph)?;
         }
         if let Some(label) = self.label {
             cx.successors(&label).map_err(ValidationError::Graph)?;
@@ -304,58 +339,64 @@ async fn persist<O: Serialize + serde::de::DeserializeOwned + Send>(
 async fn domain_relationships_accept_opaque_types_and_send_only_errors() {
     // The API accepts opaque identities and labels, and errors that are Send
     // without also being Sync, Debug, Clone, or std::error::Error.
-    #[derive(Clone, PartialEq, Eq)]
+    #[derive(Clone, PartialEq, Eq, Hash)]
     struct Identity(u8);
     #[derive(Clone)]
     struct Label(u8);
     struct GraphError(Cell<u8>);
     #[derive(Clone)]
-    struct Relationships(trust_but_verify::domain::ValidationCache);
+    struct Relationships(ValidationCache<Self>);
     impl Domain for Relationships {
-        fn cache(&self) -> &trust_but_verify::domain::ValidationCache {
+        fn cache(&self) -> &ValidationCache<Self> {
             &self.0
         }
-        type NodeId = Identity;
+        type NodeData = Identity;
         type EdgeLabel = Label;
         type Error = GraphError;
         type NodeContent = Content;
 
-        fn node_content(&self, node: &Identity) -> Result<Content, Self::Error> {
+        fn node_content(&self, node: &NodeId<Self>) -> Result<Content, Self::Error> {
+            let node = &*self.cache().node_data(*node).unwrap();
             Ok(Content(node.0.to_string()))
         }
         async fn load_evidence(
             &self,
-            _: &Identity,
+            _: &NodeId<Self>,
             _: &CriterionPath,
         ) -> Result<Option<Record<Identity, Label>>, Self::Error> {
             Ok(None)
         }
         async fn store_evidence(
             &self,
-            _: &Identity,
+            _: &NodeId<Self>,
             _: &CriterionPath,
             _: &Record<Identity, Label>,
         ) -> Result<(), Self::Error> {
             Ok(())
         }
 
-        fn node_path(&self, node: &Identity) -> NodePath {
+        fn node_path(&self, node: &NodeId<Self>) -> NodePath {
+            let node = &*self.cache().node_data(*node).unwrap();
             NodePath::new(vec!["relationships".into(), node.0.to_string()])
         }
 
         fn outgoing_edges(
             &self,
-            node: &Identity,
+            node: &NodeId<Self>,
             label: Label,
-        ) -> Result<Vec<Identity>, Self::Error> {
+        ) -> Result<Vec<NodeId<Self>>, Self::Error> {
+            let node = &*self.cache().node_data(*node).unwrap();
             if node.0 == 255 {
                 return Err(GraphError(Cell::new(node.0)));
             }
-            Ok(match (node.0, label.0) {
+            Ok((match (node.0, label.0) {
                 (1, 2) => vec![Identity(3), Identity(2), Identity(3)],
                 (1, 3) => vec![Identity(4)],
                 _ => vec![],
             })
+            .into_iter()
+            .map(|data| self.cache().intern_node(data))
+            .collect())
         }
     }
 
@@ -363,9 +404,9 @@ async fn domain_relationships_accept_opaque_types_and_send_only_errors() {
     // a required bound fails as well as adding a bound the opaque fixture lacks.
     fn check_bounds<G: Domain>(
         graph: &G,
-        node: &G::NodeId,
+        node: &NodeId<G>,
         criterion: &CriterionPath,
-        record: &Record<G::NodeId, G::EdgeLabel>,
+        record: &Record<G::NodeData, G::EdgeLabel>,
     ) {
         fn domain<T: Clone + Send + Sync>() {}
         fn identity<T: Clone + Eq + Send + Sync>() {}
@@ -373,7 +414,7 @@ async fn domain_relationships_accept_opaque_types_and_send_only_errors() {
         fn error<T: Send>() {}
         fn contents<T: NodeContents + Send + Sync>() {}
         domain::<G>();
-        identity::<G::NodeId>();
+        identity::<G::NodeData>();
         label::<G::EdgeLabel>();
         error::<G::Error>();
         contents::<G::NodeContent>();
@@ -381,46 +422,65 @@ async fn domain_relationships_accept_opaque_types_and_send_only_errors() {
         drop(send(graph.store_evidence(node, criterion, record)));
     }
 
-    fn successors<G: Domain>(graph: &G, node: &G::NodeId, label: G::EdgeLabel) -> Vec<G::NodeId> {
+    fn successors<G: Domain>(graph: &G, node: &NodeId<G>, label: G::EdgeLabel) -> Vec<NodeId<G>> {
         graph.outgoing_edges(node, label).ok().unwrap()
     }
     let graph = Relationships(Default::default());
     assert!(graph.project_sources().is_none());
-    let item = trust_but_verify::outline::OutlineId::root("lib.rs");
+    let item = trust_but_verify::outline::OutlineData::root("lib.rs");
     assert!(matches!(
         graph.source_node(&item),
         Err(trust_but_verify::sources::SourceError::Invalid(_))
     ));
-    let content = graph.node_content(&Identity(1)).ok().unwrap();
+    let content = graph
+        .node_content(&graph.cache().intern_node(Identity(1)))
+        .ok()
+        .unwrap();
     assert_eq!(content.format(), "1");
     assert_eq!(content.fingerprint().value, "1");
     // Storage futures remain Send even when the application's error is not Sync.
     let criterion = CriterionPath::new(vec!["review".into()]);
     assert!(
-        send(graph.load_evidence(&Identity(1), &criterion))
+        send(graph.load_evidence(&graph.cache().intern_node(Identity(1)), &criterion))
             .await
             .ok()
             .unwrap()
             .is_none()
     );
     let record = Record::new(Some(CriterionVersion::new("v1")), vec![], json!(false));
-    check_bounds(&graph, &Identity(1), &criterion, &record);
+    check_bounds(
+        &graph,
+        &graph.cache().intern_node(Identity(1)),
+        &criterion,
+        &record,
+    );
     assert!(
-        send(graph.store_evidence(&Identity(1), &criterion, &record))
+        send(graph.store_evidence(&graph.cache().intern_node(Identity(1)), &criterion, &record))
             .await
             .is_ok()
     );
     assert_eq!(
-        graph.node_path(&Identity(1)).segments(),
+        graph
+            .node_path(&graph.cache().intern_node(Identity(1)))
+            .segments(),
         ["relationships", "1"]
     );
-    assert_ne!(graph.node_path(&Identity(1)), graph.node_path(&Identity(2)));
-    assert!(successors(&graph, &Identity(1), Label(2)) == [Identity(3), Identity(2), Identity(3)]);
-    assert!(successors(&graph, &Identity(1), Label(3)) == [Identity(4)]);
-    assert!(successors(&graph, &Identity(1), Label(4)).is_empty());
-    assert!(successors(&graph, &Identity(2), Label(2)).is_empty());
+    assert_ne!(
+        graph.node_path(&graph.cache().intern_node(Identity(1))),
+        graph.node_path(&graph.cache().intern_node(Identity(2)))
+    );
+    assert!(
+        successors(&graph, &graph.cache().intern_node(Identity(1)), Label(2))
+            == [Identity(3), Identity(2), Identity(3)].map(|n| graph.cache().intern_node(n))
+    );
+    assert!(
+        successors(&graph, &graph.cache().intern_node(Identity(1)), Label(3))
+            == [Identity(4)].map(|n| graph.cache().intern_node(n))
+    );
+    assert!(successors(&graph, &graph.cache().intern_node(Identity(1)), Label(4)).is_empty());
+    assert!(successors(&graph, &graph.cache().intern_node(Identity(2)), Label(2)).is_empty());
     let error = graph
-        .outgoing_edges(&Identity(255), Label(2))
+        .outgoing_edges(&graph.cache().intern_node(Identity(255)), Label(2))
         .err()
         .unwrap();
     assert_eq!(send(error).0.get(), 255);
@@ -464,7 +524,7 @@ fn node_paths_round_trip_empty_and_separated_segments() {
 async fn criteria_keep_typed_answers_and_persist_only_when_requested() {
     let domain = Application::default();
     let negative = answer(false, "missing edge case");
-    let descriptor = || Review::new(&["behavior"], negative.clone());
+    let descriptor = || Review::new(&domain, &["behavior"], negative.clone());
     assert!(
         validation::load_evidence(&domain, &descriptor())
             .await
@@ -473,7 +533,7 @@ async fn criteria_keep_typed_answers_and_persist_only_when_requested() {
     );
     let value = validation::verify(&domain, descriptor()).await.unwrap();
     assert_eq!(value.output(), &negative);
-    assert_eq!(value.source_node_id(), &Node(1));
+    assert_eq!(value.source_node_id(), &domain.cache().intern_node(Node(1)));
     assert_eq!(value.criterion_path(), &path(&["behavior"]));
     assert_eq!(value.version().unwrap().as_str(), "v1");
     assert!(value.dependencies().is_empty());
@@ -501,15 +561,18 @@ async fn criteria_keep_typed_answers_and_persist_only_when_requested() {
     assert_eq!(loaded.into_output(), negative);
     let structure = vec!["both dispatchers use the helper".to_owned()];
     assert_eq!(
-        persist(&domain, Review::new(&["structure"], structure.clone()))
-            .await
-            .into_output(),
+        persist(
+            &domain,
+            Review::new(&domain, &["structure"], structure.clone())
+        )
+        .await
+        .into_output(),
         structure
     );
     // Execution ignores saved records and leaves them unchanged until an explicit save.
     let replacement = validation::verify(
         &domain,
-        Review::new(&["behavior"], answer(true, "new review")),
+        Review::new(&domain, &["behavior"], answer(true, "new review")),
     )
     .await
     .unwrap();
@@ -523,15 +586,15 @@ async fn criteria_keep_typed_answers_and_persist_only_when_requested() {
         negative
     );
     assert!(
-        validation::load_evidence(&domain, &Review::new(&["text"], ()))
+        validation::load_evidence(&domain, &Review::new(&domain, &["text"], ()))
             .await
             .unwrap()
             .is_none()
     );
-    persist(&domain, Review::new(&["text"], ()))
+    persist(&domain, Review::new(&domain, &["text"], ()))
         .await
         .into_output();
-    validation::load_evidence(&domain, &Review::new(&["text"], ()))
+    validation::load_evidence(&domain, &Review::new(&domain, &["text"], ()))
         .await
         .unwrap()
         .unwrap()
@@ -615,10 +678,10 @@ async fn changing_one_criteria_input_does_not_invalidate_another() {
         .unwrap()
         .contents
         .extend([(2, "test".into()), (3, "implementation".into())]);
-    let mut behavior = Review::new(&["behavior"], true);
+    let mut behavior = Review::new(&domain, &["behavior"], true);
     behavior.reads = vec![Node(2)];
     persist(&domain, behavior).await;
-    let mut structure = Review::new(&["structure"], true);
+    let mut structure = Review::new(&domain, &["structure"], true);
     structure.reads = vec![Node(3)];
     persist(&domain, structure).await;
     domain
@@ -627,34 +690,37 @@ async fn changing_one_criteria_input_does_not_invalidate_another() {
         .unwrap()
         .contents
         .insert(2, "changed test".into());
-    let behavior = validation::load_evidence(&domain, &Review::new(&["behavior"], true))
+    let behavior = validation::load_evidence(&domain, &Review::new(&domain, &["behavior"], true))
         .await
         .unwrap()
         .unwrap();
-    let structure = validation::load_evidence(&domain, &Review::new(&["structure"], true))
+    let structure = validation::load_evidence(&domain, &Review::new(&domain, &["structure"], true))
         .await
         .unwrap()
         .unwrap();
     assert!(!validation::check_inputs(&domain, &behavior).unwrap());
     assert!(validation::check_inputs(&domain, &structure).unwrap());
     assert_eq!(domain.0.lock().unwrap().executions, 2);
-    let mut replacement = Review::new(&["behavior"], false);
+    let mut replacement = Review::new(&domain, &["behavior"], false);
     replacement.reads = vec![Node(3)];
     let value = persist(&domain, replacement).await;
     assert!(!value.output());
     assert_eq!(
-        value.dependencies(),
+        durable_inputs(&domain, value.dependencies()),
         [Dependency::Node(
             Node(3),
             Fingerprint::new("text-v1".into(), "implementation".into())
         )]
     );
     let saved = domain
-        .load_evidence(&Node(1), &path(&["behavior"]))
+        .load_evidence(&domain.cache().intern_node(Node(1)), &path(&["behavior"]))
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(saved.dependencies, value.dependencies());
+    assert_eq!(
+        saved.dependencies,
+        durable_inputs(&domain, value.dependencies())
+    );
 }
 
 // {test}`requirements.sdk.graph.evidence.store_evidence`
@@ -667,7 +733,11 @@ async fn changing_one_criteria_input_does_not_invalidate_another() {
 #[tokio::test]
 async fn typed_loading_reports_decode_errors_even_for_stale_evidence() {
     let domain = Application::default();
-    persist(&domain, Review::new(&["behavior"], json!({"old":true}))).await;
+    persist(
+        &domain,
+        Review::new(&domain, &["behavior"], json!({"old":true})),
+    )
+    .await;
     {
         let mut state = domain.0.lock().unwrap();
         state.records[0].2.dependencies = vec![Dependency::Node(
@@ -676,7 +746,7 @@ async fn typed_loading_reports_decode_errors_even_for_stale_evidence() {
         )];
         state.fail_read = true;
     }
-    let mut changed = Review::new(&["behavior"], String::new());
+    let mut changed = Review::new(&domain, &["behavior"], String::new());
     changed.revision = "v2".into();
     assert!(matches!(
         validation::load_evidence(&domain, &changed).await,
@@ -684,7 +754,8 @@ async fn typed_loading_reports_decode_errors_even_for_stale_evidence() {
     ));
     assert!(domain.0.lock().unwrap().reads.is_empty());
     assert!(matches!(
-        validation::load_evidence(&domain, &Review::new(&["behavior"], String::new())).await,
+        validation::load_evidence(&domain, &Review::new(&domain, &["behavior"], String::new()))
+            .await,
         Err(ValidationError::Output(_))
     ));
     // No saved-input resolution or output decoding happens during a new execution.
@@ -713,7 +784,7 @@ async fn typed_loading_reports_decode_errors_even_for_stale_evidence() {
 async fn input_checking_and_execution_keep_separate_observations() {
     let domain = Application::default();
     domain.0.lock().unwrap().contents.insert(2, "before".into());
-    let mut old = Review::new(&["behavior"], json!({"old":true}));
+    let mut old = Review::new(&domain, &["behavior"], json!({"old":true}));
     old.reads = vec![Node(2)];
     persist(&domain, old).await;
     {
@@ -721,17 +792,19 @@ async fn input_checking_and_execution_keep_separate_observations() {
         state.contents.insert(2, "after".into());
         state.reads.clear();
     }
-    let loaded = validation::load_evidence(&domain, &Review::new(&["behavior"], json!(null)))
-        .await
-        .unwrap()
-        .unwrap();
+    let loaded =
+        validation::load_evidence(&domain, &Review::new(&domain, &["behavior"], json!(null)))
+            .await
+            .unwrap()
+            .unwrap();
     assert!(!validation::check_inputs(&domain, &loaded).unwrap());
     assert!(matches!(
-        validation::load_evidence(&domain, &Review::new(&["behavior"], String::new())).await,
+        validation::load_evidence(&domain, &Review::new(&domain, &["behavior"], String::new()))
+            .await,
         Err(ValidationError::Output(_))
     ));
     domain.0.lock().unwrap().reads.clear();
-    let mut new = Review::new(&["behavior"], "new answer".to_owned());
+    let mut new = Review::new(&domain, &["behavior"], "new answer".to_owned());
     new.reads = vec![Node(2)];
     let value = persist(&domain, new).await;
     assert_eq!(value.output(), "new answer");
@@ -756,7 +829,7 @@ async fn input_checking_and_execution_keep_separate_observations() {
 async fn dependency_resolution_failures_do_not_execute_or_replace_saved_answers() {
     let domain = Application::default();
     domain.0.lock().unwrap().contents.insert(2, "input".into());
-    let mut review = Review::new(&["behavior"], false);
+    let mut review = Review::new(&domain, &["behavior"], false);
     review.reads = vec![Node(2)];
     review.label = Some(7);
     let value = persist(&domain, review).await;
@@ -764,7 +837,7 @@ async fn dependency_resolution_failures_do_not_execute_or_replace_saved_answers(
         Dependency::Node(Node(2), Fingerprint::new("text-v1".into(), "input".into())),
         Dependency::OutgoingEdges(Node(1), 7, edge_fingerprint(&domain, &[])),
     ];
-    assert_eq!(value.dependencies(), expected);
+    assert_eq!(durable_inputs(&domain, value.dependencies()), expected);
     assert_eq!(validation::check_inputs(&domain, &value), Ok(true));
     domain.0.lock().unwrap().edges.insert((1, 7), vec![Node(3)]);
     assert_eq!(validation::check_inputs(&domain, &value), Ok(false));
@@ -775,15 +848,19 @@ async fn dependency_resolution_failures_do_not_execute_or_replace_saved_answers(
             state.fail_edges = edges;
         }
         // Loading is independent of input resolution, even when inputs cannot resolve.
-        let loaded = validation::load_evidence(&domain, &Review::new(&["behavior"], false))
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(loaded.dependencies(), expected);
+        let loaded =
+            validation::load_evidence(&domain, &Review::new(&domain, &["behavior"], false))
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(durable_inputs(&domain, loaded.dependencies()), expected);
         assert_eq!(validation::check_inputs(&domain, &loaded), Err(message));
         let state = domain.0.lock().unwrap();
         assert_eq!((state.executions, state.writes), (1, 1));
-        assert_eq!(state.records[0].2.dependencies, value.dependencies());
+        assert_eq!(
+            state.records[0].2.dependencies,
+            durable_inputs(&domain, value.dependencies())
+        );
         assert_eq!(state.records[0].2.output, json!(false));
     }
 }
@@ -795,9 +872,9 @@ async fn dependency_resolution_failures_do_not_execute_or_replace_saved_answers(
 #[tokio::test]
 async fn wildcard_revision_does_not_supply_other_criteria_or_nodes() {
     let domain = Application::default();
-    persist(&domain, Review::new(&[], false)).await;
+    persist(&domain, Review::new(&domain, &[], false)).await;
     domain.0.lock().unwrap().records[0].2.version = None;
-    let mut future = Review::new(&[], true);
+    let mut future = Review::new(&domain, &[], true);
     future.revision = "future".into();
     let loaded = validation::load_evidence(&domain, &future)
         .await
@@ -808,12 +885,12 @@ async fn wildcard_revision_does_not_supply_other_criteria_or_nodes() {
     assert!(future.version().is_compatible_with(loaded.version()));
     assert!(validation::check_inputs(&domain, &loaded).unwrap());
     assert!(
-        validation::load_evidence(&domain, &Review::new(&["new"], false))
+        validation::load_evidence(&domain, &Review::new(&domain, &["new"], false))
             .await
             .unwrap()
             .is_none()
     );
-    future.source = Node(2);
+    future.source = domain.cache().intern_node(Node(2));
     assert!(
         validation::load_evidence(&domain, &future)
             .await
@@ -837,7 +914,7 @@ async fn validation_and_answer_need_send_without_sync() {
     let domain = Application::default();
     let value = send(validation::verify(
         &domain,
-        Review::new(&["cell"], Cell::new(17u32)),
+        Review::new(&domain, &["cell"], Cell::new(17u32)),
     ))
     .await
     .unwrap();
@@ -845,7 +922,7 @@ async fn validation_and_answer_need_send_without_sync() {
     send(validation::store_evidence(&domain, &value))
         .await
         .unwrap();
-    let descriptor = Review::new(&["cell"], Cell::new(0u32));
+    let descriptor = Review::new(&domain, &["cell"], Cell::new(0u32));
     let loaded = send(validation::load_evidence(&domain, &descriptor))
         .await
         .unwrap()
@@ -855,14 +932,14 @@ async fn validation_and_answer_need_send_without_sync() {
     assert_eq!(domain.0.lock().unwrap().executions, 1);
     let fresh = send(validation::refresh_evidence(
         &domain,
-        Review::new(&["refresh"], Cell::new(23u32)),
+        Review::new(&domain, &["refresh"], Cell::new(23u32)),
     ))
     .await
     .unwrap();
     assert_eq!(fresh.output().get(), 23);
     let reused = send(validation::refresh_evidence(
         &domain,
-        Review::new(&["refresh"], Cell::new(0u32)),
+        Review::new(&domain, &["refresh"], Cell::new(0u32)),
     ))
     .await
     .unwrap();
@@ -880,13 +957,13 @@ async fn refresh_reuses_current_positive_negative_and_legacy_answers_without_sav
         for revision in ["v1", "*"] {
             let domain = Application::default();
             domain.0.lock().unwrap().contents.insert(2, "input".into());
-            let mut first = Review::new(&["behavior"], answer(satisfied, "saved answer"));
+            let mut first = Review::new(&domain, &["behavior"], answer(satisfied, "saved answer"));
             first.reads = vec![Node(2)];
             let saved = validation::refresh_evidence(&domain, first).await.unwrap();
             domain.0.lock().unwrap().records[0].2.version =
                 CriterionVersion::from_recorded(revision);
 
-            let mut next = Review::new(&["behavior"], answer(!satisfied, "unused answer"));
+            let mut next = Review::new(&domain, &["behavior"], answer(!satisfied, "unused answer"));
             next.failure = Some("must reuse");
             let reused = validation::refresh_evidence(&domain, next).await.unwrap();
             assert_eq!(reused.output(), saved.output());
@@ -918,6 +995,7 @@ async fn refresh_reuses_current_positive_negative_and_legacy_answers_without_sav
 // {test}`requirements.sdk.graph.evidence.checking_records.version_match`
 // {test}`requirements.sdk.graph.running-criteria.refresh_evidence`
 // {test}`requirements.sdk.graph.running-criteria.evaluate_criterion`
+// {test}`requirements.sdk.graph.evidence.evidence_storage`
 #[tokio::test]
 async fn refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace() {
     for cause in ["missing", "revision", "contents", "successors"] {
@@ -930,7 +1008,7 @@ async fn refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh
             state.edges.insert((1, 7), vec![Node(2)]);
         }
         if cause != "missing" {
-            let mut old = Review::new(&["behavior"], "old answer".to_owned());
+            let mut old = Review::new(&domain, &["behavior"], "old answer".to_owned());
             if cause == "successors" {
                 old.label = Some(7);
             } else {
@@ -955,7 +1033,7 @@ async fn refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh
                 _ => {}
             }
         }
-        let mut next = Review::new(&["behavior"], "new answer".to_owned());
+        let mut next = Review::new(&domain, &["behavior"], "new answer".to_owned());
         next.reads = vec![Node(1)];
         if cause == "revision" {
             next.revision = "v2".into();
@@ -963,7 +1041,7 @@ async fn refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh
         let replacement = validation::refresh_evidence(&domain, next).await.unwrap();
         assert_eq!(replacement.output(), "new answer");
         assert_eq!(
-            replacement.dependencies(),
+            durable_inputs(&domain, replacement.dependencies()),
             [Dependency::Node(
                 Node(1),
                 Fingerprint::new("text-v1".into(), "current input".into())
@@ -985,7 +1063,10 @@ async fn refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh
         );
         assert_eq!(state.records.len(), 1);
         assert_eq!(state.records[0].2.output, json!("new answer"));
-        assert_eq!(state.records[0].2.dependencies, replacement.dependencies());
+        assert_eq!(
+            state.records[0].2.dependencies,
+            durable_inputs(&domain, replacement.dependencies())
+        );
         assert_eq!(state.records[0].2.version.as_ref(), replacement.version());
     }
 }
@@ -1008,14 +1089,14 @@ async fn refresh_propagates_load_decode_check_execution_and_save_errors() {
     ] {
         let domain = Application::default();
         domain.0.lock().unwrap().contents.insert(2, "input".into());
-        let mut old = Review::new(&[], true);
+        let mut old = Review::new(&domain, &[], true);
         if stage == "read" {
             old.reads = vec![Node(2)];
         } else if stage == "edges" {
             old.label = Some(7);
         }
         persist(&domain, old).await;
-        let mut next = Review::new(&[], false);
+        let mut next = Review::new(&domain, &[], false);
         {
             let mut state = domain.0.lock().unwrap();
             match stage {
@@ -1075,7 +1156,7 @@ async fn refresh_serialization_failure_preserves_the_saved_record() {
         path(&[]),
         Record::new(Some(CriterionVersion::new("v1")), vec![], json!(null)),
     ));
-    let mut next = Review::new(&[], Unencodable);
+    let mut next = Review::new(&domain, &[], Unencodable);
     next.revision = "v2".into();
     assert!(matches!(
         validation::refresh_evidence(&domain, next).await,
@@ -1101,11 +1182,11 @@ async fn concurrent_refreshes_execute_independently_and_store_complete_records()
         .contents
         .extend([(2, "first".into()), (3, "second".into())]);
     let barrier = Arc::new(tokio::sync::Barrier::new(2));
-    let mut first = Review::new(&[], "first".to_owned());
+    let mut first = Review::new(&domain, &[], "first".to_owned());
     first.revision = "first".into();
     first.reads = vec![Node(2)];
     first.barrier = Some(barrier.clone());
-    let mut second = Review::new(&[], "second".to_owned());
+    let mut second = Review::new(&domain, &[], "second".to_owned());
     second.revision = "second".into();
     second.reads = vec![Node(3)];
     second.barrier = Some(barrier);
@@ -1131,7 +1212,10 @@ async fn concurrent_refreshes_execute_independently_and_store_complete_records()
     };
     assert_eq!(saved.output, serde_json::to_value(winner.output()).unwrap());
     assert_eq!(saved.version.as_ref(), winner.version());
-    assert_eq!(saved.dependencies, winner.dependencies());
+    assert_eq!(
+        saved.dependencies,
+        durable_inputs(&domain, winner.dependencies())
+    );
 }
 
 // {test}`requirements.sdk.graph.validation-context.root_inputs`
@@ -1140,16 +1224,16 @@ async fn concurrent_refreshes_execute_independently_and_store_complete_records()
 async fn absence_certification_is_invalidated_by_the_first_selected_root() {
     let domain = Application::default();
     for (name, label) in [("behavior", 1), ("structure", 2)] {
-        let mut review = Review::new(&[name], true);
+        let mut review = Review::new(&domain, &[name], true);
         review.label = Some(label);
         persist(&domain, review).await;
     }
     domain.0.lock().unwrap().edges.insert((1, 1), vec![Node(2)]);
-    let behavior = validation::load_evidence(&domain, &Review::new(&["behavior"], true))
+    let behavior = validation::load_evidence(&domain, &Review::new(&domain, &["behavior"], true))
         .await
         .unwrap()
         .unwrap();
-    let structure = validation::load_evidence(&domain, &Review::new(&["structure"], true))
+    let structure = validation::load_evidence(&domain, &Review::new(&domain, &["structure"], true))
         .await
         .unwrap()
         .unwrap();
@@ -1173,13 +1257,13 @@ impl Serialize for Unencodable {
 #[tokio::test]
 async fn serialization_failure_leaves_the_existing_record_unchanged() {
     let domain = Application::default();
-    persist(&domain, Review::new(&[], "old answer".to_owned())).await;
+    persist(&domain, Review::new(&domain, &[], "old answer".to_owned())).await;
     let before = domain
-        .load_evidence(&Node(1), &path(&[]))
+        .load_evidence(&domain.cache().intern_node(Node(1)), &path(&[]))
         .await
         .unwrap()
         .unwrap();
-    let mut new = Review::new(&[], Unencodable);
+    let mut new = Review::new(&domain, &[], Unencodable);
     new.revision = "v2".into();
     let value = validation::verify(&domain, new).await.unwrap();
     let error = validation::store_evidence(&domain, &value)
@@ -1189,7 +1273,7 @@ async fn serialization_failure_leaves_the_existing_record_unchanged() {
     assert!(matches!(error, ValidationError::Output(_)));
     assert!(error.to_string().contains("cannot encode answer"));
     let after = domain
-        .load_evidence(&Node(1), &path(&[]))
+        .load_evidence(&domain.cache().intern_node(Node(1)), &path(&[]))
         .await
         .unwrap()
         .unwrap();
@@ -1207,27 +1291,27 @@ async fn loading_execution_resolution_and_saving_failures_do_not_publish_answers
     let domain = Application::default();
     domain.0.lock().unwrap().fail_load = true;
     assert!(matches!(
-        validation::load_evidence(&domain, &Review::new(&[], true)).await,
+        validation::load_evidence(&domain, &Review::new(&domain, &[], true)).await,
         Err(ValidationError::Graph("load"))
     ));
-    let value = validation::verify(&domain, Review::new(&[], true))
+    let value = validation::verify(&domain, Review::new(&domain, &[], true))
         .await
         .unwrap();
     assert!(value.output());
     domain.0.lock().unwrap().fail_load = false;
-    let mut review = Review::new(&[], true);
+    let mut review = Review::new(&domain, &[], true);
     review.failure = Some("execute");
     assert!(matches!(
         validation::verify(&domain, review).await,
         Err(ValidationError::Graph("execute"))
     ));
-    let mut review = Review::new(&[], true);
+    let mut review = Review::new(&domain, &[], true);
     review.reads = vec![Node(99)];
     assert!(matches!(
         validation::verify(&domain, review).await,
         Err(ValidationError::Graph("missing"))
     ));
-    let mut review = Review::new(&[], true);
+    let mut review = Review::new(&domain, &[], true);
     review.label = Some(1);
     domain.0.lock().unwrap().fail_edges = true;
     assert!(matches!(
@@ -1258,11 +1342,11 @@ async fn concurrent_same_criterion_executions_keep_complete_independent_records(
         .contents
         .extend([(2, "first input".into()), (3, "second input".into())]);
     let barrier = Arc::new(tokio::sync::Barrier::new(2));
-    let mut first = Review::new(&["behavior"], "first".to_owned());
+    let mut first = Review::new(&domain, &["behavior"], "first".to_owned());
     first.revision = "first-revision".into();
     first.reads = vec![Node(2)];
     first.barrier = Some(barrier.clone());
-    let mut second = Review::new(&["behavior"], "second".to_owned());
+    let mut second = Review::new(&domain, &["behavior"], "second".to_owned());
     second.revision = "second-revision".into();
     second.reads = vec![Node(3)];
     second.barrier = Some(barrier);
@@ -1286,7 +1370,7 @@ async fn concurrent_same_criterion_executions_keep_complete_independent_records(
     saved_a.unwrap();
     saved_b.unwrap();
     let saved = domain
-        .load_evidence(&Node(1), &path(&["behavior"]))
+        .load_evidence(&domain.cache().intern_node(Node(1)), &path(&["behavior"]))
         .await
         .unwrap()
         .unwrap();
@@ -1330,19 +1414,20 @@ async fn concurrent_same_criterion_executions_keep_complete_independent_records(
 fn identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot() {
     let graph = Application::default();
     graph.0.lock().unwrap().contents.insert(1, "before".into());
-    let snapshot = ValidationContext::new(&graph, Node(1))
-        .read_snapshot(&Node(1))
+    let snapshot = ValidationContext::new(&graph, graph.cache().intern_node(Node(1)))
+        .read_snapshot(&graph.cache().intern_node(Node(1)))
         .unwrap();
     assert_eq!(snapshot.content.format(), "before");
-    let path = graph.node_path(&Node(1));
+    let path = graph.node_path(&graph.cache().intern_node(Node(1)));
     graph.0.lock().unwrap().contents.insert(1, "after".into());
     assert_eq!(snapshot.content.fingerprint(), snapshot.fingerprint);
     assert_eq!(snapshot.content.format(), "before");
     assert_eq!(graph.0.lock().unwrap().reads, [1]);
     assert_eq!(snapshot.fingerprint.value, "before");
-    assert_eq!(graph.node_path(&Node(1)), path);
-    assert_eq!(Application::default().node_path(&Node(1)), path);
-    assert_ne!(graph.node_path(&Node(2)), path);
+    assert_eq!(graph.node_path(&graph.cache().intern_node(Node(1))), path);
+    let fresh = Application::default();
+    assert_eq!(fresh.node_path(&fresh.cache().intern_node(Node(1))), path);
+    assert_ne!(graph.node_path(&graph.cache().intern_node(Node(2))), path);
     let paths = [
         vec![],
         vec![""],
@@ -1392,8 +1477,14 @@ fn edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding() 
         );
     }
     assert_ne!(
-        edge_fingerprint(&domain, &[Node(1)]),
-        edge_fingerprint(&domain, &[Node(11), Node(12)])
+        edge_fingerprint(&domain, &[domain.cache().intern_node(Node(1))]),
+        edge_fingerprint(
+            &domain,
+            &[
+                domain.cache().intern_node(Node(11)),
+                domain.cache().intern_node(Node(12))
+            ]
+        )
     );
     let empty = edge_fingerprint(&domain, &[]);
     assert_eq!(
@@ -1404,7 +1495,7 @@ fn edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding() 
         )
     );
     let fingerprints = (0..domain.1.len())
-        .map(|index| edge_fingerprint(&domain, &[Node(index as u8)]))
+        .map(|index| edge_fingerprint(&domain, &[domain.cache().intern_node(Node(index as u8))]))
         .collect::<Vec<_>>();
     assert_eq!(
         fingerprints[0].value,
@@ -1418,8 +1509,116 @@ fn edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding() 
         }
     }
     assert_eq!(
-        edge_fingerprint(&domain, &[Node(0), Node(1), Node(0)]),
-        edge_fingerprint(&domain, &[Node(1), Node(0)])
+        edge_fingerprint(
+            &domain,
+            &[
+                domain.cache().intern_node(Node(0)),
+                domain.cache().intern_node(Node(1)),
+                domain.cache().intern_node(Node(0))
+            ]
+        ),
+        edge_fingerprint(
+            &domain,
+            &[
+                domain.cache().intern_node(Node(1)),
+                domain.cache().intern_node(Node(0))
+            ]
+        )
     );
     assert!(domain.0.lock().unwrap().reads.is_empty());
+}
+
+// {test}`requirements.sdk.validation-cache.shared_node_ids`
+// {test}`requirements.sdk.validation-cache.intern_node`
+// {test}`requirements.sdk.validation-cache.node_data`
+#[test]
+fn clones_interning_the_same_data_concurrently_get_one_handle() {
+    let cache = ValidationCache::<Application>::new();
+    let start = std::sync::Barrier::new(4);
+    let ids = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..4)
+            .map(|_| {
+                let cache = cache.clone();
+                let start = &start;
+                scope.spawn(move || {
+                    start.wait();
+                    cache.intern_node(Node(42))
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    assert!(ids.iter().all(|id| *id == ids[0]));
+    assert_eq!(cache.node_data(ids[0]).as_deref(), Some(&Node(42)));
+    assert_ne!(cache.intern_node(Node(43)), ids[0]);
+}
+
+// {test}`requirements.sdk.graph.NodeData`
+// {test}`requirements.sdk.graph.NodeId`
+// {test}`requirements.sdk.validation-cache.intern_node`
+// {test}`requirements.sdk.validation-cache.node_data`
+// {test}`requirements.sdk.validation-cache.shared_node_ids`
+// {test}`requirements.sdk.graph.evidence.persisted_dependencies`
+// {test}`requirements.sdk.validation-cache.cache`
+// {test}`requirements.sdk.graph.validation-context.snapshot`
+// {test}`requirements.sdk.graph.evidence.reassigned-handles`
+#[tokio::test]
+async fn saved_node_and_edge_inputs_survive_a_different_handle_allocation_order() {
+    let first = Application::default();
+    let mut review = Review::new(&first, &["review"], true);
+    let subject = review.source;
+    let target = first.cache().intern_node(Node(2));
+    assert_eq!(first.clone().cache().intern_node(Node(1)), subject);
+    {
+        let mut state = first.0.lock().unwrap();
+        state.contents.insert(2, "current".into());
+        state.edges.insert((1, 7), vec![Node(2)]);
+    }
+    review.reads.push(Node(2));
+    review.label = Some(7);
+    let observed = persist(&first, review).await;
+    let expected = durable_inputs(&first, observed.dependencies());
+    assert_eq!(first.0.lock().unwrap().records[0].2.dependencies, expected);
+    let fresh = Application(first.0.clone(), first.1.clone(), ValidationCache::new());
+    assert!(fresh.cache().node_data(subject).is_none());
+    let fresh_target = fresh.cache().intern_node(Node(2));
+    let saved = first.0.lock().unwrap().records[0].2.clone();
+    assert!(
+        saved
+            .is_current(&fresh, &CriterionVersion::new("v1"))
+            .unwrap()
+    );
+    let descriptor = Review::new(&fresh, &["review"], true);
+    assert_ne!(fresh_target, target);
+    let loaded = validation::load_evidence(&fresh, &descriptor)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(loaded.dependencies(), [Dependency::Node(n, _), Dependency::OutgoingEdges(s, 7, _)] if *n == fresh_target && *s == descriptor.source)
+    );
+    assert_eq!(durable_inputs(&fresh, loaded.dependencies()), expected);
+    assert!(validation::check_inputs(&fresh, &loaded).unwrap());
+    fresh.0.lock().unwrap().edges.clear();
+    assert!(!validation::check_inputs(&fresh, &loaded).unwrap());
+}
+
+// {test}`requirements.sdk.graph.NodeId`
+#[test]
+fn node_handles_round_trip_as_unsigned_integers_for_any_domain() {
+    fn check<D: Domain>(node: NodeId<D>) {
+        let encoded = serde_json::to_value(node).unwrap();
+        assert!(encoded.is_u64());
+        let decoded: NodeId<D> = serde_json::from_value(encoded).unwrap();
+        assert_eq!(node, decoded);
+        assert!(std::collections::HashSet::from([node]).contains(&decoded));
+        assert!(serde_json::from_value::<NodeId<D>>(json!(-1)).is_err());
+        let schema = serde_json::to_value(schemars::schema_for!(NodeId<D>)).unwrap();
+        assert_eq!(schema["type"], "integer");
+        assert_eq!(schema["minimum"].as_f64(), Some(0.0));
+    }
+    check(Application::default().cache().intern_node(Node(3)));
 }

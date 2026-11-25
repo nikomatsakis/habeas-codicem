@@ -1761,8 +1761,12 @@ mod tests {
             assert!(!leaks(&search.result), "{pattern}: {:#}", search.result);
         }
         // A citation review's inputs and its commentary in the prompt.
-        let citation =
-            AssessmentSources::prepare_citation(root.path(), "src/lib.rs", "fn[helper]").unwrap();
+        let citation = AssessmentSources::prepare_citation(
+            crate::sdk::HabeasDomain::discover(root.path()).unwrap(),
+            "src/lib.rs",
+            "fn[helper]",
+        )
+        .unwrap();
         assert!(!leaks(&Value::Array(citation.mandatory_inputs().to_vec())));
         let prompt = super::super::initial_prompt(&citation).unwrap().joined();
         assert!(!prompt.contains(&token), "{prompt}");

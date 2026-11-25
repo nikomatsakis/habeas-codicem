@@ -1,5 +1,6 @@
-use super::{AgentConfig, CompletionProvider, ToolAgent, ToolFactory, providers::RigProvider};
+use super::{CompletionProvider, ToolAgent, ToolFactory, providers::RigProvider};
 use crate::domain::Domain;
+use crate::domain::NodeId;
 use crate::procedure::Agent;
 use crate::procedure::AgentRequest;
 use crate::request::ValidationContext;
@@ -9,24 +10,14 @@ use std::{io, sync::Arc};
 use tokio::sync::OnceCell;
 
 /// Backend state is initialized on the first awaited request.
+#[derive(Default)]
 pub(crate) struct ConfiguredAgent {
-    config: AgentConfig,
     provider: OnceCell<Arc<RigProvider>>,
-}
-
-impl ConfiguredAgent {
-    pub(crate) fn new(config: AgentConfig) -> Self {
-        Self {
-            config,
-            provider: OnceCell::new(),
-        }
-    }
 }
 
 impl<D> Agent<D> for ConfiguredAgent
 where
     D: Domain,
-    D::NodeId: serde::Serialize + serde::de::DeserializeOwned + schemars::JsonSchema,
     D::EdgeLabel: serde::de::DeserializeOwned + schemars::JsonSchema + PartialEq,
     D::Error: std::fmt::Display,
 {
@@ -35,21 +26,35 @@ where
     // {impl}`requirements.sdk.graph.agent-harness.tool_agent.provider_failure`
     fn run<'a>(
         &'a self,
-        request: AgentRequest<D::NodeId>,
+        request: AgentRequest<NodeId<D>>,
         inspection: &'a ValidationContext<'_, D>,
     ) -> BoxFuture<'a, Result<Value, io::Error>> {
         Box::pin(async move {
+            let configured = inspection
+                .graph()
+                .cache()
+                .agent
+                .as_deref()
+                .expect("agent is installed in the domain cache");
             let provider = self
                 .provider
                 .get_or_try_init(|| async {
-                    RigProvider::connect(&self.config).await.map(Arc::new)
+                    RigProvider::connect(&configured.backend)
+                        .await
+                        .map(Arc::new)
                 })
                 .await?;
+            let tools = &configured.tools;
             let agent = ToolAgent::new(provider.clone());
             if let Some(project) = inspection.graph().project_sources() {
-                agent.with_tools(project).run(request, inspection).await
+                agent
+                    .with_tools(project)
+                    .run_with_domain_tools(request, inspection, tools)
+                    .await
             } else {
-                agent.run(request, inspection).await
+                agent
+                    .run_with_domain_tools(request, inspection, tools)
+                    .await
             }
         })
     }
@@ -71,7 +76,7 @@ impl<P: CompletionProvider + ?Sized> CompletionProvider for Arc<P> {
 impl<D: Domain, T: ToolFactory<D> + ?Sized> ToolFactory<D> for Arc<T> {
     fn session<'a>(&'a self) -> Box<dyn super::ToolSession<D> + 'a>
     where
-        D::NodeId: 'a,
+        NodeId<D>: 'a,
         D::EdgeLabel: 'a,
     {
         (**self).session()
@@ -81,7 +86,7 @@ impl<D: Domain, T: ToolFactory<D> + ?Sized> ToolFactory<D> for Arc<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::OpenAiConfig;
+    use crate::agent::{AgentConfig, OpenAiConfig};
     use crate::domain::NodeContents;
     use crate::graph as validation;
     use crate::graph::Criterion;
@@ -93,7 +98,14 @@ mod tests {
     use crate::request::ValidationContext;
 
     #[derive(
-        Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+        Clone,
+        Debug,
+        PartialEq,
+        Eq,
+        serde::Serialize,
+        serde::Deserialize,
+        schemars::JsonSchema,
+        Hash,
     )]
     struct TestNode {
         id: u32,
@@ -102,8 +114,8 @@ mod tests {
     #[derive(Clone, Default)]
     struct TestDomain(
         Arc<std::sync::Mutex<Option<Record<TestNode, String>>>>,
-        Arc<std::sync::Mutex<Vec<crate::outline::OutlineId>>>,
-        crate::domain::ValidationCache,
+        Arc<std::sync::Mutex<Vec<crate::outline::OutlineData>>>,
+        crate::domain::ValidationCache<Self>,
     );
     struct Content;
 
@@ -123,7 +135,7 @@ mod tests {
     impl Domain for TestDomain {
         fn source_node(
             &self,
-            item: &crate::outline::OutlineId,
+            item: &crate::outline::OutlineData,
         ) -> Result<TestNode, crate::sources::SourceError> {
             self.1.lock().unwrap().push(item.clone());
             match item.path.to_str() {
@@ -135,29 +147,30 @@ mod tests {
             }
         }
 
-        fn cache(&self) -> &crate::domain::ValidationCache {
+        fn cache(&self) -> &crate::domain::ValidationCache<Self> {
             &self.2
         }
         type Error = String;
-        type NodeId = TestNode;
+        type NodeData = TestNode;
         type NodeContent = Content;
         type EdgeLabel = String;
 
-        fn node_path(&self, node: &TestNode) -> NodePath {
+        fn node_path(&self, node: &NodeId<Self>) -> NodePath {
+            let node = &*self.cache().node_data(*node).unwrap();
             NodePath::new(vec![node.id.to_string()])
         }
 
-        fn node_content(&self, _: &TestNode) -> Result<Content, String> {
+        fn node_content(&self, _: &NodeId<Self>) -> Result<Content, String> {
             Ok(Content)
         }
 
-        fn outgoing_edges(&self, _: &TestNode, _: String) -> Result<Vec<TestNode>, String> {
+        fn outgoing_edges(&self, _: &NodeId<Self>, _: String) -> Result<Vec<NodeId<Self>>, String> {
             Ok(Vec::new())
         }
 
         async fn load_evidence(
             &self,
-            _: &TestNode,
+            _: &NodeId<Self>,
             _: &CriterionPath,
         ) -> Result<Option<Record<TestNode, String>>, String> {
             Ok(self.0.lock().unwrap().clone())
@@ -165,7 +178,7 @@ mod tests {
 
         async fn store_evidence(
             &self,
-            _: &TestNode,
+            _: &NodeId<Self>,
             _: &CriterionPath,
             record: &Record<TestNode, String>,
         ) -> Result<(), String> {
@@ -174,13 +187,13 @@ mod tests {
         }
     }
 
-    struct Question(bool);
+    struct Question(bool, NodeId<TestDomain>);
 
     impl Criterion<TestDomain> for Question {
         type Ok = bool;
 
-        fn source_node_id(&self) -> TestNode {
-            TestNode { id: 1 }
+        fn source_node_id(&self) -> NodeId<TestDomain> {
+            self.1
         }
 
         fn criterion_path(&self) -> CriterionPath {
@@ -206,6 +219,62 @@ mod tests {
         }
     }
 
+    // {test}`requirements.sdk.graph.validation-context.shared_context`
+    #[tokio::test]
+    async fn verify_returns_direct_and_tool_reads_in_one_trace() {
+        struct ReadThenAsk(NodeId<TestDomain>);
+        impl Criterion<TestDomain> for ReadThenAsk {
+            type Ok = bool;
+            fn source_node_id(&self) -> NodeId<TestDomain> {
+                self.0
+            }
+            fn criterion_path(&self) -> CriterionPath {
+                CriterionPath::new(vec!["mixed-reads".into()])
+            }
+            fn version(&self) -> CriterionVersion {
+                CriterionVersion::new("v1")
+            }
+            async fn execute(
+                self,
+                cx: &mut ValidationContext<'_, TestDomain>,
+            ) -> Result<bool, validation::ValidationError<String>> {
+                cx.read(&cx.graph().cache().intern_node(TestNode { id: 42 }))
+                    .map_err(validation::ValidationError::Graph)?;
+                cx.ask::<bool>().await
+            }
+        }
+        let (backend, server) = local_backend(vec![
+            ("read_node", serde_json::json!({"node": 0})),
+            ("submit_result", serde_json::json!({"result": true})),
+        ]);
+        let domain = TestDomain(
+            Default::default(),
+            Default::default(),
+            crate::domain::ValidationCache::with_agent(backend),
+        );
+        domain.cache().intern_node(TestNode { id: 7 });
+        let answer = validation::verify(
+            &domain,
+            ReadThenAsk(domain.cache().intern_node(TestNode { id: 1 })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            answer.dependencies(),
+            &[
+                validation::Dependency::Node(
+                    domain.cache().intern_node(TestNode { id: 42 }),
+                    Content.fingerprint()
+                ),
+                validation::Dependency::Node(
+                    domain.cache().intern_node(TestNode { id: 7 }),
+                    Content.fingerprint()
+                ),
+            ]
+        );
+        assert_eq!(server.join().unwrap().len(), 2);
+    }
+
     // {test}`requirements.sdk.graph.agent-harness.with_agent`
     // {test}`requirements.sdk.graph.agent-harness.tool_agent.provider_failure`
     // {test}`requirements.sdk.graph.criteria.deterministic_procedures`
@@ -222,15 +291,20 @@ mod tests {
             Default::default(),
             crate::domain::ValidationCache::with_agent(config),
         );
-        let agent = domain.cache().agent.as_ref().unwrap();
-        assert!(agent.provider.get().is_none());
-        let deterministic = validation::refresh_evidence(&domain, Question(false))
-            .await
-            .unwrap();
+        let deterministic = validation::refresh_evidence(
+            &domain,
+            Question(false, domain.cache().intern_node(TestNode { id: 1 })),
+        )
+        .await
+        .unwrap();
         assert!(!deterministic.output());
-        assert!(agent.provider.get().is_none());
         assert_eq!(deterministic.dependencies().len(), 1);
-        let error = match validation::verify(&domain, Question(true)).await {
+        let error = match validation::verify(
+            &domain,
+            Question(true, domain.cache().intern_node(TestNode { id: 1 })),
+        )
+        .await
+        {
             Ok(_) => panic!("missing credentials must fail the awaited ask"),
             Err(error) => error,
         };
@@ -242,6 +316,7 @@ mod tests {
         );
     }
 
+    // {test}`requirements.sdk.graph.agent-harness.AgentSettings`
     // {test}`requirements.sdk.graph.agent-harness.setup`
     // {test}`requirements.sdk.graph.agent-harness.with_agent`
     // {test}`requirements.sdk.validation-cache.cache`
@@ -255,6 +330,7 @@ mod tests {
         );
         let mut domain = TestDomain::default();
         domain.2 = crate::domain::ValidationCache::with_agent(config.clone());
+        assert_eq!(domain.cache().agent.as_ref().unwrap().backend, config);
         assert!(domain.cache().outlines.lock().unwrap().is_empty());
         assert!(domain.cache().sources.is_none());
         let peer = domain.clone();
@@ -262,10 +338,12 @@ mod tests {
             domain.cache().agent.as_ref().unwrap(),
             peer.cache().agent.as_ref().unwrap()
         ));
-        assert_eq!(peer.cache().agent.as_ref().unwrap().config, config);
-        let verified = validation::refresh_evidence(&domain, Question(false))
-            .await
-            .unwrap();
+        let verified = validation::refresh_evidence(
+            &domain,
+            Question(false, domain.cache().intern_node(TestNode { id: 1 })),
+        )
+        .await
+        .unwrap();
         assert!(!verified.output());
         let saved = serde_json::to_value(domain.0.lock().unwrap().as_ref().unwrap()).unwrap();
         assert!(saved.get("backend").is_none());
@@ -273,20 +351,464 @@ mod tests {
         assert!(!saved.to_string().contains("claude-sonnet"));
     }
 
-    // {test}`requirements.sdk.graph.agent-harness.with_agent`
-    // {test}`requirements.sdk.graph.agent-harness.tool_agent`
-    // {test}`requirements.sdk.graph.agent-harness.tool_agent.isolation`
-    // {test}`requirements.sdk.graph.agent-harness.submission`
-    // {test}`requirements.sdk.graph.agent-harness.submission.mcp`
-    // {test}`requirements.sdk.graph.agent-harness.submission.acceptance`
-    // {test}`requirements.sdk.graph.agent-harness.fixed_tools`
-    // {test}`requirements.sdk.graph.agent-harness.OpenAiConfig`
-    // {test}`requirements.sdk.graph.validation-context.node_reference`
-    // {test}`requirements.sdk.validation-cache.with_sources`
-    // {test}`requirements.sdk.graph.search.source_identity`
-    // {test}`requirements.sdk.sources.provider.attachment`
+    // {test}`requirements.sdk.validation-cache.new`
+    #[test]
+    fn new_cache_starts_without_files_or_agent() {
+        let cache = crate::domain::ValidationCache::<TestDomain>::new();
+        assert!(cache.agent.is_none());
+        assert!(cache.sources.is_none());
+        assert!(cache.outlines.lock().unwrap().is_empty());
+    }
+
+    #[derive(
+        Clone,
+        Debug,
+        PartialEq,
+        Eq,
+        serde::Serialize,
+        serde::Deserialize,
+        schemars::JsonSchema,
+        Hash,
+    )]
+    enum LookupNode {
+        Requirement(String),
+        Selection(String),
+    }
+
+    struct LookupContent(String);
+    impl NodeContents for LookupContent {
+        fn fingerprint(&self) -> Fingerprint {
+            Fingerprint::new("test-text".into(), self.0.clone())
+        }
+        fn format(&self) -> String {
+            self.0.clone()
+        }
+    }
+
+    #[derive(serde::Deserialize, schemars::JsonSchema)]
+    struct Pattern {
+        pattern: String,
+    }
+
+    #[derive(Clone)]
+    struct LookupDomain<'a> {
+        lookup_calls: Arc<std::sync::Mutex<Vec<String>>>,
+        catalog: &'a [&'a str],
+        cache: crate::domain::ValidationCache<Self>,
+    }
+
+    impl Domain for LookupDomain<'_> {
+        type Error = String;
+        type NodeData = LookupNode;
+        type EdgeLabel = String;
+        type NodeContent = LookupContent;
+        fn cache(&self) -> &crate::domain::ValidationCache<Self> {
+            &self.cache
+        }
+        fn node_path(&self, node: &NodeId<Self>) -> NodePath {
+            let node = &*self.cache().node_data(*node).unwrap();
+            NodePath::new(vec![serde_json::to_string(node).unwrap()])
+        }
+        fn node_content(&self, node: &NodeId<Self>) -> Result<LookupContent, String> {
+            let node = &*self.cache().node_data(*node).unwrap();
+            let text = match node {
+                LookupNode::Selection(pattern) => {
+                    serde_json::to_string(&self.matches(pattern)).unwrap()
+                }
+                LookupNode::Requirement(name) if name == "requirements.sdk.outlines" => {
+                    "An outline identifies the selectable items in a source file.".into()
+                }
+                LookupNode::Requirement(name) => name.clone(),
+            };
+            Ok(LookupContent(text))
+        }
+        fn outgoing_edges(&self, _: &NodeId<Self>, _: String) -> Result<Vec<NodeId<Self>>, String> {
+            Ok(vec![])
+        }
+        async fn load_evidence(
+            &self,
+            _: &NodeId<Self>,
+            _: &CriterionPath,
+        ) -> Result<Option<Record<LookupNode, String>>, String> {
+            Ok(None)
+        }
+        async fn store_evidence(
+            &self,
+            _: &NodeId<Self>,
+            _: &CriterionPath,
+            _: &Record<LookupNode, String>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    impl LookupDomain<'_> {
+        fn matches(&self, pattern: &str) -> Vec<LookupNode> {
+            self.catalog
+                .iter()
+                .filter(|name| match pattern.strip_suffix('*') {
+                    Some(prefix) => name.starts_with(prefix),
+                    None => **name == pattern,
+                })
+                .map(|name| LookupNode::Requirement(name.to_string()))
+                .collect()
+        }
+    }
+
+    struct Lookup(&'static str);
+    impl<'d> crate::agent::Tool<LookupDomain<'d>, Pattern, Vec<NodeId<LookupDomain<'d>>>> for Lookup {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn description(&self) -> &str {
+            "Find requirement node IDs matching a name glob."
+        }
+        async fn execute(
+            &self,
+            cx: &ValidationContext<'_, LookupDomain<'d>>,
+            args: Pattern,
+        ) -> Vec<NodeId<LookupDomain<'d>>> {
+            cx.graph()
+                .lookup_calls
+                .lock()
+                .unwrap()
+                .push(args.pattern.clone());
+            cx.graph()
+                .matches(&args.pattern)
+                .into_iter()
+                .map(|data| cx.graph().cache().intern_node(data))
+                .collect()
+        }
+    }
+    #[derive(serde::Deserialize, schemars::JsonSchema)]
+    struct InspectArgs {
+        node: NodeId<LookupDomain<'static>>,
+    }
+    struct Inspect;
+    impl crate::agent::Tool<LookupDomain<'static>, InspectArgs, String> for Inspect {
+        fn name(&self) -> &str {
+            "inspect"
+        }
+        fn description(&self) -> &str {
+            "Read an entry."
+        }
+        async fn execute(
+            &self,
+            cx: &ValidationContext<'_, LookupDomain<'static>>,
+            InspectArgs { node }: InspectArgs,
+        ) -> String {
+            let entry = cx.read(&node).unwrap();
+            cx.outgoing_edges(&node, "related".into()).unwrap();
+            entry.format()
+        }
+    }
+
+    // {test}`requirements.sdk.validation-cache.with_agent`
+    // {test}`requirements.sdk.graph.agent-harness.AgentWithTools`
+    // {test}`requirements.sdk.graph.agent-harness.AgentSettings`
+    // {test}`requirements.sdk.graph.agent-harness.Tool`
+    // {test}`requirements.sdk.graph.agent-harness.with_tool`
+    // {test}`requirements.sdk.graph.agent-harness.domain_tool_dispatch`
+    // {test}`requirements.sdk.graph.agent-harness.domain_tool_inputs`
+    // {test}`requirements.sdk.graph.agent-harness.lookup_requirements`
     #[tokio::test]
-    async fn supplied_openai_backend_runs_independent_calls_against_a_local_transport() {
+    async fn registered_tools_use_the_current_context_and_ordinary_node_ids() {
+        use serde_json::json;
+        let (backend, server) = local_backend(vec![
+            (
+                "lookup_requirements",
+                json!({"pattern":"requirements.sdk.*"}),
+            ),
+            ("lookup_requirements", json!({"pattern":false})),
+            ("inspect", json!({"node":2})),
+            ("submit_result", json!({"result":true})),
+            ("submit_result", json!({"result":false})),
+        ]);
+        let catalog: &[&str] = &["requirements.sdk.cache", "requirements.sdk.outlines"];
+        let outline = LookupNode::Requirement(catalog[1].into());
+        let domain = LookupDomain {
+            lookup_calls: Default::default(),
+            catalog,
+            cache: crate::domain::ValidationCache::with_agent(
+                backend
+                    .clone()
+                    .with_tool(Arc::new(Lookup("lookup_requirements")))
+                    .with_tool(Arc::new(Inspect)),
+            ),
+        };
+        let peer = domain.clone();
+        let cx = ValidationContext::new(
+            &peer,
+            peer.cache()
+                .intern_node(LookupNode::Requirement("subject".into())),
+        );
+        assert!(cx.ask::<bool>().await.unwrap());
+        assert!(matches!(
+            &cx.dependencies()[..],
+            [validation::Dependency::Node(node, hash), validation::Dependency::OutgoingEdges(edges, label, _)] if node == &domain.cache().intern_node(outline.clone()) && hash == &domain.node_content(&domain.cache().intern_node(outline.clone())).unwrap().fingerprint() && edges == &domain.cache().intern_node(outline.clone()) && label == "related"
+        ));
+        assert_eq!(*domain.lookup_calls.lock().unwrap(), ["requirements.sdk.*"]);
+        let other = LookupDomain {
+            lookup_calls: Default::default(),
+            catalog,
+            cache: crate::domain::ValidationCache::with_agent(
+                backend.with_tool(Arc::new(Lookup("other"))),
+            ),
+        };
+        assert!(
+            !ValidationContext::new(
+                &other,
+                other
+                    .cache()
+                    .intern_node(LookupNode::Requirement("subject".into()))
+            )
+            .ask::<bool>()
+            .await
+            .unwrap()
+        );
+        let requests = server.join().unwrap();
+        for request in &requests[..4] {
+            let names: Vec<_> = request["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|tool| tool["name"].as_str().unwrap())
+                .collect();
+            assert_eq!(
+                names,
+                [
+                    "read_node",
+                    "outgoing_edges",
+                    "get_next_page",
+                    "submit_result",
+                    "lookup_requirements",
+                    "inspect"
+                ]
+            );
+        }
+        let tools = requests[0]["tools"].as_array().unwrap();
+        let lookup = tools
+            .iter()
+            .find(|tool| tool["name"] == "lookup_requirements")
+            .unwrap();
+        assert_eq!(
+            lookup["parameters"]["properties"]["pattern"]["type"],
+            "string"
+        );
+        assert_eq!(
+            lookup["description"],
+            "Find requirement node IDs matching a name glob."
+        );
+        let output = |turn: usize| {
+            requests[turn]["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|msg| msg["type"] == "function_call_output")
+                .unwrap()["output"]
+                .as_str()
+                .unwrap()
+        };
+        assert_eq!(
+            serde_json::from_str::<Value>(output(1)).unwrap(),
+            json!([1, 2])
+        );
+        assert!(output(2).contains("invalid type"));
+        assert_eq!(
+            serde_json::from_str::<String>(output(3)).unwrap(),
+            "An outline identifies the selectable items in a source file."
+        );
+        let other_tools = requests[4]["tools"].as_array().unwrap();
+        assert!(other_tools.iter().any(|tool| tool["name"] == "other"));
+        assert!(
+            !other_tools
+                .iter()
+                .any(|tool| tool["name"] == "inspect" || tool["name"] == "lookup_requirements")
+        );
+    }
+
+    struct ReadSelection;
+    impl crate::agent::Tool<LookupDomain<'_>, Pattern, String> for ReadSelection {
+        fn name(&self) -> &str {
+            "read_selection"
+        }
+        fn description(&self) -> &str {
+            "Read the selected set of requirements."
+        }
+        async fn execute(
+            &self,
+            cx: &ValidationContext<'_, LookupDomain<'_>>,
+            args: Pattern,
+        ) -> String {
+            cx.read(
+                &cx.graph()
+                    .cache()
+                    .intern_node(LookupNode::Selection(args.pattern)),
+            )
+            .unwrap()
+            .format()
+        }
+    }
+
+    // {test}`requirements.sdk.graph.agent-harness.lookup_requirements`
+    // {test}`requirements.sdk.graph.agent-harness.domain_tool_inputs`
+    #[tokio::test]
+    async fn lookup_read_and_empty_selection_have_distinct_evidence() {
+        use serde_json::json;
+        let pattern = json!({"pattern":"requirements.sdk.*"});
+        let outline = LookupNode::Requirement("requirements.sdk.outlines".into());
+        let submit = ("submit_result", json!({"result":true}));
+        let (backend, server) = local_backend(vec![
+            ("lookup_requirements", pattern.clone()),
+            ("read_node", json!({"node":0})),
+            submit.clone(),
+            ("lookup_requirements", pattern.clone()),
+            submit.clone(),
+            ("read_selection", pattern),
+            submit,
+        ]);
+        let domain = LookupDomain {
+            lookup_calls: Default::default(),
+            catalog: &["requirements.sdk.cache", "requirements.sdk.outlines"],
+            cache: crate::domain::ValidationCache::with_agent(
+                backend
+                    .with_tool(Arc::new(Lookup("lookup_requirements")))
+                    .with_tool(Arc::new(ReadSelection)),
+            ),
+        };
+        let cx = ValidationContext::new(&domain, domain.cache().intern_node(outline.clone()));
+        assert!(cx.ask::<bool>().await.unwrap());
+        assert!(
+            matches!(&cx.dependencies()[..], [validation::Dependency::Node(node, hash)] if node == &domain.cache().intern_node(outline.clone()) && hash == &domain.node_content(node).unwrap().fingerprint())
+        );
+        let empty = LookupDomain {
+            lookup_calls: Default::default(),
+            catalog: &[],
+            cache: domain.cache.clone(),
+        };
+        let discovery = ValidationContext::new(&empty, empty.cache().intern_node(outline.clone()));
+        assert!(discovery.ask::<bool>().await.unwrap());
+        assert!(discovery.dependencies().is_empty());
+        let tracked = ValidationContext::new(&empty, empty.cache().intern_node(outline.clone()));
+        assert!(tracked.ask::<bool>().await.unwrap());
+        let version = CriterionVersion::new("v1");
+        let record = tracked.finish(version.clone(), true).unwrap();
+        assert!(record.is_current(&empty, &version).unwrap());
+        let first = LookupDomain {
+            lookup_calls: Default::default(),
+            catalog: &["requirements.sdk.cache"],
+            cache: domain.cache.clone(),
+        };
+        assert!(!record.is_current(&first, &version).unwrap());
+        let requests = server.join().unwrap();
+        let output = |turn: usize| {
+            requests[turn]["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|m| m["type"] == "function_call_output")
+                .unwrap()["output"]
+                .as_str()
+                .unwrap()
+        };
+        assert_eq!(
+            serde_json::from_str::<Value>(output(2)).unwrap(),
+            json!({"text":"An outline identifies the selectable items in a source file."})
+        );
+        assert_eq!(output(4), "[]");
+    }
+
+    // {test}`requirements.sdk.graph.agent-harness.fixed_tools`
+    // {test}`requirements.sdk.graph.validation-context.read_node.mcp`
+    #[tokio::test]
+    async fn read_node_advertises_and_reads_every_domain_id_variant() {
+        use serde_json::json;
+        let requirement = LookupNode::Requirement("requirements.sdk.outlines".into());
+        let selection = LookupNode::Selection("requirements.sdk.*".into());
+        let (backend, server) = local_backend(vec![
+            ("read_node", json!({"node":0})),
+            ("read_node", json!({"node":1})),
+            ("submit_result", json!({"result":true})),
+        ]);
+        let domain = LookupDomain {
+            lookup_calls: Default::default(),
+            catalog: &["requirements.sdk.outlines"],
+            cache: crate::domain::ValidationCache::with_agent(backend.with_tool(Arc::new(Inspect))),
+        };
+        let cx = ValidationContext::new(&domain, domain.cache().intern_node(requirement.clone()));
+        domain.cache().intern_node(selection.clone());
+        assert!(cx.ask::<bool>().await.unwrap());
+        assert_eq!(
+            cx.dependencies(),
+            [requirement.clone(), selection.clone()].map(|node| {
+                let hash = domain
+                    .node_content(&domain.cache().intern_node(node.clone()))
+                    .unwrap()
+                    .fingerprint();
+                validation::Dependency::Node(domain.cache().intern_node(node), hash)
+            })
+        );
+        let requests = server.join().unwrap();
+        let params = &requests[0]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "read_node")
+            .unwrap()["parameters"];
+        assert_eq!(params["properties"]["node"]["type"], "integer");
+        for (index, node) in [requirement, selection].into_iter().enumerate() {
+            let output = requests[index + 1]["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|msg| msg["type"] == "function_call_output")
+                .unwrap()["output"]
+                .as_str()
+                .unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(output).unwrap(),
+                json!({"text":domain.node_content(&domain.cache().intern_node(node.clone())).unwrap().format()})
+            );
+        }
+    }
+
+    // {test}`requirements.sdk.graph.agent-harness.with_tool`
+    #[tokio::test]
+    async fn duplicate_tool_names_fail_the_ask_before_any_completion() {
+        let (backend, server) = local_backend(vec![]);
+        for name in ["read_node", "lookup", "search_text"] {
+            let domain = LookupDomain {
+                lookup_calls: Default::default(),
+                catalog: &[],
+                cache: crate::domain::ValidationCache::with_agent(
+                    backend
+                        .clone()
+                        .with_tool(Arc::new(Lookup("lookup")))
+                        .with_tool(Arc::new(Lookup(name))),
+                ),
+            };
+            let error = ValidationContext::new(
+                &domain,
+                domain
+                    .cache()
+                    .intern_node(LookupNode::Requirement("subject".into())),
+            )
+            .ask::<bool>()
+            .await
+            .unwrap_err();
+            assert!(
+                matches!(error, validation::ValidationError::Agent(message) if message.contains("duplicate agent tool name") && message.contains(name))
+            );
+        }
+        assert!(server.join().unwrap().is_empty());
+    }
+
+    fn local_backend(
+        calls: Vec<(&'static str, Value)>,
+    ) -> (AgentConfig, std::thread::JoinHandle<Vec<Value>>) {
         use std::{
             io::{Read, Write},
             net::TcpListener,
@@ -298,7 +820,7 @@ mod tests {
         let server = std::thread::spawn(move || {
             let mut requests = Vec::new();
             let deadline = Instant::now() + Duration::from_secs(15);
-            for call in 0..4 {
+            for (call, (name, args)) in calls.into_iter().enumerate() {
                 let (mut stream, _) = loop {
                     match listener.accept() {
                         Ok(stream) => break stream,
@@ -347,10 +869,7 @@ mod tests {
                     "created_at":1, "model":"local-test", "status":"completed",
                     "output":[{"type":"function_call", "id":format!("fc_{call}"),
                         "call_id":format!("call_{call}"),
-                        "name":if call % 2 == 0 { "read_node" } else { "submit_result" },
-                        "arguments":if call % 2 == 0 {
-                            "{\"node\":{\"id\":1}}"
-                        } else { "{\"result\":true}" },
+                        "name":name, "arguments":args.to_string(),
                         "status":"completed"}],
                     "usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}
                 })
@@ -359,16 +878,50 @@ mod tests {
             }
             requests
         });
-        let mut domain = TestDomain::default();
-        domain.2 = crate::domain::ValidationCache::with_agent(AgentConfig::OpenAi(OpenAiConfig {
+        let config = AgentConfig::OpenAi(OpenAiConfig {
             model: Some("local-test".into()),
             endpoint: Some(endpoint),
             api_key: Some("local-transport-key".into()),
             ..OpenAiConfig::default()
-        }));
-        assert_eq!(domain.node_path(&TestNode { id: 1 }).segments(), ["1"]);
+        });
+        (config, server)
+    }
+
+    // {test}`requirements.sdk.graph.agent-harness.with_agent`
+    // {test}`requirements.sdk.graph.agent-harness.tool_agent`
+    // {test}`requirements.sdk.graph.agent-harness.tool_agent.isolation`
+    // {test}`requirements.sdk.graph.agent-harness.submission`
+    // {test}`requirements.sdk.graph.agent-harness.submission.mcp`
+    // {test}`requirements.sdk.graph.agent-harness.submission.acceptance`
+    // {test}`requirements.sdk.graph.agent-harness.fixed_tools`
+    // {test}`requirements.sdk.graph.agent-harness.OpenAiConfig`
+    // {test}`requirements.sdk.graph.validation-context.node_reference`
+    // {test}`requirements.sdk.validation-cache.with_sources`
+    // {test}`requirements.sdk.graph.search.source_identity`
+    // {test}`requirements.sdk.sources.provider.attachment`
+    #[tokio::test]
+    async fn supplied_openai_backend_runs_independent_calls_against_a_local_transport() {
+        let calls = vec![
+            ("read_node", serde_json::json!({"node":0})),
+            ("submit_result", serde_json::json!({"result":true})),
+        ];
+        let calls = [calls.clone(), calls].concat();
+        let (config, server) = local_backend(calls);
+        let mut domain = TestDomain::default();
+        domain.2 = crate::domain::ValidationCache::with_agent(config);
+        assert_eq!(
+            domain
+                .node_path(&domain.cache().intern_node(TestNode { id: 1 }))
+                .segments(),
+            ["1"]
+        );
         for _ in 0..2 {
-            let answer = validation::verify(&domain, Question(true)).await.unwrap();
+            let answer = validation::verify(
+                &domain,
+                Question(true, domain.cache().intern_node(TestNode { id: 1 })),
+            )
+            .await
+            .unwrap();
             assert!(*answer.output());
             assert_eq!(answer.dependencies().len(), 1);
             validation::store_evidence(&domain, &answer).await.unwrap();
@@ -423,8 +976,8 @@ mod tests {
             } else {
                 prompt[0]["text"].as_str().unwrap()
             };
-            assert!(text.contains(r#"Current node: {"id":1}"#));
-            assert!(text.contains(r#"Node: {"id":1}"#));
+            assert!(text.contains("Current node: 0"));
+            assert!(text.contains("Node: 0"));
             assert!(input.contains("Finish by calling submit_result"), "{input}");
             if index % 2 == 1 {
                 assert!(input.contains("function_call_output"), "{input}");
@@ -503,7 +1056,7 @@ mod tests {
                         .unwrap(),
                 );
                 let (name, arguments) = if turn == 0 {
-                    ("read_node", serde_json::json!({"node":{"id":1}}))
+                    ("read_node", serde_json::json!({"node":0}))
                 } else {
                     ("submit_result", serde_json::json!({"result":true}))
                 };
@@ -535,7 +1088,12 @@ mod tests {
             Default::default(),
             crate::domain::ValidationCache::with_agent(config),
         );
-        let answer = validation::verify(&domain, Question(true)).await.unwrap();
+        let answer = validation::verify(
+            &domain,
+            Question(true, domain.cache().intern_node(TestNode { id: 1 })),
+        )
+        .await
+        .unwrap();
         assert!(*answer.output());
         assert_eq!(answer.dependencies().len(), 1);
         let requests = server.join().unwrap();
@@ -591,6 +1149,7 @@ mod tests {
     // {test}`requirements.sdk.sources.SourceProject`
     // {test}`requirements.sdk.graph.running-criteria.evaluate_criterion`
     #[tokio::test]
+    // {test}`requirements.sdk.graph.validation-context.shared_context`
     async fn configured_agent_uses_domain_source_tools_in_independent_executions() {
         use std::{
             io::{Read, Write},
@@ -803,15 +1362,26 @@ mod tests {
         );
         for _ in 0..2 {
             domain.1.lock().unwrap().clear();
-            let answer = validation::verify(&domain, Question(true)).await.unwrap();
+            let answer = validation::verify(
+                &domain,
+                Question(true, domain.cache().intern_node(TestNode { id: 1 })),
+            )
+            .await
+            .unwrap();
             assert!(*answer.output());
             assert_eq!(
                 answer.dependencies(),
                 &[
-                    crate::graph::Dependency::Node(TestNode { id: 1 }, Content.fingerprint()),
-                    crate::graph::Dependency::Node(TestNode { id: 7 }, Content.fingerprint()),
                     crate::graph::Dependency::Node(
-                        TestNode { id: 8 },
+                        domain.cache().intern_node(TestNode { id: 1 }),
+                        Content.fingerprint()
+                    ),
+                    crate::graph::Dependency::Node(
+                        domain.cache().intern_node(TestNode { id: 7 }),
+                        Content.fingerprint()
+                    ),
+                    crate::graph::Dependency::Node(
+                        domain.cache().intern_node(TestNode { id: 8 }),
                         crate::outline::OutlineContent::from_source(
                             domain.cache(),
                             "alpha.txt",
@@ -822,7 +1392,7 @@ mod tests {
                         .fingerprint()
                     ),
                     crate::graph::Dependency::Node(
-                        TestNode { id: 9 },
+                        domain.cache().intern_node(TestNode { id: 9 }),
                         crate::outline::OutlineContent::from_source(
                             domain.cache(),
                             "beta.txt",
@@ -832,7 +1402,10 @@ mod tests {
                         .at_offset(0)
                         .fingerprint()
                     ),
-                    crate::graph::Dependency::Node(TestNode { id: 10 }, Content.fingerprint()),
+                    crate::graph::Dependency::Node(
+                        domain.cache().intern_node(TestNode { id: 10 }),
+                        Content.fingerprint()
+                    ),
                 ]
             );
             assert_eq!(
@@ -844,7 +1417,10 @@ mod tests {
                     .filter(|id| id.path.starts_with("visible"))
                     .cloned()
                     .collect::<Vec<_>>(),
-                [crate::outline::OutlineId::new("visible/selected.txt", String::new()).unwrap()]
+                [
+                    crate::outline::OutlineData::new("visible/selected.txt", String::new())
+                        .unwrap()
+                ]
             );
         }
         let requests = server.join().unwrap();
@@ -871,12 +1447,7 @@ mod tests {
             for name in ["read_node", "outline_source", "outgoing_edges"] {
                 let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
                 let params = &tool["parameters"];
-                let reference = params["properties"]["node"]["$ref"].as_str().unwrap();
-                let id = params
-                    .pointer(reference.strip_prefix('#').unwrap())
-                    .unwrap();
-                assert_eq!(id["required"], serde_json::json!(["id"]));
-                assert_eq!(id["properties"]["id"]["type"], "integer");
+                assert_eq!(params["properties"]["node"]["type"], "integer");
             }
             let output = |request: &Value, name: &str| -> String {
                 request["input"]
@@ -897,7 +1468,7 @@ mod tests {
                     .as_array()
                     .unwrap()
                     .iter()
-                    .all(|n| n["id"].is_u64())
+                    .all(|n| n.is_u64())
             );
             let rejected = output(&requests[first + 2], "read_node");
             assert!(rejected.contains("invalid node ID"));

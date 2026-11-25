@@ -2,6 +2,7 @@
 
 use crate::domain::Domain;
 use crate::domain::NodeContents;
+use crate::domain::NodeId;
 use crate::graph::*;
 use futures::future::BoxFuture;
 use schemars::JsonSchema;
@@ -100,38 +101,39 @@ pub trait Agent<D: Domain>: Send + Sync {
     // {cite}`habeas:util`
     fn run<'a>(
         &'a self,
-        request: AgentRequest<D::NodeId>,
+        request: AgentRequest<NodeId<D>>,
         inspection: &'a ValidationContext<'_, D>,
     ) -> BoxFuture<'a, Result<Value, std::io::Error>>;
 }
 
 // {impl}`requirements.sdk.graph.agent-calls.author_procedure`
 pub struct ValidationContext<'d, D: Domain> {
-    node: D::NodeId,
+    node: NodeId<D>,
     graph: &'d D,
     // Hold this lock only while reading or recording dependencies.
-    observations: std::sync::Mutex<Vec<Dependency<D::NodeId, D::EdgeLabel>>>,
+    observations: std::sync::Mutex<Vec<Dependency<NodeId<D>, D::EdgeLabel>>>,
     agent: Option<&'d dyn Agent<D>>,
 }
 
 impl<'d, D: Domain> ValidationContext<'d, D> {
     // {cite}`habeas:util`
     // {impl}`requirements.sdk.graph.validation-context.ValidationContext.new`
-    pub fn new(graph: &'d D, node: D::NodeId) -> Self {
+    pub fn new(graph: &'d D, node: NodeId<D>) -> Self {
         Self::configured(graph, node, None)
     }
 
     // {cite}`habeas:util`
     #[doc(hidden)]
     #[cfg(any(test, feature = "habeas-integration"))]
-    pub(crate) fn with_agent(graph: &'d D, node: D::NodeId, agent: &'d dyn Agent<D>) -> Self {
+    pub(crate) fn with_agent(graph: &'d D, node: NodeId<D>, agent: &'d dyn Agent<D>) -> Self {
         Self::configured(graph, node, Some(agent))
     }
 
     // {cite}`habeas:util`
+    // {impl}`requirements.sdk.graph.validation-context.shared_context`
     pub(crate) fn configured(
         graph: &'d D,
-        node: D::NodeId,
+        node: NodeId<D>,
         agent: Option<&'d dyn Agent<D>>,
     ) -> Self {
         Self {
@@ -145,14 +147,14 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
     // {impl}`requirements.sdk.graph.validation-context.root_inputs`
     /// The source node this criterion examines.
     // {impl}`requirements.sdk.graph.validation-context.ValidationContext.node_id`
-    pub fn node_id(&self) -> &D::NodeId {
+    pub fn node_id(&self) -> &NodeId<D> {
         &self.node
     }
 
     // {impl}`requirements.sdk.graph.validation-context.root_inputs`
     /// Select this source's successors and record their target-set fingerprint.
     // {impl}`requirements.sdk.graph.validation-context.ValidationContext.successors`
-    pub fn successors(&self, label: &D::EdgeLabel) -> Result<Vec<D::NodeId>, D::Error>
+    pub fn successors(&self, label: &D::EdgeLabel) -> Result<Vec<NodeId<D>>, D::Error>
     where
         D::EdgeLabel: PartialEq,
     {
@@ -173,23 +175,24 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
     // {impl}`requirements.sdk.graph.validation-context.read_node.fn`
     // {impl}`requirements.sdk.graph.validation-context.read_node.inputs`
     // {impl}`requirements.sdk.graph.validation-context.ValidationContext.read`
-    pub fn read(&self, node: &D::NodeId) -> Result<D::NodeContent, D::Error> {
+    // {impl}`requirements.sdk.graph.validation-context.shared_context`
+    pub fn read(&self, node: &NodeId<D>) -> Result<D::NodeContent, D::Error> {
         Ok(self.read_snapshot(node)?.content)
     }
 
     // {impl}`requirements.sdk.graph.evidence.node_inputs`
     // {impl}`requirements.sdk.graph.snapshot`
     // {impl}`requirements.sdk.graph.validation-context.ValidationContext.read_snapshot`
-    pub fn read_snapshot(&self, node: &D::NodeId) -> Result<Snapshot<D::NodeContent>, D::Error> {
+    pub fn read_snapshot(&self, node: &NodeId<D>) -> Result<Snapshot<D::NodeContent>, D::Error> {
         let snapshot = self.prepare_read(node)?;
-        self.record_read(node.clone(), snapshot.fingerprint.clone());
+        self.record_read(*node, snapshot.fingerprint.clone());
         Ok(snapshot)
     }
 
     /// Prepare a retained node observation without claiming its delivery.
     pub(crate) fn prepare_read(
         &self,
-        node: &D::NodeId,
+        node: &NodeId<D>,
     ) -> Result<Snapshot<D::NodeContent>, D::Error> {
         let content = self.graph.node_content(node)?;
         let fingerprint = content.fingerprint();
@@ -206,14 +209,14 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
     // {impl}`requirements.sdk.graph.validation-context.ValidationContext.outgoing_edges`
     pub fn outgoing_edges(
         &self,
-        node: &D::NodeId,
+        node: &NodeId<D>,
         label: D::EdgeLabel,
-    ) -> Result<Snapshot<Vec<D::NodeId>>, D::Error>
+    ) -> Result<Snapshot<Vec<NodeId<D>>>, D::Error>
     where
         D::EdgeLabel: PartialEq,
     {
         let snapshot = self.prepare_edges(node, label.clone())?;
-        self.observe_edges(node.clone(), label, snapshot.fingerprint.clone());
+        self.observe_edges(*node, label, snapshot.fingerprint.clone());
         Ok(snapshot)
     }
 
@@ -221,9 +224,9 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
     // {cite}`habeas:util`
     pub(crate) fn prepare_edges(
         &self,
-        node: &D::NodeId,
+        node: &NodeId<D>,
         label: D::EdgeLabel,
-    ) -> Result<Snapshot<Vec<D::NodeId>>, D::Error> {
+    ) -> Result<Snapshot<Vec<NodeId<D>>>, D::Error> {
         let content = self.graph.outgoing_edges(node, label)?;
         let fingerprint = edge_fingerprint(self.graph, &content);
         Ok(Snapshot {
@@ -233,7 +236,8 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
     }
 
     /// Import the fingerprint of the exact snapshot delivered to the caller.
-    pub(crate) fn record_read(&self, node: D::NodeId, fingerprint: Fingerprint) {
+    // {impl}`requirements.sdk.graph.validation-context.shared_context`
+    pub(crate) fn record_read(&self, node: NodeId<D>, fingerprint: Fingerprint) {
         let mut observations = self.observations.lock().expect("dependency trace poisoned");
         if !observations.iter().any(|dependency| {
             matches!(dependency,
@@ -246,14 +250,14 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
     /// Habeas adapter hook for a delivered, retained observation.
     #[doc(hidden)]
     #[cfg(feature = "habeas-integration")]
-    pub fn observe_read(&self, node: D::NodeId, fingerprint: Fingerprint) {
+    pub fn observe_read(&self, node: NodeId<D>, fingerprint: Fingerprint) {
         self.record_read(node, fingerprint);
     }
 
     // {cite}`habeas:util`
     pub(crate) fn observe_edges(
         &self,
-        node: D::NodeId,
+        node: NodeId<D>,
         label: D::EdgeLabel,
         fingerprint: Fingerprint,
     ) where
@@ -265,7 +269,7 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
     // {cite}`habeas:util`
     pub(crate) fn observe_edges_by(
         &self,
-        node: D::NodeId,
+        node: NodeId<D>,
         label: D::EdgeLabel,
         fingerprint: Fingerprint,
         matches: fn(&D::EdgeLabel, &D::EdgeLabel) -> bool,
@@ -282,7 +286,7 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
 
     // {cite}`habeas:util`
     // {impl}`requirements.sdk.graph.validation-context.ValidationContext.dependencies`
-    pub fn dependencies(&self) -> Vec<Dependency<D::NodeId, D::EdgeLabel>> {
+    pub fn dependencies(&self) -> Vec<Dependency<NodeId<D>, D::EdgeLabel>> {
         self.observations
             .lock()
             .expect("dependency trace poisoned")
@@ -295,10 +299,10 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
         &self,
         version: CriterionVersion,
         output: impl serde::Serialize,
-    ) -> Result<Record<D::NodeId, D::EdgeLabel>, serde_json::Error> {
+    ) -> Result<Record<D::NodeData, D::EdgeLabel>, serde_json::Error> {
         Ok(Record {
             version: Some(version),
-            dependencies: self.dependencies(),
+            dependencies: crate::graph::persist_dependencies(self.graph, &self.dependencies()),
             output: serde_json::to_value(output)?,
         })
     }
@@ -313,10 +317,10 @@ where
     // {impl}`requirements.sdk.graph.validation-context.ValidationContext.read_source`
     pub fn read_source(
         &self,
-        item: &crate::outline::OutlineId,
+        item: &crate::outline::OutlineData,
     ) -> Result<D::NodeContent, D::Error> {
         let node = self.graph.source_node(item)?;
-        self.read(&node)
+        self.read(&self.graph.cache().intern_node(node))
     }
 }
 
@@ -413,7 +417,6 @@ where
     R: DeserializeOwned + JsonSchema + Send + 'a,
     P: 'a,
     D::Error: std::fmt::Display,
-    D::NodeId: serde::Serialize + serde::de::DeserializeOwned + schemars::JsonSchema,
     D::EdgeLabel: DeserializeOwned + JsonSchema + PartialEq,
     'd: 'a,
 {
@@ -431,24 +434,20 @@ where
                     .cache()
                     .agent
                     .as_deref()
-                    .map(|agent| agent as &dyn Agent<D>)
+                    .map(|agent| agent.runner.as_ref() as &dyn Agent<D>)
             })
             .ok_or(ValidationError::NoAgentConfigured)?;
         let mut inputs = Vec::new();
         for insertion in self.insertions {
             let nodes = match insertion {
-                Insertion::Current => vec![self.ctx.node.clone()],
+                Insertion::Current => vec![self.ctx.node],
                 Insertion::Successors(label, matches) => {
                     let snapshot = self
                         .ctx
                         .prepare_edges(&self.ctx.node, label.clone())
                         .map_err(ValidationError::Graph)?;
-                    self.ctx.observe_edges_by(
-                        self.ctx.node.clone(),
-                        label,
-                        snapshot.fingerprint,
-                        matches,
-                    );
+                    self.ctx
+                        .observe_edges_by(self.ctx.node, label, snapshot.fingerprint, matches);
                     snapshot.content
                 }
             };
@@ -471,7 +470,7 @@ where
         let prefix = self.contexts.join("\n\n");
         let prefix_fingerprint = context_fingerprint(&prefix);
         let request = AgentRequest {
-            current_node: self.ctx.node.clone(),
+            current_node: self.ctx.node,
             prefix,
             prefix_fingerprint,
             inputs,
@@ -494,7 +493,6 @@ macro_rules! await_phase {
             R: DeserializeOwned + JsonSchema + Send + 'a,
             'd: 'a,
             D::Error: std::fmt::Display,
-            D::NodeId: serde::Serialize + serde::de::DeserializeOwned + schemars::JsonSchema,
             D::EdgeLabel: DeserializeOwned + JsonSchema + PartialEq,
         {
             type Output = Result<R, ValidationError<D::Error>>;

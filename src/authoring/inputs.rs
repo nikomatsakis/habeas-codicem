@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+#[cfg(test)]
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -7,9 +8,7 @@ use serde_json::{Value, json};
 
 use super::access::SourceAccess;
 use crate::citations::CitationItem;
-use crate::evidence::{
-    Declaration, SourceReference, collect_references, discovered_files, load_definitions,
-};
+use crate::evidence::{Declaration, SourceReference};
 use crate::github::GithubIssues;
 use crate::inputs::{InputSelector, OutlineCache, ParsedSource, recorded_input};
 use crate::sites::{SiteFixme, SiteItem};
@@ -39,6 +38,7 @@ impl AssessmentKind {
 // {impl}`requirements.authoring.mandatory_inputs`
 // {impl}`requirements.authoring.delivered_inputs`
 pub(crate) struct AssessmentSources {
+    pub(crate) domain: crate::sdk::HabeasDomain,
     pub(crate) root: PathBuf,
     pub(crate) access: std::sync::Arc<SourceAccess>,
     pub(crate) subject_name: String,
@@ -63,6 +63,25 @@ pub(crate) struct AssessmentSources {
 }
 
 impl AssessmentSources {
+    #[cfg(test)]
+    pub(crate) fn prepare(root: &Path, subject_name: &str) -> io::Result<Self> {
+        Self::prepare_with_github(root, subject_name, GithubIssues::from_env(root))
+    }
+
+    // {cite}`habeas:util`
+    #[cfg(test)]
+    pub(crate) fn prepare_with_github(
+        root: &Path,
+        subject_name: &str,
+        github: GithubIssues,
+    ) -> io::Result<Self> {
+        Self::prepare_with_context(
+            crate::sdk::HabeasDomain::discover(root)?,
+            subject_name,
+            github,
+        )
+    }
+
     // {impl}`requirements.authoring.invocation`
     // {impl}`requirements.authoring.mandatory_inputs`
     // {impl}`requirements.authoring_input`
@@ -75,34 +94,15 @@ impl AssessmentSources {
     // {impl}`requirements.ci.reference_set`
     // {impl}`requirements.references.builtin_definitions`
     // {impl}`requirements.references.site_review`
-    pub(crate) fn prepare(root: &Path, subject_name: &str) -> io::Result<Self> {
-        Self::prepare_with_github(root, subject_name, GithubIssues::from_env(root))
-    }
-
-    // {cite}`habeas:util`
-    pub(crate) fn prepare_with_github(
-        root: &Path,
-        subject_name: &str,
-        github: GithubIssues,
-    ) -> io::Result<Self> {
-        Self::prepare_with_context(
-            root,
-            subject_name,
-            github,
-            &load_definitions(root)?,
-            OutlineCache::default(),
-        )
-    }
-
-    // {cite}`habeas:util`
     pub(crate) fn prepare_with_context(
-        root: &Path,
+        mut domain: crate::sdk::HabeasDomain,
         subject_name: &str,
         github: GithubIssues,
-        definitions: &BTreeMap<String, Declaration>,
-        outlines: OutlineCache,
     ) -> io::Result<Self> {
-        let root = fs::canonicalize(root)?;
+        let root = domain.root.to_path_buf();
+        let catalog_definitions = domain.definitions.clone();
+        let definitions = catalog_definitions.as_ref();
+        let outlines = domain.outlines.clone();
         let access = outlines.source_access(&root)?;
         let subject = definitions
             .get(subject_name)
@@ -159,19 +159,21 @@ impl AssessmentSources {
         let sites =
             crate::evidence::definition_sites(&root, subject_name, subject, &files, &outlines)?;
         // The same edges determine the reference contributions below.
-        let domain = crate::sdk::HabeasDomain {
-            root: &root,
-            definitions,
-            outlines: &outlines,
-        };
         let id = crate::sdk::RequirementId(subject_name.to_owned());
-        let structural = crate::evidence::structural_assessment(
+        let mut entries = crate::evidence::reference_set_entries(
             &root,
             &outlines,
+            subject_name,
             subject,
-            &domain.reference_entries(&id)?,
+            references,
+            &sites,
         );
-        let reference_set = domain.reference_set(&id)?;
+        entries.sort();
+        let structural =
+            crate::evidence::structural_assessment(&root, &outlines, subject, &entries);
+        let subject_node = crate::sdk::HabeasNode::Requirement(id);
+        let reference_set =
+            crate::evidence::digest_definition_entries(&root, &outlines, subject, entries);
         // {impl}`requirements.authoring.structural_inputs`
         // :::{fixme} requirements.authoring.structural_inputs
         // :github: nikomatsakis/habeas-codicem#51
@@ -310,7 +312,16 @@ impl AssessmentSources {
                 })
                 .collect();
         }
+        domain.install_edges(
+            subject_node,
+            crate::sdk::HabeasEdgeLabel::Mandatory,
+            mandatory
+                .iter()
+                .filter_map(InputSelector::from_input)
+                .map(|selector| crate::sdk::HabeasNode::from(&selector)),
+        );
         Ok(Self {
+            domain,
             root,
             access: access.into(),
             subject_name: subject_name.to_owned(),
@@ -337,16 +348,21 @@ impl AssessmentSources {
     /// their commentary are supplied in the prompt.
     // {impl}`requirements.authoring.citation_prompt`
     // {impl}`requirements.authoring.mandatory_inputs`
-    pub(crate) fn prepare_citation(root: &Path, file: &str, item: &str) -> io::Result<Self> {
-        let root = fs::canonicalize(root)?;
-        let access = super::access::load_source_access(&root)?;
-        let definitions = load_definitions(&root)?;
-        let outlines = OutlineCache::default();
-        let mut errors = Vec::new();
-        let references = collect_references(&root, &mut errors);
-        if !errors.is_empty() {
-            return Err(io::Error::other(errors.join("\n")));
-        }
+    pub(crate) fn prepare_citation(
+        domain: crate::sdk::HabeasDomain,
+        file: &str,
+        item: &str,
+    ) -> io::Result<Self> {
+        let root = domain.root.to_path_buf();
+        let access = domain.outlines.source_access(&root)?;
+        let definitions = domain.definitions.clone();
+        let outlines = domain.outlines.clone();
+        let catalog = outlines.reference_catalog(&root);
+        let catalog = catalog
+            .as_ref()
+            .as_ref()
+            .map_err(|error| io::Error::other(error.clone()))?;
+        let references = &catalog.references;
         let subject_name = crate::citations::subject_label(file, item);
         let citation = crate::citations::citation_items(
             &root,
@@ -411,6 +427,7 @@ impl AssessmentSources {
             &mandatory,
         );
         Ok(Self {
+            domain,
             root,
             access: access.into(),
             subject_name,
@@ -438,14 +455,14 @@ impl AssessmentSources {
     // {impl}`requirements.references.builtin_definitions`
     // {impl}`requirements.references.site_review`
     pub(crate) fn prepare_site(
-        root: &Path,
+        domain: crate::sdk::HabeasDomain,
         requirement: &str,
         file: &str,
         item: &str,
     ) -> io::Result<Self> {
-        let root = fs::canonicalize(root)?;
-        let access = super::access::load_source_access(&root)?;
-        let definitions = load_definitions(&root)?;
+        let root = domain.root.to_path_buf();
+        let access = domain.outlines.source_access(&root)?;
+        let definitions = domain.definitions.clone();
         let subject_name = crate::sites::subject_label(requirement, file, item);
         let declaration = definitions
             .get(requirement)
@@ -455,19 +472,14 @@ impl AssessmentSources {
                     "{subject_name}: no requirement named {requirement}"
                 ))
             })?;
-        let outlines = OutlineCache::default();
-        let mut errors = Vec::new();
-        let files = discovered_files(&root, &mut errors);
-        let references = crate::evidence::collect_references_with_progress(
-            &outlines.validation,
-            &root,
-            &files,
-            &mut errors,
-            &mut |_| {},
-        );
-        if !errors.is_empty() {
-            return Err(io::Error::other(errors.join("\n")));
-        }
+        let outlines = domain.outlines.clone();
+        let catalog = outlines.reference_catalog(&root);
+        let catalog = catalog
+            .as_ref()
+            .as_ref()
+            .map_err(|error| io::Error::other(error.clone()))?;
+        let references = &catalog.references;
+        let files = &catalog.files;
         let site =
             crate::sites::requirement_sites(&root, requirement, declaration, &files, &outlines)
                 .map_err(io::Error::other)?
@@ -531,6 +543,7 @@ impl AssessmentSources {
         );
         let fixmes = crate::sites::site_fixmes(&root, &site, &references, &outlines);
         Ok(Self {
+            domain,
             root,
             access: access.into(),
             subject_name,
@@ -620,7 +633,7 @@ impl AssessmentSources {
     /// Reads a selector as a model-facing input, recording a project-local
     /// absolute path relative to the project.
     pub(crate) fn read_selector(&self, selector: &InputSelector) -> io::Result<Value> {
-        let definitions = load_definitions(&self.root)?;
+        let definitions = &self.domain.definitions;
         let relative;
         let selector = match selector {
             InputSelector::Outline { file, item } => {
@@ -695,7 +708,7 @@ impl AssessmentSources {
     /// The additional definitions each input needs on its own, so a page of
     /// inputs can carry the definitions that accompany them.
     pub(crate) fn definitions_each(&self, inputs: &[Value]) -> io::Result<Vec<Vec<Value>>> {
-        let definitions = load_definitions(&self.root)?;
+        let definitions = &self.domain.definitions;
         inputs
             .iter()
             .map(|input| {
@@ -715,7 +728,7 @@ impl AssessmentSources {
     }
 
     pub(crate) fn additional_definitions(&self, inputs: &[Value]) -> io::Result<Vec<Value>> {
-        let definitions = load_definitions(&self.root)?;
+        let definitions = &self.domain.definitions;
         Ok(definition_inputs(
             &self.root,
             &self.access,
@@ -876,7 +889,7 @@ fn definition_inputs(
 }
 
 #[cfg(test)]
-pub(super) mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::authoring::access::tests::git;
 
@@ -1290,8 +1303,12 @@ pub(super) mod tests {
             ),
         )
         .unwrap();
-        let sources =
-            AssessmentSources::prepare_citation(root.path(), "src/lib.rs", "fn[helper]").unwrap();
+        let sources = AssessmentSources::prepare_citation(
+            crate::sdk::HabeasDomain::discover(root.path()).unwrap(),
+            "src/lib.rs",
+            "fn[helper]",
+        )
+        .unwrap();
         let inputs = sources.mandatory_inputs();
         // The item, each cited declaration once, the shared term once, and the
         // built-in text once.
@@ -1318,9 +1335,13 @@ pub(super) mod tests {
             "version = 1\n[evidence]\ndisallow = ['md/terms.md']\n",
         )
         .unwrap();
-        let error = AssessmentSources::prepare_citation(root.path(), "src/lib.rs", "fn[helper]")
-            .err()
-            .unwrap();
+        let error = AssessmentSources::prepare_citation(
+            crate::sdk::HabeasDomain::discover(root.path()).unwrap(),
+            "src/lib.rs",
+            "fn[helper]",
+        )
+        .err()
+        .unwrap();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
         assert!(error.to_string().contains("md/terms.md"), "{error}");
     }
@@ -1687,7 +1708,7 @@ pub(super) mod tests {
         let sources = AssessmentSources::prepare(root, "requirements.rule").unwrap();
         assert!(sources.has_applicable_fixme);
         let own_site = AssessmentSources::prepare_site(
-            root,
+            crate::sdk::HabeasDomain::discover(root).unwrap(),
             "requirements.rule",
             "src/lib.rs",
             "fn[check_two]",
@@ -1695,7 +1716,7 @@ pub(super) mod tests {
         .unwrap();
         assert!(own_site.has_applicable_fixme);
         let clean_site = AssessmentSources::prepare_site(
-            root,
+            crate::sdk::HabeasDomain::discover(root).unwrap(),
             "requirements.rule",
             "src/lib.rs",
             "fn[check_one]",

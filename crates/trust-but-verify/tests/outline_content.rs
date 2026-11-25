@@ -1,10 +1,12 @@
 use std::sync::Arc;
 use trust_but_verify::domain::NodeContents;
-use trust_but_verify::domain::ValidationCache;
+#[path = "support/stored_graph.rs"]
+mod stored_graph;
+type ValidationCache = trust_but_verify::domain::ValidationCache<stored_graph::StoredGraph>;
 use trust_but_verify::outline::Outline;
 use trust_but_verify::outline::OutlineContent;
+use trust_but_verify::outline::OutlineData;
 use trust_but_verify::outline::OutlineError;
-use trust_but_verify::outline::OutlineId;
 use trust_but_verify::outline::OutlineItem;
 use trust_but_verify::outline::OutlineLang;
 use trust_but_verify::outline::Span;
@@ -30,23 +32,23 @@ fn span_indexes_str_at_utf8_byte_boundaries() {
 // {test}`requirements.sdk.outlines.address_identity`
 #[test]
 fn addresses_reconstruct_without_reading_the_file() {
-    let id = OutlineId::new("not-present.rs", "mod[auth]/fn[check]".into()).unwrap();
-    let root = OutlineId::root("not-present.rs");
+    let id = OutlineData::new("not-present.rs", "mod[auth]/fn[check]".into()).unwrap();
+    let root = OutlineData::root("not-present.rs");
     assert!(root.selector.is_empty());
     assert_eq!(root.clone().selector(id.selector.clone()).unwrap(), id);
     assert!(root.selector("fn[".into()).is_err());
     let encoded = serde_json::to_string(&id).unwrap();
-    assert_eq!(serde_json::from_str::<OutlineId>(&encoded).unwrap(), id);
+    assert_eq!(serde_json::from_str::<OutlineData>(&encoded).unwrap(), id);
     assert_eq!(id.path, std::path::Path::new("not-present.rs"));
     assert_eq!(id.selector, "mod[auth]/fn[check]");
-    assert!(OutlineId::new("not-present.rs", "fn[".into()).is_err());
+    assert!(OutlineData::new("not-present.rs", "fn[".into()).is_err());
     assert_ne!(
         id,
-        OutlineId::new("different.rs", "mod[auth]/fn[check]".into()).unwrap()
+        OutlineData::new("different.rs", "mod[auth]/fn[check]".into()).unwrap()
     );
     assert_ne!(
         id,
-        OutlineId::new("not-present.rs", "mod[auth]".into()).unwrap()
+        OutlineData::new("not-present.rs", "mod[auth]".into()).unwrap()
     );
 }
 
@@ -151,13 +153,14 @@ fn unknown_extensions_keep_nonblank_lines_and_content_selectors() {
 // {test}`requirements.sdk.outlines.snapshot`
 // {test}`requirements.sdk.outlines.node_contents`
 // {test}`requirements.sdk.graph.NodeContents`
+// {test}`requirements.sdk.outlines.outline_file`
 #[test]
 fn selected_contents_outlive_handles_and_later_file_edits() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("notes.unknown");
     std::fs::write(&path, "first\nsecond\n").unwrap();
     let file = OutlineContent::from_path(&ValidationCache::new(), &path).unwrap();
-    let id = OutlineId::new(path.clone(), file.outline().items[2].selector.clone()).unwrap();
+    let id = OutlineData::new(path.clone(), file.outline().items[2].selector.clone()).unwrap();
     let selected = OutlineContent::from_id(&ValidationCache::new(), &id).unwrap();
     let selected_again = file.select(&id.selector).unwrap();
     assert_eq!(selected.id(), &id);
@@ -175,7 +178,7 @@ fn selected_contents_outlive_handles_and_later_file_edits() {
     assert_eq!(selected.format(), "second");
     assert!(OutlineContent::from_id(&ValidationCache::new(), &id).is_err());
     let retained_root = selected.select("").unwrap();
-    assert_eq!(retained_root.id(), &OutlineId::root(path));
+    assert_eq!(retained_root.id(), &OutlineData::root(path));
     assert_eq!(retained_root.text(), "first\nsecond\n");
     assert!(format!("{selected:?}").contains("OutlineContent"));
 }
@@ -430,6 +433,7 @@ fn ambiguous_items_are_errors_except_for_identical_plain_text_lines() {
 
 // {test}`requirements.sdk.outlines.parser`
 // {test}`requirements.sdk.outlines.independent`
+// {test}`requirements.sdk.outlines.outline_file`
 #[test]
 fn file_constructors_infer_the_language_and_return_addressed_contents() {
     let directory = tempfile::tempdir().unwrap();
@@ -451,7 +455,7 @@ fn file_constructors_infer_the_language_and_return_addressed_contents() {
             .collect::<Vec<_>>(),
         ["", "fn[check_token]"]
     );
-    let id = OutlineId::new(&path, "fn[check_token]".into()).unwrap();
+    let id = OutlineData::new(&path, "fn[check_token]".into()).unwrap();
     let selected = OutlineContent::from_id(&ValidationCache::new(), &id).unwrap();
     assert_eq!(selected.id(), &id);
     assert_eq!(selected.text(), "fn check_token() { allow(); }");

@@ -2,7 +2,8 @@ use super::{
     SearchHit, SearchResults, SourceError, SourceProject, SourceScope, StructuralQuery, TextQuery,
 };
 use crate::domain::Domain;
-use crate::outline::{OutlineContent, OutlineId, Span};
+use crate::domain::NodeId;
+use crate::outline::{OutlineContent, OutlineData, Span};
 use crate::structural::StructuralRule;
 
 impl<D: Domain> SourceProject<D> {
@@ -10,7 +11,7 @@ impl<D: Domain> SourceProject<D> {
     pub async fn search_text(
         &self,
         query: &TextQuery,
-    ) -> Result<SearchResults<SearchHit<D::NodeId>>, SourceError> {
+    ) -> Result<SearchResults<SearchHit<NodeId<D>>>, SourceError> {
         let regex = regex::RegexBuilder::new(&query.pattern)
             .multi_line(true)
             .build()
@@ -28,7 +29,7 @@ impl<D: Domain> SourceProject<D> {
     pub async fn search_structure(
         &self,
         query: &StructuralQuery,
-    ) -> Result<SearchResults<SearchHit<D::NodeId>>, SourceError> {
+    ) -> Result<SearchResults<SearchHit<NodeId<D>>>, SourceError> {
         let lang = query.language.as_str();
         let rule = StructuralRule::compile(lang, &query.rule).map_err(SourceError::Invalid)?;
         self.find_hits(&query.scope, query.limit, Some(lang), |text| {
@@ -45,7 +46,7 @@ impl<D: Domain> SourceProject<D> {
         limit: Option<usize>,
         language: Option<&str>,
         ranges: impl Fn(&str) -> Vec<std::ops::Range<usize>>,
-    ) -> Result<SearchResults<SearchHit<D::NodeId>>, SourceError> {
+    ) -> Result<SearchResults<SearchHit<NodeId<D>>>, SourceError> {
         let mut hits = Vec::new();
         for path in self.sources.list(scope).await? {
             if let Some(lang) = language
@@ -79,11 +80,14 @@ impl<D: Domain> SourceProject<D> {
                     return Ok(SearchResults::new(hits, false));
                 }
                 let item = file.at_offset(range.start);
-                let id = OutlineId {
+                let id = OutlineData {
                     path: path.clone(),
                     selector: item.id().selector.clone(),
                 };
-                let node = self.domain.source_node(&id)?;
+                let node = self
+                    .domain
+                    .cache()
+                    .intern_node(self.domain.source_node(&id)?);
                 hits.push(SearchHit::new(
                     node,
                     Span::new(range.start, range.end),

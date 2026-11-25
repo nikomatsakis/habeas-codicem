@@ -27,14 +27,14 @@ use std::{
 /// The empty selector identifies the file root. Constructing an address does
 /// not read the file.
 // {impl}`requirements.sdk.outlines.address_identity`
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
-pub struct OutlineId {
+pub struct OutlineData {
     pub path: PathBuf,
     pub selector: String,
 }
 
-impl OutlineId {
+impl OutlineData {
     pub fn root(path: impl Into<PathBuf>) -> Self {
         Self {
             path: path.into(),
@@ -236,7 +236,7 @@ struct Snapshot {
 // {impl}`requirements.sdk.outlines.snapshot`
 #[derive(Clone)]
 pub struct OutlineContent {
-    id: OutlineId,
+    id: OutlineData,
     snapshot: Arc<Snapshot>,
     selected: usize,
 }
@@ -259,7 +259,7 @@ impl OutlineContent {
     // {impl}`requirements.sdk.outlines.outline_file`
     // {impl}`requirements.sdk.outlines.outline_file.lifetime`
     pub fn from_path(
-        cache: &ValidationCache,
+        cache: &ValidationCache<impl crate::domain::Domain>,
         path: impl AsRef<Path>,
     ) -> Result<Self, OutlineError> {
         let path = path.as_ref();
@@ -283,7 +283,7 @@ impl OutlineContent {
     }
 
     pub(crate) fn search_text_snapshot(
-        cache: &ValidationCache,
+        cache: &ValidationCache<impl crate::domain::Domain>,
         path: &Path,
     ) -> Result<Option<Arc<str>>, crate::sources::SourceError> {
         let mut files = cache.outlines.lock().expect("outline cache lock poisoned");
@@ -308,7 +308,10 @@ impl OutlineContent {
 
     /// Read the addressed file, then select its item.
     // {impl}`requirements.sdk.outlines.parser`
-    pub fn from_id(cache: &ValidationCache, id: &OutlineId) -> Result<Self, OutlineError> {
+    pub fn from_id(
+        cache: &ValidationCache<impl crate::domain::Domain>,
+        id: &OutlineData,
+    ) -> Result<Self, OutlineError> {
         Self::from_path(cache, &id.path)?.select(&id.selector)
     }
 
@@ -316,7 +319,7 @@ impl OutlineContent {
     // {impl}`requirements.sdk.outlines.parser.supplied_source`
     // {impl}`requirements.sdk.outlines.defaults`
     pub fn from_source(
-        cache: &ValidationCache,
+        cache: &ValidationCache<impl crate::domain::Domain>,
         filename: impl AsRef<Path>,
         source: Arc<str>,
     ) -> Result<Self, OutlineError> {
@@ -353,7 +356,7 @@ impl OutlineContent {
     /// Read a file using explicit language rules.
     // {impl}`requirements.sdk.outlines.additional_languages`
     pub fn from_path_with<L: OutlineLang>(
-        cache: &ValidationCache,
+        cache: &ValidationCache<impl crate::domain::Domain>,
         language: &L,
         path: impl AsRef<Path>,
     ) -> Result<Self, OutlineError> {
@@ -390,7 +393,7 @@ impl OutlineContent {
     /// Outline supplied text using explicit language rules.
     // {impl}`requirements.sdk.outlines.additional_languages`
     pub fn from_source_with<L: OutlineLang>(
-        cache: &ValidationCache,
+        cache: &ValidationCache<impl crate::domain::Domain>,
         language: &L,
         filename: impl AsRef<Path>,
         source: Arc<str>,
@@ -430,7 +433,7 @@ impl OutlineContent {
         validate_outline(&outline, &source)?;
         let redaction = crate::redaction::Redaction::of_text(&source);
         Ok(Self {
-            id: OutlineId {
+            id: OutlineData {
                 path: filename.to_path_buf(),
                 selector: String::new(),
             },
@@ -478,7 +481,7 @@ impl OutlineContent {
             )));
         }
         Ok(Self {
-            id: OutlineId {
+            id: OutlineData {
                 path: self.id.path.clone(),
                 selector,
             },
@@ -488,7 +491,7 @@ impl OutlineContent {
     }
 
     /// Address of the selected item.
-    pub fn id(&self) -> &OutlineId {
+    pub fn id(&self) -> &OutlineData {
         &self.id
     }
 

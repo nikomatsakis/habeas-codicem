@@ -150,6 +150,7 @@ fn exceptions(
         }
     };
     let items = citation_items(root, &definitions, &references, outlines);
+    let domain = crate::sdk::HabeasDomain::new(root, &definitions, outlines);
     let mut accepted = BTreeMap::new();
     for (key, item) in items {
         if !item
@@ -162,7 +163,7 @@ fn exceptions(
         let mut findings = Vec::new();
         let path = item.review_path();
         if root.join(&path).is_file() {
-            validate_review(root, &path, &item, &definitions, outlines, &mut findings);
+            validate_review(&domain, &path, &item, &mut findings);
         } else {
             findings.push(format!(
                 "{path}: missing citation review; run `habeas author {}`",
@@ -1382,8 +1383,29 @@ mod tests {
             "{}",
             result.text
         );
+        assert!(
+            result.text.contains("code.rs: 0/1 (0.0%) — FAIL"),
+            "{}",
+            result.text
+        );
+        for rejected in [json!(false), json!({"FIXME": ["gap"]})] {
+            reviews(root, rejected);
+            assert!(report(root).text.contains("code.rs: 0/1 (0.0%) — FAIL"));
+        }
         reviews(root, json!(true));
         assert!(report(root).passed);
+        fs::write(
+            root.join("code.rs"),
+            source.replace("File rationale", "Changed file rationale"),
+        )
+        .unwrap();
+        record(root, "a", 1, "same", vec![process(root, &[(7, 0)], 0)]);
+        let stale_file = report(root);
+        assert!(
+            stale_file.text.contains("code.rs: 0/1 (0.0%) — FAIL"),
+            "{}",
+            stale_file.text
+        );
         fs::write(
             root.join("code.rs"),
             source.replace("Function rationale", "Changed rationale"),
