@@ -366,6 +366,7 @@ mod tests {
             api_key: Some("local-transport-key".into()),
             ..OpenAiConfig::default()
         }));
+        assert_eq!(domain.node_path(&TestNode { id: 1 }).segments(), ["1"]);
         for _ in 0..2 {
             let answer = validation::verify(&domain, Question(true)).await.unwrap();
             assert!(*answer.output());

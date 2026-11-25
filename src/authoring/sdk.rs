@@ -554,7 +554,11 @@ mod tests {
             file: "src/lib.rs".into(),
             item: "fn[helper]".into(),
         };
-        let source = HabeasNode::from(&selector);
+        let item =
+            trust_but_verify::outline::OutlineId::new("src/lib.rs", "fn[helper]".into()).unwrap();
+        let source = graph.source_node(&item).unwrap();
+        assert_eq!(source, HabeasNode::from(&selector));
+        assert!(std::ptr::eq(graph.cache(), graph.domain().cache()));
         assert_eq!(
             graph.node_path(&source).segments(),
             ["source", "repo", "src/lib.rs", "fn[helper]"]

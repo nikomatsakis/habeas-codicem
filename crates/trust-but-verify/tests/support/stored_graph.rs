@@ -80,9 +80,3 @@ impl Domain for StoredGraph {
         panic!("storage operations must not read graph contents")
     }
 }
-
-impl Default for StoredGraph {
-    fn default() -> Self {
-        Self(FileEvidenceStorage::new("."), Default::default())
-    }
-}

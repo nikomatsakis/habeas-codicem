@@ -666,6 +666,7 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
         lookups: Arc::new(AtomicUsize::new(0)),
         records: Arc::default(),
     };
+    assert!(graph.project_sources().is_none());
     let agent = ToolAgent::new(Script::new(vec![
         Some(vec![("outgoing_edges", json!({"node":1,"label":7}))]),
         Some(vec![("submit_result", json!({"result":true}))]),
@@ -1084,6 +1085,10 @@ async fn source_reads_track_optional_dependencies_and_empty_searches_remain_disc
 #[tokio::test]
 async fn deterministic_validation_uses_required_storage_without_an_agent() {
     let graph = Memory::new("ordinary computation".into());
+    assert!(matches!(
+        ValidationContext::new(&graph, Node(1)).ask::<bool>().await,
+        Err(ValidationError::NoAgentConfigured)
+    ));
     let result = validation::verify(&graph, Review(Node(1))).await.unwrap();
     validation::store_evidence(&graph, &result).await.unwrap();
     let saved = graph
@@ -1983,7 +1988,7 @@ async fn application_tool_factories_create_fresh_state_for_each_agent_call() {
         Some(vec![("submit_result", json!({"result":true}))]),
     ]))
     .with_tools(CounterTools(previous.clone()))
-    .with_tools(CounterTools(created.clone()));
+    .with_tools(Arc::new(CounterTools(created.clone())));
     let ctx = ValidationContext::with_agent(&graph, Node(1), &agent);
     for _ in 0..2 {
         assert!(ctx.ask::<bool>().await.unwrap());

@@ -462,6 +462,7 @@ impl Criterion<StoredGraph> for StoredReview<'_> {
 async fn malformed_records_are_storage_errors_and_bad_outputs_are_output_errors() {
     let temp = tempfile::tempdir().unwrap();
     let graph = StoredGraph(FileEvidenceStorage::new(temp.path()), Default::default());
+    assert!(graph.project_sources().is_none());
     let executions = AtomicUsize::new(0);
     let value = validation::verify(&graph, StoredReview(&executions))
         .await

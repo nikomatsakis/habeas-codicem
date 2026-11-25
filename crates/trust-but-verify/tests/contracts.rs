@@ -385,6 +385,12 @@ async fn domain_relationships_accept_opaque_types_and_send_only_errors() {
         graph.outgoing_edges(node, label).ok().unwrap()
     }
     let graph = Relationships(Default::default());
+    assert!(graph.project_sources().is_none());
+    let item = trust_but_verify::outline::OutlineId::root("lib.rs");
+    assert!(matches!(
+        graph.source_node(&item),
+        Err(trust_but_verify::sources::SourceError::Invalid(_))
+    ));
     let content = graph.node_content(&Identity(1)).ok().unwrap();
     assert_eq!(content.format(), "1");
     assert_eq!(content.fingerprint().value, "1");

@@ -1768,6 +1768,7 @@ async fn enum_node_ids_distinguish_requirements_and_source_items_in_one_domain()
         selector: "fn[validate]".into(),
     };
     let domain = ReviewDomain::default();
+    assert!(domain.project_sources().is_none());
     let hierarchical = ReviewNodeId::Requirement(vec!["a".into(), "b".into(), "c".into()]);
     let path = Domain::node_path(&domain, &hierarchical);
     assert_eq!(path.segments(), ["requirement", "a", "b", "c"]);
