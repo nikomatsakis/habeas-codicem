@@ -1,7 +1,7 @@
 {
   "requirement": "Every {term}`requirements.sdk.application_domain` implements\n`trust_but_verify::domain::Domain`. A domain is cloneable and safe to share between\nexecutions. The following chapters introduce its members one capability at a\ntime.\n\n```rust,ignore\npub trait Domain: Clone + Send + Sync {\n    type Error: Send;\n    type NodeData: Clone + Eq + Hash + Send + Sync;\n    type NodeContent: NodeContents;\n    type EdgeLabel: Clone + Send + Sync;\n\n    fn cache(&self) -> &ValidationCache<Self>;\n    fn node_path(&self, node: &NodeId<Self>) -> NodePath;\n    fn node_content(\n        &self,\n        node: &NodeId<Self>,\n    ) -> Result<Self::NodeContent, Self::Error>;\n    fn outgoing_edges(\n        &self,\n        node: &NodeId<Self>,\n        label: Self::EdgeLabel,\n    ) -> Result<Vec<NodeId<Self>>, Self::Error>;\n    fn load_evidence(\n        &self,\n        node: &NodeId<Self>,\n        criterion: &CriterionPath,\n    ) -> impl Future<Output = Result<Option<Record<Self::NodeData, Self::EdgeLabel>>, Self::Error>> + Send;\n    fn store_evidence(\n        &self,\n        node: &NodeId<Self>,\n        criterion: &CriterionPath,\n        record: &Record<Self::NodeData, Self::EdgeLabel>,\n    ) -> impl Future<Output = Result<(), Self::Error>> + Send;\n\n    fn project_sources(&self) -> Option<SourceProject<Self>> { ... }\n    fn source_node(\n        &self,\n        item: &OutlineData,\n    ) -> Result<Self::NodeData, SourceError> { ... }\n}\n```",
   "determination": true,
-  "rationale": "**Obligations derived from `requirements.sdk.domain`:**\n- A domain implements `Domain` and is `Clone + Send + Sync`.\n- The associated types carry the stated bounds:\n  - `Error: Send`\n  - `NodeData: Clone + Eq + Hash + Send + Sync`\n  - `NodeContent: NodeContents`\n  - `EdgeLabel: Clone + Send + Sync`\n- Each required method has the stated signature and behaves as described: `cache`, `node_path`, `node_content`, `outgoing_edges`, and the `Send` futures from `load_evidence` and `store_evidence`.\n- The defaults hold: `project_sources` returns `None`, and `source_node` returns an error.\n- A domain can be shared between executions.\n\n**Test mapping:**\n- `crates/trust-but-verify/tests/contracts.rs#fn[domain_relationships_accept_opaque_types_and_send_only_errors]` is the main contract test.\n  - Its fixture implements `Domain` with an opaque `Identity` and `Label`, and with a `GraphError` that is `Send` but not `Sync`, `Debug`, or `Clone`. This shows the bounds are not over-tightened.\n  - The generic `check_bounds` function compiles consumer code against `Domain`. It requires `Clone + Send + Sync` for the domain, `Clone + Eq + Send + Sync` for `NodeData`, `Clone + Send + Sync` for `EdgeLabel`, `Send` for `Error`, and `NodeContents + Send + Sync` for `NodeContent`. It also requires that the `load_evidence` and `store_evidence` futures are `Send`. If the trait loosened a bound, this would fail to compile.\n  - The `Hash` bound on `NodeData` is not asserted directly. I checked `src/domain.rs`: `ValidationCache` stores nodes in an `IndexSet<Arc<D::NodeData>>`, which needs `Hash`. Removing the bound would therefore break the crate, so this is not a practical gap.\n  - Behavior is asserted for these members:\n    - `node_content` returns the expected content, with the right `format` and `fingerprint`.\n    - `load_evidence` returns `None`, and `store_evidence` succeeds.\n    - `node_path` returns the expected segments, and paths for distinct nodes differ.\n    - `outgoing_edges` returns the expected ordered successors, including duplicates and empty results, and returns an error for the error case. That error is moved out and read after being passed through `send`.\n    - The defaults hold: `project_sources()` is `None` and `source_node` returns `SourceError::Invalid`.\n- Cloneable and shareable between executions:\n  - The same contract test requires `Clone + Send + Sync` for the domain.\n  - `agent/tests.rs#fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]`, `graph/validation_tests.rs#fn[shared_context_allows_independent_concurrent_agent_calls]` and `graph/validation_tests.rs#fn[concurrent_single_node_validations_keep_separate_traces]` run concurrent executions against one domain and assert on the result.\n  - `contracts.rs#fn[concurrent_same_criterion_executions_keep_complete_independent_records]` does the same for same-criterion executions.\n- Further tests use real `Domain` implementations for cache, content reads, edge reads, and evidence load and store:\n  - `agent/tests.rs#fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]`\n  - `agent/tests.rs#fn[deterministic_validation_uses_required_storage_without_an_agent]`\n  - `contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]`\n  - `src/sdk.rs#mod[tests]/fn[domain_formats_supplied_contents_without_resolving_a_replacement]`\n\n**Not assessed here:** `crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]` is marked for other requirements, not this one. The `application_domain` definition cites this requirement, and cited text needs no coverage.\n\nNo unacknowledged gap found.",
+  "rationale": "The tests adequately check `requirements.sdk.domain`.\n\n**Obligations derived from the text**\n- Every application domain implements `Domain`.\n- A domain is `Clone + Send + Sync` and safe to share between executions.\n- The associated types carry their stated bounds:\n  - `Error: Send`\n  - `NodeData: Clone + Eq + Hash + Send + Sync`\n  - `NodeContent: NodeContents`\n  - `EdgeLabel: Clone + Send + Sync`\n- The required members behave as the signatures say: `cache`, `node_path`, `node_content`, `outgoing_edges`, `load_evidence` and `store_evidence`. The two evidence futures must be `Send`.\n- The defaulted members `project_sources` and `source_node` exist with default behavior.\n- The chapters that introduce each member specify its detailed behavior, so those chapters' tests cover it.\n\n**Test mapping**\n- `crates/trust-but-verify/tests/contracts.rs#fn[domain_relationships_accept_opaque_types_and_send_only_errors]` is the main test.\n  - It implements `Domain` for a fixture with opaque `Identity` and `Label` types. The fixture's error type is `Send` but not `Sync`, `Debug` or `Clone`.\n  - The generic `check_bounds` function compiles against the declared bounds. It checks that the domain is `Clone + Send + Sync`, that `NodeData` and `EdgeLabel` meet their bounds, that `Error` is `Send`, and that `NodeContent` is `NodeContents + Send + Sync`. It also checks that both evidence futures are `Send`, so loosening or tightening a bound breaks compilation.\n  - The test asserts the defaults: `project_sources()` is `None`, and `source_node` returns `SourceError::Invalid`.\n  - It asserts `node_content` output through `format` and `fingerprint`, and `node_path` segments, including that different nodes give different paths.\n  - It asserts `outgoing_edges` for repeated and ordered successors, an empty result, and an error that survives as a `Send`-only value.\n  - It asserts that `load_evidence` and `store_evidence` run and return the expected results.\n- Sharing between executions is covered by several tests:\n  - `crates/trust-but-verify/src/agent/tests.rs#fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]`\n  - `crates/trust-but-verify/src/graph/validation_tests.rs#fn[shared_context_allows_independent_concurrent_agent_calls]`\n  - `crates/trust-but-verify/src/graph/validation_tests.rs#fn[concurrent_single_node_validations_keep_separate_traces]`\n  - `crates/trust-but-verify/tests/contracts.rs#fn[concurrent_same_criterion_executions_keep_complete_independent_records]`\n- Other tests use `Domain` implementations end to end for contents, edges, and evidence storage and loading:\n  - `crates/trust-but-verify/src/agent/tests.rs#fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]`\n  - `crates/trust-but-verify/src/agent/tests.rs#fn[deterministic_validation_uses_required_storage_without_an_agent]`\n  - `crates/trust-but-verify/tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]`\n  - `src/sdk.rs#mod[tests]/fn[domain_formats_supplied_contents_without_resolving_a_replacement]` covers a real application domain's content formatting.\n\n**Minor observation, not a gap**\n- `check_bounds` does not assert `Hash` on `NodeData`. The `Identity` fixture derives `Hash`, and `ValidationCache` interning relies on it, so dropping the bound would most likely break the library or cache code. I did not confirm this in the cache implementation.\n- The detailed behavior of each member is owned by its introducing chapter's requirements, which are assessed separately.",
   "references": "def95cddcfd729d8ab2a7869cd3b7c1d236dc0d2686efb64ec30c6a98a2e742a",
   "inputs": [
     {
@@ -110,7 +110,7 @@
     {
       "file": "src/sdk.rs",
       "item": "mod[tests]/fn[domain_formats_supplied_contents_without_resolving_a_replacement]",
-      "hash": "5fa8d5e8ed4b0b9dc48dd397ee5954a664a7c320da908024026c5aeeaad2760a"
+      "hash": "21810abef2babd76af80ac45074aec57489ea7a56fdaa1f4596a8eb6e048e796"
     },
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
@@ -134,18 +134,13 @@
     },
     {
       "file": "crates/trust-but-verify/src/domain.rs",
-      "item": "struct[ValidationCache]",
-      "hash": "da71957c3b59575ac04d56571feb9a24fff2c31ea4b4a791366e56543ecb573f"
-    },
-    {
-      "file": "crates/trust-but-verify/src/domain.rs",
       "item": "trait[Domain]/type[NodeData]",
       "hash": "9ba0b9dd205fef75690d47decc2bc1026e617bd4a2c5872d94c897dd14081895"
     },
     {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/struct[Identity]",
-      "hash": "8dd9dfdd789492f4e31b74f9dcb4f2c47bfe094f6cfc36eb78f7ad714a5b7ede"
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "struct[ValidationCache]",
+      "hash": "da71957c3b59575ac04d56571feb9a24fff2c31ea4b4a791366e56543ecb573f"
     }
   ],
   "format_version": 1,
@@ -368,7 +363,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "7702d2eb6481ae04124aab1977e354e163a62b7a00b68dd7a335124ee5d79b5f"
+          "value": "2d6a184792a3ddef1ef2386c19c0f916c0bf2d74ce958d78721922dfa052defa"
         }
       ]
     },
@@ -408,23 +403,6 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/domain.rs"
             },
-            "selector": "struct[ValidationCache]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "32a4105205e373d7a725c1a230281c44a71f89c4c8c04886c0c335c5a64eae28"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/domain.rs"
-            },
             "selector": "trait[Domain]/type[NodeData]"
           }
         },
@@ -440,14 +418,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
+              "location": "crates/trust-but-verify/src/domain.rs"
             },
-            "selector": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/struct[Identity]"
+            "selector": "struct[ValidationCache]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "8dfc83349c947069a2660a1a8eb858b78510d8de8cd17828631796c8c1236954"
+          "value": "32a4105205e373d7a725c1a230281c44a71f89c4c8c04886c0c335c5a64eae28"
         }
       ]
     }
