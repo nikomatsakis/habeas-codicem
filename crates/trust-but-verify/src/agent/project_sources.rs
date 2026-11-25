@@ -432,6 +432,12 @@ mod tests {
             assert!(session.dispatch("search_text", &invalid).await.is_err());
         }
 
+        let hits = tools
+            .search_text(&TextQuery::new("hit".into()))
+            .await
+            .unwrap();
+        let mut nodes: Vec<_> = hits.matches.into_iter().map(|hit| hit.node).collect();
+        nodes.dedup();
         let mut delivery = session
             .dispatch("search_text", &json!({"pattern":"hit"}))
             .await
@@ -449,7 +455,7 @@ mod tests {
             for (index, entry) in matches.iter().enumerate() {
                 assert_eq!(
                     entry,
-                    &json!({"node":format!("n{count}"), "excerpt":lines[count], "tag":(index+1).to_string()})
+                    &json!({"node":nodes[count], "excerpt":lines[count], "tag":(index+1).to_string()})
                 );
                 count += 1;
             }
@@ -473,6 +479,7 @@ mod tests {
     // {test}`requirements.sdk.graph.search.search_structure.behavior`
     // {test}`requirements.sdk.graph.search.agent_search_accounting`
     // {test}`requirements.sdk.graph.search.enclosing_item`
+    // {test}`requirements.sdk.graph.agent-harness.fixed_tools`
     async fn structural_tags_select_only_the_original_enclosing_item() {
         let root = tempfile::tempdir().unwrap();
         let code = root.path().join("code.rs");
@@ -524,7 +531,10 @@ mod tests {
                 Content(String::new()).fingerprint()
             )]
         );
-        let tag = &matches.iter().find(|m| m["node"] == "n1").unwrap()["tag"];
+        let tag = &matches
+            .iter()
+            .find(|m| m["node"] == "code.rs#fn[two]")
+            .unwrap()["tag"];
         let expected = crate::outline::OutlineContent::from_path(domain.cache(), &code)
             .unwrap()
             .select("fn[two]")
@@ -558,6 +568,7 @@ mod tests {
     // {test}`requirements.sdk.graph.validation-context.pages.mcp`
     // {test}`requirements.sdk.graph.validation-context.pages.behavior`
     #[tokio::test]
+    // {test}`requirements.sdk.graph.agent-harness.fixed_tools`
     async fn outline_continuations_keep_the_file_and_complete_ordered_items() {
         let root = tempfile::tempdir().unwrap();
         let names: Vec<_> = (0..400).map(|i| format!("item_{i}")).collect();
@@ -573,12 +584,12 @@ mod tests {
         let mut session = SessionTools::new(tools.session());
         session.dispatch("list_sources", &json!({})).await.unwrap();
         let mut delivery = session
-            .dispatch("outline_source", &json!({"node":"n0"}))
+            .dispatch("outline_source", &json!({"node":"code.rs#"}))
             .await
             .unwrap();
         std::fs::write(root.path().join("code.rs"), "fn changed() {}").unwrap();
         let again = session
-            .dispatch("outline_source", &json!({"node":"n0"}))
+            .dispatch("outline_source", &json!({"node":"code.rs#"}))
             .await
             .unwrap();
         let first: Value = serde_json::from_str(&delivery.text).unwrap();
@@ -597,7 +608,7 @@ mod tests {
         loop {
             let page: Value = serde_json::from_str(&delivery.text).unwrap();
             assert!(delivery.dependencies.is_empty());
-            assert_eq!(page["node"], "n0");
+            assert_eq!(page["node"], "code.rs#");
             let chunk = page["items"].as_array().unwrap();
             assert!(!chunk.is_empty());
             items.extend(chunk.iter().cloned());
@@ -611,7 +622,14 @@ mod tests {
         assert!(pages > 1);
         assert_eq!(items.len(), names.len() + 1);
         for (i, item) in items.iter().enumerate() {
-            assert_eq!(item["node"], format!("n{i}"));
+            assert_eq!(
+                item["node"],
+                if i == 0 {
+                    "code.rs#".into()
+                } else {
+                    format!("code.rs#fn[{}]", names[i - 1])
+                }
+            );
             assert_eq!(item["kind"], if i == 0 { "" } else { "fn" });
         }
         let context = ValidationContext::new(tools.domain.as_ref(), String::new());
@@ -632,6 +650,7 @@ mod tests {
     #[tokio::test]
     async fn listing_continuations_return_complete_paths_from_the_original_listing() {
         let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("empty_directory")).unwrap();
         let expected: Vec<_> = (0..2000).map(|i| format!("item{i:04}.rs")).collect();
         for name in &expected {
             std::fs::write(root.path().join(name), "").unwrap();
@@ -659,8 +678,9 @@ mod tests {
         }
         assert_eq!(
             files,
-            (0..expected.len())
-                .map(|i| format!("n{i}"))
+            expected
+                .iter()
+                .map(|file| format!("{file}#"))
                 .collect::<Vec<_>>()
         );
     }
@@ -710,8 +730,8 @@ mod tests {
         assert_eq!(
             page["matches"],
             json!([
-                {"tag":"1", "node":"n0", "excerpt":"const A: &str = \"éhit\";"},
-                {"tag":"2", "node":"n1", "excerpt":"const B: &str = \"hit hit\";"}
+                {"tag":"1", "node":"code.rs#const[A]", "excerpt":"const A: &str = \"éhit\";"},
+                {"tag":"2", "node":"code.rs#const[B]", "excerpt":"const B: &str = \"hit hit\";"}
             ])
         );
         let context = ValidationContext::new(project.domain.as_ref(), String::new());
@@ -765,24 +785,25 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(hits.matches[0].node, "fragment.rs#");
-            let mut pages = Pages::new();
-            let mut session = project.session();
+            let cx = ValidationContext::new(project.domain.as_ref(), String::new());
+            let mut session = SessionTools::new(project.session());
             for (args, expected) in [
                 (json!({"pattern":pattern, "window_bytes":2}), small),
                 (json!({"pattern":pattern}), source),
             ] {
-                let result = session
-                    .dispatch("search_text", &args, &mut pages)
-                    .await
-                    .unwrap();
+                let result = session.dispatch("search_text", &args).await.unwrap();
                 let page: Value = serde_json::from_str(&result.text).unwrap();
                 assert_eq!(
                     page["matches"],
-                    json!([{"tag":"1", "node":"n0", "excerpt":expected}])
+                    json!([{"tag":"1", "node":"fragment.rs#", "excerpt":expected}])
                 );
-                let node = pages.node(&page["matches"][0]).unwrap();
-                assert_eq!(node, "fragment.rs#");
-                assert_eq!(project.domain.node_content(&node).unwrap().format(), source);
+                let read = session.read_node(&cx, &page["matches"][0]).unwrap();
+                let payload: Value = serde_json::from_str(&read.text).unwrap();
+                assert_eq!(payload["text"], source);
+                assert_eq!(
+                    project.domain.0.lock().unwrap().read_nodes.last().unwrap(),
+                    "fragment.rs#"
+                );
             }
         }
     }
@@ -814,6 +835,7 @@ mod tests {
 
     // {test}`requirements.sdk.graph.search.windows`
     #[test]
+    // {test}`requirements.sdk.graph.search.omissions`
     fn touching_windows_keep_the_contiguous_source() {
         use crate::outline::{OutlineContent, Span};
         let item =
@@ -843,19 +865,6 @@ mod tests {
             assert_eq!(hits.matches.len(), 1);
             assert_eq!(hits.matches[0].node, expected);
         }
-    }
-
-    // {test}`requirements.sdk.graph.validation-context.node_reference`
-    #[test]
-    fn node_references_resolve_only_within_their_conversation() {
-        let mut first = Pages::<u32, ()>::new();
-        let mut second = Pages::<u32, ()>::new();
-        let node = first.register(&20);
-        let peer = first.register(&30);
-        assert_eq!(second.register(&10), node);
-        assert_eq!(first.node(&json!({"node": node})).unwrap(), 20);
-        assert_eq!(second.node(&json!({"node": node})).unwrap(), 10);
-        assert!(second.node(&json!({"node": peer})).is_err());
     }
 
     // {test}`requirements.sdk.graph.search.domain_node`
@@ -897,6 +906,17 @@ mod tests {
                 .unwrap();
             assert_eq!(item.header_span.map(|s| &code[s]), header);
             assert_eq!(item.trailer_span.map(|s| &code[s]), trailer);
+            if let Some(span) = item.trailer_span {
+                assert_eq!(span.end, item.span.end);
+                assert_eq!(
+                    span.start,
+                    if kind == "impl" {
+                        code.rfind('}').unwrap()
+                    } else {
+                        code.find('}').unwrap()
+                    }
+                );
+            }
         }
     }
 
@@ -930,7 +950,7 @@ mod tests {
             let page: Value = serde_json::from_str(&page.text).unwrap();
             assert_eq!(
                 page["matches"],
-                json!([{"tag":"1", "node":"n0", "excerpt":expected}])
+                json!([{"tag":"1", "node":"runner.rs#impl[Runner]/fn[run]", "excerpt":expected}])
             );
             let read = session.read_node(&context, &page["matches"][0]).unwrap();
             let read: Value = serde_json::from_str(&read.text).unwrap();
@@ -1194,6 +1214,7 @@ mod tests {
 impl<D: crate::domain::Domain> ToolFactory<D> for ProjectSources<D>
 where
     D::Error: std::fmt::Display,
+    D::NodeId: serde::Serialize + serde::de::DeserializeOwned + schemars::JsonSchema,
 {
     fn session<'a>(&'a self) -> Box<dyn ToolSession<D> + 'a>
     where
@@ -1209,12 +1230,13 @@ where
 
 struct Session<'a, D: crate::domain::Domain> {
     tools: &'a ProjectSources<D>,
-    files: std::collections::HashMap<String, std::path::PathBuf>,
+    files: std::collections::HashMap<Value, std::path::PathBuf>,
 }
 
 impl<D: crate::domain::Domain> ToolSession<D> for Session<'_, D>
 where
     D::Error: std::fmt::Display,
+    D::NodeId: serde::Serialize + serde::de::DeserializeOwned + schemars::JsonSchema,
 {
     // {impl}`requirements.sdk.graph.validation-context.list_sources.mcp`
     // {impl}`requirements.sdk.graph.validation-context.list_sources.mcp.description`
@@ -1229,7 +1251,7 @@ where
     fn definitions(&self) -> io::Result<Vec<ToolDefinition>> {
         [
             json!({"name":"list_sources","description":"List available project file nodes.", "parameters":{"type":"object","properties":{}}}),
-            json!({"name":"outline_source","description":"Inspect the outline of a listed file node.","parameters":{"type":"object","required":["node"],"properties":{"node":{"type":"string"}}}}),
+            json!({"name":"outline_source","description":"Inspect the outline of a listed file node.","parameters":super::tools::node_parameters::<D::NodeId>(None)}),
             json!({"name":"search_text","description":"Find regular-expression matches in available files. Read selected nodes separately.","parameters":{"type":"object","required":["pattern"],"properties":{"pattern":{"type":"string"},"window_bytes":{"type":"integer","minimum":0,"default":128},"limit":{"type":"integer","minimum":0}}}}),
             json!({"name":"search_structure","description":"Find structural matches in available files. Read selected nodes separately.","parameters":{"type":"object","required":["language","rule"],"properties":{"language":{"type":"string"},"rule":{"type":"object"},"limit":{"type":"integer","minimum":0}}}}),
         json!({
@@ -1305,16 +1327,18 @@ where
                             .domain
                             .source_node(&id)
                             .map_err(io::Error::other)?;
-                        let reference = pages.register(&node);
+                        let reference = serde_json::to_value(&node)?;
                         self.files.insert(reference.clone(), path);
                         files.push(reference);
                     }
                     (json!({}), "files", json!(files))
                 }
                 "outline_source" => {
+                    let node: D::NodeId = super::tools::node_argument(args)?;
+                    let id = serde_json::to_value(node)?;
                     let path = self
                         .files
-                        .get(string("node")?)
+                        .get(&id)
                         .ok_or_else(|| io::Error::other("expected a listed file node"))?;
                     let full = self
                         .tools
@@ -1340,9 +1364,9 @@ where
                             .domain
                             .source_node(&id)
                             .map_err(io::Error::other)?;
-                        items.push(json!({"node":pages.register(&node),"kind":item.kind}));
+                        items.push(json!({"node":serde_json::to_value(&node)?,"kind":item.kind}));
                     }
-                    (json!({"node":string("node")?}), "items", json!(items))
+                    (json!({"node":id}), "items", json!(items))
                 }
                 "finish_search" => return pages.finish_search(args),
                 "search_text" => {
@@ -1379,13 +1403,14 @@ where
                         .into_iter()
                         .map(|(hit, spans)| {
                             let text = excerpt(&hit.item, &spans, window);
-                            let entry = json!({"node":pages.register(&hit.node),"excerpt":text});
-                            (
+                            let entry =
+                                json!({"node":serde_json::to_value(&hit.node)?,"excerpt":text});
+                            Ok((
                                 entry,
                                 Ok(Dependency::Node(hit.node, hit.item.fingerprint())),
-                            )
+                            ))
                         })
-                        .collect();
+                        .collect::<io::Result<Vec<_>>>()?;
                     return Ok(
                         pages.search(crate::sources::SearchResults::new(entries, found.complete))
                     );
@@ -1406,15 +1431,15 @@ where
                         .matches
                         .into_iter()
                         .map(|hit| {
-                            let node = pages.register(&hit.node);
+                            let node = serde_json::to_value(&hit.node)?;
                             let excerpt = hit.item.redacted_span(hit.span);
                             let entry = json!({"node": node, "excerpt": excerpt});
-                            (
+                            Ok((
                                 entry,
                                 Ok(Dependency::Node(hit.node, hit.item.fingerprint())),
-                            )
+                            ))
                         })
-                        .collect();
+                        .collect::<io::Result<Vec<_>>>()?;
                     return Ok(
                         pages.search(crate::sources::SearchResults::new(entries, found.complete))
                     );

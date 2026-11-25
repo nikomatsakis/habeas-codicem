@@ -148,7 +148,9 @@ field and `T[]` is an array. A `next` field holds a continuation UUID issued by 
 ## Passing node identities to an agent
 
 :::{req} node_reference
-The harness represents a domain `D::NodeId` to the agent as an opaque JSON string scoped to the conversation. It retains the IDs of the current node, supplied input nodes, and nodes introduced by tool results. Tools that return nodes give the agent references to those IDs. Tools that accept a node resolve its reference to the same ID. An unknown reference produces a tool error.
+The agent harness serializes the current node, supplied input nodes, and node IDs in tool results using the domain's Serde representation of `D::NodeId`. A tool accepting a node ID deserializes the same JSON value. Its argument schema uses `D::NodeId`'s `JsonSchema` implementation. An invalid ID representation produces a tool error before the domain is queried.
+
+For example, if a search hit contains `"node": {"Issue": 42}`, the agent can call `read_node({"node": {"Issue": 42}})` to read that issue.
 :::
 
 ## Reading the contents of a graph node
@@ -187,23 +189,23 @@ Criterion code uses {cite}`requirements.sdk.graph.validation-context.ValidationC
 :::
 
 :::{req} read_node.mcp
-Give `read_node` the reference for a known node. The result contains the node’s text. If more
+Give `read_node` the ID of a node. The result contains the node’s text. If more
 text remains, pass `next` to `get_next_page`.
 
 ```text
-read_node({node: string}) -> {text: string, next?: UUID}
+read_node({node: NodeId}) -> {text: string, next?: UUID}
 ```
 :::
 
 :::{req} read_node.mcp.description
-> `Read a known graph node. Returns text and, when more remains, a next UUID. A
+> `Read a graph node by its domain ID. Returns text and, when more remains, a next UUID. A
 > delivered page records its enclosing node.`
 :::
 
 :::{req} read_node.behavior
 The Rust caller receives the node's complete `D::NodeContent` or the domain's read error.
 
-The tool reads a known node, such as the current node or a target from `outgoing_edges`.
+The tool asks the domain to read the supplied node ID, including when the ID first appears in the `read_node` call.
 Each page’s `text` contains the next portion of the node’s formatted contents. Formatting follows
 {cite}`requirements.sdk.graph.agent-calls.judge.rendering`.
 :::
@@ -254,11 +256,11 @@ Criterion code uses {cite}`requirements.sdk.graph.validation-context.ValidationC
 :::
 
 :::{req} outgoing_edges.mcp
-Give `outgoing_edges` a known node reference and a label of the application’s
+Give `outgoing_edges` a node ID and a label of the application’s
 edge-label type. Each reference in `targets` can be used in a subsequent graph tool call.
 
 ```text
-outgoing_edges({node: string, label: EdgeLabel}) -> {targets: string[]}
+outgoing_edges({node: NodeId, label: EdgeLabel}) -> {targets: NodeId[]}
 ```
 :::
 
@@ -376,7 +378,7 @@ impl Sources {
 List visible file-root node references under {cite}`requirements.sdk.graph.validation-context.node_reference`.
 
 ```text
-list_sources({}) -> {files: string[], next?: UUID}
+list_sources({}) -> {files: NodeId[], next?: UUID}
 ```
 :::
 
@@ -421,7 +423,7 @@ impl Sources {
 Pass a listed file reference to obtain its selectable nodes.
 
 ```text
-outline_source({node: string}) -> {node: string, items: {node: string, kind: string}[], next?: UUID}
+outline_source({node: NodeId}) -> {node: NodeId, items: {node: NodeId, kind: string}[], next?: UUID}
 ```
 :::
 
@@ -446,10 +448,10 @@ one more page of file nodes. This example shows one reference from each page.
 
 ```text
 list_sources({})
-→ {"files":["n1"], "next":"71d27a0b-f65f-47e5-9aa2-750335b78897"}
+→ {"files":[{"File":1}], "next":"71d27a0b-f65f-47e5-9aa2-750335b78897"}
 
 get_next_page({"uuid":"71d27a0b-f65f-47e5-9aa2-750335b78897"})
-→ {"files":["n2"]}
+→ {"files":[{"File":2}]}
 ```
 
 The second page has no `next`, so the listing is complete. The same call

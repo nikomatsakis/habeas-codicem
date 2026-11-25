@@ -26,6 +26,7 @@ impl ConfiguredAgent {
 impl<D> Agent<D> for ConfiguredAgent
 where
     D: Domain,
+    D::NodeId: serde::Serialize + serde::de::DeserializeOwned + schemars::JsonSchema,
     D::EdgeLabel: serde::de::DeserializeOwned + schemars::JsonSchema + PartialEq,
     D::Error: std::fmt::Display,
 {
@@ -91,9 +92,16 @@ mod tests {
     use crate::graph::Record;
     use crate::request::ValidationContext;
 
+    #[derive(
+        Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+    )]
+    struct TestNode {
+        id: u32,
+    }
+
     #[derive(Clone, Default)]
     struct TestDomain(
-        Arc<std::sync::Mutex<Option<Record<u32, String>>>>,
+        Arc<std::sync::Mutex<Option<Record<TestNode, String>>>>,
         Arc<std::sync::Mutex<Vec<crate::outline::OutlineId>>>,
         crate::domain::ValidationCache,
     );
@@ -116,14 +124,14 @@ mod tests {
         fn source_node(
             &self,
             item: &crate::outline::OutlineId,
-        ) -> Result<u32, crate::sources::SourceError> {
+        ) -> Result<TestNode, crate::sources::SourceError> {
             self.1.lock().unwrap().push(item.clone());
             match item.path.to_str() {
-                Some("visible/selected.txt") => Ok(7),
-                Some("alpha.txt") => Ok(8),
-                Some("beta.txt") => Ok(9),
-                Some("unused.txt") => Ok(10),
-                _ => Ok(11),
+                Some("visible/selected.txt") => Ok(TestNode { id: 7 }),
+                Some("alpha.txt") => Ok(TestNode { id: 8 }),
+                Some("beta.txt") => Ok(TestNode { id: 9 }),
+                Some("unused.txt") => Ok(TestNode { id: 10 }),
+                _ => Ok(TestNode { id: 11 }),
             }
         }
 
@@ -131,35 +139,35 @@ mod tests {
             &self.2
         }
         type Error = String;
-        type NodeId = u32;
+        type NodeId = TestNode;
         type NodeContent = Content;
         type EdgeLabel = String;
 
-        fn node_path(&self, node: &u32) -> NodePath {
-            NodePath::new(vec![node.to_string()])
+        fn node_path(&self, node: &TestNode) -> NodePath {
+            NodePath::new(vec![node.id.to_string()])
         }
 
-        fn node_content(&self, _: &u32) -> Result<Content, String> {
+        fn node_content(&self, _: &TestNode) -> Result<Content, String> {
             Ok(Content)
         }
 
-        fn outgoing_edges(&self, _: &u32, _: String) -> Result<Vec<u32>, String> {
+        fn outgoing_edges(&self, _: &TestNode, _: String) -> Result<Vec<TestNode>, String> {
             Ok(Vec::new())
         }
 
         async fn load_evidence(
             &self,
-            _: &u32,
+            _: &TestNode,
             _: &CriterionPath,
-        ) -> Result<Option<Record<u32, String>>, String> {
+        ) -> Result<Option<Record<TestNode, String>>, String> {
             Ok(self.0.lock().unwrap().clone())
         }
 
         async fn store_evidence(
             &self,
-            _: &u32,
+            _: &TestNode,
             _: &CriterionPath,
-            record: &Record<u32, String>,
+            record: &Record<TestNode, String>,
         ) -> Result<(), String> {
             *self.0.lock().unwrap() = Some(record.clone());
             Ok(())
@@ -171,8 +179,8 @@ mod tests {
     impl Criterion<TestDomain> for Question {
         type Ok = bool;
 
-        fn source_node_id(&self) -> u32 {
-            1
+        fn source_node_id(&self) -> TestNode {
+            TestNode { id: 1 }
         }
 
         fn criterion_path(&self) -> CriterionPath {
@@ -341,7 +349,7 @@ mod tests {
                         "call_id":format!("call_{call}"),
                         "name":if call % 2 == 0 { "read_node" } else { "submit_result" },
                         "arguments":if call % 2 == 0 {
-                            "{\"node\":\"n0\"}"
+                            "{\"node\":{\"id\":1}}"
                         } else { "{\"result\":true}" },
                         "status":"completed"}],
                     "usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}
@@ -403,6 +411,19 @@ mod tests {
                 "boolean"
             );
             let input = serde_json::to_string(&request["input"]).unwrap();
+            let prompt = &request["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|message| message["role"] == "user")
+                .unwrap()["content"];
+            let text = if let Some(text) = prompt.as_str() {
+                text
+            } else {
+                prompt[0]["text"].as_str().unwrap()
+            };
+            assert!(text.contains(r#"Current node: {"id":1}"#));
+            assert!(text.contains(r#"Node: {"id":1}"#));
             assert!(input.contains("Finish by calling submit_result"), "{input}");
             if index % 2 == 1 {
                 assert!(input.contains("function_call_output"), "{input}");
@@ -481,7 +502,7 @@ mod tests {
                         .unwrap(),
                 );
                 let (name, arguments) = if turn == 0 {
-                    ("read_node", serde_json::json!({"node":"n0"}))
+                    ("read_node", serde_json::json!({"node":{"id":1}}))
                 } else {
                     ("submit_result", serde_json::json!({"result":true}))
                 };
@@ -786,10 +807,10 @@ mod tests {
             assert_eq!(
                 answer.dependencies(),
                 &[
-                    crate::graph::Dependency::Node(1, Content.fingerprint()),
-                    crate::graph::Dependency::Node(7, Content.fingerprint()),
+                    crate::graph::Dependency::Node(TestNode { id: 1 }, Content.fingerprint()),
+                    crate::graph::Dependency::Node(TestNode { id: 7 }, Content.fingerprint()),
                     crate::graph::Dependency::Node(
-                        8,
+                        TestNode { id: 8 },
                         crate::outline::OutlineContent::from_source(
                             domain.cache(),
                             "alpha.txt",
@@ -800,7 +821,7 @@ mod tests {
                         .fingerprint()
                     ),
                     crate::graph::Dependency::Node(
-                        9,
+                        TestNode { id: 9 },
                         crate::outline::OutlineContent::from_source(
                             domain.cache(),
                             "beta.txt",
@@ -810,7 +831,7 @@ mod tests {
                         .at_offset(0)
                         .fingerprint()
                     ),
-                    crate::graph::Dependency::Node(10, Content.fingerprint()),
+                    crate::graph::Dependency::Node(TestNode { id: 10 }, Content.fingerprint()),
                 ]
             );
             assert_eq!(
@@ -846,6 +867,16 @@ mod tests {
                     "finish_search"
                 ]
             );
+            for name in ["read_node", "outline_source", "outgoing_edges"] {
+                let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
+                let params = &tool["parameters"];
+                let reference = params["properties"]["node"]["$ref"].as_str().unwrap();
+                let id = params
+                    .pointer(reference.strip_prefix('#').unwrap())
+                    .unwrap();
+                assert_eq!(id["required"], serde_json::json!(["id"]));
+                assert_eq!(id["properties"]["id"]["type"], "integer");
+            }
             let output = |request: &Value, name: &str| -> String {
                 request["input"]
                     .as_array()
@@ -865,10 +896,10 @@ mod tests {
                     .as_array()
                     .unwrap()
                     .iter()
-                    .all(|n| n.as_str().unwrap().starts_with('n'))
+                    .all(|n| n["id"].is_u64())
             );
             let rejected = output(&requests[first + 2], "read_node");
-            assert!(rejected.contains("unknown node"));
+            assert!(rejected.contains("invalid node ID"));
             let mapped: Value =
                 serde_json::from_str(&output(&requests[first + 3], "read_node")).unwrap();
             assert_eq!(mapped["text"], "a source snapshot");

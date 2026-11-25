@@ -16,20 +16,26 @@ use trust_but_verify::graph::NodePath;
 use trust_but_verify::request::ValidationContext;
 
 /// Source address as stored in Habeas evidence records.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub(crate) struct OutlineId {
     pub resource: ResourceId,
     pub selector: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub(crate) struct ResourceId {
     pub scheme: String,
     pub location: String,
 }
 
 // {cite}`habeas:util`
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub(crate) struct RequirementId(pub String);
 
 // {cite}`habeas:util`
@@ -65,7 +71,9 @@ pub(crate) struct RequirementId(pub String);
 // do not yet cover reuse, expiry refresh/failure, or snapshot-consistent formatting
 // and fingerprinting. The existing CLI issue-state cache is a separate interface.
 // :::
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub(crate) enum HabeasNode {
     Requirement(RequirementId),
     ReferenceSet(RequirementId),

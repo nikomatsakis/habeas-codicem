@@ -55,8 +55,9 @@ impl<'a, D: Domain> SessionTools<'a, D> {
     ) -> io::Result<ToolDelivery<D::NodeId, D::EdgeLabel>>
     where
         D::Error: std::fmt::Display,
+        D::NodeId: serde::de::DeserializeOwned,
     {
-        let node = self.pages.node(arguments)?;
+        let node = node_argument(arguments)?;
         let snapshot = inspection
             .prepare_read(&node)
             .map_err(|error| io::Error::other(error.to_string()))?;
@@ -150,6 +151,7 @@ impl<P, T> ToolAgent<P, T> {
 impl<D, P, T> Agent<D> for ToolAgent<P, T>
 where
     D: Domain,
+    D::NodeId: serde::Serialize + serde::de::DeserializeOwned + schemars::JsonSchema,
     D::EdgeLabel: serde::de::DeserializeOwned + schemars::JsonSchema + PartialEq,
     D::Error: std::fmt::Display,
     P: CompletionProvider,
@@ -164,17 +166,17 @@ where
     ) -> BoxFuture<'a, Result<Value, std::io::Error>> {
         Box::pin(async move {
             let submit = request.submission_name.clone();
-            let mut tools = SessionTools::new(self.tools.session());
-            let current = tools.pages.register(&request.current_node);
+            let tools = SessionTools::new(self.tools.session());
+            let current = serde_json::to_string(&request.current_node)?;
             let mut pending = Vec::new();
             let mut texts = Vec::new();
             for input in request.inputs {
-                let reference = tools.pages.register(&input.node);
+                let reference = serde_json::to_string(&input.node)?;
                 texts.push(format!("{}\nNode: {reference}", input.text));
                 pending.push(Dependency::Node(input.node, input.fingerprint));
             }
             let subject = format!(
-                "{}\n\nFinish by calling {submit} with {{\"result\": ...}}. Text alone is not a result. You may inspect known nodes with read_node and outgoing_edges.\nCurrent node: {current}",
+                "{}\n\nFinish by calling {submit} with {{\"result\": ...}}. Text alone is not a result. You may inspect nodes by domain ID with read_node and outgoing_edges.\nCurrent node: {current}",
                 texts.join("\n\n")
             );
             let mut schema = request.result_schema;
@@ -214,6 +216,7 @@ struct GraphSession<'a, 'd, D: Domain> {
 impl<D> Conversation for GraphSession<'_, '_, D>
 where
     D: Domain,
+    D::NodeId: serde::Serialize + serde::de::DeserializeOwned + schemars::JsonSchema,
     D::EdgeLabel: serde::de::DeserializeOwned + schemars::JsonSchema + PartialEq,
     D::Error: std::fmt::Display,
 {
@@ -230,10 +233,10 @@ where
     // {impl}`requirements.sdk.graph.agent-harness.fixed_tools`
     fn tools(&self) -> io::Result<Vec<ToolDefinition>> {
         let mut tools: Vec<ToolDefinition> = [
-            json!({"name":"read_node","description":"Read a known graph node. Returns text and, when more remains, a next UUID. A delivered page records its enclosing node.",
-                "parameters":{"type":"object","required":["node"],"properties":{"node":{"type":"string"}}}}),
+            json!({"name":"read_node","description":"Read a graph node by its domain ID. Returns text and, when more remains, a next UUID. A delivered page records its enclosing node.",
+                "parameters":node_parameters::<D::NodeId>(None)}),
             json!({"name":"outgoing_edges","description":"Inspect a known node's outgoing targets for the requested label, making those targets available to read_node.",
-                "parameters":edge_parameters::<D::EdgeLabel>()}),
+                "parameters":node_parameters::<D::NodeId>(Some(schemars::SchemaGenerator::subschema_for::<D::EdgeLabel>))}),
             json!({"name":"get_next_page","description":"Pass the UUID from next to read the next page in the same format. When next is absent, this is the last page.",
                 "parameters":{"type":"object","required":["uuid"],"properties":{"uuid":{"type":"string","format":"uuid"}}}}),
             json!({"name":"submit_result","description":"Finish by submitting your structured result in result. Exactly one accepted submission ends this call.",
@@ -272,19 +275,16 @@ where
                 Ok(delivery.text)
             }
             "outgoing_edges" => {
-                let node = self.tools.pages.node(arguments)?;
+                let node = node_argument(arguments)?;
                 let label: D::EdgeLabel =
                     serde_json::from_value(arguments["label"].clone()).map_err(io::Error::other)?;
                 let snapshot = self
                     .inspection
                     .prepare_edges(&node, label.clone())
                     .map_err(|error| io::Error::other(error.to_string()))?;
+                let targets = serde_json::to_value(snapshot.content)?;
                 self.pending
                     .push(Dependency::OutgoingEdges(node, label, snapshot.fingerprint));
-                let mut targets = Vec::new();
-                for target in snapshot.content {
-                    targets.push(self.tools.pages.register(&target));
-                }
                 Ok(json!({"targets":targets}).to_string())
             }
             _ => {
@@ -364,19 +364,31 @@ mod submission_tests {
     }
 }
 
-// {cite}`habeas:util`
-fn edge_parameters<L: schemars::JsonSchema>() -> Value {
-    let mut label = serde_json::to_value(schemars::schema_for!(L)).expect("label schema");
-    let definitions = label
-        .as_object_mut()
-        .and_then(|object| object.remove("$defs"));
+// {impl}`requirements.sdk.graph.validation-context.node_reference`
+pub(super) fn node_argument<N: serde::de::DeserializeOwned>(args: &Value) -> io::Result<N> {
+    let node = args
+        .get("node")
+        .ok_or_else(|| io::Error::other("missing node ID"))?;
+    serde_json::from_value(node.clone())
+        .map_err(|err| io::Error::other(format!("invalid node ID: {err}")))
+}
+
+// {impl}`requirements.sdk.graph.validation-context.node_reference`
+pub(super) fn node_parameters<N: schemars::JsonSchema>(
+    label_schema: Option<fn(&mut schemars::SchemaGenerator) -> schemars::Schema>,
+) -> Value {
+    let mut generator = schemars::SchemaGenerator::default();
     let mut parameters = json!({
-        "type":"object",
-        "required":["node","label"],
-        "properties":{"node":{"type":"string"},"label":label},
+        "type": "object", "required": ["node"],
+        "properties": {"node": generator.subschema_for::<N>()}
     });
-    if let Some(definitions) = definitions {
-        parameters["$defs"] = definitions;
+    if let Some(label) = label_schema {
+        parameters["required"] = json!(["node", "label"]);
+        parameters["properties"]["label"] = json!(label(&mut generator));
+    }
+    let definitions = generator.take_definitions(true);
+    if !definitions.is_empty() {
+        parameters["$defs"] = Value::Object(definitions);
     }
     parameters
 }
@@ -404,17 +416,25 @@ mod tests {
             },
         };
         assert_eq!(label.metadata.kind, "tests");
-        let parameters = edge_parameters::<Label>();
-        let reference = parameters["properties"]["label"]["properties"]["metadata"]["$ref"]
-            .as_str()
+        let parameters =
+            node_parameters::<u32>(Some(schemars::SchemaGenerator::subschema_for::<Label>));
+        let label = parameters
+            .pointer(
+                parameters["properties"]["label"]["$ref"]
+                    .as_str()
+                    .unwrap()
+                    .strip_prefix('#')
+                    .unwrap(),
+            )
             .unwrap();
+        let reference = label["properties"]["metadata"]["$ref"].as_str().unwrap();
         let definition = parameters
             .pointer(reference.strip_prefix('#').unwrap())
             .unwrap();
         assert_eq!(definition["properties"]["kind"]["type"], "string");
         assert!(parameters["properties"]["label"].get("$defs").is_none());
         assert_eq!(parameters["required"], json!(["node", "label"]));
-        let unit = edge_parameters::<()>();
+        let unit = node_parameters::<u32>(Some(schemars::SchemaGenerator::subschema_for::<()>));
         assert_eq!(unit["properties"]["label"]["type"], "null");
         assert!(unit.get("$defs").is_none());
     }

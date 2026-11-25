@@ -33,8 +33,7 @@ struct Assessment<M> {
     metadata: M,
 }
 
-// Node identities deliberately have no Serde or Hash implementations.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 struct Node(u8);
 // {cite}`habeas:util`
 #[derive(Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -319,10 +318,10 @@ impl CompletionProvider for ParallelConversations {
     async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
         let alpha = request.chat_history[0] == Message::system("alpha");
         let (prefix, contents, other, node) = if alpha {
-            ("alpha", "ALPHA-CONTENTS", "BETA-CONTENTS", "n0")
+            ("alpha", "ALPHA-CONTENTS", "BETA-CONTENTS", 1)
         } else {
             assert_eq!(request.chat_history[0], Message::system("beta"));
-            ("beta", "BETA-CONTENTS", "ALPHA-CONTENTS", "n1")
+            ("beta", "BETA-CONTENTS", "ALPHA-CONTENTS", 2)
         };
         let turn = {
             let mut calls = self.calls.lock().unwrap();
@@ -668,7 +667,7 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
         records: Arc::default(),
     };
     let agent = ToolAgent::new(Script::new(vec![
-        Some(vec![("outgoing_edges", json!({"node":"n0","label":7}))]),
+        Some(vec![("outgoing_edges", json!({"node":1,"label":7}))]),
         Some(vec![("submit_result", json!({"result":true}))]),
     ]));
     let agent = Arc::new(agent);
@@ -717,12 +716,12 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
     assert_eq!(
         result.content,
         vec![ToolResultContent::text(
-            json!({"targets":["n1","n2","n1"]}).to_string()
+            json!({"targets":[3,2,3]}).to_string()
         )]
     );
     drop(requests);
     drop(records);
-    // An unknown path cannot trigger a graph query or add an observation.
+    // A malformed node ID fails before a graph query can add an observation.
     let graph = GraphWithChangingEdges {
         cache: Default::default(),
         lookups: Arc::default(),
@@ -749,12 +748,14 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
     assert!(result.is_error);
     assert_eq!(
         result.content,
-        vec![ToolResultContent::text("unknown node reference")]
+        vec![ToolResultContent::text(
+            "invalid node ID: invalid type: string \"unknown\", expected u8"
+        )]
     );
     drop(requests);
     // A prepared selection is not an input until delivery succeeds.
     let failed = ToolAgent::new(Script::new(vec![
-        Some(vec![("outgoing_edges", json!({"node":"n0","label":7}))]),
+        Some(vec![("outgoing_edges", json!({"node":1,"label":7}))]),
         None,
     ]));
     let ctx = ValidationContext::with_agent(&graph, 1, &failed);
@@ -767,8 +768,8 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
         records: Arc::default(),
     };
     let agent = ToolAgent::new(Script::new(vec![
-        Some(vec![("outgoing_edges", json!({"node":"n0","label":8}))]),
-        Some(vec![("outgoing_edges", json!({"node":"n1","label":7}))]),
+        Some(vec![("outgoing_edges", json!({"node":1,"label":8}))]),
+        Some(vec![("outgoing_edges", json!({"node":3,"label":7}))]),
         Some(vec![("submit_result", json!({"result":true}))]),
     ]));
     let ctx = ValidationContext::with_agent(&graph, 1, &agent);
@@ -789,9 +790,7 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
     };
     assert_eq!(
         result.content,
-        vec![ToolResultContent::text(
-            json!({"targets":["n1"]}).to_string()
-        )]
+        vec![ToolResultContent::text(json!({"targets":[3]}).to_string())]
     );
 }
 
@@ -856,6 +855,22 @@ async fn typed_submission_references_resolve_and_invalid_results_are_agent_error
     }
 }
 
+// {test}`requirements.sdk.graph.validation-context.read_node.behavior`
+#[tokio::test]
+async fn read_node_accepts_a_domain_id_first_supplied_by_the_agent() {
+    let graph = Memory::new("source".into());
+    let agent = ToolAgent::new(Script::new(vec![
+        Some(vec![("read_node", json!({"node":2}))]),
+        Some(vec![("submit_result", json!({"result":true}))]),
+    ]));
+    let ctx = ValidationContext::with_agent(&graph, Node(1), &agent);
+    assert!(ctx.ask::<bool>().await.unwrap());
+    assert!(matches!(
+        &ctx.dependencies()[..],
+        [Dependency::Node(Node(2), _)]
+    ));
+}
+
 // {test}`requirements.sdk.graph.validation-context.tracked_inspection`
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
 // {test}`requirements.sdk.graph.evidence.node_inputs`
@@ -870,8 +885,8 @@ async fn typed_submission_references_resolve_and_invalid_results_are_agent_error
 async fn graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery() {
     let graph = Memory::new("x".repeat(18_000));
     let agent = ToolAgent::new(Script::new(vec![
-        Some(vec![("outgoing_edges", json!({"node":"n0","label":null}))]),
-        Some(vec![("read_node", json!({"node":"n1"}))]),
+        Some(vec![("outgoing_edges", json!({"node":1,"label":null}))]),
+        Some(vec![("read_node", json!({"node":2}))]),
         Some(vec![("get_next_page", json!({"use_next":true}))]),
         Some(vec![("submit_result", json!({"result":true}))]),
     ]));
@@ -897,14 +912,14 @@ async fn graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record
         .unwrap();
     assert!(record.dependencies == observations);
     let failed = ToolAgent::new(Script::new(vec![
-        Some(vec![("read_node", json!({"node":"n0"}))]),
+        Some(vec![("read_node", json!({"node":1}))]),
         None,
     ]));
     let ctx = ValidationContext::with_agent(&graph, Node(1), &failed);
     assert!(ctx.ask::<bool>().await.is_err());
     assert!(ctx.dependencies().is_empty());
     let failed = ToolAgent::new(Script::new(vec![
-        Some(vec![("read_node", json!({"node":"n0"}))]),
+        Some(vec![("read_node", json!({"node":1}))]),
         None,
     ]));
     let ctx = ValidationContext::with_agent(&graph, Node(1), &failed);
@@ -1137,7 +1152,7 @@ async fn one_submission_accepts_only_its_value_and_skips_other_calls_and_prose()
     let mut response = tool_turn(
         FinishReason::ToolCalls,
         vec![
-            ("read_node", json!({"node":"n0"})),
+            ("read_node", json!({"node":1})),
             ("submit_result", json!({"result":false})),
         ],
     );
@@ -1158,9 +1173,9 @@ async fn one_submission_accepts_only_its_value_and_skips_other_calls_and_prose()
 async fn count_is_checked_before_arguments_and_one_reminder_allows_recovery() {
     let graph = Memory::new("source".into());
     let agent = ToolAgent::new(Script::new(vec![
-        Some(vec![("read_node", json!({"node":"n0"}))]),
+        Some(vec![("read_node", json!({"node":1}))]),
         Some(vec![
-            ("read_node", json!({"node":"n0"})),
+            ("read_node", json!({"node":1})),
             ("submit_result", json!({})),
             ("submit_result", json!({"other":true})),
         ]),
@@ -1199,7 +1214,7 @@ async fn count_is_checked_before_arguments_and_one_reminder_allows_recovery() {
 async fn zero_and_multiple_submissions_share_one_reminder_and_a_second_violation_ends() {
     let multi = || {
         vec![
-            ("read_node", json!({"node":"n0"})),
+            ("read_node", json!({"node":1})),
             ("submit_result", json!({"result":true})),
             ("submit_result", json!({"result":false})),
         ]
@@ -1233,6 +1248,17 @@ async fn zero_and_multiple_submissions_share_one_reminder_and_a_second_violation
     let graph = Memory::new("source".into());
     let agent = ToolAgent::new(Script::new(vec![
         Some(vec![]),
+        Some(vec![("read_node", json!({"node":1}))]),
+        Some(multi()),
+    ]));
+    let ctx = ValidationContext::with_agent(&graph, Node(1), &agent);
+    assert!(
+        matches!(ctx.ask::<bool>().await, Err(ValidationError::Agent(message)) if message.contains("even after a reminder"))
+    );
+    assert_eq!(*graph.reads.lock().unwrap(), [1]);
+    let graph = Memory::new("source".into());
+    let agent = ToolAgent::new(Script::new(vec![
+        Some(vec![]),
         Some(vec![("submit_result", json!({"result":true}))]),
     ]));
     let ctx = ValidationContext::with_agent(&graph, Node(1), &agent);
@@ -1248,7 +1274,7 @@ async fn queued_contents_and_graph_read_tools_redact_credentials_before_delivery
     let original = format!("credential = {secret}\n");
     let graph = Memory::new(original.clone());
     let agent = ToolAgent::new(Script::new(vec![
-        Some(vec![("read_node", json!({"node":"n0"}))]),
+        Some(vec![("read_node", json!({"node":1}))]),
         Some(vec![("submit_result", json!({"result":true}))]),
     ]));
     let ctx = ValidationContext::with_agent(&graph, Node(1), &agent);
@@ -1467,7 +1493,7 @@ async fn node_preparation_tool_errors_allow_recovery_without_recording_undeliver
     let mut graph = Memory::new("source".into());
     graph.formatter = |_, _| Err(io::Error::other("unsupported node contents"));
     let agent = ToolAgent::new(Script::new(vec![
-        Some(vec![("read_node", json!({"node":"n0"}))]),
+        Some(vec![("read_node", json!({"node":1}))]),
         Some(vec![("submit_result", json!({"result":true}))]),
     ]));
     let ctx = ValidationContext::with_agent(&graph, Node(1), &agent);
@@ -1498,7 +1524,7 @@ async fn retries_and_cut_off_tools_preserve_inputs_and_submission_skips_other_re
     let graph = Memory::new("source".into());
     let calls = || {
         vec![
-            ("read_node", json!({"node":"n1"})),
+            ("read_node", json!({"node":2})),
             ("submit_result", json!({"result":false})),
         ]
     };
@@ -1508,7 +1534,7 @@ async fn retries_and_cut_off_tools_preserve_inputs_and_submission_skips_other_re
         Ok(tool_turn(
             FinishReason::ToolCalls,
             vec![
-                ("read_node", json!({"node":"n1"})),
+                ("read_node", json!({"node":2})),
                 ("submit_result", json!({"result":true})),
             ],
         )),
@@ -1993,11 +2019,11 @@ async fn application_tools_preserve_graph_tools_in_the_same_conversation() {
     let created = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let agent = ToolAgent::new(Script::new(vec![
         Some(vec![
-            ("outgoing_edges", json!({"node":"n0","label":null})),
+            ("outgoing_edges", json!({"node":1,"label":null})),
             ("increment", json!({})),
         ]),
         Some(vec![
-            ("read_node", json!({"node":"n1"})),
+            ("read_node", json!({"node":2})),
             ("increment", json!({})),
         ]),
         Some(vec![("get_next_page", json!({"use_next":true}))]),
@@ -2043,7 +2069,7 @@ async fn application_tools_preserve_graph_tools_in_the_same_conversation() {
         .collect();
     assert_eq!(
         serde_json::from_str::<Value>(&deliveries[0][0]).unwrap(),
-        json!({"targets":["n1"]})
+        json!({"targets":[2]})
     );
     assert_eq!(deliveries[0][1], "counter=1");
     assert_eq!(
@@ -2076,7 +2102,7 @@ async fn application_tools_preserve_graph_tools_in_the_same_conversation() {
 async fn a_complete_node_read_has_text_and_no_continuation() {
     let graph = Memory::new("short text".into());
     let agent = ToolAgent::new(Script::new(vec![
-        Some(vec![("read_node", json!({"node":"n0"}))]),
+        Some(vec![("read_node", json!({"node":1}))]),
         Some(vec![("submit_result", json!({"result":true}))]),
     ]));
     let ctx = ValidationContext::with_agent(&graph, Node(1), &agent);
@@ -2122,7 +2148,7 @@ async fn graph_read_pages_retain_the_prepared_snapshot_after_contents_change() {
     let agent = ToolAgent::new(ChangingProvider {
         graph: graph.clone(),
         script: Script::new(vec![
-            Some(vec![("read_node", json!({"node":"n0"}))]),
+            Some(vec![("read_node", json!({"node":1}))]),
             Some(vec![("get_next_page", json!({"use_next":true}))]),
             Some(vec![("submit_result", json!({"result":true}))]),
         ]),
@@ -2230,7 +2256,7 @@ async fn graph_page_ids_from_a_populated_peer_conversation_are_rejected() {
         async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
             let mut state = self.state.lock().unwrap();
             let call = match state.0 {
-                0 | 2 => ("read_node", json!({"node":"n0"})),
+                0 | 2 => ("read_node", json!({"node":1})),
                 1 => {
                     state.1 = Some(returned_node_page(&request));
                     ("submit_result", json!({"result":true}))
@@ -2287,6 +2313,7 @@ async fn graph_page_ids_from_a_populated_peer_conversation_are_rejected() {
 // {test}`requirements.sdk.graph.validation-context.pages.inputs`
 // {test}`requirements.sdk.graph.search.search_text.mcp`
 #[tokio::test]
+// {test}`requirements.sdk.graph.agent-harness.fixed_tools`
 async fn source_tools_forward_arguments_and_present_discovery_and_read_results() {
     struct Provider(Arc<Mutex<Vec<Value>>>);
     impl SourceProvider for Provider {

@@ -146,7 +146,7 @@ For the `instructions` field, see {cite}`requirements.sdk.graph.search.first_sea
 
 ```text
 search_text({pattern: string, window_bytes?: integer, limit?: integer})
-  -> {search_id: UUID, instructions?: string, next?: UUID, complete: boolean, matches: {tag: string, node: string, excerpt: string}[]}
+  -> {search_id: UUID, instructions?: string, next?: UUID, complete: boolean, matches: {tag: string, node: NodeId, excerpt: string}[]}
 ```
 :::
 
@@ -248,7 +248,7 @@ For the `instructions` field, see {cite}`requirements.sdk.graph.search.first_sea
 
 ```text
 search_structure({language: string, rule: object, limit?: integer})
-  -> {search_id: UUID, instructions?: string, next?: UUID, complete: boolean, matches: {tag: string, node: string, excerpt: string}[]}
+  -> {search_id: UUID, instructions?: string, next?: UUID, complete: boolean, matches: {tag: string, node: NodeId, excerpt: string}[]}
 ```
 :::
 
@@ -363,8 +363,8 @@ For the same `hit` query, the agent receives one excerpt per declaration. After 
   "search_id": "11111111-1111-4111-8111-111111111111",
   "complete": true,
   "matches": [
-    {"tag": "1", "node": "n7", "excerpt": "const A: &str = \"éhit\";"},
-    {"tag": "2", "node": "n8", "excerpt": "const B: &str = \"hit hit\";"}
+    {"tag": "1", "node": {"Const":"A"}, "excerpt": "const A: &str = \"éhit\";"},
+    {"tag": "2", "node": {"Const":"B"}, "excerpt": "const B: &str = \"hit hit\";"}
   ]
 }
 ```
@@ -377,7 +377,7 @@ When it delivers a formatted page, the agent harness opens a [`finish_search`](#
 :::{example} selecting_an_excerpt
 {cite}`requirements.sdk.graph.search.agent_search_accounting`
 
-If the agent relies on the excerpt for `B`, it calls `finish_search({"search_id":"11111111-1111-4111-8111-111111111111","used":["2"]})`. The harness records one dependency on `Const(B)` even though the Rust search found two hits there. If the agent instead reads `n8` with `read_node` and relies only on that full read, the read records its own dependency and the agent finishes the search page with `used: []`.
+If the agent relies on the excerpt for `B`, it calls `finish_search({"search_id":"11111111-1111-4111-8111-111111111111","used":["2"]})`. The harness records one dependency on `Const(B)` even though the Rust search found two hits there. If the agent instead calls `read_node({"node":{"Const":"B"}})` and relies only on that full read, the read records its own dependency and the agent finishes the search page with `used: []`.
 :::
 
 ### Show the declaration around separated hits
@@ -417,23 +417,23 @@ impl Runner {
 The first two windows overlap. Together they include the space between the calls and the newline after the second semicolon. The third window is separated by omitted source. The agent receives one entry for `run`.
 
 ```json
-{"tag":"1","node":"n9","excerpt":"fn run() {...    hit(); hit();\n...    hit();\n...}"}
+{"tag":"1","node":{"Method":["Runner","run"]},"excerpt":"fn run() {...    hit(); hit();\n...    hit();\n...}"}
 ```
 
-`read_node({"node":"n9"})` reads the full function, including `cleanup();`.
+`read_node({"node":{"Method":["Runner","run"]}})` reads the full function, including `cleanup();`.
 :::
 
 :::{example} utf8_window
 {cite}`requirements.sdk.graph.search.windows`
 {cite}`requirements.sdk.graph.search.omissions`
 
-A file-root item contains `éhit猫` and has no header or trailer. With `window_bytes: 2`, the agent receives `{"tag":"1","node":"n10","excerpt":"éhit..."}`. The two bytes before `hit` contain the entire `é`. The two bytes after it cover only part of `猫`, so the excerpt ends with the omission marker. With the default window, the excerpt is `éhit猫`.
+A file-root item contains `éhit猫` and has no header or trailer. With `window_bytes: 2`, the agent receives `{"tag":"1","node":{"File":"fragment.rs"},"excerpt":"éhit..."}`. The two bytes before `hit` contain the entire `é`. The two bytes after it cover only part of `猫`, so the excerpt ends with the omission marker. With the default window, the excerpt is `éhit猫`.
 :::
 
 :::{example} file_root
 {cite}`requirements.sdk.graph.search.enclosing_item`
 
-A file contains only `needle` and its outline consists of the file root. Searching for `needle` returns `{"tag":"1","node":"n10","excerpt":"needle"}`. Reading `n10` reads the file-root node.
+A file contains only `needle` and its outline consists of the file root. Searching for `needle` returns `{"tag":"1","node":{"File":"fragment.rs"},"excerpt":"needle"}`. Reading `{"File":"fragment.rs"}` reads the file-root node.
 :::
 
 ## Accounting for search excerpts in an agent session

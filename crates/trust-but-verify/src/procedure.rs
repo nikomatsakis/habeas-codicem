@@ -413,6 +413,7 @@ where
     R: DeserializeOwned + JsonSchema + Send + 'a,
     P: 'a,
     D::Error: std::fmt::Display,
+    D::NodeId: serde::Serialize + serde::de::DeserializeOwned + schemars::JsonSchema,
     D::EdgeLabel: DeserializeOwned + JsonSchema + PartialEq,
     'd: 'a,
 {
@@ -493,6 +494,7 @@ macro_rules! await_phase {
             R: DeserializeOwned + JsonSchema + Send + 'a,
             'd: 'a,
             D::Error: std::fmt::Display,
+            D::NodeId: serde::Serialize + serde::de::DeserializeOwned + schemars::JsonSchema,
             D::EdgeLabel: DeserializeOwned + JsonSchema + PartialEq,
         {
             type Output = Result<R, ValidationError<D::Error>>;
