@@ -1690,7 +1690,10 @@ fn outline_constructors_preserve_fields_and_replace_attachments() {
     );
     assert_eq!(item.name_span, None);
     assert!(item.attachments.is_empty());
+    assert_eq!((item.header_span, item.trailer_span), (None, None));
     let item = item
+        .with_header_span(Span::new(4, 9))
+        .with_trailer_span(Span::new(11, 12))
         .with_name_span(Span::new(7, 8))
         .with_attachments(vec![OutlineAttachment::new(
             AttachmentKind::Comment,
@@ -1700,6 +1703,10 @@ fn outline_constructors_preserve_fields_and_replace_attachments() {
             AttachmentKind::Annotation,
             Span::new(4, 6),
         )]);
+    assert_eq!(
+        (item.header_span, item.trailer_span),
+        (Some(Span::new(4, 9)), Some(Span::new(11, 12)))
+    );
     let outline = Outline::new(vec![item.clone()]);
     assert!(outline.diagnostic.is_none());
     assert!(!format!("{outline:?}").is_empty());

@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex};
 #[derive(Clone, Default)]
 pub struct ValidationCache {
     pub(crate) outlines: Arc<Mutex<HashMap<PathBuf, CachedFile>>>,
+    pub(crate) sources: Option<Arc<crate::sources::Sources>>,
     pub(crate) agent: Option<Arc<ConfiguredAgent>>,
 }
 
@@ -30,6 +31,13 @@ impl ValidationCache {
     // {impl}`requirements.sdk.validation-cache.new`
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Attach the project files available to search and inspection.
+    // {impl}`requirements.sdk.validation-cache.with_sources`
+    pub fn with_sources(mut self, sources: crate::sources::Sources) -> Self {
+        self.sources = Some(Arc::new(sources));
+        self
     }
 
     // {impl}`requirements.sdk.validation-cache.with_agent`
@@ -50,9 +58,23 @@ pub trait Domain: Clone + Send + Sync {
     // {impl}`requirements.sdk.validation-cache.cache`
     fn cache(&self) -> &ValidationCache;
 
+    // {impl}`requirements.sdk.graph.search.source_identity`
     /// Project source tools available to the configured agent.
     fn project_sources(&self) -> Option<crate::sources::SourceProject<Self>> {
-        None
+        Some(crate::sources::SourceProject {
+            sources: self.cache().sources.clone()?,
+            domain: Arc::new(self.clone()),
+        })
+    }
+
+    /// Graph identity for a project-relative outline item.
+    fn source_node(
+        &self,
+        item: &crate::outline::OutlineId,
+    ) -> Result<Self::NodeId, crate::sources::SourceError> {
+        Err(crate::sources::SourceError::Invalid(format!(
+            "domain has no source node mapping for {item:?}"
+        )))
     }
 
     /// Application-defined errors from domain operations.
@@ -120,12 +142,6 @@ pub trait NodeContents: Send + Sync {
     /// All resource reads and fallible preparation happen when loading contents.
     // {impl}`requirements.sdk.graph.node_content.format`
     fn format(&self) -> String;
-}
-
-/// Map a project file and outline selector to a node in this domain.
-// {impl}`requirements.sdk.sources.source_nodes`
-pub trait SourceNodes: Domain {
-    fn source_node(&self, item: &crate::outline::OutlineId) -> Result<Self::NodeId, Self::Error>;
 }
 
 #[cfg(test)]

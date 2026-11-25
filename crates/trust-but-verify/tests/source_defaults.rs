@@ -35,6 +35,10 @@ async fn source_bytes_error_kinds_and_language_names_round_trip() {
     assert!(matches!(io, SourceError::Io(_)));
     let diagnostic: &dyn std::error::Error = &io;
     assert_eq!(diagnostic.to_string(), "unreadable source");
+    assert_eq!(std::io::Error::from(io).to_string(), "unreadable source");
+    let invalid = std::io::Error::from(SourceError::Invalid("invalid location".into()));
+    assert_eq!(invalid.kind(), std::io::ErrorKind::Other);
+    assert_eq!(invalid.to_string(), "invalid location");
     let name = LanguageId::from("CustomLang");
     assert_eq!(name.as_str(), "CustomLang");
     assert_eq!(LanguageId::from(String::from("CustomLang")), name);

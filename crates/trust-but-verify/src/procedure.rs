@@ -304,7 +304,10 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
     }
 }
 
-impl<D: crate::domain::SourceNodes> ValidationContext<'_, D> {
+impl<D: Domain> ValidationContext<'_, D>
+where
+    D::Error: From<crate::sources::SourceError>,
+{
     // {impl}`requirements.sdk.graph.validation-context.read_source.fn`
     // {impl}`requirements.sdk.sources.provider_observations`
     // {impl}`requirements.sdk.graph.validation-context.ValidationContext.read_source`

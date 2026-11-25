@@ -123,6 +123,8 @@ pub struct OutlineItem {
     pub span: Span,
     /// Source to highlight for the selector name.
     pub name_span: Option<Span>,
+    pub header_span: Option<Span>,
+    pub trailer_span: Option<Span>,
     pub structural_hash: String,
     pub attachments: Vec<OutlineAttachment>,
 }
@@ -135,6 +137,8 @@ impl OutlineItem {
             kind,
             span,
             name_span: None,
+            header_span: None,
+            trailer_span: None,
             structural_hash,
             attachments: Vec::new(),
         }
@@ -144,6 +148,18 @@ impl OutlineItem {
     // {impl}`requirements.sdk.outlines.name_span`
     pub fn with_name_span(mut self, span: Span) -> Self {
         self.name_span = Some(span);
+        self
+    }
+
+    /// Retain the declaration header when formatting an excerpt.
+    pub fn with_header_span(mut self, span: Span) -> Self {
+        self.header_span = Some(span);
+        self
+    }
+
+    /// Retain the declaration trailer when formatting an excerpt.
+    pub fn with_trailer_span(mut self, span: Span) -> Self {
+        self.trailer_span = Some(span);
         self
     }
 
@@ -264,6 +280,30 @@ impl OutlineContent {
             },
         );
         Ok(outline)
+    }
+
+    pub(crate) fn search_text_snapshot(
+        cache: &ValidationCache,
+        path: &Path,
+    ) -> Result<Option<Arc<str>>, crate::sources::SourceError> {
+        let mut files = cache.outlines.lock().expect("outline cache lock poisoned");
+        if let Some(file) = files.get(path) {
+            return Ok((!file.source.contains('\0')).then(|| file.source.clone()));
+        }
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) if !text.contains('\0') => Arc::<str>::from(text),
+            Ok(_) => return Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        files.insert(
+            path.to_owned(),
+            crate::domain::CachedFile {
+                source: text.clone(),
+                outline: None,
+            },
+        );
+        Ok(Some(text))
     }
 
     /// Read the addressed file, then select its item.
@@ -474,7 +514,33 @@ impl OutlineContent {
         &self.snapshot.scheme
     }
 
-    fn item(&self) -> &OutlineItem {
+    pub(crate) fn at_offset(&self, offset: usize) -> Self {
+        let selected = self
+            .outline()
+            .items
+            .iter()
+            .enumerate()
+            .rev()
+            .filter(|(_, item)| item.span.start <= offset && offset < item.span.end)
+            .min_by_key(|(_, item)| item.span.end - item.span.start)
+            .map_or(0, |(i, _)| i);
+        let mut content = self.clone();
+        content.selected = selected;
+        content.id.selector = content.item().selector.clone();
+        content
+    }
+
+    pub(crate) fn source_span(&self, span: Span) -> Option<&str> {
+        self.snapshot.source.get(span.range())
+    }
+
+    pub(crate) fn redacted_span(&self, span: Span) -> std::borrow::Cow<'_, str> {
+        self.snapshot
+            .redaction
+            .slice(&self.snapshot.source, span.range())
+    }
+
+    pub(crate) fn item(&self) -> &OutlineItem {
         &self.snapshot.outline.items[self.selected]
     }
 }
@@ -514,6 +580,8 @@ impl Outline {
                     node.structural_hash,
                 );
                 item.name_span = node.name_span;
+                item.header_span = node.header_span;
+                item.trailer_span = node.trailer_span;
                 item
             })
             .collect();
@@ -580,6 +648,14 @@ fn validate_outline(outline: &Outline, source: &str) -> Result<(), OutlineError>
             return Err(selection_error(
                 "name span must be present exactly for named outline items",
             ));
+        }
+        for span in [item.header_span, item.trailer_span].into_iter().flatten() {
+            if span.start < item.span.start
+                || span.end > item.span.end
+                || source.get(span.range()).is_none()
+            {
+                return Err(selection_error("invalid declaration span"));
+            }
         }
         if let Some(name) = item.name_span
             && (name.start < item.span.start

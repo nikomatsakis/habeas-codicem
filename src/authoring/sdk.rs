@@ -79,6 +79,12 @@ impl NodeContents for ReviewContent {
 
 // {impl}`requirements.sdk.domain`
 impl Domain for ReviewGraph<'_> {
+    fn source_node(
+        &self,
+        item: &trust_but_verify::outline::OutlineId,
+    ) -> Result<HabeasNode, trust_but_verify::sources::SourceError> {
+        self.domain().source_node(item)
+    }
     fn cache(&self) -> &trust_but_verify::domain::ValidationCache {
         &self.outlines.validation
     }

@@ -1,9 +1,10 @@
+mod hits;
 use crate::resource::ResourceId;
 use crate::source_engine::LocalSources;
 use crate::source_engine::SourceAnalysis;
 use crate::source_engine::SourceProvider;
-use crate::source_engine::project_path_visible;
 use crate::source_engine::project_resource;
+
 use serde_json::{Map, Value};
 use std::{
     path::{Component, Path, PathBuf},
@@ -242,20 +243,6 @@ pub struct Sources {
 }
 
 impl Sources {
-    pub(crate) fn check_path(&self, path: &Path) -> Result<(), SourceError> {
-        let root = self.analysis.provider.project_directory()?;
-        let requested = path
-            .to_str()
-            .ok_or_else(|| SourceError::Invalid("source path is not UTF-8".into()))?;
-        let target = self.analysis.provider.path(requested)?;
-        let original = root.join(path);
-        if !project_path_visible(&root, &original)? || !project_path_visible(&root, &target)? {
-            return Err(SourceError::Invalid(
-                "source path is excluded from the project".into(),
-            ));
-        }
-        Ok(())
-    }
     // {impl}`requirements.sdk.sources.provider`
     /// Inspect the project directory with the SDK's built-in defaults.
     pub fn new(root: impl Into<PathBuf>) -> Self {
@@ -319,17 +306,54 @@ impl Sources {
 /// Project files and the domain mapping used by agent inspection tools.
 // {impl}`requirements.sdk.sources.SourceProject`
 pub struct SourceProject<D: crate::domain::Domain> {
-    pub(crate) sources: Sources,
+    pub(crate) sources: Arc<Sources>,
     pub(crate) domain: std::sync::Arc<D>,
-    pub(crate) source_node: fn(&D, &crate::outline::OutlineId) -> Result<D::NodeId, D::Error>,
 }
 
-impl<D: crate::domain::SourceNodes> SourceProject<D> {
+impl<D: crate::domain::Domain> SourceProject<D> {
     pub fn new(domain: D, sources: Sources) -> Self {
         Self {
-            sources,
-            domain: std::sync::Arc::new(domain),
-            source_node: D::source_node,
+            domain: Arc::new(domain),
+            sources: Arc::new(sources),
         }
+    }
+}
+
+impl From<SourceError> for std::io::Error {
+    fn from(error: SourceError) -> Self {
+        match error {
+            SourceError::Io(e) => e,
+            other => Self::other(other),
+        }
+    }
+}
+
+/// One occurrence in a retained project source snapshot.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct SearchHit<N> {
+    pub node: N,
+    pub span: crate::outline::Span,
+    pub text: String,
+    pub(crate) item: crate::outline::OutlineContent,
+}
+
+impl<N> SearchHit<N> {
+    /// Capture the matched bytes at a file-relative span in the retained outline.
+    pub fn new(
+        node: N,
+        span: crate::outline::Span,
+        item: crate::outline::OutlineContent,
+    ) -> Result<Self, SourceError> {
+        let text = item
+            .source_span(span)
+            .ok_or_else(|| SourceError::Invalid("invalid match span".into()))?
+            .to_owned();
+        Ok(Self {
+            node,
+            span,
+            text,
+            item,
+        })
     }
 }

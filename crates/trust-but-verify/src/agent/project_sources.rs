@@ -15,33 +15,60 @@ use std::io;
 
 use crate::sources::SourceProject as ProjectSources;
 
-impl<D: crate::domain::Domain> ProjectSources<D>
-where
-    D::Error: std::fmt::Display,
-{
-    // Text context can span several outline items. Capture the file root from
-    // the bytes searched so every line in the delivered excerpt is covered.
-    fn text_input(
-        &self,
-        path: &std::path::Path,
-        file: &crate::sources::SourceFile,
-    ) -> Result<Dependency<D::NodeId, D::EdgeLabel>, String> {
-        let contents = crate::outline::OutlineContent::from_source(
-            self.domain.cache(),
-            path,
-            file.text().map_err(|e| e.to_string())?.into(),
-        )
-        .map_err(|e| e.to_string())?;
-        let node = (self.source_node)(&self.domain, contents.id()).map_err(|e| e.to_string())?;
-        Ok(Dependency::Node(node, contents.fingerprint()))
+// {impl}`requirements.sdk.graph.search.windows`
+// {impl}`requirements.sdk.graph.search.omissions`
+fn excerpt(
+    item: &crate::outline::OutlineContent,
+    hits: &[crate::outline::Span],
+    window: usize,
+) -> String {
+    let info = item.item();
+    let bounds = info.span;
+    let source = item.text();
+    let mut spans: Vec<_> = [info.header_span, info.trailer_span]
+        .into_iter()
+        .flatten()
+        .collect();
+    for hit in hits {
+        let start = hit
+            .start
+            .saturating_sub(window)
+            .clamp(bounds.start, bounds.end)
+            - bounds.start;
+        let end = hit
+            .end
+            .saturating_add(window)
+            .clamp(bounds.start, bounds.end)
+            - bounds.start;
+        spans.push(crate::outline::Span::new(
+            bounds.start + source.ceil_char_boundary(start),
+            bounds.start + source.floor_char_boundary(end),
+        ));
     }
+    spans.sort_unstable_by_key(|s| s.start);
+    let mut cursor = bounds.start;
+    let mut result = String::new();
+    for span in spans {
+        if span.start > cursor {
+            result.push_str("...");
+        }
+        let start = cursor.max(span.start);
+        if start < span.end {
+            result.push_str(&item.redacted_span(crate::outline::Span::new(start, span.end)));
+        }
+        cursor = cursor.max(span.end);
+    }
+    if cursor < bounds.end {
+        result.push_str("...");
+    }
+    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::tools::SessionTools;
     use super::*;
-    use crate::domain::{Domain, SourceNodes};
+    use crate::domain::Domain;
     use crate::graph as validation;
     use crate::graph::Criterion;
     use crate::graph::CriterionPath;
@@ -75,6 +102,19 @@ mod tests {
         }
     }
     impl Domain for Project {
+        fn source_node(&self, item: &OutlineId) -> Result<String, crate::sources::SourceError> {
+            let path = item.path.to_str().unwrap();
+            if path == "unknown.txt" || item.selector == "line[unknown]" {
+                return Err(crate::sources::SourceError::Invalid(
+                    "unsupported source item".into(),
+                ));
+            }
+            if path == "source.txt" && item.selector.is_empty() {
+                return Ok("source-node".into());
+            }
+            Ok(format!("{path}#{}", item.selector))
+        }
+
         fn cache(&self) -> &crate::domain::ValidationCache {
             &self.1
         }
@@ -122,17 +162,6 @@ mod tests {
             Ok(())
         }
     }
-    impl SourceNodes for Project {
-        fn source_node(&self, item: &OutlineId) -> io::Result<String> {
-            if item.path == std::path::Path::new("code.rs") {
-                return Ok(format!("code.rs#{}", item.selector));
-            }
-            if item.path != std::path::Path::new("source.txt") || !item.selector.is_empty() {
-                return Err(io::Error::other("unsupported source item"));
-            }
-            Ok("source-node".into())
-        }
-    }
     struct ReadSource;
     impl Criterion<Project> for ReadSource {
         type Ok = String;
@@ -171,6 +200,7 @@ mod tests {
         )
     }
 
+    // {test}`requirements.sdk.graph.search.agent_search_accounting`
     // {test}`requirements.sdk.graph.search.first_search.instructions`
     // {test}`requirements.sdk.graph.search.first_search.instructions.content`
     // {test}`requirements.sdk.graph.search.search_structure.inputs`
@@ -186,7 +216,9 @@ mod tests {
     async fn search_obligations_follow_delivery_and_keep_the_original_snapshot() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("source.txt");
-        let original = "hit me here\n".repeat(300);
+        let original = (0..300)
+            .map(|n| format!("hit me here {n}\n"))
+            .collect::<String>();
         std::fs::write(&path, &original).unwrap();
         let expected = crate::outline::OutlineContent::from_source(
             project("").cache(),
@@ -194,10 +226,11 @@ mod tests {
             original.into(),
         )
         .unwrap()
-        .fingerprint();
+        .at_offset(0);
+        let expected_id = project("").source_node(expected.id()).unwrap();
+        let expected = expected.fingerprint();
         let tools = ProjectSources {
-            source_node: Project::source_node,
-            sources: Sources::new(root.path()),
+            sources: Sources::new(root.path()).into(),
             domain: project("unrelated domain text").into(),
         };
         let mut session = SessionTools::new(tools.session());
@@ -347,7 +380,7 @@ mod tests {
             let closed = session.dispatch("finish_search", &selected).await.unwrap();
             assert_eq!(
                 closed.dependencies,
-                [Dependency::Node("source-node".into(), expected.clone())]
+                [Dependency::Node(expected_id.clone(), expected.clone())]
             );
         }
         session
@@ -371,8 +404,7 @@ mod tests {
         let lines: Vec<_> = (1..=350).map(|i| format!("hit {i}")).collect();
         std::fs::write(&path, lines.join("\n")).unwrap();
         let tools = ProjectSources {
-            source_node: Project::source_node,
-            sources: Sources::new(root.path()),
+            sources: Sources::new(root.path()).into(),
             domain: project("").into(),
         };
         let mut session = SessionTools::new(tools.session());
@@ -386,23 +418,20 @@ mod tests {
         assert_eq!(
             search.parameters,
             json!({"type":"object","required":["pattern"],"properties":{
-                "pattern":{"type":"string"}, "prefix":{"type":"string"},
-                "context_lines":{"type":"integer","minimum":0}, "limit":{"type":"integer","minimum":0}
+                "pattern":{"type":"string"},
+                "window_bytes":{"type":"integer","minimum":0,"default":128}, "limit":{"type":"integer","minimum":0}
             }})
         );
         for invalid in [
             json!({}),
             json!({"pattern":"hit","limit":"1"}),
-            json!({"pattern":"hit","context_lines":-1}),
+            json!({"pattern":"hit","window_bytes":-1}),
         ] {
             assert!(session.dispatch("search_text", &invalid).await.is_err());
         }
-        std::fs::write(root.path().join("excluded-by-prefix.txt"), "hit outside").unwrap();
+
         let mut delivery = session
-            .dispatch(
-                "search_text",
-                &json!({"pattern":"hit","prefix":"source.txt"}),
-            )
+            .dispatch("search_text", &json!({"pattern":"hit"}))
             .await
             .unwrap();
         std::fs::write(&path, "changed").unwrap();
@@ -418,7 +447,7 @@ mod tests {
             for (index, entry) in matches.iter().enumerate() {
                 assert_eq!(
                     entry,
-                    &json!({"path":"source.txt", "line":count+1, "excerpt":lines[count], "tag":(index+1).to_string()})
+                    &json!({"node":format!("n{count}"), "excerpt":lines[count], "tag":(index+1).to_string()})
                 );
                 count += 1;
             }
@@ -435,28 +464,44 @@ mod tests {
 
     // {test}`requirements.sdk.graph.search.search_structure.inputs`
     // {test}`requirements.sdk.graph.search.finish_search.inputs`
+    // {test}`requirements.sdk.graph.search.agent_search`
+    // {test}`requirements.sdk.graph.search.occurrence`
     #[tokio::test]
+    // {test}`requirements.sdk.sources.SourceProject`
+    // {test}`requirements.sdk.graph.search.search_structure.behavior`
     async fn structural_tags_select_only_the_original_enclosing_item() {
         let root = tempfile::tempdir().unwrap();
         let code = root.path().join("code.rs");
         std::fs::write(&code, "fn one(){call();} fn two(){call();}").unwrap();
         let domain = project("");
         let tools = ProjectSources {
-            source_node: Project::source_node,
-            sources: Sources::new(root.path()),
+            sources: Sources::new(root.path()).into(),
             domain: domain.clone().into(),
         };
         let mut session = SessionTools::new(tools.session());
         let args = json!({"language":"rust","rule":{"rule":{"pattern":"call()"}}});
+        let query = StructuralQuery::new("rust".into(), args["rule"].as_object().unwrap().clone());
+        let hits = tools.search_structure(&query).await.unwrap();
+        assert_eq!(
+            hits.matches
+                .iter()
+                .map(|h| (h.node.as_str(), h.span.start..h.span.end, h.text.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("code.rs#fn[one]", 9..15, "call()"),
+                ("code.rs#fn[two]", 27..33, "call()")
+            ]
+        );
         let search = session.dispatch("search_structure", &args).await.unwrap();
         assert!(search.dependencies.is_empty());
         let page: Value = serde_json::from_str(&search.text).unwrap();
         let matches = page["matches"].as_array().unwrap();
+        assert_eq!(page["complete"], hits.complete);
         assert_eq!(matches.len(), 2);
-        let tag = &matches
-            .iter()
-            .find(|m| m["node"]["selector"] == "fn[two]")
-            .unwrap()["tag"];
+        for (hit, entry) in hits.matches.iter().zip(matches) {
+            assert_eq!(entry["excerpt"], hit.text);
+        }
+        let tag = &matches.iter().find(|m| m["node"] == "n1").unwrap()["tag"];
         let expected = crate::outline::OutlineContent::from_path(domain.cache(), &code)
             .unwrap()
             .select("fn[two]")
@@ -499,21 +544,37 @@ mod tests {
             .collect();
         std::fs::write(root.path().join("code.rs"), code).unwrap();
         let tools = ProjectSources {
-            source_node: Project::source_node,
-            sources: Sources::new(root.path()),
+            sources: Sources::new(root.path()).into(),
             domain: project("").into(),
         };
         let mut session = SessionTools::new(tools.session());
+        session.dispatch("list_sources", &json!({})).await.unwrap();
         let mut delivery = session
-            .dispatch("outline_source", &json!({"path":"code.rs"}))
+            .dispatch("outline_source", &json!({"node":"n0"}))
             .await
             .unwrap();
+        std::fs::write(root.path().join("code.rs"), "fn changed() {}").unwrap();
+        let again = session
+            .dispatch("outline_source", &json!({"node":"n0"}))
+            .await
+            .unwrap();
+        let first: Value = serde_json::from_str(&delivery.text).unwrap();
+        let again: Value = serde_json::from_str(&again.text).unwrap();
+        assert_eq!(first["items"], again["items"]);
+        for invalid in ["invalid", "00000000-0000-4000-8000-000000000000"] {
+            assert!(
+                session
+                    .dispatch("get_next_page", &json!({"uuid":invalid}))
+                    .await
+                    .is_err()
+            );
+        }
         let mut items = Vec::new();
         let mut pages = 0;
         loop {
             let page: Value = serde_json::from_str(&delivery.text).unwrap();
             assert!(delivery.dependencies.is_empty());
-            assert_eq!(page["path"], "code.rs");
+            assert_eq!(page["node"], "n0");
             let chunk = page["items"].as_array().unwrap();
             assert!(!chunk.is_empty());
             items.extend(chunk.iter().cloned());
@@ -525,24 +586,11 @@ mod tests {
                 .unwrap();
         }
         assert!(pages > 1);
-        let expected: Vec<_> = std::iter::once(json!({"selector":"","kind":""}))
-            .chain(
-                names
-                    .iter()
-                    .map(|name| json!({"selector":format!("fn[{name}]"),"kind":"fn"})),
-            )
-            .collect();
-        assert_eq!(items, expected);
-        let selector = &items.last().unwrap()["selector"];
-        tools.domain.0.lock().unwrap().text = "fn item_399() {}".into();
-        let address = json!({"path":"code.rs", "selector":selector});
-        let read = session.dispatch("read_source", &address).await.unwrap();
-        let page: Value = serde_json::from_str(&read.text).unwrap();
-        assert_eq!(page, json!({"node":address, "text":"fn item_399() {}"}));
-        assert_eq!(
-            tools.domain.0.lock().unwrap().read_nodes,
-            ["code.rs#fn[item_399]"]
-        );
+        assert_eq!(items.len(), names.len() + 1);
+        for (i, item) in items.iter().enumerate() {
+            assert_eq!(item["node"], format!("n{i}"));
+            assert_eq!(item["kind"], if i == 0 { "" } else { "fn" });
+        }
     }
 
     // {test}`requirements.sdk.graph.validation-context.list_sources.mcp`
@@ -553,15 +601,12 @@ mod tests {
     #[tokio::test]
     async fn listing_continuations_return_complete_paths_from_the_original_listing() {
         let root = tempfile::tempdir().unwrap();
-        let expected: Vec<_> = (0..200)
-            .map(|i| format!("{i:03}-{}.rs", "a".repeat(100)))
-            .collect();
+        let expected: Vec<_> = (0..2000).map(|i| format!("item{i:04}.rs")).collect();
         for name in &expected {
             std::fs::write(root.path().join(name), "").unwrap();
         }
         let tools = ProjectSources {
-            source_node: Project::source_node,
-            sources: Sources::new(root.path()),
+            sources: Sources::new(root.path()).into(),
             domain: project("").into(),
         };
         let mut session = SessionTools::new(tools.session());
@@ -581,286 +626,218 @@ mod tests {
             assert!(delivery.dependencies.is_empty());
             page = serde_json::from_str(&delivery.text).unwrap();
         }
-        assert_eq!(files, expected);
+        assert_eq!(
+            files,
+            (0..expected.len())
+                .map(|i| format!("n{i}"))
+                .collect::<Vec<_>>()
+        );
     }
 
-    // {test}`requirements.sdk.sources.provider_observations`
-    // {test}`requirements.sdk.sources.source_nodes`
-    // {test}`requirements.sdk.graph.validation-context.read_source.behavior`
-    // {test}`requirements.sdk.graph.validation-context.read_source.mcp`
-    // {test}`requirements.sdk.graph.validation-context.read_source.inputs`
-    // {test}`requirements.sdk.graph.validation-context.list_sources.inputs`
-    // {test}`requirements.sdk.graph.validation-context.list_sources.behavior`
-    // {test}`requirements.sdk.graph.validation-context.outline_source.inputs`
-    // {test}`requirements.sdk.graph.validation-context.outline_source.behavior`
-    // {test}`requirements.sdk.graph.search.search_text.inputs`
-    // {test}`requirements.sdk.graph.search.search_text.fn`
-    // {test}`requirements.sdk.graph.search.search_structure.inputs`
-    // {test}`requirements.sdk.graph.search.search_structure.behavior`
-    // {test}`requirements.sdk.graph.validation-context.pages.inputs`
-    // {test}`requirements.sdk.graph.validation-context.pages.mcp`
-    // {test}`requirements.sdk.graph.validation-context.pages.behavior`
-    // {test}`requirements.sdk.graph.agent-harness.fixed_tools`
-    // {test}`requirements.sdk.graph.validation-context.list_sources.mcp`
-    // {test}`requirements.sdk.graph.validation-context.outline_source.mcp`
+    // {test}`requirements.sdk.sources.SourceProject`
     // {test}`requirements.sdk.graph.search.search_text.behavior`
-    // {test}`requirements.sdk.graph.search.search_text.mcp`
+    // {test}`requirements.sdk.graph.search.same_line`
+    // {test}`requirements.sdk.graph.search.agent_search`
+    // {test}`requirements.sdk.graph.search.domain_node`
+    // {test}`requirements.sdk.graph.search.grouped_constants`
+    // {test}`requirements.sdk.graph.search.selecting_an_excerpt`
+    // {test}`requirements.sdk.graph.search.occurrence`
+    // {test}`requirements.sdk.graph.search.group_hits`
+    // {test}`requirements.sdk.graph.search.omissions`
+    // {test}`requirements.sdk.graph.search.windows`
     #[tokio::test]
-    async fn fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies() {
+    async fn search_groups_exact_occurrences_and_records_the_selected_declaration() {
         let root = tempfile::tempdir().unwrap();
-        std::fs::write(root.path().join("source.txt"), "disk text\n").unwrap();
-        std::fs::write(root.path().join(".gitignore"), "ignored.txt\n").unwrap();
-        std::fs::write(root.path().join("ignored.txt"), "secret").unwrap();
-        std::fs::write(
-            root.path().join("code.rs"),
-            "fn chosen() { call(); }\nimpl Thing { fn nested() {} }\n",
-        )
-        .unwrap();
-        let domain = project("prepared domain contents");
-        let tools = ProjectSources {
-            source_node: Project::source_node,
-            sources: Sources::new(root.path()),
-            domain: domain.clone().into(),
-        };
-        let mut session = SessionTools::new(tools.session());
+        let code = "const A: &str = \"éhit\"; const B: &str = \"hit hit\";";
+        std::fs::write(root.path().join("code.rs"), code).unwrap();
+        let project = ProjectSources::new(project(""), Sources::new(root.path()));
+        let results = project
+            .search_text(&TextQuery::new("hit".into()))
+            .await
+            .unwrap();
         assert_eq!(
-            session
-                .extra
-                .definitions()
-                .unwrap()
+            results
+                .matches
                 .iter()
-                .map(|tool| tool.name.as_str())
+                .map(|h| (h.node.as_str(), h.span.start..h.span.end, h.text.as_str()))
                 .collect::<Vec<_>>(),
             [
-                "list_sources",
-                "outline_source",
-                "read_source",
-                "search_text",
-                "search_structure",
-                "finish_search"
+                ("code.rs#const[A]", 19..22, "hit"),
+                ("code.rs#const[B]", 42..45, "hit"),
+                ("code.rs#const[B]", 46..49, "hit")
             ]
         );
-        let listing = session
-            .dispatch("list_sources", &json!({"prefix":"source.txt"}))
+        let mut session = SessionTools::new(project.session());
+        let result = session
+            .dispatch("search_text", &json!({"pattern":"hit"}))
             .await
             .unwrap();
-        assert!(listing.dependencies.is_empty());
-        assert_eq!(
-            serde_json::from_str::<Value>(&listing.text).unwrap(),
-            json!({"files":["source.txt"]})
-        );
-        let outlined = session
-            .dispatch("outline_source", &json!({"path":"source.txt"}))
-            .await
-            .unwrap();
-        assert!(outlined.dependencies.is_empty());
-        let result: Value = serde_json::from_str(&outlined.text).unwrap();
-        assert_eq!(result["path"], "source.txt");
-        assert_eq!(result["items"][0], json!({"selector":"","kind":""}));
-        assert_eq!(result["items"].as_array().unwrap().len(), 2);
-        assert_eq!(result["items"][1]["kind"], "line");
-        assert!(
-            result["items"][1]["selector"]
-                .as_str()
-                .unwrap()
-                .starts_with("line@")
-        );
-        let search = session
-            .dispatch(
-                "search_text",
-                &json!({"prefix":"source.txt","pattern":"disk"}),
-            )
-            .await
-            .unwrap();
-        assert!(search.dependencies.is_empty());
-        assert_eq!(
-            serde_json::from_str::<Value>(&search.text).unwrap()["matches"],
-            json!([{"path":"source.txt","line":1,"excerpt":"disk text","tag":"1"}])
-        );
-        let outlined = session
-            .dispatch("outline_source", &json!({"path":"code.rs"}))
-            .await
-            .unwrap();
-        assert!(outlined.dependencies.is_empty());
-        assert_eq!(
-            serde_json::from_str::<Value>(&outlined.text).unwrap(),
-            json!({"path":"code.rs","items":[
-                {"selector":"","kind":""},
-                {"selector":"fn[chosen]","kind":"fn"},
-                {"selector":"impl[Thing]","kind":"impl"},
-                {"selector":"impl[Thing]/fn[nested]","kind":"fn"}
-            ]})
-        );
-        let mut arguments =
-            json!({"prefix":"code.rs","language":"rust","rule":{"rule":{"pattern":"call()"}}});
-        let search = session
-            .dispatch("search_structure", &arguments)
-            .await
-            .unwrap();
-        assert!(search.dependencies.is_empty());
-        let page: Value = serde_json::from_str(&search.text).unwrap();
-        assert!(uuid::Uuid::parse_str(page["search_id"].as_str().unwrap()).is_ok());
+        assert!(result.dependencies.is_empty());
+        let page: Value = serde_json::from_str(&result.text).unwrap();
         assert_eq!(page["complete"], true);
         assert_eq!(
             page["matches"],
-            json!([{
-                "node":{"path":"code.rs","selector":"fn[chosen]"},
-                "excerpt":"call()","tag":"1"
-            }])
+            json!([
+                {"tag":"1", "node":"n0", "excerpt":"const A: &str = \"éhit\";"},
+                {"tag":"2", "node":"n1", "excerpt":"const B: &str = \"hit hit\";"}
+            ])
         );
-        arguments["limit"] = json!(0);
-        let truncated = session
-            .dispatch("search_structure", &arguments)
+        let finished = session
+            .dispatch(
+                "finish_search",
+                &json!({"search_id":page["search_id"], "used":["2"]}),
+            )
             .await
             .unwrap();
-        let page: Value = serde_json::from_str(&truncated.text).unwrap();
-        assert_eq!(page["complete"], false);
-        assert_eq!(page["matches"], json!([]));
-        assert_eq!(domain.0.lock().unwrap().reads, 0);
-        let read = session
-            .dispatch("read_source", &json!({"path":"source.txt"}))
-            .await
-            .unwrap();
-        assert!(read.text.contains("prepared domain contents"));
-        assert!(!read.text.contains("disk text"));
         assert_eq!(
-            read.dependencies,
-            vec![Dependency::Node(
-                "source-node".into(),
-                Content("prepared domain contents".into()).fingerprint()
+            finished.dependencies,
+            [Dependency::Node(
+                "code.rs#const[B]".into(),
+                results.matches[1].item.fingerprint()
             )]
         );
-        assert_eq!(domain.0.lock().unwrap().read_nodes, ["source-node"]);
-        for args in [
-            json!({"path":"ignored.txt"}),
-            json!({"path":"../source.txt"}),
-            json!({"path":"source.txt","selector":"line[unknown]"}),
-            json!({"path":"source.txt","selector":"fn[unclosed"}),
+    }
+
+    // {test}`requirements.sdk.graph.search.windows`
+    // {test}`requirements.sdk.graph.search.omissions`
+    // {test}`requirements.sdk.graph.search.enclosing_item`
+    // {test}`requirements.sdk.graph.search.file_root`
+    // {test}`requirements.sdk.graph.search.utf8_window`
+    #[tokio::test]
+    async fn root_hits_clip_context_to_utf8_boundaries() {
+        let root = tempfile::tempdir().unwrap();
+        for (source, pattern, small) in
+            [("needle", "needle", "needle"), ("éhit猫", "hit", "éhit...")]
+        {
+            std::fs::write(root.path().join("fragment.rs"), source).unwrap();
+            let project = ProjectSources::new(project(source), Sources::new(root.path()));
+            let hits = project
+                .search_text(&TextQuery::new(pattern.into()))
+                .await
+                .unwrap();
+            assert_eq!(hits.matches[0].node, "fragment.rs#");
+            let mut pages = Pages::new();
+            let mut session = project.session();
+            for (args, expected) in [
+                (json!({"pattern":pattern, "window_bytes":2}), small),
+                (json!({"pattern":pattern}), source),
+            ] {
+                let result = session
+                    .dispatch("search_text", &args, &mut pages)
+                    .await
+                    .unwrap();
+                let page: Value = serde_json::from_str(&result.text).unwrap();
+                assert_eq!(
+                    page["matches"],
+                    json!([{"tag":"1", "node":"n0", "excerpt":expected}])
+                );
+                let node = pages.node(&page["matches"][0]).unwrap();
+                assert_eq!(project.domain.node_content(&node).unwrap().format(), source);
+            }
+        }
+    }
+
+    // {test}`requirements.sdk.graph.search.windows`
+    // {test}`requirements.sdk.graph.search.omissions`
+    #[tokio::test]
+    async fn default_windows_retain_128_bytes_on_each_side() {
+        let root = tempfile::tempdir().unwrap();
+        let code = format!("{}猫hit猫{}", "a".repeat(200), "z".repeat(200));
+        std::fs::write(root.path().join("fragment.rs"), code).unwrap();
+        let project = ProjectSources::new(project(""), Sources::new(root.path()));
+        let mut session = SessionTools::new(project.session());
+        for (args, expected) in [
+            (
+                json!({"pattern":"hit"}),
+                format!("...{}猫hit猫{}...", "a".repeat(125), "z".repeat(125)),
+            ),
+            (
+                json!({"pattern":"hit","window_bytes":1}),
+                "...hit...".to_owned(),
+            ),
         ] {
-            assert!(session.dispatch("read_source", &args).await.is_err());
+            let result = session.dispatch("search_text", &args).await.unwrap();
+            let page: Value = serde_json::from_str(&result.text).unwrap();
+            assert_eq!(page["matches"][0]["excerpt"], expected);
         }
-        assert_eq!(domain.0.lock().unwrap().reads, 1);
-        domain.0.lock().unwrap().text = "é".repeat(20_000);
-        let initial = session
-            .dispatch("read_source", &json!({"path":"source.txt"}))
+    }
+
+    // {test}`requirements.sdk.graph.search.domain_node`
+    #[tokio::test]
+    async fn an_unmapped_hit_fails_the_search() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("unknown.txt"), "hit").unwrap();
+        let project = ProjectSources::new(project(""), Sources::new(root.path()));
+        let error = project
+            .search_text(&TextQuery::new("hit".into()))
             .await
+            .err()
             .unwrap();
-        let envelope: Value = serde_json::from_str(&initial.text).unwrap();
-        let uuid = &envelope["next"];
-        assert!(uuid::Uuid::parse_str(uuid.as_str().unwrap()).is_ok());
-        let expected = initial.dependencies;
-        let mut peer = SessionTools::new(tools.session());
-        let peer_initial = peer
-            .dispatch("read_source", &json!({"path":"source.txt"}))
-            .await
-            .unwrap();
-        let peer_envelope: Value = serde_json::from_str(&peer_initial.text).unwrap();
-        let peer_page = &peer_envelope["next"];
-        assert!(
-            session
-                .dispatch("get_next_page", &json!({"uuid":peer_page}))
-                .await
-                .is_err()
-        );
-        assert!(
-            peer.dispatch("get_next_page", &json!({"uuid":uuid}))
-                .await
-                .is_err()
-        );
-        domain.0.lock().unwrap().text = "replacement".into();
-        let mut page = envelope;
-        let mut retained = page["text"].as_str().unwrap().to_owned();
-        while let Some(next) = page.get("next") {
-            let args = json!({"uuid":next});
-            let result = session.dispatch("get_next_page", &args).await.unwrap();
-            assert_eq!(
-                session.dispatch("get_next_page", &args).await.unwrap().text,
-                result.text
-            );
-            assert_eq!(result.dependencies, expected);
-            let following: Value = serde_json::from_str(&result.text).unwrap();
-            assert_eq!(following["node"], page["node"]);
-            retained.push_str(following["text"].as_str().unwrap());
-            page = following;
+        assert!(error.to_string().contains("unsupported source item"));
+    }
+
+    // {test}`requirements.sdk.graph.search.declaration_spans`
+    #[test]
+    fn rust_declarations_supply_independent_file_spans() {
+        let code = "// lead\nstruct T; impl T { fn f() {} } const C: u8 = 1; static S: u8 = 2;";
+        let outline = crate::outline::OutlineContent::from_source(
+            project("").cache(),
+            "input.rs",
+            code.into(),
+        )
+        .unwrap();
+        for (kind, header, trailer) in [
+            ("impl", Some("impl T {"), Some("}")),
+            ("fn", Some("fn f() {"), Some("}")),
+            ("const", Some("const C: u8 ="), None),
+            ("static", Some("static S: u8 ="), None),
+            ("struct", None, None),
+        ] {
+            let item = outline
+                .outline()
+                .items
+                .iter()
+                .find(|i| i.kind == kind)
+                .unwrap();
+            assert_eq!(item.header_span.map(|s| &code[s]), header);
+            assert_eq!(item.trailer_span.map(|s| &code[s]), trailer);
         }
-        assert_eq!(retained, "é".repeat(20_000));
-        assert_eq!(domain.0.lock().unwrap().reads, 3);
-        assert!(
-            session
-                .dispatch("get_next_page", &json!({"uuid":"invalid"}))
-                .await
-                .is_err()
-        );
-        assert!(
-            SessionTools::new(tools.session())
+    }
+
+    // {test}`requirements.sdk.graph.search.windows`
+    // {test}`requirements.sdk.graph.search.separated_hits`
+    // {test}`requirements.sdk.graph.search.declaration_spans`
+    // {test}`requirements.sdk.graph.search.enclosing_item`
+    // {test}`requirements.sdk.graph.search.omissions`
+    #[tokio::test]
+    async fn separated_hit_windows_preserve_the_function_declaration() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("runner.rs");
+        let code = "impl Runner {\n    fn run() {\n        setup();\n        hit(); hit();\n        cleanup();\n        hit();\n        finish();\n    }\n}";
+        std::fs::write(&path, code).unwrap();
+        let project = ProjectSources::new(project(""), Sources::new(root.path()));
+        let mut session = SessionTools::new(project.session());
+        for (window, expected) in [
+            (4, "fn run() {...    hit(); hit();\n...    hit();\n...}"),
+            (0, "fn run() {...hit...hit...hit...}"),
+        ] {
+            let page = session
                 .dispatch(
-                    "get_next_page",
-                    &json!({"uuid":uuid::Uuid::nil().to_string()})
+                    "search_text",
+                    &json!({"pattern":"hit", "window_bytes":window}),
                 )
                 .await
-                .is_err()
-        );
+                .unwrap();
+            let page: Value = serde_json::from_str(&page.text).unwrap();
+            assert_eq!(
+                page["matches"],
+                json!([{"tag":"1", "node":"n0", "excerpt":expected}])
+            );
+            std::fs::write(&path, "fn changed() {}").unwrap();
+        }
     }
 
-    // {test}`requirements.sdk.graph.validation-context.read_source.behavior`
     // {test}`requirements.sdk.graph.validation-context.read_source.inputs`
-    // {test}`requirements.sdk.graph.validation-context.read_source.mcp`
-    #[tokio::test]
-    async fn omitted_and_explicit_empty_selectors_deliver_the_same_whole_file() {
-        let root = tempfile::tempdir().unwrap();
-        std::fs::write(root.path().join("source.txt"), "disk text").unwrap();
-        let domain = project("whole file from domain");
-        let tools = ProjectSources {
-            source_node: Project::source_node,
-            sources: Sources::new(root.path()),
-            domain: domain.clone().into(),
-        };
-        let mut session = SessionTools::new(tools.session());
-        let tool = session
-            .extra
-            .definitions()
-            .unwrap()
-            .into_iter()
-            .find(|tool| tool.name == "read_source")
-            .unwrap();
-        assert_eq!(tool.parameters["required"], json!(["path"]));
-        for field in ["path", "selector"] {
-            assert_eq!(tool.parameters["properties"][field]["type"], "string");
-        }
-        for args in [
-            json!({"path":"source.txt"}),
-            json!({"path":"source.txt","selector":""}),
-        ] {
-            let delivered = session.dispatch("read_source", &args).await.unwrap();
-            assert_eq!(
-                serde_json::from_str::<Value>(&delivered.text).unwrap(),
-                json!({
-                    "node":{"path":"source.txt","selector":""},
-                    "text":"whole file from domain"
-                }),
-                "{args}"
-            );
-            assert_eq!(
-                delivered.dependencies,
-                [Dependency::Node(
-                    "source-node".into(),
-                    Content("whole file from domain".into()).fingerprint()
-                )],
-                "{args}"
-            );
-        }
-        assert_eq!(
-            domain.0.lock().unwrap().read_nodes,
-            ["source-node", "source-node"]
-        );
-    }
-
-    // {test}`requirements.sdk.sources.provider.attachment`
-    // {test}`requirements.sdk.sources.provider_observations`
-    // {test}`requirements.sdk.graph.validation-context.read_source.fn`
-    // {test}`requirements.sdk.graph.validation-context.read_source.behavior`
-    // {test}`requirements.sdk.graph.validation-context.read_source.inputs`
-    // {test}`requirements.sdk.graph.evidence.refresh_evidence`
     #[tokio::test]
     async fn deterministic_source_reads_reuse_saved_results() {
         let domain = project("first");
@@ -952,66 +929,6 @@ mod tests {
     // {test}`requirements.sdk.graph.validation-context.read_source.behavior`
     // {test}`requirements.sdk.graph.validation-context.read_source.inputs`
     // {test}`requirements.sdk.sources.redaction`
-    // {test}`requirements.sdk.graph.validation-context.read_source.mcp`
-    // {test}`requirements.sdk.sources.source_nodes`
-    #[tokio::test]
-    async fn fixed_source_reads_redact_delivery_and_propagate_preparation_errors() {
-        let root = tempfile::tempdir().unwrap();
-        std::fs::write(root.path().join("source.txt"), "disk text").unwrap();
-        let token = format!("gh{}_{}", "p", "16C7e42F292c6912E7710c838347Ae178B4a");
-        let raw = format!("visible text\ncredential {token}\nlast line\n");
-        let domain = project(&raw);
-        let tools = ProjectSources {
-            source_node: Project::source_node,
-            sources: Sources::new(root.path()),
-            domain: domain.clone().into(),
-        };
-        let mut session = SessionTools::new(tools.session());
-        domain.0.lock().unwrap().fail_read = true;
-        let error = session
-            .dispatch("read_source", &json!({"path":"source.txt"}))
-            .await
-            .err()
-            .unwrap();
-        assert!(error.to_string().contains("prepared source read failed"));
-        domain.0.lock().unwrap().fail_read = false;
-        let returned = session
-            .dispatch("read_source", &json!({"path":"source.txt"}))
-            .await
-            .unwrap();
-        let body: Value = serde_json::from_str(&returned.text).unwrap();
-        assert!(!returned.text.contains(&token));
-        assert!(
-            body["text"]
-                .as_str()
-                .unwrap()
-                .contains("[REDACTED:GitHub Token]")
-        );
-        assert_eq!(
-            body["text"].as_str().unwrap().lines().count(),
-            raw.lines().count()
-        );
-        assert_eq!(
-            returned.dependencies,
-            [Dependency::Node(
-                "source-node".into(),
-                Content(raw).fingerprint()
-            )]
-        );
-        assert_eq!(domain.0.lock().unwrap().reads, 2);
-        std::fs::write(root.path().join("code.rs"), "fn selected() {}").unwrap();
-        let address = json!({"path":"code.rs","selector":"fn[selected]"});
-        let selected = session.dispatch("read_source", &address).await.unwrap();
-        let page: Value = serde_json::from_str(&selected.text).unwrap();
-        assert_eq!(page["node"], address);
-        assert_eq!(
-            domain.0.lock().unwrap().read_nodes.last().unwrap(),
-            "code.rs#fn[selected]"
-        );
-        assert!(page["text"].as_str().unwrap().starts_with("visible text"));
-    }
-
-    // {test}`requirements.sdk.sources.redaction`
     // {test}`requirements.sdk.graph.search.search_structure.inputs`
     // {test}`requirements.sdk.graph.search.search_text.mcp`
     #[tokio::test]
@@ -1039,15 +956,14 @@ mod tests {
         std::fs::write(root.path().join("code.rs"), &raw).unwrap();
         let domain = project("domain contents are not read for search");
         let tools = ProjectSources {
-            source_node: Project::source_node,
-            sources: Sources::new(root.path()),
+            sources: Sources::new(root.path()).into(),
             domain: domain.clone().into(),
         };
         let mut session = SessionTools::new(tools.session());
         let queries = [
             (
                 "search_text",
-                json!({"prefix":"code.rs","pattern":"fn chosen","context_lines":20}),
+                json!({"pattern":"fn chosen","window_bytes":25000}),
             ),
             (
                 "search_structure",
@@ -1077,11 +993,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            let selector = if tool == "search_text" {
-                ""
-            } else {
-                "fn[chosen]"
-            };
+            let selector = "fn[chosen]";
             let snapshot = crate::outline::OutlineContent::from_source(
                 domain.cache(),
                 "code.rs",
@@ -1121,19 +1033,26 @@ mod tests {
         std::fs::write(root.path().join(".git/config"), "metadata").unwrap();
         let domain = project("domain text");
         let tools = ProjectSources {
-            source_node: Project::source_node,
-            sources: Sources::new(root.path()),
+            sources: Sources::new(root.path()).into(),
             domain: domain.clone().into(),
         };
         let mut session = SessionTools::new(tools.session());
+        let listing = session.dispatch("list_sources", &json!({})).await.unwrap();
+        let listing: Value = serde_json::from_str(&listing.text).unwrap();
+        let files = tools.sources.list(&Default::default()).await.unwrap();
+        let index = files
+            .iter()
+            .position(|p| p == std::path::Path::new("source.txt"))
+            .unwrap();
+        let reference = &listing["files"][index];
         let allowed = session
-            .dispatch("outline_source", &json!({"path":"source.txt"}))
+            .dispatch("outline_source", &json!({"node":reference}))
             .await
             .unwrap();
         assert!(allowed.dependencies.is_empty());
         let outline: Value = serde_json::from_str(&allowed.text).unwrap();
-        assert_eq!(outline["path"], "source.txt");
-        assert_eq!(outline["items"][0]["selector"], "");
+        assert_eq!(&outline["node"], reference);
+        assert!(outline["items"][0]["node"].is_string());
         assert_eq!(outline["items"].as_array().unwrap().len(), 3);
         for args in [
             json!({"path":"ignored.txt"}),
@@ -1148,12 +1067,19 @@ mod tests {
             );
         }
         std::fs::write(root.path().join("invalid.rs"), "fn {").unwrap();
+        let listing = session.dispatch("list_sources", &json!({})).await.unwrap();
+        let listing: Value = serde_json::from_str(&listing.text).unwrap();
+        let files = tools.sources.list(&Default::default()).await.unwrap();
+        let index = files
+            .iter()
+            .position(|p| p == std::path::Path::new("invalid.rs"))
+            .unwrap();
         let recovered = session
-            .dispatch("outline_source", &json!({"path":"invalid.rs"}))
+            .dispatch("outline_source", &json!({"node":listing["files"][index]}))
             .await
             .unwrap();
         let outline: Value = serde_json::from_str(&recovered.text).unwrap();
-        assert_eq!(outline["items"][0]["selector"], "");
+        assert!(outline["items"][0]["node"].is_string());
         assert_eq!(domain.0.lock().unwrap().reads, 0);
     }
 }
@@ -1167,12 +1093,16 @@ where
         D::NodeId: 'a,
         D::EdgeLabel: 'a,
     {
-        Box::new(Session { tools: self })
+        Box::new(Session {
+            tools: self,
+            files: std::collections::HashMap::new(),
+        })
     }
 }
 
 struct Session<'a, D: crate::domain::Domain> {
     tools: &'a ProjectSources<D>,
+    files: std::collections::HashMap<String, std::path::PathBuf>,
 }
 
 impl<D: crate::domain::Domain> ToolSession<D> for Session<'_, D>
@@ -1183,8 +1113,6 @@ where
     // {impl}`requirements.sdk.graph.validation-context.list_sources.mcp.description`
     // {impl}`requirements.sdk.graph.validation-context.outline_source.mcp`
     // {impl}`requirements.sdk.graph.validation-context.outline_source.mcp.description`
-    // {impl}`requirements.sdk.graph.validation-context.read_source.mcp`
-    // {impl}`requirements.sdk.graph.validation-context.read_source.mcp.description`
     // {impl}`requirements.sdk.graph.search.search_text.mcp`
     // {impl}`requirements.sdk.graph.search.search_text.mcp.description`
     // {impl}`requirements.sdk.graph.search.search_structure.mcp`
@@ -1193,16 +1121,10 @@ where
     // {impl}`requirements.sdk.graph.search.finish_search.mcp.description`
     fn definitions(&self) -> io::Result<Vec<ToolDefinition>> {
         [
-            json!({"name":"list_sources","description":"List available project files.",
-                "parameters":{"type":"object","properties":{"prefix":{"type":"string"}}}}),
-            json!({"name":"outline_source","description":"Inspect selectable items in a project file.",
-                "parameters":{"type":"object","required":["path"],"properties":{"path":{"type":"string"}}}}),
-            json!({"name":"read_source","description":"Read a selected source node and record its exact observation.",
-                "parameters":{"type":"object","required":["path"],"properties":{"path":{"type":"string"},"selector":{"type":"string"}}}}),
-            json!({"name":"search_text","description":"Find regular-expression matches in available files. Read selected nodes separately.",
-                "parameters":{"type":"object","required":["pattern"],"properties":{"pattern":{"type":"string"},"prefix":{"type":"string"},"context_lines":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":0}}}}),
-            json!({"name":"search_structure","description":"Find structural matches in available files. Read selected nodes separately.",
-                "parameters":{"type":"object","required":["language","rule"],"properties":{"language":{"type":"string"},"rule":{"type":"object"},"prefix":{"type":"string"},"limit":{"type":"integer","minimum":0}}}}),
+            json!({"name":"list_sources","description":"List available project file nodes.", "parameters":{"type":"object","properties":{}}}),
+            json!({"name":"outline_source","description":"Inspect the outline of a listed file node.","parameters":{"type":"object","required":["node"],"properties":{"node":{"type":"string"}}}}),
+            json!({"name":"search_text","description":"Find regular-expression matches in available files. Read selected nodes separately.","parameters":{"type":"object","required":["pattern"],"properties":{"pattern":{"type":"string"},"window_bytes":{"type":"integer","minimum":0,"default":128},"limit":{"type":"integer","minimum":0}}}}),
+            json!({"name":"search_structure","description":"Find structural matches in available files. Read selected nodes separately.","parameters":{"type":"object","required":["language","rule"],"properties":{"language":{"type":"string"},"rule":{"type":"object"},"limit":{"type":"integer","minimum":0}}}}),
         json!({
             "name":"finish_search",
             "description":"Close a delivered search and record dependencies for snippets you used to justify your conclusion without an additional source read. search_id is the result's UUID and used is an array of its short entry tags, e.g. {\"search_id\":\"11111111-1111-4111-8111-111111111111\",\"used\":[\"1\"]}. Entries whose source you also read may be omitted; including them is harmless. Use used:[] when no entries qualify, including an empty search. Every delivered search must be finished before submission. The result is {search_id, finished:true}; no additional source is delivered.",
@@ -1217,6 +1139,8 @@ where
         .collect()
     }
 
+    // {impl}`requirements.sdk.graph.search.agent_search`
+    // {impl}`requirements.sdk.graph.search.group_hits`
     // {impl}`requirements.sdk.graph.search.search_text.behavior`
     // {impl}`requirements.sdk.graph.search.search_structure.behavior`
     // {impl}`requirements.sdk.graph.search.search_text.inputs`
@@ -1256,132 +1180,141 @@ where
                     })
                     .transpose()
             };
-            let scope = SourceScope::under(
-                args.get("prefix")
-                    .map(|_| string("prefix"))
-                    .transpose()?
-                    .unwrap_or(""),
-            );
+            let scope = SourceScope::all();
             let limit = optional_number("limit")?;
-            let mut dependencies = Vec::new();
             let (metadata, field, contents) = match name {
-                "list_sources" => (
-                    json!({}),
-                    "files",
-                    serde_json::to_value(
-                        self.tools
-                            .sources
-                            .list(&scope)
-                            .await
-                            .map_err(io::Error::other)?,
-                    )
-                    .map_err(io::Error::other)?,
-                ),
-                "outline_source" => {
-                    let contents = self
+                "list_sources" => {
+                    let mut files = Vec::new();
+                    for path in self
                         .tools
                         .sources
-                        .parse(string("path")?)
+                        .list(&scope)
                         .await
-                        .map_err(io::Error::other)?;
-                    (
-                        json!({"path":contents.id().path}),
-                        "items",
-                        json!(
-                            contents
-                                .outline()
-                                .items
-                                .iter()
-                                .map(|item| json!({"selector":item.selector,"kind":item.kind}))
-                                .collect::<Vec<_>>()
-                        ),
-                    )
+                        .map_err(io::Error::other)?
+                    {
+                        let id = OutlineId::root(&path);
+                        let node = self
+                            .tools
+                            .domain
+                            .source_node(&id)
+                            .map_err(io::Error::other)?;
+                        let reference = pages.register(&node);
+                        self.files.insert(reference.clone(), path);
+                        files.push(reference);
+                    }
+                    (json!({}), "files", json!(files))
                 }
-                "read_source" => {
-                    let path = string("path")?;
-                    self.tools
-                        .sources
-                        .check_path(std::path::Path::new(path))
-                        .map_err(io::Error::other)?;
-                    let item = OutlineId::new(
-                        path,
-                        args.get("selector")
-                            .map(|_| string("selector"))
-                            .transpose()?
-                            .unwrap_or("")
-                            .into(),
-                    )
-                    .map_err(io::Error::other)?;
-                    let node = (self.tools.source_node)(&self.tools.domain, &item)
-                        .map_err(|error| io::Error::other(error.to_string()))?;
-                    let contents = self
+                "outline_source" => {
+                    let path = self
+                        .files
+                        .get(string("node")?)
+                        .ok_or_else(|| io::Error::other("expected a listed file node"))?;
+                    let full = self
                         .tools
-                        .domain
-                        .node_content(&node)
-                        .map_err(|error| io::Error::other(error.to_string()))?;
-                    dependencies.push(Dependency::Node(node, contents.fingerprint()));
-                    let text = crate::redaction::redact_text(&contents.format()).into_owned();
-                    (json!({"node":item}), "text", Value::String(text))
+                        .sources
+                        .analysis
+                        .provider
+                        .visible_path(
+                            path.to_str()
+                                .ok_or_else(|| io::Error::other("invalid path"))?,
+                        )
+                        .map_err(io::Error::other)?;
+                    let contents =
+                        crate::outline::OutlineContent::from_path(self.tools.domain.cache(), full)
+                            .map_err(io::Error::other)?;
+                    let mut items = Vec::new();
+                    for item in &contents.outline().items {
+                        let id = OutlineId {
+                            path: path.clone(),
+                            selector: item.selector.clone(),
+                        };
+                        let node = self
+                            .tools
+                            .domain
+                            .source_node(&id)
+                            .map_err(io::Error::other)?;
+                        items.push(json!({"node":pages.register(&node),"kind":item.kind}));
+                    }
+                    (json!({"node":string("node")?}), "items", json!(items))
                 }
                 "finish_search" => return pages.finish_search(args),
                 "search_text" => {
-                    let query = TextQuery {
-                        scope,
-                        pattern: string("pattern")?.to_owned(),
-                        context_lines: optional_number("context_lines")?.unwrap_or(0),
-                        limit,
-                    };
-                    let matches = crate::source_engine::defaults::search_text_with(
-                        &self.tools.sources.analysis.provider,
-                        &query,
-                        |path, file| self.tools.text_input(path, file),
-                        |found, input| {
-                            let excerpt = crate::redaction::redact_text(&found.excerpt);
-                            let entry =
-                                json!({"path":found.path,"line":found.line,"excerpt":excerpt});
-                            (entry, input.clone())
-                        },
-                    )
-                    .await
-                    .map_err(io::Error::other)?;
-                    return Ok(pages.search(matches));
+                    let window = optional_number("window_bytes")?.unwrap_or(128);
+                    let mut query = TextQuery::new(string("pattern")?.to_owned());
+                    query.limit = limit;
+                    let found = self
+                        .tools
+                        .search_text(&query)
+                        .await
+                        .map_err(io::Error::other)?;
+                    let mut groups = Vec::<(
+                        crate::sources::SearchHit<D::NodeId>,
+                        Vec<crate::outline::Span>,
+                    )>::new();
+                    let mut indices = std::collections::HashMap::new();
+                    for hit in found.matches {
+                        let item = hit.item.item();
+                        let key = (
+                            hit.item.id().path.clone(),
+                            item.selector.clone(),
+                            item.span.start,
+                            item.span.end,
+                        );
+                        let span = hit.span;
+                        let index = *indices.entry(key).or_insert_with(|| {
+                            let index = groups.len();
+                            groups.push((hit, Vec::new()));
+                            index
+                        });
+                        groups[index].1.push(span);
+                    }
+                    let entries = groups
+                        .into_iter()
+                        .map(|(hit, spans)| {
+                            let text = excerpt(&hit.item, &spans, window);
+                            let entry = json!({"node":pages.register(&hit.node),"excerpt":text});
+                            (
+                                entry,
+                                Ok(Dependency::Node(hit.node, hit.item.fingerprint())),
+                            )
+                        })
+                        .collect();
+                    return Ok(
+                        pages.search(crate::sources::SearchResults::new(entries, found.complete))
+                    );
                 }
                 "search_structure" => {
-                    let query = StructuralQuery {
-                        scope,
-                        language: string("language")?.into(),
-                        rule: args["rule"]
-                            .as_object()
-                            .ok_or_else(|| io::Error::other("rule must be an object"))?
-                            .clone(),
-                        limit,
-                    };
-                    let analysis = &self.tools.sources.analysis;
-                    let matches = crate::source_engine::defaults::search_structure_with(
-                        &analysis.provider,
-                        &query,
-                        &analysis.languages,
-                        |found, parsed, node| {
-                            let scheme = format!("{}-structural-v1", parsed.outline.profile.name);
-                            let fingerprint = crate::graph::Fingerprint::new(
-                                scheme,
-                                node.structural_hash.clone(),
-                            );
-                            let input = (self.tools.source_node)(&self.tools.domain, &found.node)
-                                .map(|id| Dependency::Node(id, fingerprint))
-                                .map_err(|error| error.to_string());
-                            let excerpt = crate::redaction::redact_text(&found.excerpt);
-                            let entry = json!({"node":found.node,"excerpt":excerpt});
-                            (entry, input)
-                        },
-                    )
-                    .await
-                    .map_err(io::Error::other)?;
-                    return Ok(pages.search(matches));
+                    let rule = args["rule"]
+                        .as_object()
+                        .ok_or_else(|| io::Error::other("rule must be an object"))?
+                        .clone();
+                    let mut query = StructuralQuery::new(string("language")?.into(), rule);
+                    query.limit = limit;
+                    let found = self
+                        .tools
+                        .search_structure(&query)
+                        .await
+                        .map_err(io::Error::other)?;
+                    let entries = found
+                        .matches
+                        .into_iter()
+                        .map(|hit| {
+                            let node = pages.register(&hit.node);
+                            let excerpt = hit.item.redacted_span(hit.span);
+                            let entry = json!({"node": node, "excerpt": excerpt});
+                            (
+                                entry,
+                                Ok(Dependency::Node(hit.node, hit.item.fingerprint())),
+                            )
+                        })
+                        .collect();
+                    return Ok(
+                        pages.search(crate::sources::SearchResults::new(entries, found.complete))
+                    );
                 }
                 _ => return Err(io::Error::other(format!("unknown source tool {name:?}"))),
             };
-            Ok(pages.prepare(metadata, field, contents, dependencies))
+            Ok(pages.prepare(metadata, field, contents, Vec::new()))
         })
     }
 }

@@ -74,12 +74,7 @@ impl Sources {
 :::
 
 :::{req} provider.attachment
-For a domain that implements `SourceNodes`, the agent’s source inspection tools
-use the supplied `Sources` to discover and search files in the project
-directory. The domain maps each selected item to a node under
-{cite}`requirements.sdk.sources.source_nodes`. A domain enables these tools by
-returning `Some(SourceProject::new(self.clone(), sources))` from
-`Domain::project_sources`. The default returns `None`.
+Configure the domain’s project files with {cite}`requirements.sdk.validation-cache.with_sources`. `Domain::project_sources` binds those files to the domain for Rust searches and agent inspection. Each hit identifies a node under {cite}`requirements.sdk.sources.source_nodes`.
 :::
 
 :::{req} SourceProject
@@ -89,8 +84,10 @@ returning `Some(SourceProject::new(self.clone(), sources))` from
 ```rust,ignore
 pub struct SourceProject<D: Domain> { /* private fields */ }
 
-impl<D: SourceNodes> SourceProject<D> {
+impl<D: Domain> SourceProject<D> {
     pub fn new(domain: D, sources: Sources) -> Self;
+    pub async fn search_text(&self, query: &TextQuery,) -> Result<SearchResults<SearchHit<D::NodeId>>, SourceError>;
+    pub async fn search_structure(&self, query: &StructuralQuery,) -> Result<SearchResults<SearchHit<D::NodeId>>, SourceError>;
 }
 ```
 :::
@@ -130,6 +127,7 @@ impl Debug for SourceError;
 impl Display for SourceError;
 impl Error for SourceError;
 impl From<std::io::Error> for SourceError;
+impl From<SourceError> for std::io::Error;
 ```
 :::
 
@@ -250,8 +248,9 @@ an unsupported or invalid address returns an error. The SDK reads the mapped
 node through the application's `Domain` interface.
 
 ```rust,ignore
-pub trait SourceNodes: Domain {
-    fn source_node(&self, item: &OutlineId) -> Result<Self::NodeId, Self::Error>;
+pub trait Domain: Clone + Send + Sync {
+    // ...
+    fn source_node(&self, item: &OutlineId) -> Result<Self::NodeId, SourceError> { ... }
 }
 ```
 :::

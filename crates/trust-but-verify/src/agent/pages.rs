@@ -19,6 +19,7 @@ struct SearchPage<N, L> {
 
 /// Continuations for one model conversation, keyed by the UUID supplied in `next`.
 pub struct Pages<N, L> {
+    known: Vec<N>,
     retained: HashMap<Uuid, ToolDelivery<N, L>>,
     searches: BTreeMap<Uuid, SearchPage<N, L>>,
 }
@@ -26,9 +27,40 @@ pub struct Pages<N, L> {
 impl<N: Clone, L: Clone> Pages<N, L> {
     pub(super) fn new() -> Self {
         Self {
+            known: Vec::new(),
             retained: HashMap::new(),
             searches: BTreeMap::new(),
         }
+    }
+
+    // {impl}`requirements.sdk.graph.validation-context.node_reference`
+    pub(super) fn register(&mut self, node: &N) -> String
+    where
+        N: PartialEq,
+    {
+        let index = self
+            .known
+            .iter()
+            .position(|known| known == node)
+            .unwrap_or_else(|| {
+                self.known.push(node.clone());
+                self.known.len() - 1
+            });
+        format!("n{index}")
+    }
+
+    // {impl}`requirements.sdk.graph.validation-context.node_reference`
+    pub(super) fn node(&self, args: &Value) -> io::Result<N> {
+        let reference = args["node"]
+            .as_str()
+            .ok_or_else(|| io::Error::other("expected a node reference"))?;
+        reference
+            .strip_prefix('n')
+            .and_then(|s| s.parse::<usize>().ok())
+            .filter(|i| format!("n{i}") == reference)
+            .and_then(|i| self.known.get(i))
+            .cloned()
+            .ok_or_else(|| io::Error::other("unknown node reference"))
     }
 
     // {impl}`requirements.sdk.graph.validation-context.pages.behavior`
@@ -72,6 +104,7 @@ impl<N: Clone, L: Clone> Pages<N, L> {
     // {impl}`requirements.sdk.graph.search.search_text.mcp`
     // {impl}`requirements.sdk.graph.search.search_structure.mcp`
     // {impl}`requirements.sdk.graph.search.finish_search.behavior`
+    // {impl}`requirements.sdk.graph.search.agent_search_accounting`
     pub(super) fn search(
         &mut self,
         results: crate::sources::SearchResults<SearchEntry<N, L>>,

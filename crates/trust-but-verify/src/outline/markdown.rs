@@ -390,6 +390,8 @@ impl Builder<'_> {
             kind,
             name,
             name_span,
+            header_span: None,
+            trailer_span: None,
             segment: String::new(),
             selector: String::new(),
             parent: Some(parent),

@@ -96,7 +96,6 @@ mod tests {
         Arc<std::sync::Mutex<Option<Record<u32, String>>>>,
         Arc<std::sync::Mutex<Vec<crate::outline::OutlineId>>>,
         crate::domain::ValidationCache,
-        Option<std::path::PathBuf>,
     );
     struct Content;
 
@@ -114,14 +113,20 @@ mod tests {
     }
 
     impl Domain for TestDomain {
-        fn project_sources(&self) -> Option<crate::sources::SourceProject<Self>> {
-            self.3.clone().map(|sources| {
-                crate::sources::SourceProject::new(
-                    self.clone(),
-                    crate::sources::Sources::new(sources),
-                )
-            })
+        fn source_node(
+            &self,
+            item: &crate::outline::OutlineId,
+        ) -> Result<u32, crate::sources::SourceError> {
+            self.1.lock().unwrap().push(item.clone());
+            match item.path.to_str() {
+                Some("visible/selected.txt") => Ok(7),
+                Some("alpha.txt") => Ok(8),
+                Some("beta.txt") => Ok(9),
+                Some("unused.txt") => Ok(10),
+                _ => Ok(11),
+            }
         }
+
         fn cache(&self) -> &crate::domain::ValidationCache {
             &self.2
         }
@@ -158,20 +163,6 @@ mod tests {
         ) -> Result<(), String> {
             *self.0.lock().unwrap() = Some(record.clone());
             Ok(())
-        }
-    }
-
-    impl crate::domain::SourceNodes for TestDomain {
-        fn source_node(&self, item: &crate::outline::OutlineId) -> Result<u32, String> {
-            assert!(item.selector.is_empty());
-            self.1.lock().unwrap().push(item.clone());
-            match item.path.to_str() {
-                Some("visible/selected.txt") => Ok(7),
-                Some("alpha.txt") => Ok(8),
-                Some("beta.txt") => Ok(9),
-                Some("unused.txt") => Ok(10),
-                _ => Err(format!("unknown source {}", item.path.display())),
-            }
         }
     }
 
@@ -222,7 +213,6 @@ mod tests {
             Default::default(),
             Default::default(),
             crate::domain::ValidationCache::with_agent(config),
-            None,
         );
         let agent = domain.cache().agent.as_ref().unwrap();
         assert!(agent.provider.get().is_none());
@@ -248,6 +238,7 @@ mod tests {
     // {test}`requirements.sdk.graph.agent-harness.with_agent`
     // {test}`requirements.sdk.validation-cache.cache`
     #[tokio::test]
+    // {test}`requirements.sdk.validation-cache.with_agent`
     async fn bedrock_configuration_attaches_to_a_cache_without_being_persisted() {
         let config = AgentConfig::Bedrock(
             super::super::BedrockConfig::new("us.anthropic.claude-sonnet-5-5".into())
@@ -256,6 +247,8 @@ mod tests {
         );
         let mut domain = TestDomain::default();
         domain.2 = crate::domain::ValidationCache::with_agent(config.clone());
+        assert!(domain.cache().outlines.lock().unwrap().is_empty());
+        assert!(domain.cache().sources.is_none());
         let peer = domain.clone();
         assert!(Arc::ptr_eq(
             domain.cache().agent.as_ref().unwrap(),
@@ -280,6 +273,9 @@ mod tests {
     // {test}`requirements.sdk.graph.agent-harness.submission.acceptance`
     // {test}`requirements.sdk.graph.agent-harness.fixed_tools`
     // {test}`requirements.sdk.graph.agent-harness.OpenAiConfig`
+    // {test}`requirements.sdk.graph.validation-context.node_reference`
+    // {test}`requirements.sdk.validation-cache.with_sources`
+    // {test}`requirements.sdk.graph.search.source_identity`
     // {test}`requirements.sdk.sources.provider.attachment`
     #[tokio::test]
     async fn supplied_openai_backend_runs_independent_calls_against_a_local_transport() {
@@ -345,7 +341,7 @@ mod tests {
                         "call_id":format!("call_{call}"),
                         "name":if call % 2 == 0 { "read_node" } else { "submit_result" },
                         "arguments":if call % 2 == 0 {
-                            "{\"path\":{\"segments\":[\"1\"]}}"
+                            "{\"node\":\"n0\"}"
                         } else { "{\"result\":true}" },
                         "status":"completed"}],
                     "usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}
@@ -484,7 +480,7 @@ mod tests {
                         .unwrap(),
                 );
                 let (name, arguments) = if turn == 0 {
-                    ("read_node", serde_json::json!({"path":{"segments":["1"]}}))
+                    ("read_node", serde_json::json!({"node":"n0"}))
                 } else {
                     ("submit_result", serde_json::json!({"result":true}))
                 };
@@ -515,7 +511,6 @@ mod tests {
             Default::default(),
             Default::default(),
             crate::domain::ValidationCache::with_agent(config),
-            None,
         );
         let answer = validation::verify(&domain, Question(true)).await.unwrap();
         assert!(*answer.output());
@@ -559,6 +554,9 @@ mod tests {
     // {test}`requirements.sdk.graph.search.finish_search.inputs`
     // {test}`requirements.sdk.graph.agent-harness.submission.acceptance`
     // {test}`requirements.sdk.graph.search.search_text.inputs`
+    // {test}`requirements.sdk.graph.validation-context.node_reference`
+    // {test}`requirements.sdk.validation-cache.with_sources`
+    // {test}`requirements.sdk.graph.search.source_identity`
     // {test}`requirements.sdk.sources.provider.attachment`
     // {test}`requirements.sdk.sources.local_provider`
     // {test}`requirements.sdk.sources.source_nodes`
@@ -598,6 +596,14 @@ mod tests {
         )
         .unwrap();
         std::fs::write(selected.path().join(".gitignore"), "visible/ignored.txt\n").unwrap();
+        let files = crate::sources::Sources::new(selected.path())
+            .list(&Default::default())
+            .await
+            .unwrap();
+        let selected_index = files
+            .iter()
+            .position(|p| p == std::path::Path::new("visible/selected.txt"))
+            .unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         listener.set_nonblocking(true).unwrap();
@@ -616,7 +622,7 @@ mod tests {
                     .as_str()
                     .unwrap()
             }
-            for turn in 0..30 {
+            for turn in 0..32 {
                 let (mut stream, _) = loop {
                     match listener.accept() {
                         Ok(stream) => break stream,
@@ -660,16 +666,17 @@ mod tests {
                     serde_json::from_slice::<Value>(&bytes[header_end..header_end + length])
                         .unwrap(),
                 );
-                let (name, arguments) = match turn % 15 {
-                    0 => ("list_sources", serde_json::json!({"prefix":"visible"})),
-                    1 => (
-                        "read_source",
-                        serde_json::json!({"path":"visible/ignored.txt"}),
-                    ),
-                    2 => (
-                        "read_source",
-                        serde_json::json!({"path":"visible/selected.txt"}),
-                    ),
+                let (name, arguments) = match turn % 16 {
+                    0 => ("list_sources", serde_json::json!({})),
+                    1 => ("read_node", serde_json::json!({"node":"unknown"})),
+                    2 => {
+                        let listing: Value =
+                            serde_json::from_str(last_output(&requests[turn - 1])).unwrap();
+                        (
+                            "read_node",
+                            serde_json::json!({"node":listing["files"][selected_index]}),
+                        )
+                    }
                     3 | 4 => (
                         "search_text",
                         serde_json::json!({"pattern":"no matching line"}),
@@ -716,7 +723,7 @@ mod tests {
                                 .as_array()
                                 .unwrap()
                                 .iter()
-                                .find(|hit| hit["path"] == file)
+                                .find(|hit| hit["excerpt"] == format!("excerpt {file}"))
                                 .unwrap()["tag"]
                                 .clone()
                         };
@@ -729,6 +736,15 @@ mod tests {
                             "finish_search",
                             serde_json::json!({"search_id":page["search_id"], "used":used}),
                         )
+                    }
+                    14 => {
+                        let hit = page["matches"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .find(|hit| hit["excerpt"] == "excerpt unused.txt")
+                            .unwrap();
+                        ("read_node", serde_json::json!({"node": hit["node"]}))
                     }
                     _ => ("submit_result", serde_json::json!({"result":true})),
                 };
@@ -759,8 +775,8 @@ mod tests {
         let domain = TestDomain(
             Default::default(),
             Default::default(),
-            crate::domain::ValidationCache::with_agent(config),
-            Some(selected.path().to_owned()),
+            crate::domain::ValidationCache::with_agent(config)
+                .with_sources(crate::sources::Sources::new(selected.path())),
         );
         for _ in 0..2 {
             domain.1.lock().unwrap().clear();
@@ -779,6 +795,7 @@ mod tests {
                             "excerpt alpha.txt".into()
                         )
                         .unwrap()
+                        .at_offset(0)
                         .fingerprint()
                     ),
                     crate::graph::Dependency::Node(
@@ -789,8 +806,10 @@ mod tests {
                             "excerpt beta.txt".into()
                         )
                         .unwrap()
+                        .at_offset(0)
                         .fingerprint()
                     ),
+                    crate::graph::Dependency::Node(10, Content.fingerprint()),
                 ]
             );
             assert_eq!(
@@ -806,8 +825,8 @@ mod tests {
             );
         }
         let requests = server.join().unwrap();
-        assert_eq!(requests.len(), 30);
-        for first in [0, 15] {
+        assert_eq!(requests.len(), 32);
+        for first in [0, 16] {
             let tools = requests[first]["tools"].as_array().unwrap();
             assert_eq!(
                 tools
@@ -821,7 +840,6 @@ mod tests {
                     "submit_result",
                     "list_sources",
                     "outline_source",
-                    "read_source",
                     "search_text",
                     "search_structure",
                     "finish_search"
@@ -841,15 +859,17 @@ mod tests {
             };
             let listing: Value =
                 serde_json::from_str(&output(&requests[first + 1], "list_sources")).unwrap();
-            assert_eq!(
-                listing["files"],
-                serde_json::json!(["visible/selected.txt"])
+            assert!(
+                listing["files"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|n| n.as_str().unwrap().starts_with('n'))
             );
-            let ignored = output(&requests[first + 2], "read_source");
-            assert!(ignored.contains("excluded"), "{ignored}");
+            let rejected = output(&requests[first + 2], "read_node");
+            assert!(rejected.contains("unknown node"));
             let mapped: Value =
-                serde_json::from_str(&output(&requests[first + 3], "read_source")).unwrap();
-            assert_eq!(mapped["node"]["path"], "visible/selected.txt");
+                serde_json::from_str(&output(&requests[first + 3], "read_node")).unwrap();
             assert_eq!(mapped["text"], "a source snapshot");
             assert!(!mapped.to_string().contains("selected disk contents"));
         }

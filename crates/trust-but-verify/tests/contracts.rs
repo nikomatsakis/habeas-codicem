@@ -11,6 +11,7 @@ use trust_but_verify::graph as validation;
 use trust_but_verify::graph::*;
 use trust_but_verify::request::ValidationContext;
 
+// {test}`requirements.sdk.graph.search.source_identity`
 // {test}`requirements.sdk.sources.provider.attachment`
 #[test]
 fn domain_without_project_sources_leaves_source_tools_disabled() {

@@ -15,7 +15,7 @@ be added one key at a time.
 
 The SDK’s public modules follow the interfaces introduced in these chapters.
 
-- `domain`: application data and the `Domain`, `NodeContents`, and `SourceNodes` traits.
+- `domain`: application data and the `Domain` and `NodeContents` traits.
 - `graph`: criterion definitions, graph observations, evidence, and functions for running criteria.
 - `request`: `ValidationContext`, typed `Ask` builders, context values, and request phases.
 - `agent`: configuration for the supplied agents.
@@ -174,6 +174,7 @@ pub trait Domain: Clone + Send + Sync {
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     fn project_sources(&self) -> Option<SourceProject<Self>> { ... }
+    fn source_node(&self, item: &OutlineId) -> Result<Self::NodeId, SourceError> { ... }
 }
 ```
 :::
@@ -218,7 +219,7 @@ The chapters introduce each interface and the tools used with it:
 | [Agent harness](sdk/graph/agent-harness.md) | Agent configuration, fixed inspection tools, and structured submissions. | [`AgentConfig`](../rustdocs/trust_but_verify/agent/enum.AgentConfig.html) |
 | [Storage](sdk/graph/evidence.md) | Where and how evidence is saved. | [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html) |
 | [Filesystem evidence storage](sdk/filesystem-storage.md) | Filesystem persistence for SDK evidence records. | [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html), [`FileEvidenceStorage`](../rustdocs/trust_but_verify/storage/struct.FileEvidenceStorage.html) |
-| [Sources and inspection](sdk/sources.md) | Project files, discovery, and source-item-to-node mapping. | [`Sources`](../rustdocs/trust_but_verify/sources/struct.Sources.html), [`SourceNodes`](../rustdocs/trust_but_verify/domain/trait.SourceNodes.html) |
+| [Sources and inspection](sdk/sources.md) | Project files, discovery, and source-item-to-node mapping. | [`Sources`](../rustdocs/trust_but_verify/sources/struct.Sources.html), `Domain::source_node` |
 | [Source outlines](sdk/outlines.md) | Default language selection and ready-to-use source contents. | [`OutlineId`](../rustdocs/trust_but_verify/outline/struct.OutlineId.html), [`OutlineLang`](../rustdocs/trust_but_verify/outline/trait.OutlineLang.html), [`OutlineContent`](../rustdocs/trust_but_verify/outline/struct.OutlineContent.html) |
 
 ## Putting it all together

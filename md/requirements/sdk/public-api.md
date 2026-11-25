@@ -68,6 +68,7 @@ documented TBV public API.
       - `NodeId`
       - `NodeContent`
       - `EdgeLabel`
+      - `source_node()`
       - `project_sources()`
       - `cache()`
       - `node_path()`
@@ -78,10 +79,9 @@ documented TBV public API.
     - `trait NodeContents` — [Declaration](graph.md#habeas-req-requirements.sdk.graph.NodeContents) · [Read node contents](graph.md#read-node-contents) · [Format contents for an agent](graph.md#format-node-contents-for-an-agent)
       - `fingerprint()`
       - `format()`
-    - `trait SourceNodes` — [Declaration](sources.md#habeas-req-requirements.sdk.sources.source_nodes) · [Map source items to graph nodes](sources.md#connect-source-items-to-graph-nodes)
-      - `source_node()`
     - `struct ValidationCache` — [Declaration](validation-cache.md#habeas-req-requirements.sdk.validation-cache.ValidationCache)
       - `new()` — [Declaration](validation-cache.md#habeas-req-requirements.sdk.validation-cache.new)
+      - `with_sources()` — [Declaration](validation-cache.md#habeas-req-requirements.sdk.validation-cache.with_sources)
       - `with_agent()` — [Declaration](validation-cache.md#habeas-req-requirements.sdk.validation-cache.with_agent)
   - `mod graph` — [Graph nodes](graph.md) · [Graph edges](graph-edges.md)
     - `trait Criterion` — [Declaration](graph/criteria.md#habeas-req-requirements.sdk.graph.criteria.criterion_trait) · [Define a criterion](graph/criteria.md#define-a-criterion)
@@ -166,11 +166,15 @@ documented TBV public API.
       - `selector`
       - `kind`
       - `span`
+      - `header_span`
+      - `trailer_span`
       - `name_span`
       - `structural_hash`
       - `attachments`
       - `new()`
       - `with_name_span()`
+      - `with_header_span()`
+      - `with_trailer_span()`
       - `with_attachments()`
     - `trait OutlineLang` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.language_provider) · [Choose an outline language](outlines.md#choose-an-outline-language)
       - `name()`
@@ -242,8 +246,15 @@ documented TBV public API.
     - `struct SourceScope` — [Declaration](graph/search.md#habeas-req-requirements.sdk.graph.search.source_scope) · [Choose a source scope](graph/search.md#choosing-a-source-scope)
       - `all()`
       - `under()`
+    - `struct SearchHit` — [Declaration](graph/search.md#habeas-req-requirements.sdk.graph.search.occurrence)
+      - `new()`
+      - `node`
+      - `span`
+      - `text`
     - `struct SourceProject` — [Declaration](sources.md#habeas-req-requirements.sdk.sources.SourceProject)
       - `new()`
+      - `search_text()`
+      - `search_structure()`
     - `struct Sources` — [Declaration](sources.md#habeas-req-requirements.sdk.sources.Sources) · [Select the project directory](sources.md#select-the-project-directory)
       - `new()`
       - `list()`

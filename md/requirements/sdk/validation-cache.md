@@ -93,3 +93,15 @@ let cache = match settings.agent {
 
 [Agent harness](graph/agent-harness.md) describes the available backends and
 model settings.
+
+## Configure project sources
+
+:::{req} with_sources
+`with_sources` attaches a project directory to the cache. Domains with project sources map each selectable outline item to a graph node under {cite}`requirements.sdk.sources.source_nodes`.
+
+```rust,ignore
+impl ValidationCache {
+    pub fn with_sources(self, sources: Sources) -> Self;
+}
+```
+:::

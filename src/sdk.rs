@@ -200,6 +200,18 @@ impl NodeContents for HabeasNodeContent {
 // {impl}`requirements.sdk.graph.domain_types`
 // {impl}`requirements.sdk.domain`
 impl Domain for HabeasDomain<'_> {
+    fn source_node(
+        &self,
+        item: &trust_but_verify::outline::OutlineId,
+    ) -> Result<HabeasNode, trust_but_verify::sources::SourceError> {
+        let file = item.path.to_str().ok_or_else(|| {
+            trust_but_verify::sources::SourceError::Invalid("source path is not UTF-8".into())
+        })?;
+        Ok(HabeasNode::from(&InputSelector::Outline {
+            file: file.to_owned(),
+            item: item.selector.clone(),
+        }))
+    }
     fn cache(&self) -> &trust_but_verify::domain::ValidationCache {
         &self.outlines.validation
     }

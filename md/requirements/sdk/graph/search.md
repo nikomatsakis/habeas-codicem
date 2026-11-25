@@ -291,7 +291,31 @@ The Rust search operation calls `Domain::source_node(&self, item: &OutlineId)` t
 ### What Rust receives
 
 :::{req} occurrence
-Return one result per occurrence, including multiple matches on the same line or in the same item. Each result contains the enclosing `D::NodeId`, the exact matched text, and its file-relative `Span` in the retained UTF-8 source (zero-based byte offsets, end exclusive). Rust callers can use the node ID to load the item's contents and choose their own presentation.
+Return one result per occurrence, including multiple matches on the same line or in the same item. Each result contains the enclosing `D::NodeId`, the exact matched text, and its file-relative `Span` in the retained UTF-8 source (zero-based byte offsets, end exclusive). `SourceProject::search_text` and `SourceProject::search_structure` return these hits. Rust callers can use the node ID to load the item's contents and choose their own presentation.
+
+```rust,ignore
+#[non_exhaustive]
+pub struct SearchHit<N> {
+    pub node: N,
+    pub span: Span,
+    pub text: String,
+    /* private fields */
+}
+
+impl<N> SearchHit<N> {
+    pub fn new(
+        node: N,
+        span: Span,
+        item: OutlineContent,
+    ) -> Result<Self, SourceError>;
+}
+```
+
+Trait implementations
+
+```rust,ignore
+impl<N: Debug> Debug for SearchHit<N>;
+```
 :::
 
 :::{example} same_line

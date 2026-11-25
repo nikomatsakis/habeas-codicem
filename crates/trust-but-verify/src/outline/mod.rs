@@ -37,6 +37,8 @@ pub struct OutlineNode {
     /// a Rust trait impl has two, the self type and the trait.
     pub name: Option<Vec<String>>,
     pub(crate) name_span: Option<crate::outline::Span>,
+    pub(crate) header_span: Option<crate::outline::Span>,
+    pub(crate) trailer_span: Option<crate::outline::Span>,
     /// This node's selector segment; empty for the root.
     pub segment: String,
     /// Full selector from the root; empty for the root.
@@ -293,6 +295,8 @@ fn plain_text(
             kind: "line",
             name: None,
             name_span: None,
+            header_span: None,
+            trailer_span: None,
             selector: segment.clone(),
             segment,
             parent: Some(0),
@@ -330,6 +334,8 @@ fn root_node(
         kind: "",
         name: None,
         name_span: None,
+        header_span: None,
+        trailer_span: None,
         segment: String::new(),
         selector: String::new(),
         parent: None,
@@ -342,6 +348,44 @@ fn root_node(
         source_start: 0,
         structural_hash,
         identity_hash,
+    }
+}
+
+// {impl}`requirements.sdk.graph.search.declaration_spans`
+fn declaration_spans(
+    language: &str,
+    node: Node<'_>,
+) -> (Option<crate::outline::Span>, Option<crate::outline::Span>) {
+    use crate::outline::Span;
+    if language != "rust" {
+        return (None, None);
+    }
+    match node.kind() {
+        "function_item" | "impl_item" => {
+            let Some(body) = node.child_by_field_name("body") else {
+                return (None, None);
+            };
+            let open = body.child(0).filter(|n| n.kind() == "{" && !n.is_missing());
+            let close = body
+                .child_count()
+                .checked_sub(1)
+                .and_then(|i| body.child(i))
+                .filter(|n| n.kind() == "}" && !n.is_missing());
+            (
+                open.map(|n| Span::new(node.start_byte(), n.end_byte())),
+                close.map(|n| Span::new(n.start_byte(), n.end_byte())),
+            )
+        }
+        "const_item" | "static_item" => {
+            let equal = node
+                .children(&mut node.walk())
+                .find(|n| n.kind() == "=" && !n.is_missing());
+            (
+                equal.map(|n| Span::new(node.start_byte(), n.end_byte())),
+                None,
+            )
+        }
+        _ => (None, None),
     }
 }
 
@@ -613,7 +657,10 @@ impl<'tree, 'source> Builder<'tree, 'source> {
             let (_, line_end) = lines.range(draft.core.start_byte(), draft.core.end_byte());
             let parent = draft.parent.unwrap_or(0);
             nodes[parent].children.push(index);
+            let (header_span, trailer_span) = declaration_spans(self.profile.name, draft.core);
             nodes.push(OutlineNode {
+                header_span,
+                trailer_span,
                 kind: draft.kind,
                 name: draft.name.clone(),
                 name_span: draft.name_span,

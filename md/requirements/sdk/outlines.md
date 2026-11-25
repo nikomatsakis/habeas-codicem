@@ -513,6 +513,8 @@ pub struct OutlineItem {
     pub kind: String,
     pub span: Span,
     pub name_span: Option<Span>,
+    pub header_span: Option<Span>,
+    pub trailer_span: Option<Span>,
     pub structural_hash: String,
     pub attachments: Vec<OutlineAttachment>,
 }
@@ -525,6 +527,8 @@ impl OutlineItem {
         structural_hash: String,
     ) -> Self;
     pub fn with_name_span(self, span: Span) -> Self;
+    pub fn with_header_span(self, span: Span) -> Self;
+    pub fn with_trailer_span(self, span: Span) -> Self;
     pub fn with_attachments(self, attachments: Vec<OutlineAttachment>) -> Self;
 }
 ```

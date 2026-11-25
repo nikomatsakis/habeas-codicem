@@ -136,9 +136,7 @@ flowchart TD
 
 Source discovery uses the project files and outline module
 described in [Sources and inspection](../sources.md). The application maps
-source addresses into its graph and resolves their contents. The SDK's
-`read_source` tool uses that mapping, then performs the same tracked node read
-as criterion code.
+source addresses into its graph and resolves their contents. The agent passes the resulting node reference to `read_node` for a tracked read.
 
 For each operation, `.fn` identifies the Rust method and `.mcp` gives the
 agent tool's name, JSON arguments, result shape, and the description sent to
@@ -330,7 +328,7 @@ within a file. Discovery identifies files through
 Resolve an outline item to its graph node, read the contents, and record the observation under {cite}`requirements.sdk.graph.validation-context.read_source.inputs`.
 
 ```rust,ignore
-impl<D: SourceNodes> ValidationContext<'_, D> {
+impl<D: Domain> ValidationContext<'_, D> where D::Error: From<SourceError> {
     pub fn read_source(&self, item: &OutlineId) -> Result<D::NodeContent, D::Error>;
 }
 ```
@@ -340,28 +338,8 @@ impl<D: SourceNodes> ValidationContext<'_, D> {
 Criterion code uses {cite}`requirements.sdk.graph.validation-context.ValidationContext.read_source` for this operation.
 :::
 
-:::{req} read_source.mcp
-Give `read_source` a project-relative file path. Supply `selector` to read one
-outline item. Each page identifies the item alongside its text.
-
-```text
-read_source({path: string, selector?: string})
-  -> {node: OutlineId, text: string, next?: UUID}
-```
-:::
-
-:::{req} read_source.mcp.description
-> `Read a selected source node and record its exact observation.`
-:::
-
 :::{req} read_source.behavior
-`SourceNodes` maps the `OutlineId` into the graph. `Domain::node_content`
-returns that node’s `D::NodeContent`. Mapping and read failures return errors.
-
-Read a project-relative file or an item within it. An omitted or empty selector
-chooses the whole file. `node` contains the path and selector, and `text` is the
-mapped node's `NodeContents::format` output. For long reads, [continue with `next`](#continuing-a-paged-result). Project access follows
-{cite}`requirements.sdk.sources.local_provider`.
+`Domain::source_node` maps the `OutlineId` into the graph. `Domain::node_content` returns that node’s contents. Mapping and read failures return errors. Agents use the node reference from discovery with `read_node`.
 :::
 
 :::{req} read_source.inputs
@@ -395,23 +373,19 @@ impl Sources {
 :::
 
 :::{req} list_sources.mcp
-Call `list_sources` with an empty object to list the project, or supply
-`prefix` to select a file or directory. Each page contains a `files` array of complete paths.
+List visible file-root node references under {cite}`requirements.sdk.graph.validation-context.node_reference`.
 
 ```text
-list_sources({prefix?: string})
-  -> {files: string[], next?: UUID}
+list_sources({}) -> {files: string[], next?: UUID}
 ```
 :::
 
 :::{req} list_sources.mcp.description
-> `List available project files.`
+> `List available project file nodes.`
 :::
 
 :::{req} list_sources.behavior
-List project-relative file paths in the [selected scope](search.md#choosing-a-source-scope).
-Omitting `prefix` lists all visible project files. If more paths remain, follow `next` as shown in
-[Continuing a paged result](#continuing-a-paged-result).
+Each listed reference identifies a visible file. Follow `next` to retrieve further pages.
 :::
 
 :::{req} list_sources.inputs
@@ -444,25 +418,19 @@ impl Sources {
 :::
 
 :::{req} outline_source.mcp
-Give `outline_source` a project-relative file path. The outline pairs each
-item’s selector with its kind. Every page names the file and carries complete outline items.
+Pass a listed file reference to obtain its selectable nodes.
 
 ```text
-outline_source({path: string})
-  -> {path: string, items: {selector: string, kind: string}[], next?: UUID}
+outline_source({node: string}) -> {node: string, items: {node: string, kind: string}[], next?: UUID}
 ```
 :::
 
 :::{req} outline_source.mcp.description
-> `Inspect selectable items in a project file.`
+> `Inspect the outline of a listed file node.`
 :::
 
 :::{req} outline_source.behavior
-`Sources::parse` reads a single file snapshot. `OutlineContent` retains its
-identity and parsed contents under {cite}`requirements.sdk.sources.provider_results.parse_snapshot`.
-
-Inspect the selectable items in a visible project file. Pass a returned selector
-and the same `path` to `read_source` to read that item. Follow [`next`](#continuing-a-paged-result) to see more items.
+The outline uses the file snapshot retained by the domain’s cache. Each item includes its kind and a reference the agent can pass to `read_node`. Follow `next` to see more items.
 :::
 
 :::{req} outline_source.inputs
@@ -474,14 +442,14 @@ of a selected item records that item's contents and fingerprint.
 ## Continuing a paged result
 
 Read each page as soon as it arrives. For example, suppose `list_sources` has
-one more page of file names. This example shows one path from each page.
+one more page of file nodes. This example shows one reference from each page.
 
 ```text
-list_sources({"prefix":"src"})
-→ {"files":["src/a.rs"], "next":"71d27a0b-f65f-47e5-9aa2-750335b78897"}
+list_sources({})
+→ {"files":["n1"], "next":"71d27a0b-f65f-47e5-9aa2-750335b78897"}
 
 get_next_page({"uuid":"71d27a0b-f65f-47e5-9aa2-750335b78897"})
-→ {"files":["src/z.rs"]}
+→ {"files":["n2"]}
 ```
 
 The second page has no `next`, so the listing is complete. The same call

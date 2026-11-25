@@ -348,14 +348,8 @@ impl LocalSources {
         Ok(resources)
     }
 
-    pub fn read_sync(&self, id: &ResourceId) -> Result<SourceFile, SourceError> {
-        if id.scheme != "repo" {
-            return Err(SourceError::Invalid(format!(
-                "unsupported resource scheme {:?}",
-                id.scheme
-            )));
-        }
-        let path = self.path(&id.location)?;
+    pub(crate) fn visible_path(&self, location: &str) -> Result<PathBuf, SourceError> {
+        let path = self.path(location)?;
         let root = self.project_directory()?;
         let target = path.canonicalize()?;
         if !project_path_visible(&root, &path)?
@@ -363,9 +357,20 @@ impl LocalSources {
         {
             return Err(SourceError::Invalid(format!(
                 "source is excluded from project inspection: {}",
-                id.location
+                location
             )));
         }
+        Ok(path)
+    }
+
+    pub fn read_sync(&self, id: &ResourceId) -> Result<SourceFile, SourceError> {
+        if id.scheme != "repo" {
+            return Err(SourceError::Invalid(format!(
+                "unsupported resource scheme {:?}",
+                id.scheme
+            )));
+        }
+        let path = self.visible_path(&id.location)?;
         Ok(SourceFile {
             bytes: std::fs::read(path)?.into(),
             language: None,

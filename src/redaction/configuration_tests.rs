@@ -147,6 +147,11 @@ fn hashes_do_not_depend_on_credential_values() {
         hashes("src/lib.rs", &rust(&token)),
         hashes("src/lib.rs", &rust(&other))
     );
+    let markdown = |token: &str| format!("# Settings\nUse `{token}`.\n");
+    assert_eq!(
+        hashes("guide.md", &markdown(&token)),
+        hashes("guide.md", &markdown(&other))
+    );
     let text = |token: &str| format!("token {token}\nother line\n");
     assert_eq!(
         hashes("notes.txt", &text(&token)),
