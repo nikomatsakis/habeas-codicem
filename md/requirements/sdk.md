@@ -174,11 +174,11 @@ pub trait Domain: Clone + Send + Sync {
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     fn project_sources(&self) -> Option<SourceProject<Self>> { ... }
-    fn source_address(&self, data: &Self::NodeData) -> Option<OutlineData> { ... }
     fn source_node(
         &self,
         item: &OutlineData,
     ) -> Result<Self::NodeData, SourceError> { ... }
+    fn source_address(&self, _data: &Self::NodeData) -> Option<OutlineData> { ... }
 }
 ```
 :::

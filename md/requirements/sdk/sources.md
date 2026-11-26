@@ -247,11 +247,11 @@ An application supporting tracked source inspection returns `Self::NodeData` for
 ```rust,ignore
 pub trait Domain: Clone + Send + Sync {
     // ...
-    fn source_address(&self, data: &Self::NodeData) -> Option<OutlineData> { ... }
     fn source_node(
         &self,
         item: &OutlineData,
     ) -> Result<Self::NodeData, SourceError> { ... }
+    fn source_address(&self, _data: &Self::NodeData) -> Option<OutlineData> { ... }
 }
 ```
 :::
