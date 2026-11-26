@@ -104,6 +104,7 @@ awaits an agent request.
 impl<D: Domain> ValidationCache<D> {
     pub fn with_agent(config: impl AgentSettings<D>) -> Self
     where
+        D::NodeData: Serialize + DeserializeOwned + JsonSchema,
         D::EdgeLabel: DeserializeOwned + JsonSchema + PartialEq,
         D::Error: Display;
 }

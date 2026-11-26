@@ -145,13 +145,13 @@ Use the returned `search_id` and match tags when calling `finish_search`.
 For the `instructions` field, see {cite}`requirements.sdk.graph.search.first_search.instructions`.
 
 ```text
-search_text({pattern: string, window_bytes?: integer, limit?: integer})
-  -> {search_id: UUID, instructions?: string, next?: UUID, complete: boolean, matches: {tag: string, node: NodeId, excerpt: string}[]}
+search_text({pattern: string, path?: string, window_bytes?: integer, limit?: integer})
+  -> {search_id: UUID, instructions?: string, next?: UUID, complete: boolean, matches: {tag: string, node: NodeId, file: string, selector: string, excerpt: string}[]}
 ```
 :::
 
 :::{req} search_text.mcp.description
-> `Find regular-expression matches in available files. Read selected nodes
+> `Find regular-expression matches in available files, optionally within a file or directory. Read selected nodes
 > separately.`
 :::
 
@@ -273,13 +273,13 @@ Give `search_structure` the language, an ast-grep rule, and an optional match li
 For the `instructions` field, see {cite}`requirements.sdk.graph.search.first_search.instructions`.
 
 ```text
-search_structure({language: string, rule: object, limit?: integer})
-  -> {search_id: UUID, instructions?: string, next?: UUID, complete: boolean, matches: {tag: string, node: NodeId, excerpt: string}[]}
+search_structure({language: string, rule: object, path?: string, limit?: integer})
+  -> {search_id: UUID, instructions?: string, next?: UUID, complete: boolean, matches: {tag: string, node: NodeId, file: string, selector: string, excerpt: string}[]}
 ```
 :::
 
 :::{req} search_structure.mcp.description
-> `Find structural matches in available files. Read selected nodes separately.`
+> `Find structural matches in available files, optionally within a file or directory. Read selected nodes separately.`
 :::
 
 :::{req} search_structure.behavior
@@ -365,6 +365,8 @@ Suppose the cache assigned handles `7` and `8` to `A` and `B`. The Rust caller r
 ### What the agent receives
 
 :::{req} agent_search
+Both tools accept an optional project-relative `path` selecting one visible file or a directory subtree under {cite}`requirements.sdk.graph.search.source_scope`. Omitting `path` searches all visible files. Every match identifies the enclosing item by its node ID, project-relative `file`, and outline `selector` (empty for the file root).
+
 The agent's `search_text` and `search_structure` tools call the corresponding public Rust search operation. For the same query they format the occurrences returned by that call, using its node IDs, match spans, and completeness flag. They build excerpts from the retained snapshot in which the Rust operation found the hits.
 :::
 
@@ -389,8 +391,8 @@ For the same `hit` query, the agent receives one excerpt per declaration. After 
   "search_id": "11111111-1111-4111-8111-111111111111",
   "complete": true,
   "matches": [
-    {"tag": "1", "node": 7, "excerpt": "const A: &str = \"éhit\";"},
-    {"tag": "2", "node": 8, "excerpt": "const B: &str = \"hit hit\";"}
+    {"tag": "1", "node": 7, "file": "src/lib.rs", "selector": "const[A]", "excerpt": "const A: &str = \"éhit\";"},
+    {"tag": "2", "node": 8, "file": "src/lib.rs", "selector": "const[B]", "excerpt": "const B: &str = \"hit hit\";"}
   ]
 }
 ```
@@ -443,7 +445,7 @@ impl Runner {
 The first two windows overlap. Together they include the space between the calls and the newline after the second semicolon. The third window is separated by omitted source. The agent receives one entry for `run`.
 
 ```json
-{"tag":"1","node":9,"excerpt":"fn run() {...    hit(); hit();\n...    hit();\n...}"}
+{"tag":"1","node":9,"file":"src/lib.rs","selector":"impl[Runner]/fn[run]","excerpt":"fn run() {...    hit(); hit();\n...    hit();\n...}"}
 ```
 
 `read_node({"node":9})` reads the full function, including `cleanup();`.
@@ -453,13 +455,13 @@ The first two windows overlap. Together they include the space between the calls
 {cite}`requirements.sdk.graph.search.windows`
 {cite}`requirements.sdk.graph.search.omissions`
 
-A file-root item contains `éhit猫` and has no header or trailer. With `window_bytes: 2`, the agent receives `{"tag":"1","node":10,"excerpt":"éhit..."}`. The two bytes before `hit` contain the entire `é`. The two bytes after it cover only part of `猫`, so the excerpt ends with the omission marker. With the default window, the excerpt is `éhit猫`.
+A file-root item contains `éhit猫` and has no header or trailer. With `window_bytes: 2`, the agent receives `{"tag":"1","node":10,"file":"notes.txt","selector":"","excerpt":"éhit..."}`. The two bytes before `hit` contain the entire `é`. The two bytes after it cover only part of `猫`, so the excerpt ends with the omission marker. With the default window, the excerpt is `éhit猫`.
 :::
 
 :::{example} file_root
 {cite}`requirements.sdk.graph.search.enclosing_item`
 
-A file contains only `needle` and its outline consists of the file root. Searching for `needle` returns `{"tag":"1","node":10,"excerpt":"needle"}`. Reading `10` reads the file-root node.
+A file contains only `needle` and its outline consists of the file root. Searching for `needle` returns `{"tag":"1","node":10,"file":"notes.txt","selector":"","excerpt":"needle"}`. Reading `10` reads the file-root node.
 :::
 
 ## Accounting for search excerpts in an agent session
@@ -527,7 +529,7 @@ error and preserves the page's completion state.
 
 :::{req} finish_search.inputs
 For each selected tag, the harness records the node identity and fingerprint
-from the snapshot that produced the delivered excerpt. Selecting a tag again
+from the snapshot that produced the delivered excerpt. If the excerpt also shows source owned by other outline nodes, record those nodes’ read fingerprints as well. Selecting a tag again
 preserves the original dependency. Earlier selections survive later calls.
 An empty `used` list adds no dependency. Unselected excerpts and the match set
 add none either. An invalid call leaves all recorded inputs intact.

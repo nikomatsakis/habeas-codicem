@@ -148,9 +148,28 @@ field and `T[]` is an array. A `next` field holds a continuation UUID issued by 
 ## Passing node identities to an agent
 
 :::{req} node_reference
-The agent harness uses the unsigned integer representation of `NodeId<D>` for the current node, supplied inputs, and nodes in tool results. Built-in tools accepting a node ID resolve that integer in the domain's cache. A malformed value or an unassigned integer produces a tool error before any graph read.
+The harness represents a `NodeId<D>` as an unsigned integer. Each built-in tool that accepts a node accepts the same top-level address fields, alongside its own arguments (such as an edge `label`). `NodeAddress` in tool signatures denotes these alternatives:
 
-For example, if a search hit contains `"node": 7`, the agent can call `read_node({"node": 7})` to read the enclosing node.
+| Address fields | Resolution |
+| --- | --- |
+| `node` | Look up the assigned ID in the domain's cache. |
+| `path`, optional `location` | Resolve the project-relative file within the domain's visible sources. `location` is its outline selector and defaults to the empty selector for the file root. Resolve the item, map its `OutlineData` through `Domain::source_node`, and intern the resulting identity. |
+| `data` | Deserialize the JSON value as `D::NodeData` and intern it in the domain's cache. |
+
+For domains using the agent harness, the tool schema describes `data` using the domain’s JSON schema for `D::NodeData`. The harness uses the same JSON representation when returning and accepting an identity.
+
+Resolving an address is discovery. The requested operation determines which observations enter evidence. Invalid addresses, unavailable files, and unknown selectors produce tool errors before the requested operation runs.
+:::
+
+:::{req} node_reference.consistency
+A tool MUST also accept `node` and `data` together. Look up the existing ID and compare its stored identity with the deserialized `data` using `D::NodeData` equality. Use that ID on a match. An unassigned ID, malformed data, or a mismatch produces a tool error, even if the supplied data would be valid on its own. A `path` address may include `location` and must be used separately from `node` and `data`.
+:::
+
+:::{example} file_node_arguments
+{cite}`requirements.sdk.graph.validation-context.node_reference`
+{cite}`requirements.sdk.graph.validation-context.node_reference.consistency`
+
+Suppose `list_sources` returns `{"node":7,"data":{"file":"src/parser.rs"}}`. The agent can pass that entry unchanged to `read_node`. It can also pass `{"node":7}`, `{"data":{"file":"src/parser.rs"}}`, or `{"path":"src/parser.rs"}` to read the same root. On its first call it can read a method directly with `{"path":"src/parser.rs","location":"impl[Parser]/fn[parse]"}`. Supplying `{"node":7,"data":{"file":"src/other.rs"}}` yields an identity mismatch.
 :::
 
 ## Reading the contents of a graph node
@@ -189,16 +208,18 @@ Criterion code uses {cite}`requirements.sdk.graph.validation-context.ValidationC
 :::
 
 :::{req} read_node.mcp
-Give `read_node` the ID of a node. The result contains the node’s text. If more
+Give `read_node` a node address under {cite}`requirements.sdk.graph.validation-context.node_reference`. The result contains the node’s text. If more
 text remains, pass `next` to `get_next_page`.
 
 ```text
-read_node({node: NodeId}) -> {text: string, next?: UUID}
+read_node(NodeAddress) -> {text: string, next?: UUID}
+// For a source node the result has these additional fields:
+{file: string, selector: string, children: {node: NodeId, file: string, selector: string}[]}
 ```
 :::
 
 :::{req} read_node.mcp.description
-> `Read a graph node by its domain ID. Returns text and, when more remains, a next UUID. A
+> `Read a graph node by ID, source address, or node data. Returns text and, when more remains, a next UUID. A
 > delivered page records its enclosing node.`
 :::
 
@@ -226,6 +247,24 @@ function that returns `3`, and someone changes it to return `4` before the
 provider responds. The model saw the version that returns `3`, so the SDK
 records the fingerprint it computed from that version. Reading the function
 again at this point would record a fingerprint for code the model never saw.
+:::
+
+:::{req} read_node.source_children
+For a source node, `read_node` includes the project-relative `file`, its `selector`, and `children` in the result. Each child entry contains `{node, file, selector}` for one immediate outline child in source order. A leaf has an empty child list. Render the selected item's own source under {cite}`requirements.sdk.outlines.node_contents`. Listing a child records no dependency on its contents or on the set of children. Reading that child records its own fingerprint.
+:::
+
+:::{example} reading_an_outline_parent
+{cite}`requirements.sdk.graph.validation-context.read_node.source_children`
+
+Suppose `src/parser.rs` defines `impl Parser` with one method. The agent's first call can be `read_node({"path":"src/parser.rs","location":"impl[Parser]"})`. One possible response is:
+
+```json
+{"file":"src/parser.rs","selector":"impl[Parser]","text":"impl Parser { … }","children":[
+  {"node":9,"file":"src/parser.rs","selector":"impl[Parser]/fn[parse]"}
+]}
+```
+
+Editing the method body alone preserves the impl read's fingerprint. If the agent also calls `read_node({"node":9})`, its evidence depends on the method body.
 :::
 
 ## Selecting a node's outgoing edges
@@ -256,11 +295,11 @@ Criterion code uses {cite}`requirements.sdk.graph.validation-context.ValidationC
 :::
 
 :::{req} outgoing_edges.mcp
-Give `outgoing_edges` a node ID and a label of the application’s
+Give `outgoing_edges` a node address and a label of the application’s
 edge-label type. Each reference in `targets` can be used in a subsequent graph tool call.
 
 ```text
-outgoing_edges({node: NodeId, label: EdgeLabel}) -> {targets: NodeId[]}
+outgoing_edges({…NodeAddress, label: EdgeLabel}) -> {targets: NodeId[]}
 ```
 :::
 
@@ -273,7 +312,7 @@ outgoing_edges({node: NodeId, label: EdgeLabel}) -> {targets: NodeId[]}
 The returned vector preserves order and duplicates. The fingerprint describes
 the set of stable target paths under {cite}`requirements.sdk.graph.validation-context.snapshot`.
 
-Follow edges with `label` from the node identified by `node`. The application's
+Follow edges with `label` from the addressed node. The application's
 `D::EdgeLabel` supplies the JSON schema for `label`. Each entry in `targets` is a node reference under {cite}`requirements.sdk.graph.validation-context.node_reference` that the agent can pass directly to `read_node` or `outgoing_edges`.
 :::
 
@@ -381,7 +420,7 @@ impl Sources {
 List visible file-root node references under {cite}`requirements.sdk.graph.validation-context.node_reference`.
 
 ```text
-list_sources({}) -> {files: NodeId[], next?: UUID}
+list_sources({}) -> {files: {node: NodeId, data: NodeData}[], next?: UUID}
 ```
 :::
 
@@ -390,7 +429,7 @@ list_sources({}) -> {files: NodeId[], next?: UUID}
 :::
 
 :::{req} list_sources.behavior
-Each listed reference identifies a visible file. Follow `next` to retrieve further pages.
+Each file entry pairs its assigned root ID with the domain identity serialized as a JSON value. The whole entry is a valid node argument under {cite}`requirements.sdk.graph.validation-context.node_reference.consistency`. Follow `next` to retrieve further pages.
 :::
 
 :::{req} list_sources.inputs
@@ -423,15 +462,15 @@ impl Sources {
 :::
 
 :::{req} outline_source.mcp
-Pass a listed file reference to obtain its selectable nodes.
+Pass a file-root address to obtain its selectable nodes. The tool accepts an address on the first call as well as one obtained from a listing.
 
 ```text
-outline_source({node: NodeId}) -> {node: NodeId, items: {node: NodeId, kind: string}[], next?: UUID}
+outline_source(NodeAddress) -> {node: NodeId, items: {node: NodeId, file: string, selector: string, kind: string}[], next?: UUID}
 ```
 :::
 
 :::{req} outline_source.mcp.description
-> `Inspect the outline of a listed file node.`
+> `Inspect the outline of a file node.`
 :::
 
 :::{req} outline_source.behavior
@@ -451,10 +490,10 @@ one more page of file nodes. This example shows one reference from each page.
 
 ```text
 list_sources({})
-→ {"files":[1], "next":"71d27a0b-f65f-47e5-9aa2-750335b78897"}
+→ {"files":[{"node":1,"data":{"file":"src/lib.rs"}}], "next":"71d27a0b-f65f-47e5-9aa2-750335b78897"}
 
 get_next_page({"uuid":"71d27a0b-f65f-47e5-9aa2-750335b78897"})
-→ {"files":[2]}
+→ {"files":[{"node":2,"data":{"file":"src/parser.rs"}}]}
 ```
 
 The second page has no `next`, so the listing is complete. The same call

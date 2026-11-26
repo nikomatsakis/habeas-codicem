@@ -523,7 +523,7 @@ impl Debug for Outline;
 
 `selector` addresses the item and `kind` describes it. `span` locates the whole item under {cite}`requirements.sdk.outlines.Span`.
 `name_span` locates the name under {cite}`requirements.sdk.outlines.name_span`.
-`structural_hash` identifies the item’s outline-relevant contents.
+`structural_hash` identifies the item’s outline-relevant contents. A language supplies the digest excluding descendants with `with_own_hash` when it differs from the structural hash.
 `attachments` lists the source constructs assigned to this item under
 {cite}`requirements.sdk.outlines.attachments`. `OutlineItem::new` initializes
 the list to empty. `with_attachments` sets it to the supplied list.
@@ -539,6 +539,7 @@ pub struct OutlineItem {
     pub trailer_span: Option<Span>,
     pub structural_hash: String,
     pub attachments: Vec<OutlineAttachment>,
+    /* private fields */
 }
 
 impl OutlineItem {
@@ -551,6 +552,7 @@ impl OutlineItem {
     pub fn with_name_span(self, span: Span) -> Self;
     pub fn with_header_span(self, span: Span) -> Self;
     pub fn with_trailer_span(self, span: Span) -> Self;
+    pub fn with_own_hash(self, hash: String) -> Self;
     pub fn with_attachments(self, attachments: Vec<OutlineAttachment>) -> Self;
 }
 ```
@@ -810,10 +812,8 @@ impl OutlineContent {
 `Domain::NodeContent` under
 {cite}`requirements.sdk.graph.node_content`.
 
-Its `fingerprint()` returns the selected item's retained structural hash and
-scheme under {cite}`requirements.sdk.graph.node_content.fingerprint`.
-Its `format()` returns the selected source text with recognized credentials
-redacted under {cite}`requirements.sdk.sources.redaction` and
+Its `fingerprint()` identifies the selected item's own outline-relevant contents under {cite}`requirements.sdk.graph.node_content.fingerprint`. Apply the language's fingerprinting rules to the item's own source, excluding its outline descendants and their attached source. Adding, removing, or editing a child alone preserves the parent's read fingerprint. A digest supplied through `with_own_hash` uses the language's structural scheme with the suffix `:own-v1` for read evidence.
+Its `format()` renders the item's own source, omitting descendant source and redacting recognized credentials under {cite}`requirements.sdk.sources.redaction` and
 {cite}`requirements.sdk.graph.node_content.format`.
 Both operations describe the source snapshot retained by the value.
 `text()` retains the original selected bytes for source inspection.

@@ -242,11 +242,12 @@ The application maps discovered source items to its graph. For HC,
 :::{req} source_nodes
 :test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
 
-An application supporting tracked source inspection returns `Self::NodeData` for the requested path and selector. The SDK interns that data in the domain's cache to obtain `NodeId<Self>`. An unsupported or invalid address returns an error.
+An application supporting tracked source inspection returns `Self::NodeData` for the requested path and selector. The SDK interns that data in the domain's cache to obtain `NodeId<Self>`. An unsupported or invalid address returns an error. The cache retains the address when the SDK maps a source item. For source identities the application can supply independently, implement `source_address` to recover the project-relative outline address from the domain identity. Other identities return `None`.
 
 ```rust,ignore
 pub trait Domain: Clone + Send + Sync {
     // ...
+    fn source_address(&self, data: &Self::NodeData) -> Option<OutlineData> { ... }
     fn source_node(
         &self,
         item: &OutlineData,

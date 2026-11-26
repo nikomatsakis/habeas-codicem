@@ -76,6 +76,7 @@ documented TBV public API.
       - `NodeData` — [Declaration](graph.md#habeas-req-requirements.sdk.graph.NodeData)
       - `NodeContent`
       - `EdgeLabel`
+      - `source_address()`
       - `source_node()`
       - `project_sources()`
       - `cache()`
@@ -189,6 +190,7 @@ documented TBV public API.
       - `with_name_span()`
       - `with_header_span()`
       - `with_trailer_span()`
+      - `with_own_hash()`
       - `with_attachments()`
     - `trait OutlineLang` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.language_provider) · [Choose an outline language](outlines.md#choose-an-outline-language)
       - `name()`

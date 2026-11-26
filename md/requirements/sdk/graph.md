@@ -389,12 +389,12 @@ assert!(original.format().contains("fn check_token()"));
 implements `NodeContents`. An application can use it directly
 as `Domain::NodeContent`, or include it in a content enum alongside issue data
 and other node kinds. The selection retains its source snapshot and supplies
-both its structural fingerprint and formatted excerpt.
+both its formatted contents and the fingerprint of its own source under {cite}`requirements.sdk.outlines.node_contents`. Outline descendants have their own read fingerprints.
 
 | Selected contents | Fingerprinting rules |
 | --- | --- |
-| A Rust function such as `check_token` | The selected function's [Rust outline](sources/rust.md) hash. |
-| A requirement written in Markdown | The selected directive's [Markdown outline](sources/markdown.md) hash, including its body. |
+| A Rust function such as `check_token` | The function's own source under the [Rust outline](sources/rust.md) rules. |
+| A requirement written in Markdown | The directive's own body text under the [Markdown outline](sources/markdown.md) rules. |
 | Unstructured text | The [plain-text outline](sources/plain-text.md), with hashes for individual nonblank lines and the resource root. |
 
 Markdown structural hashing ignores ordinary whitespace, so reflowing a
