@@ -21,6 +21,7 @@ pub(crate) mod tests {
         format!("gh{}_{}", "p", "16C7e42F292c6912E7710c838347Ae178B4a")
     }
 
+    // {test}`requirements.authoring.credentials`
     #[test]
     fn credential_fields_reports_nested_settings_in_source_order() {
         let source = r#"
@@ -43,6 +44,7 @@ token = "fourth"
         );
     }
 
+    // {test}`requirements.authoring.credentials`
     #[test]
     fn credential_fields_distinguishes_absent_settings_from_invalid_toml() {
         assert_eq!(super::credential_fields("version = 1"), Some(Vec::new()));
