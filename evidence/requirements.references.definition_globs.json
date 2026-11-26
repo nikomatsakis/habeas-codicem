@@ -1,7 +1,7 @@
 {
   "requirement": "A definition glob MUST match a complete full name. `*` MUST match zero or more characters, including dots; all other valid name characters MUST match literally. An empty glob MUST be invalid. Every definition selection MUST use this matching rule, including requirements evidence inputs, CLI definition filters, and the authoring `references` tool, and MUST match against both requirements and named examples.",
   "determination": true,
-  "rationale": "The tests adequately check `requirements.references.definition_globs`. Every selection path calls the shared `crate::definition_glob::validate` and `matches`. I confirmed this in `src/authoring/inputs.rs`, `src/authoring/tools.rs` (`fn[references]` and `fn[referencing]`), `src/commands.rs` (status and info) and `src/inputs.rs` (`InputSelector::resolve`). So the matching rule needs direct tests, and each consumer needs at least one test that exercises it.\n\nObligations and the tests that cover them:\n- **Complete full-name match.** `src/definition_glob.rs#mod[tests]/fn[wildcard_crosses_dot_segments_and_matches_the_whole_name]` rejects both a prefixed name and a suffixed name for `foo.*.bar`. It also checks that `foo.bar.*` does not match `foo.bar`.\n- **`*` matches zero or more characters, including dots.** The same unit test matches `foo.*.bar` against both `foo.x.bar` and `foo.x.y.bar`. In `tests/commands.rs#fn[commands_report_invalid_arguments_and_unmatched_selectors]`, the glob `requirements.*ready` matches `requirements.ready` (zero characters) and `requirements.xready` (one character), and it excludes `requirements.pending`. In `src/evidence.rs#mod[tests]/fn[requirements_inputs_track_matched_declarations_in_full_name_order]`, `foo.*.bar` matches the nested name `foo.a.b.bar`.\n- **Other characters match literally.** `.` is checked as literal (`foo.bar` does not match `fooxbar`), as are `_` and `-`. The unit test asserts `foo_bar-baz` matches itself and does not match `fooXbar-baz` or `foo_barXbaz`.\n- **An empty glob is invalid.** The unit test asserts `validate(\"\")` is an error. The evidence-inputs test asserts the error \"definition glob must not be empty\". The authoring `references` test rejects an empty selection string.\n- **Invalid characters are rejected.** `foo[bar]` is rejected in the unit test. `[` is rejected for the evidence inputs and for the CLI `info` and `status` commands (\"invalid definition glob\").\n- **Applies to requirements evidence inputs.** The evidence test checks glob matching, the input's matches list, the \"matches no requirement or example\" error, and add/remove tracking. `tests/definitions.rs#fn[selections_match_requirements_and_examples_but_never_named_definitions]` also covers this path.\n- **Applies to CLI definition filters.** The `status` and `info` commands are tested with `rules.*` and with `requirements.*ready` (the `requirements.*ready` check is in the status test). Unmatched globs fail with \"no definitions match\".\n- **Applies to the authoring `references` tool.** `references_list_names_and_flattened_sites_without_recording_inputs` tests `requirements.*` (which flattens sites) and an exact name. It rejects the missing name `requirements.missing`, a bad name and an empty selection. The authoring `habeas` requirements read, `ripgrep` referencing and `ast_grep` referencing tests also use globs.\n- **Matches both requirements and named examples.** The glob `requirements.*` returns both `requirements.case` (an example) and `requirements.ready`. The `rules.*` CLI and evidence tests also include the example.\n\nI found no plausible violating behavior that these tests would accept. The only thing not tested directly is the CLI with an empty glob. That path uses the same `validate` function, which the unit and evidence tests cover.",
+  "rationale": "**Verdict:** the reviewed tests adequately check `requirements.references.definition_globs`.\n\nAll selection surfaces call the shared `crate::definition_glob::validate` and `matches`. I confirmed this with a ripgrep over `src`, which found calls from the evidence input resolver (`src/inputs.rs`, `impl[InputSelector]/fn[resolve]`), the authoring tools (`fn[references]`, `fn[referencing]`), the authoring inputs (`fn[source_input]`), and the CLI commands (`status_markdown_with_github` and `info_markdown` in `src/commands.rs`). The matching rule can therefore be tested directly on the shared function, and each surface needs only to show that it applies it.\n\n**Matching rule, tested in `src/definition_glob.rs#mod[tests]/fn[wildcard_crosses_dot_segments_and_matches_the_whole_name]`:**\n- **Complete full name:** `foo.*.bar` does not match `prefix.foo.x.bar` or `foo.x.bar.suffix`. This checks both anchors.\n- **`*` crosses dots:** `foo.*.bar` matches both `foo.x.bar` and `foo.x.y.bar`.\n- **Other characters literal:** `foo.bar` does not match `fooxbar`, so the dot is literal. The cases `foo_bar-baz` and its `X`-substituted variants check that `_` and `-` are literal.\n- **Zero characters:** `foo.bar.*` does not match `foo.bar`, because the literal dot before `*` is still required. The zero-character case itself is exercised in `tests/commands.rs#fn[commands_report_invalid_arguments_and_unmatched_selectors]`. There `status requirements.*ready` selects `requirements.ready`, where `*` matches nothing, and `requirements.xready`, where it matches one character. It excludes `requirements.pending`.\n- **Empty glob invalid:** `validate(\"\")` returns an error. The same case is checked in the evidence test (`definition glob must not be empty`) and in the `references` tool test, where a `\"\"` selection is rejected.\n- **Invalid characters:** `foo[bar]` is rejected in the unit test, and `foo.[a].bar` is rejected in the evidence test with `unsupported character '['`.\n\n**Every selection uses the rule:**\n- **Evidence inputs:** `src/evidence.rs#mod[tests]/fn[requirements_inputs_track_matched_declarations_in_full_name_order]` uses `foo.*.bar` and expects it to match both `foo.a.bar` and `foo.a.b.bar`, so `*` crossing dots is checked here. It checks added and removed matches and the no-match error, and it rejects invalid and empty globs.\n- **CLI filters:**\n  - `commands_report_invalid_arguments_and_unmatched_selectors` checks that `[` is rejected by both `info` and `status` with `invalid definition glob`. It also checks that `nothing.*` gives `no definitions match`, and the `status requirements.*ready` case above.\n  - `tests/definitions.rs#fn[selections_match_requirements_and_examples_but_never_named_definitions]` runs `status rules.*` and `info rules.*` and expects both the requirement and the example. It also checks that the definition `rules.used` is not selected.\n  - `tests/commands.rs#fn[verbose_status_lists_fixme_judgments_and_globs_scope_issue_groups]` also exercises glob scoping in `status`.\n- **Authoring tools:**\n  - `src/authoring/tools.rs#mod[tests]/fn[references_list_names_and_flattened_sites_without_recording_inputs]` selects with `requirements.*` and gets back both requirements and the example. It rejects `\"\"` and `bad name`, and it rejects the definition `requirements.word`.\n  - `fn[requirements_reads_select_requirements_and_examples_but_not_definitions]` covers the `habeas` tool, matching `requirements.*` to the example and requirement only.\n  - `fn[ripgrep_referencing_searches_only_referencing_files_or_nodes]` and `fn[ast_grep_referencing_restricts_the_search_as_ripgrep_does]` cover `referencing` selections that use globs.\n\n**Requirements and named examples:** the example `requirements.case` appears among the matches in the authoring tests, the evidence test, and `tests/definitions.rs`. Definitions are excluded in these same tests.\n\nI found no obligation without a test and no assertion that contradicts the requirement. The acknowledgments list is empty, and no gap needs one.",
   "references": "288667bf2256bfb2c1e3d9a893df50df3abc797b6e7682916392f4e0759318ed",
   "inputs": [
     {
@@ -73,12 +73,12 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[references]",
-      "hash": "34ddaf1e894ebe6ec74dce4f8456ac69bc0768a1a8e62d5b31beadd2eea92fed"
+      "hash": "b38ae9145680e20cf6539325c0bf22d3aad0e43192e0cc32b64a7cccca1cc136"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[referencing]",
-      "hash": "49f8b22258b043792d122a07dd9f294b4106b9d8febc0ff649e8353f9a9422cc"
+      "hash": "75e4f27177757622999c3b3b39a1c7c16c91fd240404b1499f57bfa6fe7a46dc"
     },
     {
       "file": "src/commands.rs",
@@ -91,19 +91,14 @@
       "hash": "808e87abd0cfa617a8d72643ae5d72dbd860df4b5fbc91ef9ed02afcdf82285e"
     },
     {
-      "file": "src/definition_glob.rs",
-      "item": "fn[validate]",
-      "hash": "a9c6ac4bd687d127e8cdd7c5d37c348cc921377fa1bec049296f5e7b1ea93594"
-    },
-    {
-      "file": "src/definition_glob.rs",
-      "item": "fn[matches]",
-      "hash": "a30bed9ac91239d8993e09d3c29e80176ffb7e0dca5aae286510e3f3be32f136"
-    },
-    {
       "file": "src/inputs.rs",
       "item": "impl[InputSelector]/fn[resolve]",
       "hash": "31484ab02335e170a83b403eb91d713b0d3b75a04000169fa0d1ec6d988dbbd2"
+    },
+    {
+      "file": "src/definition_glob.rs",
+      "item": "fn[validate]",
+      "hash": "a9c6ac4bd687d127e8cdd7c5d37c348cc921377fa1bec049296f5e7b1ea93594"
     }
   ],
   "format_version": 1,
@@ -343,7 +338,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f5d9f602dfb2930278f5116d7ca655e64829ca5a6f2f5599a9505e94a0e28abe"
+          "value": "018d6c626ebef99e949fc157531d5c1d3f28ad2df63f860eaeb53f415cba8020"
         }
       ]
     },
@@ -360,7 +355,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "a40cc8d7cf9b6dec268d9b3075f0e94d82fcdc3781a11593e272dbb8ee5b5c45"
+          "value": "bcc148b43fd243cb90cab488581078b0cfa3318aaefb70fae643dea4cf923831"
         }
       ]
     },
@@ -404,40 +399,6 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "src/definition_glob.rs"
-            },
-            "selector": "fn[validate]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "a88a5b201562f604d0a8808937d956a1d049ef8ced3bf2b90e9b59a44cc719da"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/definition_glob.rs"
-            },
-            "selector": "fn[matches]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "ec072b716d7de8a1c3ba903684e7b5808239f8b3386fa96cf82408b0197aebed"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
               "location": "src/inputs.rs"
             },
             "selector": "impl[InputSelector]/fn[resolve]"
@@ -446,6 +407,23 @@
         {
           "scheme": "habeas-input-v1",
           "value": "feffc600049cca857a69868d08c1d174c6b0902d5cf7f8696aefb187c7efb539"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/definition_glob.rs"
+            },
+            "selector": "fn[validate]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "a88a5b201562f604d0a8808937d956a1d049ef8ced3bf2b90e9b59a44cc719da"
         }
       ]
     }

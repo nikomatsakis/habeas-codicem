@@ -1,7 +1,7 @@
 {
   "requirement": "The SDK presents node inputs using the returned value's `NodeContents::format`\nunder {cite}`requirements.sdk.graph.node_content.format`.\nIts text and fingerprint describe the same retained observation.\n\n```rust,ignore\nlet contents = domain.node_content(&node_id)?;\nlet text = contents.format();\n```\n\nLoading and fallible preparation occur in `Domain::node_content` under\n{cite}`requirements.sdk.graph.node_content`. For inputs queued on an ask\nbuilder, these failures return `ValidationError::Graph`. During a `read_node`\ntool call, they are returned to the agent as a tool error, so it can continue\nand recover.",
   "determination": true,
-  "rationale": "The tests adequately check each obligation in `requirements.sdk.graph.agent-calls.judge.rendering`.\n\n**Inputs are presented through `NodeContents::format`.**\n- `crates/trust-but-verify/src/agent/tests.rs#fn[default_tool_accepts_scalar_results_and_keeps_the_exact_prefix]` installs a custom formatter. It asserts that the user message sent to the agent contains \"formatted input: source\".\n- `fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]` asserts that the node contents appear in the request, in order.\n- `fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]` asserts the exact contents sent to the agent for queued inputs.\n\n**Text and fingerprint describe the same retained observation.**\n- `crates/trust-but-verify/tests/contracts.rs#fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]` mutates the underlying source after the read. It then asserts that `format()` still returns \"before\" and that `fingerprint()` equals the snapshot fingerprint.\n- `src/sdk.rs#mod[tests]/fn[domain_formats_supplied_contents_without_resolving_a_replacement]` checks that formatting uses the supplied retained value and does not read the resource again.\n- The agent tests assert that the recorded `Dependency::Node` fingerprint (\"source\") matches the content that was formatted. `fn[agent_executions_isolate_conversations_and_dependency_traces]` does this for two concurrent executions.\n\n**Loading or preparation failures on queued ask-builder inputs return `ValidationError::Graph`.**\n- `crates/trust-but-verify/src/graph/validation_tests.rs#fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]` covers a load failure (`fail_read`) and an edge-lookup failure (`fail_edges`). It also covers a preparation failure (`fail_prepare`).\n- Each case is asserted to return `Err(ValidationError::Graph(..))`. The test also asserts that no agent request is made and that no dependency is recorded.\n\n**Failures during a `read_node` tool call are returned to the agent as a tool error.**\n- `fn[node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents]` has the formatter fail during `node_content`. It asserts that the second request's last message is a `ToolResult` with `is_error`, `name` \"read_node\" and the error text.\n- It also asserts that the agent then submits a result (the ask returns true), so the agent recovers. No dependency is recorded for the undelivered contents.\n- `read_node` in `tools.rs` and `Ask::execute` in `procedure.rs` both call `prepare_read` and propagate any error with `?`. A load failure takes the same mapping path as a preparation failure, so the missing load-failure variant for `read_node` is not a separate behavior that needs its own test.\n\nI found no obligation without a test, and no wrong expected result. No `{fixme}` acknowledgments apply.",
+  "rationale": "The reviewed tests cover each obligation in `judge.rendering`.\n\n**Obligations**\n1. Node inputs are presented using the returned value's `NodeContents::format`.\n2. The text and fingerprint describe the same retained observation.\n3. Failures in loading or preparation return `ValidationError::Graph` for inputs queued on an ask builder.\n4. During a `read_node` tool call, the same failures go to the agent as a tool error, and the agent can continue.\n\n**Coverage**\n- **Queued inputs use `format`.**\n  - `agent/tests.rs#fn[default_tool_accepts_scalar_results_and_keeps_the_exact_prefix]` sets a custom formatter. It asserts that the chat history contains \"formatted input: source\". It also asserts that the dependency fingerprint is \"source\" and that the node was read exactly once.\n  - `validation_tests.rs#fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]` and `agent/tests.rs#fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]` assert the presented text and order for several queued inputs. The second also asserts the matching dependency fingerprints.\n- **Use of `format` during `read_node`.** `agent/tests.rs#fn[agent_executions_isolate_conversations_and_dependency_traces]` uses the `distinct_pages` formatter. The `ParallelConversations` provider asserts that `read_node` pages contain the formatter-only strings \"ALPHA-CONTENTS\" and \"BETA-CONTENTS\". Dependencies are recorded as the matching fingerprints.\n- **Same retained observation.** `tests/contracts.rs#fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]` changes the underlying contents after the read. It then asserts that `format()` still returns \"before\" and that `fingerprint()` equals the snapshot's fingerprint. The domain is read once. `src/sdk.rs#mod[tests]/fn[domain_formats_supplied_contents_without_resolving_a_replacement]` shows that formatting uses the supplied retained value, even when a re-read could not resolve the node. `src/authoring/sdk.rs#mod[tests]/fn[authoring_keeps_the_prepared_subject_snapshot_and_concrete_version]` keeps the prepared snapshot after the source changes.\n- **Failure on the ask builder.** `validation_tests.rs#fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]` covers a failed read and a failed preparation. These return `ValidationError::Graph(\"read\")` and `ValidationError::Graph(\"render\")`. No agent request is made and no dependency is recorded.\n- **Failure during `read_node`.** `agent/tests.rs#fn[node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents]` makes the formatter fail inside `node_content`. It asserts that the agent receives a `read_node` tool result with `is_error` set and the error text. The agent then submits its result, and no dependencies are recorded.\n- **Missing-agent case.** `validation_tests.rs#fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]` covers the missing-agent path and the presented inputs.\n\n**Residual note.** The tool-call failure test exercises preparation failure only. A load failure inside a `read_node` call is not tested separately. Both failures reach the tool path through the same `Domain::node_content` error result. The requirement does not give them different handling there, and load failure is tested on the ask-builder path. I do not count this as a gap.\n\nNo acknowledgments or FIXME items apply.",
   "references": "8048d176a8293e95cc92aa446b4513cd36a149d6f42a172bff9e5eae9b604752",
   "inputs": [
     {
@@ -199,24 +199,24 @@
       ]
     },
     {
-      "file": "crates/trust-but-verify/src/agent/tools.rs",
-      "item": "impl[SessionTools<'a,%20D>]/fn[read_node]",
-      "hash": "e993e0995aa3ed56129ddc1a1177fa51938c1f981f925f079a231d5215747e67"
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "fn[distinct_pages]",
+      "hash": "71b30a6c494353acecdeadc53d2f250a6e34cb8a697572bfa3cde2d13c5970cc"
     },
     {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]",
-      "hash": "dc84753a7d295f0fcaec241a9061dd1d159d1ea38abfb89d988403dd9fb1d788"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[ValidationContext<'d,%20D>]#2/fn[read_snapshot]",
-      "hash": "5e3efe54a48c8f95e29eb184caacad03019678d83ccf4910bcd1f67c52801b00"
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "impl[ParallelConversations/CompletionProvider]",
+      "hash": "b1426a3b95ac786ea000ec2f1f8726669fb79c303a8e5fbf5123576add36da5e"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "impl[Memory/Domain]/fn[node_content]",
       "hash": "5534d42af219c1ca7e739d318ae5ee044ff41631eee302d0b9ce1ebf94bd5467"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "struct[State]",
+      "hash": "c2b2b883beeff88f0c7feaeaa4362cb6b2faf855b231dc13920e97bc709d4ff5"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
@@ -503,14 +503,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tools.rs"
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
-            "selector": "impl[SessionTools<'a,%20D>]/fn[read_node]"
+            "selector": "fn[distinct_pages]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "809ed218e20f958bfda2804c47e4fac0f0fda5371420feebda4c76ad1f94bb95"
+          "value": "1a1384d6f8edf12cba153e6cc3e732699e7cb106e2b5e5ed3656e30135dd2a19"
         }
       ]
     },
@@ -520,31 +520,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
-            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]"
+            "selector": "impl[ParallelConversations/CompletionProvider]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "dc6d63c5bc1c9b8a38f8c38129fc31a547b1c506b355305dc0e7f0092b7d5938"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[read_snapshot]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "86dae6d9fe4b47fb498fd96d28948a6f167fcc0ce564e1f98be0204930b7899d"
+          "value": "88b213a0b3e2c8e7546146e1d7101f197299ae8178e745a5ff04710d5e559af1"
         }
       ]
     },
@@ -562,6 +545,23 @@
         {
           "scheme": "habeas-input-v1",
           "value": "5f1d8059f384c8c4df056fdbe0495a47bb7684ff3114fa82b9dedee89df6bfa9"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+            },
+            "selector": "struct[State]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "4c3b4695d94971e45474eda812aea5981a4642489338fec55400e617c1b7382c"
         }
       ]
     },
