@@ -17,7 +17,9 @@ use trust_but_verify::request::ValidationContext;
 // {test}`requirements.sdk.sources.provider.attachment`
 #[test]
 fn domain_without_project_sources_leaves_source_tools_disabled() {
-    assert!(Application::default().project_sources().is_none());
+    let domain = Application::default();
+    assert!(domain.project_sources().is_none());
+    assert_eq!(domain.source_address(&Node(1)), None);
 }
 
 // {test}`requirements.sdk.outlines.outline_file`
