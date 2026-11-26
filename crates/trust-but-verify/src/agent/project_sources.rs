@@ -328,6 +328,11 @@ mod tests {
         assert!(listed.dependencies.is_empty());
         let entry = &serde_json::from_str::<Value>(&listed.text).unwrap()["files"][0];
         let from_entry = session.read_node(&cx, entry).unwrap();
+        let root_page: Value = serde_json::from_str(&from_entry.text).unwrap();
+        assert_eq!(
+            root_page["children"],
+            json!([{"node":tools.domain.cache().intern_node("parser.rs#impl[Parser]".into()),"file":"parser.rs","selector":"impl[Parser]"}])
+        );
         for address in [
             json!({"node":entry["node"]}),
             json!({"data":entry["data"]}),
@@ -341,7 +346,7 @@ mod tests {
         let reads = tools.domain.0.lock().unwrap().reads;
         for invalid in [
             json!({}),
-            json!({"node":entry["node"],"data":"unknown"}),
+            json!({"node":entry["node"],"data":"parser.rs#impl[Parser]"}),
             json!({"node":10000,"data":entry["data"]}),
             json!({"node":-1}),
             json!({"data":false}),
@@ -763,6 +768,33 @@ mod tests {
             .unwrap();
         let limited: Value = serde_json::from_str(&limited.text).unwrap();
         assert_eq!(limited["complete"], false);
+        assert_eq!(limited["matches"].as_array().unwrap().len(), 1);
+        assert!(limited.get("next").is_none());
+        let definition = session
+            .extra
+            .definitions()
+            .unwrap()
+            .into_iter()
+            .find(|tool| tool.name == "search_structure")
+            .unwrap();
+        assert_eq!(
+            definition.parameters,
+            json!({"type":"object","required":["language","rule"],"properties":{"language":{"type":"string"},"rule":{"type":"object"},"path":{"type":"string"},"limit":{"type":"integer","minimum":0}}})
+        );
+        for invalid in [
+            json!({"language":false,"rule":{}}),
+            json!({"language":"rust","rule":false}),
+            json!({"language":"rust","rule":{},"path":3}),
+            json!({"language":"rust","rule":{},"limit":-1}),
+        ] {
+            assert!(
+                session
+                    .dispatch("search_structure", &invalid)
+                    .await
+                    .is_err()
+            );
+        }
+
         let search = session.dispatch("search_structure", &args).await.unwrap();
         assert!(search.dependencies.is_empty());
         let page: Value = serde_json::from_str(&search.text).unwrap();
@@ -1552,6 +1584,7 @@ mod tests {
     // {test}`requirements.sdk.sources.local_provider`
     #[tokio::test]
     // {test}`requirements.sdk.graph.validation-context.outline_source.mcp`
+    // {test}`requirements.sdk.graph.validation-context.node_reference`
     async fn outline_tool_rejects_excluded_and_unreadable_sources_without_domain_reads() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("source.txt"), "first\nsecond\n").unwrap();

@@ -1717,11 +1717,12 @@ fn bundled_languages_classify_only_their_attachment_syntax() {
 // {test}`requirements.sdk.outlines.attachments.span`
 // {test}`requirements.sdk.outlines.attachments.item_span`
 #[test]
+// {test}`requirements.sdk.outlines.attachments.order`
 fn custom_attachment_spans_are_checked_against_the_original_snapshot() {
     use trust_but_verify::outline::{AttachmentKind, OutlineAttachment};
     #[derive(Clone)]
     struct Custom {
-        span: Span,
+        spans: Vec<Span>,
     }
     impl OutlineLang for Custom {
         fn name(&self) -> &str {
@@ -1734,7 +1735,11 @@ fn custom_attachment_spans_are_checked_against_the_original_snapshot() {
             "custom-v1"
         }
         fn outline(&self, source: &str) -> Result<Outline, OutlineError> {
-            let marker = OutlineAttachment::new(AttachmentKind::Other("marker".into()), self.span);
+            let markers = self
+                .spans
+                .iter()
+                .map(|span| OutlineAttachment::new(AttachmentKind::Other("marker".into()), *span))
+                .collect();
             let root = OutlineItem::new(
                 String::new(),
                 String::new(),
@@ -1748,12 +1753,12 @@ fn custom_attachment_spans_are_checked_against_the_original_snapshot() {
                 "part".into(),
             )
             .with_name_span(Span::new(1, 3))
-            .with_attachments(vec![marker]);
+            .with_attachments(markers);
             Ok(Outline::new(vec![root, item]))
         }
     }
-    let load = |span| {
-        let language = Custom { span };
+    let load = |spans| {
+        let language = Custom { spans };
         assert_eq!(language.name(), "custom");
         assert_eq!(language.extensions(), &["custom"]);
         OutlineContent::from_source_with(
@@ -1763,14 +1768,16 @@ fn custom_attachment_spans_are_checked_against_the_original_snapshot() {
             "_é_".into(),
         )
     };
-    let snapshot = load(Span::new(1, 3)).unwrap();
+    assert!(load(vec![Span::new(1, 3), Span::new(3, 3)]).is_ok());
+    assert!(load(vec![Span::new(3, 3), Span::new(1, 3)]).is_err());
+    let snapshot = load(vec![Span::new(1, 3)]).unwrap();
     let attachment = &snapshot.outline().items[1].attachments[0];
     assert_eq!(attachment.kind, AttachmentKind::Other("marker".into()));
     assert_eq!(&snapshot.text()[attachment.span], "é");
-    assert!(load(Span::new(1, 2)).is_err()); // splits é
-    assert!(load(Span::new(1, 5)).is_err()); // outside the snapshot
-    assert!(load(Span::new(1, 4)).is_err()); // extends past the item
-    assert!(load(Span::new(0, 3)).is_err());
+    assert!(load(vec![Span::new(1, 2)]).is_err()); // splits é
+    assert!(load(vec![Span::new(1, 5)]).is_err()); // outside the snapshot
+    assert!(load(vec![Span::new(1, 4)]).is_err()); // extends past the item
+    assert!(load(vec![Span::new(0, 3)]).is_err());
 }
 
 // {test}`requirements.sdk.outlines.Outline`
