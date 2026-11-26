@@ -109,14 +109,8 @@ pub(crate) struct OutlineCache {
     /// Content to parse in place of a file's, by project-relative path.
     overrides: Arc<HashMap<String, String>>,
     catalogs: Arc<Mutex<HashMap<PathBuf, Arc<Result<ReferenceCatalog, String>>>>>,
-    access: Arc<
-        Mutex<
-            HashMap<
-                PathBuf,
-                Result<Arc<crate::authoring::access::SourceAccess>, (std::io::ErrorKind, String)>,
-            >,
-        >,
-    >,
+    /// Source visibility for agent reads. Saved evidence uses its recorded-input resolver.
+    project_sources: Option<Arc<crate::authoring::access::SourceAccess>>,
 }
 
 // {cite}`habeas:util`
@@ -133,7 +127,7 @@ impl Clone for OutlineCache {
             files: self.files.clone(),
             overrides: self.overrides.clone(),
             catalogs: self.catalogs.clone(),
-            access: self.access.clone(),
+            project_sources: self.project_sources.clone(),
         }
     }
 }
@@ -148,23 +142,24 @@ impl OutlineCache {
         }
     }
 
-    /// Git discovery and access rules share the inspection's source snapshot.
-    // {cite}`habeas:util`
-    pub(crate) fn source_access(
+    /// Start a model-facing view sharing the domain's retained SDK outlines.
+    pub(crate) fn for_authoring(
         &self,
-        root: &Path,
-    ) -> std::io::Result<Arc<crate::authoring::access::SourceAccess>> {
-        self.access
-            .lock()
-            .expect("source access cache lock")
-            .entry(root.to_path_buf())
-            .or_insert_with(|| {
-                crate::authoring::access::load_source_access(root)
-                    .map(Arc::new)
-                    .map_err(|error| (error.kind(), error.to_string()))
-            })
-            .clone()
-            .map_err(|(kind, message)| std::io::Error::new(kind, message))
+        access: Arc<crate::authoring::access::SourceAccess>,
+    ) -> Self {
+        Self {
+            project_sources: Some(access),
+            files: Default::default(),
+            ..self.clone()
+        }
+    }
+
+    fn check_project_file(&self, root: &Path, file: &str) -> Result<PathBuf, String> {
+        match &self.project_sources {
+            Some(sources) => sources.file(root, Path::new(file)),
+            None => crate::authoring::access::resolve_evidence_file(root, file),
+        }
+        .map_err(|error| error.to_string())
     }
 
     /// Repository relationships share one discovery snapshot per inspection.
@@ -207,12 +202,23 @@ impl OutlineCache {
         file: &str,
     ) -> Result<trust_but_verify::outline::OutlineContent, String> {
         use trust_but_verify::outline::OutlineContent;
-        let path = check_project_file(root, file)?;
-        let snapshot = match self.overrides.get(file) {
-            Some(text) => {
-                OutlineContent::from_source(&self.validation, &path, text.as_str().into())
+        let snapshot = if let Some(sources) = &self.project_sources {
+            let (path, file) = sources
+                .read(root, Path::new(file))
+                .map_err(|error| error.to_string())?;
+            OutlineContent::from_source(
+                &self.validation,
+                path,
+                file.text().map_err(|error| error.to_string())?.into(),
+            )
+        } else {
+            let path = self.check_project_file(root, file)?;
+            match self.overrides.get(file) {
+                Some(text) => {
+                    OutlineContent::from_source(&self.validation, &path, text.as_str().into())
+                }
+                None => OutlineContent::from_path(&self.validation, &path),
             }
-            None => OutlineContent::from_path(&self.validation, &path),
         }
         .map_err(|error| format!("cannot read {file}: {error}"))?;
         if let Some(error) = &snapshot.outline().diagnostic {
@@ -634,7 +640,7 @@ impl InputSelector {
                     .get(definition)
                     .filter(|d| d.kind == crate::DefinitionKind::Term)
                     .ok_or_else(|| format!("{definition}: no matching named definition"))?;
-                check_project_file(root, &target.file)?;
+                outlines.check_project_file(root, &target.file)?;
                 Ok(ResolvedInput {
                     ranges: vec![SourceRange {
                         file: target.file.clone(),
@@ -659,7 +665,7 @@ impl InputSelector {
                     {
                         continue;
                     }
-                    check_project_file(root, &definition.file)?;
+                    outlines.check_project_file(root, &definition.file)?;
                     if !text.is_empty() {
                         text.push(String::new());
                     }
@@ -730,11 +736,6 @@ pub(crate) fn project_relative(root: &Path, file: &str) -> String {
         Some(parts) if !parts.is_empty() => parts.join("/"),
         _ => file.to_owned(),
     }
-}
-
-// {cite}`habeas:util`
-fn check_project_file(root: &Path, file: &str) -> Result<PathBuf, String> {
-    crate::authoring::access::resolve_evidence_file(root, file).map_err(|error| error.to_string())
 }
 
 /// Resolves the outline node `item` in `file`, relative to the project

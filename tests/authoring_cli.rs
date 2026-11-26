@@ -859,67 +859,47 @@ fn version_only_configurations_cannot_author_needed_evidence() {
 // {test}`requirements.authoring.persistence`
 // {test}`requirements.authoring.usage_storage`
 // {test}`requirements.authoring.usage_requests`
-// {test}`requirements.authoring.read_denial.untracked`
 // {test}`requirements.authoring.read_denial`
+// {test}`requirements.authoring.tool_descriptions.special_cases`
 #[test]
-fn explicit_untracked_reads_return_an_untracked_error_and_the_assessment_continues() {
-    for (tool, arguments) in [
-        ("habeas", json!({"file":"untracked.txt", "line_start":1})),
-        (
-            "ripgrep",
-            json!({"path":"untracked.txt", "pattern":"hidden"}),
-        ),
-        (
-            "ast_grep",
-            json!({"path":"untracked.txt", "language":"rust", "rule":{"rule":{"pattern":"hidden"}}}),
-        ),
-        ("list_files", json!({"path":"untracked-directory"})),
-    ] {
-        let server = Server::start(vec![
-            reply(vec![call("denied", tool, arguments)]),
-            reply(vec![call(
-                "submit",
-                "submit_judgment",
-                json!({"determination": true, "rationale": "The tracked sources support it."}),
-            )]),
-        ]);
-        let fixture = Fixture::new(&server.endpoint);
-        for args in [["init", "--quiet"], ["add", "."]] {
-            let git = Command::new("git")
-                .current_dir(&fixture.project)
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(git.status.success(), "{git:?}");
-        }
-        fs::write(fixture.project.join("untracked.txt"), "hidden source\n").unwrap();
-        fs::create_dir(fixture.project.join("untracked-directory")).unwrap();
-        fs::write(
-            fixture.project.join("untracked-directory/hidden.txt"),
-            "hidden source\n",
-        )
-        .unwrap();
-
-        let output = fixture.run(&["author", SUBJECT, "--stdout"]);
-        assert!(output.status.success(), "{tool}: {output:?}");
-        // The model was told the path is untracked and how to fix it, and
-        // the file was neither delivered nor recorded.
-        let requests = server.finish();
-        assert_eq!(requests.len(), 2, "{tool}");
-        let second = requests[1].body.to_string();
-        assert!(
-            second.contains("is untracked") || second.contains("untracked, so"),
-            "{tool}: {second}"
-        );
-        assert!(second.contains("git add"), "{tool}: {second}");
-        assert!(!second.contains("hidden source"), "{tool}: {second}");
-        let evidence = String::from_utf8_lossy(&output.stdout);
-        assert!(!evidence.contains("untracked"), "{tool}: {evidence}");
-        let usage = fixture.usage();
-        assert_eq!(usage["outcome"], "completed", "{tool}: {usage}");
-        assert_eq!(usage["request_count"], 2, "{tool}: {usage}");
-        assert_eq!(usage["tool_failures"][tool], 1, "{tool}: {usage}");
+fn explicit_ignored_reads_return_an_error_and_the_assessment_continues() {
+    let tool = "habeas";
+    let arguments = json!({"file":"untracked.txt", "line_start":1});
+    let server = Server::start(vec![
+        reply(vec![call("denied", tool, arguments)]),
+        reply(vec![call(
+            "submit",
+            "submit_judgment",
+            json!({"determination": true, "rationale": "The tracked sources support it."}),
+        )]),
+    ]);
+    let fixture = Fixture::new(&server.endpoint);
+    for args in [["init", "--quiet"], ["add", "."]] {
+        let git = Command::new("git")
+            .current_dir(&fixture.project)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(git.status.success(), "{git:?}");
     }
+    fs::write(fixture.project.join("untracked.txt"), "hidden source\n").unwrap();
+    fs::write(fixture.project.join(".gitignore"), "untracked.txt\n").unwrap();
+    let output = fixture.run(&["author", SUBJECT, "--stdout"]);
+    assert!(output.status.success(), "{tool}: {output:?}");
+    let requests = server.finish();
+    assert_eq!(requests.len(), 2, "{tool}");
+    let second = requests[1].body.to_string();
+    assert!(
+        second.contains("untracked.txt") && second.contains("excluded"),
+        "{tool}: {second}"
+    );
+    assert!(!second.contains("hidden source"), "{tool}: {second}");
+    let evidence = String::from_utf8_lossy(&output.stdout);
+    assert!(!evidence.contains("untracked"), "{tool}: {evidence}");
+    let usage = fixture.usage();
+    assert_eq!(usage["outcome"], "completed", "{tool}: {usage}");
+    assert_eq!(usage["request_count"], 2, "{tool}: {usage}");
+    assert_eq!(usage["tool_failures"][tool], 1, "{tool}: {usage}");
 }
 
 // {test}`requirements.authoring.negative_assessment`
@@ -2898,11 +2878,7 @@ fn unresolvable_mandatory_inputs_fail_before_any_model_request() {
     listener.set_nonblocking(true).unwrap();
     let fixture = Fixture::new(&format!("http://{}", listener.local_addr().unwrap()));
     // The subject's own declaration is a mandatory input that cannot be read.
-    fs::write(
-        fixture.project.join("habeas.toml"),
-        "version = 1\n[evidence]\ndisallow = ['md/requirements.md']\n",
-    )
-    .unwrap();
+    fs::write(fixture.project.join(".gitignore"), "md/requirements.md\n").unwrap();
     let output = fixture.run(&["author", SUBJECT]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "{stderr}");
@@ -3468,7 +3444,7 @@ fn the_habeas_skill_is_home_of_routing_inspection_syntax_and_shared_gotchas() {
     assert_text(
         "gotchas",
         &section(raw, "## Gotchas"),
-        &["Reference discovery and authoring read only files in the Git index"],
+        &["reference discovery uses the Git index"],
     );
     assert_text(
         "distributed requirements",
@@ -5875,11 +5851,7 @@ fn adaptive_preflight_and_provider_errors_never_attempt_sol() {
         let fixture = Fixture::new(&endpoint);
         configure_adaptive_fixture(&fixture, &endpoint);
         if failure == "mandatory" {
-            fs::write(
-                fixture.project.join("habeas.toml"),
-                "version = 1\n[evidence]\ndisallow = ['md/requirements.md']\n",
-            )
-            .unwrap();
+            fs::write(fixture.project.join(".gitignore"), "md/requirements.md\n").unwrap();
         }
         if failure == "storage" {
             fs::write(&fixture.state, "not a directory").unwrap();

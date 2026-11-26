@@ -599,28 +599,13 @@ obvious, and the form of a successful result.
 
 :::{req} tool_descriptions.special_cases
 Model tool descriptions SHOULD NOT explain cases the model meets only
-occasionally, such as access policy, excluded or build-output paths, redaction,
+occasionally, such as excluded paths, redaction,
 paging, and failures, and the harness SHOULD explain each of these where it
 occurs: in the tool error, or in a note in the result it affects. The model reads
 every description on every assessment, so explaining rare cases there costs
 attention on every review for a case most never meet, and access-policy wording
 in particular can steer its reasoning away from the review. A tool whose purpose
 is one of these cases, such as `next_page`, explains it in its description.
-:::
-
-:::{req} not_listed
-A `list_files`, `ripgrep`, or `ast_grep` result MUST include `not_listed`, an
-array of `{path, reason}` with reason `untracked`, naming each untracked file
-inside the project that the listing would otherwise include or that contains a
-match, so the model can tell that sources exist which it cannot read. It MUST
-be omitted when there are none, and for a paged result it MUST appear on the
-first page, continuing across subsequent pages when needed to obey the page
-size limit. Page counts MUST include these entries as well as the ordinary
-result entries, and each array MUST retain its order. It MUST NOT give those
-files' contents, and they MUST NOT become
-evidence inputs. Files excluded for another reason, such as a workspace disallow
-rule or generated `evidence/` output, MUST NOT be read to find matches and MUST
-NOT be listed.
 :::
 
 :::{req} redaction_notice
@@ -652,21 +637,10 @@ forms. Each form MUST correspond to one existing evidence-input kind:
 | `definition: String` | Definition input | {cite}`requirements.definitions.inputs` |
 
 Selector arguments MUST use the syntax defined by
-{cite}`requirements.references.outline_selectors`. Reads MUST use the current
-project working tree, including unstaged changes to tracked files and staged new
-files. By default, source inputs MUST stay within the project root after
-resolving symlinks; in a Git worktree, both the requested file and its resolved
-target MUST be present in the Git index. Projects outside Git MUST use the same
-containment rules without requiring an index. Failure to read an existing
-repository's index MUST be reported as an error.
-The project-root `evidence/` directory MUST be excluded from model reads by
-default, including symlink aliases. Every source the harness supplies to the
-model MUST be redacted under {cite}`requirements.authoring.redaction`. Generated build outputs MUST follow
-{cite}`requirements.authoring.generated_inputs`. Workspace path overrides MUST
-follow {cite}`requirements.configuration.evidence_paths`, including explicit
-permission for otherwise excluded inputs. A denied mandatory input MUST abort
-under {cite}`requirements.authoring.read_denial.mandatory`, and a denied model
-read MUST return a tool error under {cite}`requirements.authoring.read_denial`.
+{cite}`requirements.references.outline_selectors`. Habeas MUST use the public SDK project source provider for authoring. Mandatory
+inputs, file listings, direct reads, outlines, and searches MUST follow
+{cite}`requirements.sdk.sources.local_provider`. Every source supplied to the
+model MUST be redacted under {cite}`requirements.authoring.redaction`.
 
 Line numbers are only a way to request sources; recorded evidence MUST identify
 sources by outline selector and structural hash, never by line number. Request
@@ -705,34 +679,15 @@ an explanatory tool error.
 :::
 
 :::{req} read_denial
-When source-access policy denies a path that a model tool call names
-explicitly, the harness MUST return a tool error naming the path and the reason
+When a model tool explicitly reads an excluded file, the harness MUST return a tool error naming the path and the reason
 it cannot be read, add no evidence input, and continue the assessment.
-Discovery and search MUST leave denied candidates out of their entries,
-reporting untracked ones under {cite}`requirements.authoring.not_listed`. Malformed tool
+Discovery and search MUST omit excluded files. Malformed tool
 arguments and ordinary read failures MUST also return explanatory tool errors.
-:::
-
-:::{req} read_denial.untracked
-A tool error for a denied file inside the project that is not in the Git index
-MUST say that the file is untracked and that the caller can stage it with
-`git add` or permit it with a workspace allow rule. The harness MUST NOT stage or
-permit the file itself.
-:::
-
-:::{req} read_denial.build_output
-A tool error for a path inside the book's build directory, `book` unless
-`book.toml` sets `[build] build-dir`, or inside the project-root `target`
-directory, that no workspace allow rule or generated-output rule permits MUST say
-that the path holds build output and that the sources it is built from are
-elsewhere in the project.
 :::
 
 :::{req} read_denial.mandatory
 When source-access policy denies a mandatory input, the assessment MUST abort
-before any model request and report the denied path and reason to its caller;
-for an untracked file, the report MUST say what {cite}`requirements.authoring.read_denial.untracked`
-says. The aborted assessment MUST NOT write evidence or emit evidence JSON, and
+before any model request and report the denied path and reason to its caller. The aborted assessment MUST NOT write evidence or emit evidence JSON, and
 its usage record MUST identify the failure. In a batch, other assessments MUST
 continue, including queued assessments, and their successful writes MUST be
 retained; the command MUST return a nonzero exit status after the batch
@@ -740,28 +695,11 @@ finishes.
 :::
 
 :::{req} generated_inputs
-Habeas MUST permit existing Cargo build-script output directories as an exception
-to default Git tracking and containment restrictions. It MUST discover the Cargo
-build directory using metadata and inspect existing build-script output records,
-without running a build or executing build scripts. It MUST NOT treat its own
-inherited `OUT_DIR` environment variable as the workspace's output directory.
-Only discovered output directories and their contents MUST receive this default
-permission; unrelated build artifacts MUST remain subject to ordinary rules.
-Workspace disallow entries MUST override this permission.
-
-Discovery MUST tolerate missing builds or unavailable metadata; callers MUST be
-able to allow undiscovered outputs explicitly using `habeas.toml`. The model's
-root directory listing MUST expose available generated-output directories,
-including external ones. Generated inputs MUST use outline inputs and receive
-ordinary freshness checks. Validation MUST NOT
-invoke a build to materialize an input.
+When validating a saved evidence input in a Cargo build-script output directory,
+Habeas MUST accept existing output discovered from Cargo metadata and its
+build-script output records, subject to {cite}`requirements.configuration.evidence_paths`.
+It MUST check freshness using the recorded selector and MUST NOT run a build.
 :::
-
-Cargo has one `OUT_DIR` per build-script execution. Discovery uses existing
-`root-output` records beneath the Cargo build directory; this is Cargo's current
-internal layout, so an explicit allow is the fallback for an undiscovered layout.
-Generated paths are recorded as ordinary file selectors. CI must build the
-matching paths and contents before checking that evidence.
 
 ### Discover files: `list_files`
 
@@ -778,17 +716,9 @@ DirectoryEntry {
 ```
 
 The tool MUST list the immediate children of the requested directory, returning
-project-relative paths where possible and absolute paths for permitted external
-files. Its root listing MUST also expose available generated-output directories
-and configured external allow paths. The model can list a returned
-directory in another call to explore further. A failed listing MUST return an
-explanatory tool error unless access was denied, which MUST be handled under
-{cite}`requirements.authoring.read_denial`. Directory listings MUST NOT become evidence inputs.
-Listings MUST omit files excluded by {cite}`requirements.authoring.source_tools`.
-In a Git worktree, directories MUST have at least one eligible source
-descendant to be listed unless explicitly allowed or discovered as generated
-output. Explicitly requesting an excluded path MUST be handled as a denial under
-{cite}`requirements.authoring.read_denial`.
+project-relative paths. Each listed directory MUST contain a visible file.
+A failed listing MUST return an explanatory tool error. Directory listings
+MUST NOT become evidence inputs.
 :::
 
 ### List a file's outline: `outline`
@@ -848,13 +778,11 @@ SearchMatch {
 ```
 
 The tool MUST search the requested permitted file or directory using
-ripgrep's regular-expression syntax and default case-sensitive search and ignore
-rules. It MUST search in process using ripgrep's library crates, without
+ripgrep's regular-expression syntax and case-sensitive matching. It MUST search in process using ripgrep's library crates, without
 requiring an external `rg` executable, and MUST apply source-access policy while
 walking files rather than filtering results afterwards. It MAY search files in
 parallel; results MUST be ordered by path and then line regardless of
-parallelism, so the same sources always produce the same inputs. Explicitly allowed paths and discovered generated-output directories MUST
-be searched even when ignored or hidden; workspace disallow rules still apply.
+parallelism, so the same sources always produce the same inputs. The search scope follows {cite}`requirements.sdk.sources.local_provider`.
 `context`
 MUST be nonnegative and specify how many lines before and after each matching
 line to include, defaulting to two on each side. Windows MUST stop at item
@@ -882,9 +810,9 @@ the outline nodes that contain or are named by those references, and with
 `file`, their whole files. A selection matching no requirement or example, or an
 unknown role or scope, MUST return an explanatory tool error. Its model-facing
 description MUST explain `referencing`.
-Search results MUST exclude files disallowed by
-{cite}`requirements.authoring.source_tools`; explicitly requesting an excluded
-path MUST be handled as a denial under {cite}`requirements.authoring.read_denial`.
+Search results MUST contain only files visible under
+{cite}`requirements.authoring.source_tools`. A search scoped to a `.gitignore`-excluded
+file or directory MUST return an empty `matches` array.
 No matches MUST return an empty array; invalid arguments or a failed search MUST
 return an explanatory tool error.
 :::
@@ -915,8 +843,8 @@ rules of {cite}`requirements.authoring.text_search`, with the matched lines as
 its lines; selected snippets MUST contribute inputs through
 {cite}`requirements.authoring.finish_search.inputs`. Its model-facing description MUST
 explain the rule syntax and the `context` and `selector` form for fragments that
-do not parse as standalone code. Explicitly requesting an excluded path MUST be
-handled as a denial under {cite}`requirements.authoring.read_denial`. No matches
+do not parse as standalone code. A search scoped to a `.gitignore`-excluded file
+or directory MUST return an empty `matches` array. No matches
 MUST return an empty array; an invalid language or rule, or a failed search,
 MUST return an explanatory tool error.
 :::
@@ -931,8 +859,7 @@ A new search call MUST use new UUIDs.
 
 :::{req} search_accounting.entry_tags
 Each `matches` entry MUST have a short string `tag`, unique within its result,
-for selection by `finish_search`. Entries under `not_listed` MUST NOT receive
-selectable tags.
+for selection by `finish_search`.
 :::
 
 :::{req} search_accounting.outstanding
@@ -1302,9 +1229,8 @@ define which sources it contributes and when. The harness MUST include every
 applicable contribution, deduplicate identical selections, and report
 unresolvable mandatory inputs before inference. The complete set MUST be supplied
 in the initial model request.
-Generated output under project-root `evidence/`, including symlink aliases, MUST
-be omitted from mandatory inputs when the default exclusion applies. An explicit
-workspace allow MUST permit those selections; an explicit disallow MUST abort
+A file selected as a mandatory input MUST be visible under
+{cite}`requirements.sdk.sources.local_provider`. A denied selection MUST abort
 under {cite}`requirements.authoring.read_denial.mandatory`.
 :::
 
@@ -1375,8 +1301,7 @@ establish that the requirement has no structural properties needing
 implementation evidence; an unmet structural obligation MUST be a gap.
 Incoming `{test}` references or `:test:` anchors MUST NOT skip this check.
 References and anchors are those considered under
-{cite}`requirements.references.discovery` and the existing source-access
-policy; omitted generated evidence MUST NOT count as an edge. Obligations
+{cite}`requirements.references.discovery` and {cite}`requirements.references.anchors`. Obligations
 delegated to refining declarations follow
 {cite}`requirements.ci.review_criteria`. Examples, distributed requirements,
 citation reviews, and site reviews retain their own assessment tasks.
@@ -1394,8 +1319,7 @@ testing exemption or obligation delegated to a refining declaration under
 {cite}`requirements.ci.review_criteria`; otherwise the missing test evidence
 MUST be a gap. Incoming `{impl}` references or `:impl:` anchors MUST NOT skip
 this check. Considered references and anchors follow
-{cite}`requirements.references.discovery` and the existing source-access
-policy; omitted generated evidence MUST NOT count as an edge.
+{cite}`requirements.references.discovery` and {cite}`requirements.references.anchors`.
 :::
 
 The current harness selects structural assessment only for requirements with
@@ -1954,7 +1878,7 @@ recommending credential-source references, because committed credentials leak.
 Documentation MUST discourage literal credentials in workspace files and
 recommend AWS profiles or environment-variable references. Examples MUST use
 placeholders and explain that workspace files may be committed or read as source
-when explicitly allowed.
+when visible under the project’s `.gitignore` rules.
 :::
 
 :::{req} output_limit
@@ -2040,8 +1964,8 @@ by hand. It MUST explain backend-specific options and credential-source referenc
 Create the user file at the [shared configuration location](configuration.md#locations-and-scope).
 For workspace settings, create `habeas.toml` in the directory whose descendants
 should use them. The nearest enclosing file wins. This complete workspace `habeas.toml`
-selects the user's saved `cloud` configuration and makes a generated source
-directory readable while excluding its private subtree:
+selects the user's saved `cloud` configuration and configures saved-evidence validation for a generated
+source directory and its private subtree.
 {impl}`requirements.configuration.documentation`
 {impl}`requirements.authoring.configuration_documentation`
 
@@ -2221,7 +2145,7 @@ before increasing the experiment size. Specify each comparison model explicitly.
 Literal credentials are supported but not recommended, especially in a
 workspace file that might be committed. Prefer AWS profiles (`aws_profile`) or
 environment-variable references (`api_key_env`).
-Workspace files may be committed or read as source when explicitly allowed.
+Workspace files may be committed or read as source when visible under the project’s `.gitignore` rules.
 If needed, this complete `habeas.toml` illustrates the fields;
 replace every uppercase placeholder with your own value and keep the resulting
 file out of version control. Omit `session_token` for credentials without one.

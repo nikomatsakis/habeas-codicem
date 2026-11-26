@@ -296,12 +296,7 @@ fn assessment_kind(inspection: &RepositoryInspection, subject: &AuthoringSubject
                 &inspection.references,
                 &inspection.sites,
             );
-            if crate::evidence::structural_assessment(
-                &inspection.root,
-                &inspection.outlines,
-                definition,
-                &entries,
-            ) {
+            if crate::evidence::structural_assessment(definition, &entries) {
                 "structural requirement"
             } else {
                 definition.kind.noun()

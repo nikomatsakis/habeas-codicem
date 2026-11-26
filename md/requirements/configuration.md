@@ -127,18 +127,10 @@ rules apply. No operation requires the section. The table has no user-file
 counterpart, and these rules have no invocation options. This section refines
 {impl}`requirements.configuration.feature_sections` for the evidence feature.
 
-For authoring reads, a matching disallow MUST reject the path; otherwise a
-matching allow MUST permit it; otherwise the default source-access rules MUST
-apply. Explicit allow MUST override every default, including Git tracking,
-project containment, generated-evidence exclusion, and automatic generated-output
-rules. Disallow MUST win even when an allow or generated-output rule also matches.
-Both the requested path and its resolved symlink target MUST be checked for
-disallow, so an allowed alias cannot expose a disallowed target.
-
-The same explicit disallow rules and external-path exceptions MUST apply when
-resolving recorded evidence inputs, including ordinary validation. Validation MUST
-remain independent of Git index membership: it
-checks the recorded inputs' existence and contents. Loading path policy MUST NOT
+Authoring source visibility follows {cite}`requirements.sdk.sources.local_provider`.
+For validation of recorded inputs, a matching disallow MUST reject the requested
+path or its resolved symlink target. A matching allow MUST authorize an external
+input when neither path matches a disallow rule. Validation checks the recorded inputs' existence and contents. Loading path policy MUST NOT
 resolve credentials or validate unused authoring settings.
 :::
 
@@ -153,7 +145,7 @@ examples and the definitions of their authoring structures appear in
 [Authoring evidence](authoring.md#serialized-configuration-data-model).
 
 A complete workspace `habeas.toml` can select a model configuration saved in the
-user file and permit generated sources while excluding one subtree:
+user file and configure which generated sources can be checked as saved evidence.
 
 ```toml
 version = 1
@@ -170,7 +162,7 @@ Replace `generated` and `generated/private` with your own paths.
 `generated/private` is excluded even though its parent is allowed. An allow is an
 exception to the defaults, not an exclusive list of every readable path.
 Edit either array to change the policy, or delete the `[evidence]` table to
-restore the default source-access rules.
+restore the default saved-evidence validation rules.
 {impl}`requirements.configuration.documentation`
 
 ## Feature sections

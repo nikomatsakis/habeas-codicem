@@ -550,8 +550,6 @@ impl HabeasDomain {
     pub(crate) fn reference_set(&self, query: &RequirementId) -> std::io::Result<String> {
         let entries = self.reference_entries(query)?;
         Ok(crate::evidence::digest_definition_entries(
-            &self.root,
-            &self.outlines,
             &self.definitions[&query.0],
             entries,
         ))

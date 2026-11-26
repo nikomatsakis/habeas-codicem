@@ -203,21 +203,14 @@ Ollama server. The server can run on another machine; Habeas does not need a GPU
 {cite}`requirements.authoring.outline_tool`
 {cite}`requirements.authoring.reference_index`
 
-In a Git worktree, stage new source files with `git add` before authoring. The
-model can read unstaged edits to tracked files. By default, reads exclude untracked files,
-generated `evidence/` content, and paths outside the project, including symlink
-aliases. Standalone projects use the same containment rules without requiring Git.
-When the model requests an excluded path, the tool returns an error naming the
-path and the reason, such as an untracked file that `git add` would make
-readable, and the assessment continues. A denied mandatory input instead aborts
-that assessment and reports the path to you; in a batch, other assessments
-continue and successful writes are retained, and the command exits
-unsuccessfully after the batch finishes. Tool descriptions cover only the common
-case; redaction, paging, and errors are explained in the results where they
-occur.
+Authoring uses the SDK’s project source rules. You can read and search a new
+file before staging it. Project `.gitignore` files, including nested rules and
+exceptions, control visibility. The SDK excludes Git metadata and files outside
+the project, including symlinks to those files. An unavailable mandatory input
+stops that assessment before inference. A failed tool read returns its error to
+the reviewer and the assessment continues.
 {cite}`requirements.authoring.source_tools`
 {cite}`requirements.authoring.read_denial`
-{cite}`requirements.authoring.read_denial.untracked`
 {cite}`requirements.authoring.read_denial.mandatory`
 {cite}`requirements.authoring.tool_descriptions.special_cases`
 
@@ -266,12 +259,12 @@ allow = ["generated"]
 disallow = ["generated/private"]
 ```
 
-An allow overrides all defaults; disallow wins if both match. Paths name literal
+When checking saved evidence inputs, disallow wins if both rules match. Paths name literal
 files or directory subtrees, not globs. Absolute paths can allow external inputs.
 Replace `generated` and `generated/private` with your own paths. Add or delete
 entries in either array to change the policy. An omitted `allow` or `disallow`
 means an empty list; delete the whole `[evidence]` table to restore the default
-source-access rules, or the `[authoring]` table to use only user settings.
+evidence validation rules, or the `[authoring]` table to use only user settings.
 {impl}`requirements.configuration.documentation`
 Workspace files can also define `[authoring.configs.<name>]` records, which
 replace same-named user records as a whole. No ancestor workspace files are
@@ -281,12 +274,9 @@ default, then user default.
 {cite}`requirements.configuration.evidence_paths`
 {cite}`requirements.authoring.configuration_precedence`
 
-Existing Cargo build-script output directories are automatically allowed when
-discoverable from the current build layout, including external build directories.
-No build is run to find or recreate them. Root listings expose discovered output
-directories, and workspace disallow rules still win. For an undiscovered layout,
-add its output directory to `allow`. CI must generate the recorded paths and
-contents before validating their evidence.
+Habeas can validate saved evidence that names an existing Cargo build-script
+output, including a discoverable external build directory. For new authoring,
+put generated sources inside the project and make them visible to the SDK.
 {cite}`requirements.authoring.generated_inputs`
 
 Create and edit `$XDG_CONFIG_HOME/habeas/config.toml`, or
@@ -588,7 +578,7 @@ the definition: a citing requirement or example receives the cited declaration
 as context. In the book, references and definitions become linked badges.
 {cite}`requirements.references.roles` {cite}`requirements.references.evidence_coverage` {cite}`requirements.references.authoring_inputs`
 
-Habeas discovers references in the same sources authoring may read. In a Git worktree, these are the files in the Git index, including staged new files; outside Git, every project file. Either way, the project-root `book` and `evidence` directories, `.git` and `target` directories at any depth, and paths your `[evidence]` configuration disallows are skipped. References in an untracked file are not validated and do not count toward any definition until you stage the file with `git add`; `habeas status` lists untracked files that contain references as a reminder.
+Habeas builds its reference graph from project sources. In a Git worktree, these are the files in the Git index, including staged new files; outside Git, every project file. Either way, the project-root `book` and `evidence` directories, `.git` and `target` directories at any depth, and paths your `[evidence]` configuration disallows are skipped. References in an untracked file are not validated and do not count toward any definition until you stage the file with `git add`; `habeas status` lists untracked files that contain references as a reminder.
 {cite}`requirements.references.discovery` {cite}`requirements.cli.status`
 
 ### Choosing references

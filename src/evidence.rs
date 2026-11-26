@@ -1247,8 +1247,6 @@ pub(crate) fn reference_set_digest<'a>(
     sites: &crate::sites::Sites,
 ) -> String {
     digest_definition_entries(
-        root,
-        outlines,
         definition,
         reference_set_entries(root, outlines, name, definition, references, sites),
     )
@@ -1271,24 +1269,13 @@ pub(crate) fn reference_set_digest<'a>(
 // tests cover exclusive selection, not both checks or removal of either edge kind.
 // :::
 pub(crate) fn structural_assessment(
-    root: &Path,
-    outlines: &OutlineCache,
     definition: &Declaration,
     entries: &[ReferenceSetEntry],
 ) -> bool {
-    let access = outlines.source_access(root);
-    let considered = |entry: &&ReferenceSetEntry| {
-        access
-            .as_ref()
-            .is_ok_and(|access| !access.omit_generated_evidence(root, Path::new(&entry.file)))
-    };
     definition.kind == DefinitionKind::Requirement
         && !crate::structural::has_query_directive(definition)
-        && !entries
-            .iter()
-            .filter(considered)
-            .any(|entry| entry.role == "test")
-        && entries.iter().filter(considered).any(|entry| {
+        && !entries.iter().any(|entry| entry.role == "test")
+        && entries.iter().any(|entry| {
             entry.role == "impl"
                 && !matches!(
                     name_for_path(Path::new(&entry.file)),
@@ -1308,12 +1295,10 @@ pub(crate) fn structural_assessment(
 // assert the current exclusive mode's digest, not full independent-check freshness.
 // :::
 pub(crate) fn digest_definition_entries(
-    root: &Path,
-    outlines: &OutlineCache,
     definition: &Declaration,
     entries: Vec<ReferenceSetEntry>,
 ) -> String {
-    let structural = structural_assessment(root, outlines, definition, &entries);
+    let structural = structural_assessment(definition, &entries);
     let digest = digest_entries(entries);
     if structural {
         use sha2::{Digest, Sha256};
@@ -2324,8 +2309,14 @@ pub(crate) mod tests {
         }
         // Plain text has no comments: roles count anywhere.
         assert_eq!(
-            names("notes.txt", format!("see {}\n", role("d.text"))),
-            ["d.text"]
+            names(
+                "notes.txt",
+                format!(
+                    "see {}\n\n:::{{impl}} d.fenced\nBody.\n:::\n",
+                    role("d.text")
+                )
+            ),
+            ["d.text", "d.fenced"]
         );
         // Markdown keeps its own rules.
         assert_eq!(
@@ -2986,6 +2977,7 @@ api_key = 'PRIVATE_REMOTE'
 
     // {test}`requirements.references.discovery`
     // {test}`requirements.references.markdown_literals`
+    // {test}`requirements.references.reference_contexts`
     #[test]
     fn every_markdown_extension_keeps_escaped_and_code_roles_literal() {
         let temp = fixture();

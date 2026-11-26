@@ -65,28 +65,6 @@ impl Listing {
         }
     }
 
-    /// The listing's entries, in order.
-    pub(crate) fn values(&self) -> impl Iterator<Item = &Value> {
-        self.entries.iter().map(|(_, value)| value)
-    }
-
-    /// Untracked paths are entries too: place them first so they start on the
-    /// first page and can continue without becoming unbounded page overhead.
-    // {impl}`requirements.authoring.not_listed`
-    pub(crate) fn with_not_listed(mut self, paths: Vec<Value>) -> Self {
-        if paths.is_empty() {
-            return self;
-        }
-        if self.arrays.is_empty() {
-            self.arrays.push("entries");
-        }
-        let index = self.arrays.len();
-        self.arrays.push("not_listed");
-        self.entries
-            .splice(0..0, paths.into_iter().map(|path| (index, path)));
-        self
-    }
-
     /// The result, or one page of it, holding `entries` with `definitions`.
     // {impl}`requirements.authoring.search_accounting.instructions`
     fn render(
@@ -117,9 +95,7 @@ impl Listing {
                 .filter(|(_, array)| **array == index)
                 .map(|(entry, _)| (*entry).clone())
                 .collect();
-            if *key != "not_listed" || !values.is_empty() {
-                object.insert((*key).to_owned(), Value::Array(values));
-            }
+            object.insert((*key).to_owned(), Value::Array(values));
         }
         if self.evidence {
             object.insert("definitions".into(), Value::Array(definitions.to_vec()));
@@ -162,13 +138,12 @@ impl ResultPages {
     /// returned page's inputs are delivered.
     // {impl}`requirements.authoring.delivered_inputs`
     // {impl}`requirements.authoring.tool_descriptions.special_cases`
-    // {impl}`requirements.authoring.not_listed`
     pub(crate) fn deliver(
         &mut self,
         sources: &AssessmentSources,
         mut listing: Listing,
     ) -> io::Result<ToolDelivery> {
-        // Tags are attached before sizing, and never assigned to not_listed.
+        // Tags are attached before sizing.
         // {impl}`requirements.authoring.search_accounting.entry_tags`
         let search = listing.arrays.iter().position(|key| *key == "matches");
         let instructions = search.is_some() && self.searches.needs_instructions();
@@ -336,10 +311,7 @@ fn paginate(
         "next": "0".repeat(TOKEN_LENGTH),
         "note": PAGE_NOTE,
     });
-    let mut empty = listing.render(&[], &[], &[], Some(longest), search_instructions);
-    if listing.arrays.contains(&"not_listed") {
-        empty["not_listed"] = json!([]);
-    }
+    let empty = listing.render(&[], &[], &[], Some(longest), search_instructions);
     let overhead = empty.to_string().len() + reserve;
     let mut pages = Vec::new();
     let mut start = 0;
@@ -508,111 +480,6 @@ mod tests {
                     .map(|index| format!("fn[item_{index}]"))
                     .collect::<Vec<_>>()
             );
-        }
-    }
-
-    // {test}`requirements.authoring.result_pages`
-    // {test}`requirements.authoring.not_listed`
-    #[test]
-    fn not_listed_comes_on_the_first_page_within_the_page_limit() {
-        let root = project();
-        for index in 0..800 {
-            fs::write(
-                root.path()
-                    .join(format!("src/file_with_a_rather_long_name_{index:04}.rs")),
-                "fn f() {}\n",
-            )
-            .unwrap();
-        }
-        let git = |args: &[&str]| {
-            let output = std::process::Command::new("git")
-                .current_dir(root.path())
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(output.status.success(), "{output:?}");
-        };
-        git(&["init", "--quiet"]);
-        git(&["add", "."]);
-        for index in 0..40 {
-            fs::write(
-                root.path().join(format!(
-                    "src/untracked_draft_with_a_long_name_{index:02}.rs"
-                )),
-                "fn f() {}\n",
-            )
-            .unwrap();
-        }
-        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-        let mut pages = ResultPages::default();
-        let first =
-            dispatch_paged(&sources, &mut pages, "list_files", &json!({"path":"src"})).unwrap();
-        let delivered = all_pages(&mut pages, first);
-        assert_eq!(
-            delivered[0].result["not_listed"].as_array().unwrap().len(),
-            40,
-            "{}",
-            delivered[0].result
-        );
-        for (number, page) in delivered.iter().enumerate() {
-            assert!(page.result.to_string().len() <= PAGE_LIMIT, "page {number}");
-            if number > 0 {
-                assert!(page.result.get("not_listed").is_none(), "page {number}");
-            }
-        }
-    }
-
-    // {test}`requirements.authoring.result_pages`
-    // {test}`requirements.authoring.not_listed`
-    #[test]
-    fn untracked_entries_page_without_tracked_entries_or_oversized_overhead() {
-        let root = project();
-        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-        let untracked: Vec<Value> = (0..1000)
-            .map(|i| json!({"path":format!("src/{i:04}_{}.rs", "x".repeat(70)), "reason":"untracked"}))
-            .collect();
-        for count in [0, 1, 500] {
-            let tracked: Vec<Value> = (0..count)
-                .map(|i| json!({"path":format!("src/tracked_{i:04}.rs"),"kind":"file"}))
-                .collect();
-            let mut pages = ResultPages::default();
-            let first = pages
-                .deliver(
-                    &sources,
-                    Listing::array(tracked.clone()).with_not_listed(untracked.clone()),
-                )
-                .unwrap();
-            assert!(
-                first.result["not_listed"]
-                    .as_array()
-                    .is_some_and(|v| !v.is_empty())
-            );
-            let delivered = all_pages(&mut pages, first);
-            let mut actual_tracked = Vec::new();
-            let mut actual_untracked = Vec::new();
-            for page in delivered {
-                assert!(page.result.to_string().len() <= PAGE_LIMIT);
-                assert!(page.inputs.is_empty(), "untracked paths are never evidence");
-                let entries = page.result["entries"].as_array().unwrap();
-                let omitted = page
-                    .result
-                    .get("not_listed")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
-                assert_eq!(
-                    page.result["page"]["total_entries"],
-                    count + untracked.len()
-                );
-                assert_eq!(
-                    page.result["page"]["returned_entries"],
-                    entries.len() + omitted.len()
-                );
-                actual_tracked.extend(entries.iter().cloned());
-                actual_untracked.extend(omitted);
-            }
-            assert_eq!(actual_tracked, tracked);
-            assert_eq!(actual_untracked, untracked);
         }
     }
 

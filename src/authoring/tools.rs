@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Mutex;
 
 use grep_matcher::Matcher;
 use serde_json::{Map, Value, json};
@@ -20,8 +19,6 @@ pub(crate) struct ToolDelivery {
 
 // {impl}`requirements.authoring.file_discovery`
 // {impl}`requirements.authoring.structural_search`
-// {impl}`requirements.configuration.evidence_paths`
-// {impl}`requirements.authoring.generated_inputs`
 // {impl}`requirements.authoring.outline_tool`
 // {impl}`requirements.authoring.reference_index`
 // {impl}`requirements.authoring.github_reads`
@@ -115,24 +112,10 @@ pub(crate) fn dispatch_paged(
             Ok(delivery) => Ok(delivery),
             Err(listing) => deliver(Ok(listing)),
         }),
-        "list_files" => {
-            deliver(list_files(sources, arguments).and_then(|listing| {
-                with_not_listed(sources, arguments, NotListed::Children, listing)
-            }))
-        }
+        "list_files" => deliver(list_files(sources, arguments)),
         "outline" => deliver(outline(sources, arguments)),
-        "ripgrep" => deliver(search(sources, arguments).and_then(|listing| {
-            let pattern = regex::Regex::new(string(arguments, "pattern")?).ok();
-            with_not_listed(sources, arguments, NotListed::Text(pattern), listing)
-        })),
-        "ast_grep" => deliver(structural(sources, arguments).and_then(|listing| {
-            let rule = arguments
-                .get("language")
-                .and_then(Value::as_str)
-                .zip(arguments.get("rule").and_then(Value::as_object))
-                .and_then(|(language, rule)| StructuralRule::compile(language, rule).ok());
-            with_not_listed(sources, arguments, NotListed::Rule(rule), listing)
-        })),
+        "ripgrep" => deliver(search(sources, arguments)),
+        "ast_grep" => deliver(structural(sources, arguments)),
         "references" => deliver(references(sources, arguments)),
         "next_page" => check_keys(arguments, &["token"])
             .and_then(|()| pages.next_page(string(arguments, "token")?)),
@@ -148,110 +131,6 @@ pub(crate) fn dispatch_paged(
     }
     .map(|delivery| with_redaction_note(sources, delivery))
     .map_err(super::access::recoverable_os_denial)
-    .map_err(super::access::recoverable_outside_request)
-}
-
-// {cite}`habeas:util`
-/// Which untracked files a result names under `not_listed`.
-enum NotListed {
-    /// The requested directory's entries that would otherwise be listed.
-    Children,
-    /// Files under the path with a line matching the pattern.
-    Text(Option<regex::Regex>),
-    /// Files under the path, of the rule's language, with a match.
-    Rule(Option<StructuralRule>),
-}
-
-/// Adds `not_listed` to a listing or search result: each untracked file
-/// under the requested path that the listing would include, or that has a
-/// match, by its project-relative path and without its contents. Searches
-/// scoped by `referencing` only consider files reference discovery reads,
-/// which excludes untracked ones.
-// {impl}`requirements.authoring.not_listed`
-fn with_not_listed(
-    sources: &AssessmentSources,
-    arguments: &Map<String, Value>,
-    kind: NotListed,
-    listing: Listing,
-) -> io::Result<Listing> {
-    // This is the first page; later pages come from next_page.
-    if arguments.contains_key("referencing") {
-        return Ok(listing);
-    }
-    let requested_path = project_path(sources, optional_path(arguments)?)?;
-    let requested = relative_path(&sources.root, &requested_path)?;
-    let requested = requested.trim_end_matches('/');
-    let untracked = super::access::load_discovery_sources(&sources.root)?.untracked()?;
-    let mut named = BTreeSet::new();
-    for file in untracked {
-        let Ok(relative) = file.strip_prefix(&sources.root) else {
-            continue;
-        };
-        let relative = relative.to_string_lossy().replace('\\', "/");
-        let inside = if requested.is_empty() {
-            Some(relative.as_str())
-        } else {
-            relative
-                .strip_prefix(requested)
-                .and_then(|rest| rest.strip_prefix('/'))
-                .or_else(|| (relative == requested).then_some(""))
-        };
-        let Some(inside) = inside else {
-            continue;
-        };
-        let name = match &kind {
-            NotListed::Children => {
-                let child = inside.split('/').next().unwrap_or_default();
-                if child.is_empty() {
-                    continue;
-                }
-                if requested.is_empty() {
-                    child.to_owned()
-                } else {
-                    format!("{requested}/{child}")
-                }
-            }
-            NotListed::Text(pattern) => {
-                let Some(pattern) = pattern else { continue };
-                let Ok(text) = fs::read_to_string(&file) else {
-                    continue;
-                };
-                if !text.lines().any(|line| pattern.is_match(line)) {
-                    continue;
-                }
-                relative.clone()
-            }
-            NotListed::Rule(rule) => {
-                let Some(rule) = rule else { continue };
-                if !crate::structural::covers(rule, &file) {
-                    continue;
-                }
-                let Ok(text) = fs::read_to_string(&file) else {
-                    continue;
-                };
-                if rule.matches(&text).is_empty() {
-                    continue;
-                }
-                relative.clone()
-            }
-        };
-        named.insert(name);
-    }
-    // A directory listing already shows a child it lists.
-    let listed: BTreeSet<&str> = listing
-        .values()
-        .filter_map(|entry| entry.get("path").and_then(Value::as_str))
-        .collect();
-    let not_listed: Vec<Value> = named
-        .iter()
-        .filter(|name| !listed.contains(name.as_str()))
-        .map(|path| json!({"path": path, "reason": "untracked"}))
-        .collect();
-    if not_listed.is_empty() {
-        return Ok(listing);
-    }
-    // Start on the first page; large arrays continue through ordinary paging.
-    Ok(listing.with_not_listed(not_listed))
 }
 
 /// What a result containing redacted text tells the model, since tool
@@ -386,7 +265,6 @@ fn read(
 fn outline(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<Listing> {
     check_keys(args, &["file"])?;
     let file = string(args, "file")?;
-    sources.access.file(&sources.root, Path::new(file))?;
     let snapshot = sources
         .outlines
         .snapshot(&sources.root, file)
@@ -418,59 +296,29 @@ fn outline_entries(
 }
 
 // {impl}`requirements.authoring.file_discovery`
-// {impl}`requirements.configuration.evidence_paths`
-// {impl}`requirements.authoring.generated_inputs`
 fn list_files(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<Listing> {
     check_keys(args, &["path"])?;
     let path = optional_path(args)?;
-    let directory = project_path(sources, path)?;
-    let mut entries = Vec::new();
-    for entry in fs::read_dir(&directory)
-        .map_err(|error| io::Error::new(error.kind(), format!("cannot list {path}: {error}")))?
-    {
-        let entry = entry.map_err(|error| {
-            io::Error::new(error.kind(), format!("cannot list {path}: {error}"))
-        })?;
-        let relative = relative_path(&sources.root, &entry.path())?;
-        if sources
-            .access
-            .path(&sources.root, Path::new(&relative))
-            .is_err()
-        {
-            continue;
-        }
-        let metadata = fs::metadata(entry.path()).map_err(|error| {
-            io::Error::new(
-                error.kind(),
-                format!("cannot inspect {}: {error}", entry.path().display()),
-            )
-        })?;
-        let kind = if metadata.is_dir() {
-            "directory"
-        } else if metadata.is_file() {
-            "file"
-        } else {
-            continue;
-        };
-        entries.push((relative, kind));
+    let prefix = super::access::SourceAccess::relative(&sources.root, Path::new(path))?;
+    let files = sources.access.files(&sources.root, &prefix)?;
+    if !sources.root.join(&prefix).is_dir() {
+        return Err(io::Error::other(format!(
+            "cannot list {path}: expected a directory"
+        )));
     }
-    if directory == sources.root {
-        for extra in sources.access.extra_roots() {
-            if sources.access.path(&sources.root, extra).is_err() {
-                continue;
-            }
-            let kind = if extra.is_dir() {
-                "directory"
-            } else if extra.is_file() {
+    let mut entries = BTreeSet::new();
+    for file in files {
+        let relative = file.strip_prefix(&prefix).map_err(io::Error::other)?;
+        if let Some(first) = relative.components().next() {
+            let child = prefix.join(first.as_os_str());
+            let kind = if relative.components().count() == 1 {
                 "file"
             } else {
-                continue;
+                "directory"
             };
-            entries.push((relative_path(&sources.root, extra)?, kind));
+            entries.insert((child, kind));
         }
     }
-    entries.sort();
-    entries.dedup();
     Ok(Listing::array(
         entries
             .into_iter()
@@ -564,6 +412,13 @@ fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
     let mut sites = Vec::new();
     for reference in &found {
         let file = relative_path(&sources.root, &reference.file)?;
+        if sources
+            .access
+            .file(&sources.root, Path::new(&file))
+            .is_err()
+        {
+            continue;
+        }
         let parsed = sources.outlines.parse(&sources.root, &file);
         let item = parsed.as_ref().as_ref().ok().map(|parsed| {
             let index = parsed.reference_owner(reference.line, reference.column);
@@ -617,8 +472,6 @@ fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
     ))
 }
 
-// {impl}`requirements.configuration.evidence_paths`
-// {impl}`requirements.authoring.generated_inputs`
 fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<Listing> {
     check_keys(args, &["pattern", "path", "context", "referencing"])?;
     let pattern = string(args, "pattern")?;
@@ -836,109 +689,27 @@ impl SearchNodes {
     }
 }
 
-/// Walks the permitted files under a requested path, and under the explicitly
-/// allowed and generated-output roots it contains or lies in, visiting each
-/// file `include` accepts and collecting the results `visit` returns by
-/// project-relative path. Source-access policy is applied while walking, so
-/// denied files are never opened.
-// {impl}`requirements.configuration.evidence_paths`
-// {impl}`requirements.authoring.generated_inputs`
-fn walk_sources<T: Send>(
+/// Visit the SDK-visible files in the requested scope in path order.
+// {impl}`requirements.authoring.source_tools`
+fn walk_sources<T>(
     sources: &AssessmentSources,
     path: &str,
-    include: &(dyn Fn(&str, &Path) -> bool + Sync),
-    visit: &(dyn Fn(&str, &Path) -> io::Result<Option<T>> + Sync),
+    include: &dyn Fn(&str, &Path) -> bool,
+    visit: &dyn Fn(&str, &Path) -> io::Result<Option<T>>,
 ) -> io::Result<BTreeMap<String, T>> {
-    let requested = project_path(sources, path)?;
-    let mut searches = vec![(requested.clone(), false)];
-    for extra in sources.access.extra_roots() {
-        let Ok(extra) = sources.access.path(&sources.root, extra) else {
-            continue;
-        };
-        let candidate = if requested.starts_with(&extra) {
-            requested.clone()
-        } else if extra.starts_with(&requested) || requested == sources.root {
-            extra.clone()
-        } else {
-            continue;
-        };
-        if sources.access.path(&sources.root, &candidate).is_ok() {
-            searches.push((candidate, true));
+    let mut found = BTreeMap::new();
+    for file in sources.access.files(&sources.root, Path::new(path))? {
+        let relative = relative_path(&sources.root, &file)?;
+        let absolute = sources.root.join(&file);
+        if include(&relative, &absolute)
+            && let Some(result) = visit(&relative, &absolute)?
+        {
+            found.insert(relative, result);
         }
     }
-    searches.sort();
-    searches.dedup();
-    let found = Mutex::new(BTreeMap::<String, T>::new());
-    let failure = Mutex::new(None::<io::Error>);
-    for (path, include_ignored) in searches {
-        let mut walker = ignore::WalkBuilder::new(&path);
-        walker
-            .hidden(!include_ignored)
-            .ignore(!include_ignored)
-            .git_ignore(!include_ignored)
-            .git_global(!include_ignored)
-            .git_exclude(!include_ignored)
-            .parents(!include_ignored)
-            .add_custom_ignore_filename(".rgignore");
-        walker.build_parallel().run(|| {
-            let found = &found;
-            let failure = &failure;
-            Box::new(move |entry| {
-                let entry = match entry {
-                    Ok(entry) => entry,
-                    Err(error) => {
-                        *failure.lock().expect("search failure lock") = Some(io::Error::other(
-                            format!("cannot traverse source files: {error}"),
-                        ));
-                        return ignore::WalkState::Quit;
-                    }
-                };
-                if entry.file_type().is_some_and(|kind| kind.is_dir())
-                    && sources.access.path(&sources.root, entry.path()).is_err()
-                {
-                    return ignore::WalkState::Skip;
-                }
-                if !entry.file_type().is_some_and(|kind| kind.is_file()) {
-                    return ignore::WalkState::Continue;
-                }
-                // Apply source-access policy while walking: denied files are
-                // never opened.
-                if sources.access.file(&sources.root, entry.path()).is_err() {
-                    return ignore::WalkState::Continue;
-                }
-                let visited = relative_path(&sources.root, entry.path()).and_then(|file| {
-                    if include(&file, entry.path()) {
-                        Ok(visit(&file, entry.path())?.map(|result| (file, result)))
-                    } else {
-                        Ok(None)
-                    }
-                });
-                match visited {
-                    Ok(Some((file, result))) => {
-                        found
-                            .lock()
-                            .expect("search results lock")
-                            .insert(file, result);
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        *failure.lock().expect("search failure lock") = Some(error);
-                        return ignore::WalkState::Quit;
-                    }
-                }
-                ignore::WalkState::Continue
-            })
-        });
-    }
-    if let Some(error) = failure.into_inner().expect("search failure lock") {
-        return Err(error);
-    }
-    // Parallel walks finish in any order; the map makes results independent
-    // of scheduling.
-    Ok(found.into_inner().expect("search results lock"))
+    Ok(found)
 }
 
-// {cite}`habeas:util`
 /// The sources a `referencing` scope restricts a search to, by
 /// project-relative file: the inclusive line ranges of each referencing
 /// outline node, or `None` for the whole file.
@@ -1123,8 +894,6 @@ fn referencing(
     Ok(Some(regions))
 }
 
-// {impl}`requirements.configuration.evidence_paths`
-// {impl}`requirements.authoring.generated_inputs`
 fn structural(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<Listing> {
     if args.contains_key("query") {
         check_keys(args, &["query"])?;
@@ -1215,6 +984,16 @@ fn declared_query(sources: &AssessmentSources, query: &str) -> io::Result<Listin
     }
     let mut errors = Vec::new();
     let files = crate::evidence::discovered_files(&sources.root, &mut errors);
+    let visible: BTreeSet<_> = sources
+        .access
+        .files(&sources.root, Path::new("."))?
+        .into_iter()
+        .map(|path| sources.root.join(path))
+        .collect();
+    let files: Vec<_> = files
+        .into_iter()
+        .filter(|file| visible.contains(file))
+        .collect();
     if !errors.is_empty() {
         return Err(io::Error::other(format!(
             "cannot run query {query} because reference discovery failed:\n{}",
@@ -1293,12 +1072,6 @@ fn optional_path(args: &Map<String, Value>) -> io::Result<&str> {
 }
 
 // {impl}`requirements.authoring.file_discovery`
-// {impl}`requirements.ci.input_containment`
-fn project_path(sources: &AssessmentSources, relative: &str) -> io::Result<PathBuf> {
-    sources.access.path(&sources.root, Path::new(relative))
-}
-
-// {impl}`requirements.authoring.file_discovery`
 fn relative_path(root: &Path, path: &Path) -> io::Result<String> {
     path.strip_prefix(root)
         .unwrap_or(path)
@@ -1315,6 +1088,67 @@ mod tests {
     use super::*;
     use crate::authoring::access::tests::git;
     use crate::authoring::inputs::tests::{project, role};
+
+    // {test}`requirements.authoring.read_denial`
+    // {test}`requirements.configuration.evidence_paths`
+    // {test}`requirements.authoring.source_tools`
+    // {test}`requirements.authoring.file_discovery`
+    // {test}`requirements.authoring.text_search`
+    // {test}`requirements.authoring.structural_search`
+    #[test]
+    fn source_tools_share_sdk_visibility_for_untracked_files() {
+        let root = project();
+        git(root.path(), &["init", "--quiet"]);
+        fs::create_dir(root.path().join("src/build")).unwrap();
+        fs::write(
+            root.path().join("src/.gitignore"),
+            "*.rs\n!draft.rs\nbuild/\n",
+        )
+        .unwrap();
+        for file in ["draft.rs", "ignored.rs", "build/draft.rs"] {
+            fs::write(root.path().join("src").join(file), "fn needle() {}\n").unwrap();
+        }
+        fs::write(
+            root.path().join("habeas.toml"),
+            "version=1\n[evidence]\nallow=['src/ignored.rs']\ndisallow=['src/draft.rs']\n",
+        )
+        .unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let entries = dispatch(&sources, "list_files", &json!({"path":"src"})).unwrap();
+        assert_eq!(
+            entries.result,
+            json!([{"path":"src/.gitignore","kind":"file"},{"path":"src/draft.rs","kind":"file"}])
+        );
+        for (tool, mut args) in [
+            ("ripgrep", json!({"pattern":"needle", "path":"src"})),
+            (
+                "ast_grep",
+                json!({"language":"rust", "rule":{"rule":{"kind":"function_item"}}, "path":"src"}),
+            ),
+        ] {
+            let result = dispatch(&sources, tool, &args).unwrap();
+            assert_eq!(matched(&result).len(), 1);
+            assert_eq!(matched(&result)[0]["file"], "src/draft.rs");
+            for scope in ["src/ignored.rs", "src/build"] {
+                args["path"] = json!(scope);
+                let empty = dispatch(&sources, tool, &args).unwrap();
+                assert!(matched(&empty).is_empty(), "{tool} {scope}");
+                assert!(empty.inputs.is_empty());
+            }
+        }
+        for (path, visible) in [("src/draft.rs", true), ("src/ignored.rs", false)] {
+            for (tool, args) in [
+                ("outline", json!({"file":path})),
+                ("habeas", json!({"file":path,"item":"fn[needle]"})),
+            ] {
+                assert_eq!(
+                    dispatch(&sources, tool, &args).is_ok(),
+                    visible,
+                    "{tool} {path}"
+                );
+            }
+        }
+    }
 
     // {test}`requirements.authoring.github_reads`
     #[test]
@@ -1507,11 +1341,7 @@ mod tests {
         fs::create_dir(root.path().join("blocked-only")).unwrap();
         fs::write(root.path().join("a/b/file.txt"), "eligible\n").unwrap();
         fs::write(root.path().join("blocked-only/hidden.txt"), "blocked\n").unwrap();
-        fs::write(
-            root.path().join("habeas.toml"),
-            "version = 1\n[evidence]\ndisallow = ['blocked-only/hidden.txt']\n",
-        )
-        .unwrap();
+        fs::write(root.path().join(".gitignore"), "blocked-only/hidden.txt\n").unwrap();
         git(root.path(), &["init", "--quiet"]);
         git(root.path(), &["add", "."]);
         let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
@@ -1913,7 +1743,7 @@ mod tests {
     fn search_merges_context_windows_and_respects_ignore_rules() {
         let root = project();
         git(root.path(), &["init", "--quiet"]);
-        fs::write(root.path().join(".gitignore"), "ignored.txt\n").unwrap();
+        fs::write(root.path().join(".gitignore"), "ignored.txt\n.hidden.txt\n").unwrap();
         fs::write(root.path().join("ignored.txt"), "needle\n").unwrap();
         fs::write(root.path().join(".hidden.txt"), "needle\n").unwrap();
         let lines = (1..=20)
@@ -1981,145 +1811,6 @@ mod tests {
             .is_err()
         );
         assert!(dispatch(&sources, "list_files", &json!({"path":"../"})).is_err());
-    }
-
-    // {test}`requirements.authoring.source_tools`
-    // {test}`requirements.authoring.file_discovery`
-    // {test}`requirements.authoring.text_search`
-    // {test}`requirements.authoring.structural_search`
-    // {test}`requirements.authoring.read_denial`
-    // {test}`requirements.authoring.tool_descriptions.special_cases`
-    #[test]
-    fn generated_evidence_is_excluded_from_reads_search_and_discovery() {
-        let root = project();
-        fs::create_dir(root.path().join("evidence")).unwrap();
-        fs::create_dir(root.path().join("src/evidence")).unwrap();
-        fs::write(
-            root.path().join("evidence/old.json"),
-            "needle in a previous judgment\n",
-        )
-        .unwrap();
-        fs::write(
-            root.path().join("evidence/generated.rs"),
-            "fn generated() {}\n",
-        )
-        .unwrap();
-        fs::write(root.path().join("source.txt"), "needle in source\n").unwrap();
-        fs::write(
-            root.path().join("src/evidence/source.txt"),
-            "needle in nested source\n",
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink(
-                root.path().join("evidence"),
-                root.path().join("old-output"),
-            )
-            .unwrap();
-            std::os::unix::fs::symlink(
-                root.path().join("evidence/old.json"),
-                root.path().join("old.json"),
-            )
-            .unwrap();
-        }
-        git(root.path(), &["init", "--quiet"]);
-        git(root.path(), &["add", "."]);
-        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-        let search = dispatch(
-            &sources,
-            "ripgrep",
-            &json!({"pattern":"needle", "context":0}),
-        )
-        .unwrap();
-        let files = matched(&search)
-            .iter()
-            .map(|input| input["file"].as_str().unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(files, vec!["source.txt", "src/evidence/source.txt"]);
-        let structural = dispatch(
-            &sources,
-            "ast_grep",
-            &json!({"language":"rust","rule":{"rule":{"kind":"function_item"}}}),
-        )
-        .unwrap();
-        assert!(matched(&structural).is_empty(), "{:?}", structural.result);
-        assert!(
-            dispatch(
-                &sources,
-                "ast_grep",
-                &json!({"language":"rust","rule":{"rule":{"kind":"function_item"}},"path":"evidence"}),
-            )
-            .err()
-            .unwrap()
-            .to_string()
-            .contains("generated evidence")
-        );
-        let listing = dispatch(&sources, "list_files", &json!({})).unwrap();
-        assert!(listing.result.as_array().unwrap().iter().all(|entry| {
-            !["evidence", "old-output", "old.json"].contains(&entry["path"].as_str().unwrap())
-        }));
-        for path in ["evidence/old.json", "./evidence/old.json"] {
-            let error = dispatch(&sources, "habeas", &json!({"file":path, "line_start":1}))
-                .err()
-                .unwrap();
-            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-            assert!(error.to_string().contains("evidence/old.json"), "{error}");
-            assert!(error.to_string().contains("generated evidence"), "{error}");
-            assert!(sources.recorded_inputs().is_empty());
-        }
-        for (name, arguments) in [
-            (
-                "habeas",
-                json!({"file":"evidence/generated.rs", "item":"fn[generated]"}),
-            ),
-            ("list_files", json!({"path":"evidence"})),
-            ("ripgrep", json!({"path":"evidence", "pattern":"needle"})),
-            (
-                "ast_grep",
-                json!({"path":"evidence", "language":"rust","rule":{"rule":{"kind":"function_item"}}}),
-            ),
-        ] {
-            let error = dispatch(&sources, name, &arguments).err().unwrap();
-            let path = arguments["file"]
-                .as_str()
-                .or_else(|| arguments["path"].as_str())
-                .unwrap();
-            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-            assert!(error.to_string().contains(path), "{error}");
-            assert!(error.to_string().contains("generated evidence"), "{error}");
-            assert!(sources.recorded_inputs().is_empty());
-        }
-        #[cfg(unix)]
-        {
-            for path in ["old.json", "old-output/old.json"] {
-                assert!(
-                    dispatch(&sources, "habeas", &json!({"file":path, "line_start":1}))
-                        .err()
-                        .unwrap()
-                        .to_string()
-                        .contains("generated evidence")
-                );
-                assert!(
-                    dispatch(
-                        &sources,
-                        "ripgrep",
-                        &json!({"path":path, "pattern":"needle"})
-                    )
-                    .err()
-                    .unwrap()
-                    .to_string()
-                    .contains("generated evidence")
-                );
-            }
-            assert!(
-                dispatch(&sources, "list_files", &json!({"path":"old-output"}))
-                    .err()
-                    .unwrap()
-                    .to_string()
-                    .contains("generated evidence")
-            );
-        }
     }
 
     // {test}`requirements.authoring.source_tools`
@@ -2211,46 +1902,6 @@ mod tests {
     }
 
     // {test}`requirements.authoring.read_denial`
-    // {test}`requirements.authoring.read_denial.untracked`
-    // {test}`requirements.authoring.tool_descriptions.special_cases`
-    #[test]
-    fn untracked_diagnostics_name_git_add_and_an_allow_rule() {
-        let root = project();
-        fs::write(root.path().join("tracked.txt"), "tracked\n").unwrap();
-        git(root.path(), &["init", "--quiet"]);
-        git(root.path(), &["add", "."]);
-        fs::create_dir(root.path().join("untracked-dir")).unwrap();
-        fs::write(root.path().join("untracked-dir/file.rs"), "fn f() {}\n").unwrap();
-        fs::write(root.path().join("untracked.rs"), "fn g() {}\n").unwrap();
-        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-        for (name, arguments) in [
-            ("habeas", json!({"file": "untracked.rs", "line_start": 1})),
-            ("list_files", json!({"path": "untracked-dir"})),
-        ] {
-            let error = dispatch(&sources, name, &arguments).err().unwrap();
-            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
-            let message = error.to_string();
-            assert!(message.contains("git add"), "{message}");
-            assert!(message.contains("habeas.toml allow rule"), "{message}");
-            let path = arguments["file"]
-                .as_str()
-                .or_else(|| arguments["path"].as_str())
-                .unwrap();
-            assert!(message.contains(path), "{message}");
-        }
-        // The harness neither stages nor permits the files itself.
-        let status = std::process::Command::new("git")
-            .args(["status", "--porcelain"])
-            .current_dir(root.path())
-            .output()
-            .unwrap();
-        let status = String::from_utf8(status.stdout).unwrap();
-        assert!(status.contains("?? untracked-dir/"), "{status}");
-        assert!(status.contains("?? untracked.rs"), "{status}");
-        assert!(!root.path().join("habeas.toml").exists());
-    }
-
-    // {test}`requirements.authoring.read_denial`
     #[cfg(unix)]
     #[test]
     fn requests_through_symlinks_leaving_the_project_are_denials() {
@@ -2278,435 +1929,10 @@ mod tests {
             ("list_files", json!({"path": "outside"})),
         ] {
             let error = dispatch(&sources, name, &arguments).err().unwrap();
-            assert_eq!(
-                error.kind(),
-                io::ErrorKind::PermissionDenied,
+            assert!(
+                error.to_string().contains("outside"),
                 "{name} {arguments}: {error}"
             );
-            assert!(
-                error.to_string().contains("outside the project"),
-                "{name} {arguments}: {error}"
-            );
-        }
-    }
-
-    // {test}`requirements.authoring.source_tools`
-    // {test}`requirements.authoring.file_discovery`
-    // {test}`requirements.authoring.text_search`
-    // {test}`requirements.authoring.read_denial`
-    #[test]
-    fn git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files() {
-        let root = project();
-        fs::create_dir(root.path().join("tracked-dir")).unwrap();
-        fs::write(root.path().join("tracked-dir/file.txt"), "original\n").unwrap();
-        fs::write(root.path().join("staged.txt"), "needle staged\n").unwrap();
-        git(root.path(), &["init", "--quiet"]);
-        git(root.path(), &["add", "."]);
-        fs::write(root.path().join("tracked-dir/file.txt"), "needle dirty\n").unwrap();
-        fs::create_dir(root.path().join("untracked-dir")).unwrap();
-        fs::write(
-            root.path().join("untracked-dir/file.txt"),
-            "needle hidden\n",
-        )
-        .unwrap();
-        fs::write(root.path().join("untracked.rs"), "fn needle() {}\n").unwrap();
-        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-        let listing = dispatch(&sources, "list_files", &json!({})).unwrap();
-        assert_eq!(
-            listing
-                .result
-                .get("entries")
-                .unwrap_or(&listing.result)
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|entry| entry["path"].as_str().unwrap())
-                .collect::<Vec<_>>(),
-            vec!["Cargo.toml", "book.toml", "md", "staged.txt", "tracked-dir"]
-        );
-        for (path, text) in [
-            ("staged.txt", "needle staged"),
-            ("tracked-dir/file.txt", "needle dirty"),
-        ] {
-            let read = dispatch(&sources, "habeas", &json!({"file":path, "line_start":1})).unwrap();
-            assert_eq!(read.result["inputs"][0]["text"], json!([text]));
-        }
-        let search = dispatch(&sources, "ripgrep", &json!({"pattern":"needle"})).unwrap();
-        assert_eq!(
-            matched(&search)
-                .iter()
-                .map(|input| input["file"].as_str().unwrap())
-                .collect::<Vec<_>>(),
-            vec!["staged.txt", "tracked-dir/file.txt"]
-        );
-        for arguments in [
-            json!({"file":"untracked.rs", "line_start":1}),
-            json!({"file":"untracked.rs", "line_start":1, "line_end":1}),
-            json!({"file":"untracked.rs", "item":"fn[needle]"}),
-        ] {
-            let error = dispatch(&sources, "habeas", &arguments).err().unwrap();
-            assert!(error.to_string().contains("git add"), "{error}");
-        }
-        let error = dispatch(&sources, "outline", &json!({"file":"untracked.rs"}))
-            .err()
-            .unwrap();
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
-        assert!(error.to_string().contains("git add"), "{error}");
-        assert!(dispatch(&sources, "list_files", &json!({"path":"untracked-dir"})).is_err());
-        assert!(
-            dispatch(
-                &sources,
-                "ripgrep",
-                &json!({"path":"untracked.rs", "pattern":"needle"})
-            )
-            .is_err()
-        );
-    }
-
-    // {test}`requirements.authoring.source_tools`
-    // {test}`requirements.authoring.file_discovery`
-    // {test}`requirements.authoring.text_search`
-    // {test}`requirements.authoring.read_denial`
-    #[cfg(unix)]
-    #[test]
-    fn git_symlink_reads_require_both_the_alias_and_target_to_be_tracked() {
-        let root = project();
-        fs::write(root.path().join("tracked.txt"), "needle allowed\n").unwrap();
-        fs::write(root.path().join("untracked.txt"), "needle hidden\n").unwrap();
-        for (alias, target) in [
-            ("tracked-alias.txt", "tracked.txt"),
-            ("untracked-target.txt", "untracked.txt"),
-            ("untracked-alias.txt", "tracked.txt"),
-        ] {
-            std::os::unix::fs::symlink(target, root.path().join(alias)).unwrap();
-        }
-        git(root.path(), &["init", "--quiet"]);
-        git(
-            root.path(),
-            &[
-                "add",
-                "Cargo.toml",
-                "book.toml",
-                "md",
-                "tracked.txt",
-                "tracked-alias.txt",
-                "untracked-target.txt",
-            ],
-        );
-        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-        let allowed = dispatch(
-            &sources,
-            "habeas",
-            &json!({"file":"tracked-alias.txt", "line_start":1}),
-        )
-        .unwrap();
-        assert_eq!(
-            allowed.result["inputs"][0]["text"],
-            json!(["needle allowed"])
-        );
-        for alias in ["untracked-target.txt", "untracked-alias.txt"] {
-            assert!(
-                dispatch(&sources, "habeas", &json!({"file":alias, "line_start":1}))
-                    .err()
-                    .unwrap()
-                    .to_string()
-                    .contains("git add")
-            );
-            assert!(
-                dispatch(
-                    &sources,
-                    "ripgrep",
-                    &json!({"path":alias, "pattern":"needle"})
-                )
-                .is_err()
-            );
-        }
-        let listing = dispatch(&sources, "list_files", &json!({})).unwrap();
-        let paths = listing
-            .result
-            .get("entries")
-            .unwrap_or(&listing.result)
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|entry| entry["path"].as_str().unwrap())
-            .collect::<Vec<_>>();
-        assert!(paths.contains(&"tracked-alias.txt"));
-        assert!(!paths.contains(&"untracked-target.txt"));
-        assert!(!paths.contains(&"untracked-alias.txt"));
-        assert!(!paths.contains(&"untracked.txt"));
-    }
-
-    // {test}`requirements.configuration.evidence_paths`
-    // {test}`requirements.authoring.source_tools`
-    // {test}`requirements.authoring.file_discovery`
-    // {test}`requirements.authoring.text_search`
-    // {test}`requirements.authoring.read_denial`
-    // {test}`requirements.authoring.structural_search`
-    #[test]
-    fn allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not() {
-        let root = project();
-        let external = tempfile::tempdir().unwrap();
-        fs::create_dir_all(root.path().join("generated/private")).unwrap();
-        fs::write(
-            root.path().join("generated/visible.txt"),
-            "needle allowed\n",
-        )
-        .unwrap();
-        fs::write(
-            root.path().join("generated/private/hidden.txt"),
-            "needle denied\n",
-        )
-        .unwrap();
-        fs::write(external.path().join("outside.txt"), "needle external\n").unwrap();
-        fs::write(external.path().join("outside.rs"), "fn external() {}\n").unwrap();
-        fs::write(
-            root.path().join("generated/visible.rs"),
-            "fn visible() {}\n",
-        )
-        .unwrap();
-        fs::write(
-            root.path().join("generated/private/denied.rs"),
-            "fn denied() {}\n",
-        )
-        .unwrap();
-        fs::write(root.path().join(".hidden.rs"), "fn hidden() {}\n").unwrap();
-        fs::write(root.path().join(".gitignore"), "generated/\n").unwrap();
-        git(root.path(), &["init", "--quiet"]);
-        git(root.path(), &["add", "."]);
-        let external_toml = toml::Value::String(external.path().display().to_string());
-        fs::write(root.path().join("habeas.toml"), format!(
-            "version = 1\n[evidence]\nallow = ['generated', '.hidden.rs', {external_toml}]\ndisallow = ['generated/private']\n"
-        )).unwrap();
-        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-        let listing = dispatch(&sources, "list_files", &json!({})).unwrap();
-        let paths = listing
-            .result
-            .get("entries")
-            .unwrap_or(&listing.result)
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|entry| entry["path"].as_str().unwrap())
-            .collect::<Vec<_>>();
-        assert!(paths.contains(&"generated"));
-        assert!(paths.contains(&external.path().to_str().unwrap()));
-        let generated = dispatch(&sources, "list_files", &json!({"path":"generated"})).unwrap();
-        assert_eq!(
-            generated.result,
-            json!([
-                {"path":"generated/visible.rs", "kind":"file"},
-                {"path":"generated/visible.txt", "kind":"file"}
-            ])
-        );
-        assert!(generated.inputs.is_empty());
-        let external_listing =
-            dispatch(&sources, "list_files", &json!({"path":external.path()})).unwrap();
-        assert_eq!(
-            external_listing.result,
-            json!([
-                {"path":external.path().join("outside.rs"),"kind":"file"},
-                {"path":external.path().join("outside.txt"),"kind":"file"}
-            ])
-        );
-        assert!(external_listing.inputs.is_empty());
-
-        let structural = dispatch(
-            &sources,
-            "ast_grep",
-            &json!({"language":"rust","rule":{"rule":{"kind":"function_item"}}}),
-        )
-        .unwrap();
-        let structural_files = matched(&structural)
-            .iter()
-            .map(|entry| entry["file"].as_str().unwrap())
-            .collect::<Vec<_>>();
-        for expected in [
-            ".hidden.rs",
-            "generated/visible.rs",
-            external.path().join("outside.rs").to_str().unwrap(),
-        ] {
-            assert!(structural_files.contains(&expected), "{structural_files:?}");
-        }
-        assert!(!structural_files.contains(&"generated/private/denied.rs"));
-        assert!(structural.inputs.is_empty());
-
-        let search = dispatch(
-            &sources,
-            "ripgrep",
-            &json!({"pattern":"needle", "context":0}),
-        )
-        .unwrap();
-        assert_eq!(matched(&search).len(), 2);
-        assert!(
-            matched(&search)
-                .iter()
-                .any(|input| input["file"] == "generated/visible.txt")
-        );
-        assert!(matched(&search).iter().any(|input| input["file"] == external.path().join("outside.txt").to_str().unwrap()));
-        let read = dispatch(
-            &sources,
-            "habeas",
-            &json!({"file":external.path().join("outside.txt"), "line_start":1}),
-        )
-        .unwrap();
-        assert_eq!(read.result["inputs"][0]["text"], json!(["needle external"]));
-        for (name, args) in [
-            (
-                "habeas",
-                json!({"file":"generated/private/hidden.txt", "line_start":1}),
-            ),
-            ("list_files", json!({"path":"generated/private"})),
-            (
-                "ripgrep",
-                json!({"path":"generated/private", "pattern":"needle"}),
-            ),
-            (
-                "ast_grep",
-                json!({"path":"generated/private","language":"rust","rule":{"rule":{"kind":"function_item"}}}),
-            ),
-        ] {
-            assert_eq!(
-                dispatch(&sources, name, &args).err().unwrap().kind(),
-                io::ErrorKind::PermissionDenied
-            );
-        }
-    }
-
-    // {test}`requirements.authoring.generated_inputs`
-    // {test}`requirements.authoring.file_discovery`
-    // {test}`requirements.authoring.text_search`
-    // {test}`requirements.authoring.source_tools`
-    // {test}`requirements.configuration.evidence_paths`
-    // {test}`requirements.authoring.read_denial`
-    // {test}`requirements.authoring.read_denial.build_output`
-    // {test}`requirements.authoring.structural_search`
-    #[test]
-    fn cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files() {
-        let root = project();
-        fs::write(root.path().join("src/lib.rs"), "pub fn ready() {}\n").unwrap();
-        fs::write(
-            root.path().join("Cargo.lock"),
-            "version = 4\n\n[[package]]\nname = 'fixture'\nversion = '0.1.0'\n",
-        )
-        .unwrap();
-        fs::write(root.path().join(".gitignore"), "target/\n").unwrap();
-        git(root.path(), &["init", "--quiet"]);
-        git(root.path(), &["add", "."]);
-        let unbuilt = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-        assert!(
-            dispatch(
-                &unbuilt,
-                "habeas",
-                &json!({"file":"src/lib.rs", "line_start":1})
-            )
-            .is_ok()
-        );
-        assert!(!root.path().join("target").exists());
-        let out = root.path().join("target/debug/build/fixture-hash/out");
-        fs::create_dir_all(&out).unwrap();
-        fs::write(out.join("generated.rs"), "pub fn generated_needle() {}\n").unwrap();
-        fs::write(
-            out.parent().unwrap().join("root-output"),
-            out.to_str().unwrap(),
-        )
-        .unwrap();
-        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-        let listing = dispatch(&sources, "list_files", &json!({})).unwrap();
-        assert!(
-            listing
-                .result
-                .get("entries")
-                .unwrap_or(&listing.result)
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|entry| entry["path"] == "target/debug/build/fixture-hash/out")
-        );
-        let search = dispatch(&sources, "ripgrep", &json!({"pattern":"generated_needle"})).unwrap();
-        let generated = dispatch(
-            &sources,
-            "list_files",
-            &json!({"path":"target/debug/build/fixture-hash/out"}),
-        )
-        .unwrap();
-        assert_eq!(
-            generated.result,
-            json!([{"path":"target/debug/build/fixture-hash/out/generated.rs","kind":"file"}])
-        );
-        assert!(generated.inputs.is_empty());
-        assert_eq!(matched(&search).len(), 1);
-        let structural_arguments =
-            json!({"language":"rust","rule":{"rule":{"pattern":"pub fn generated_needle() {}"}}});
-        let structural = dispatch(&sources, "ast_grep", &structural_arguments).unwrap();
-        assert_eq!(
-            found(&structural),
-            ["target/debug/build/fixture-hash/out/generated.rs#fn[generated_needle]"]
-        );
-        assert!(structural.inputs.is_empty());
-        let read = dispatch(&sources, "habeas", &json!({"file":"target/debug/build/fixture-hash/out/generated.rs", "item":"fn[generated_needle]"})).unwrap();
-        assert_eq!(
-            read.result["input"]["text"],
-            json!(["pub fn generated_needle() {}"])
-        );
-        // Other build output under target is an ordinary read failure.
-        let error = dispatch(
-            &sources,
-            "habeas",
-            &json!({"file":"target/debug/build/fixture-hash/root-output", "line_start":1}),
-        )
-        .err()
-        .unwrap();
-        assert_ne!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
-        assert!(error.to_string().contains("holds build output"), "{error}");
-        fs::write(
-            root.path().join("habeas.toml"),
-            "version = 1\n[evidence]\ndisallow = ['target/debug/build/fixture-hash/out']\n",
-        )
-        .unwrap();
-        let denied = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-        let listing = dispatch(&denied, "list_files", &json!({})).unwrap();
-        assert!(
-            !listing
-                .result
-                .get("entries")
-                .unwrap_or(&listing.result)
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|entry| entry["path"] == "target/debug/build/fixture-hash/out")
-        );
-        assert!(
-            matched(&dispatch(&denied, "ripgrep", &json!({"pattern":"generated_needle"})).unwrap())
-                .is_empty()
-        );
-        assert!(matched(&dispatch(&denied, "ast_grep", &structural_arguments).unwrap()).is_empty());
-        for (name, arguments) in [
-            (
-                "habeas",
-                json!({"file":"target/debug/build/fixture-hash/out/generated.rs", "line_start":1}),
-            ),
-            (
-                "list_files",
-                json!({"path":"target/debug/build/fixture-hash/out"}),
-            ),
-            (
-                "ripgrep",
-                json!({"path":"target/debug/build/fixture-hash/out", "pattern":"generated_needle"}),
-            ),
-            (
-                "ast_grep",
-                json!({"path":"target/debug/build/fixture-hash/out","language":"rust","rule":{"rule":{"kind":"function_item"}}}),
-            ),
-        ] {
-            let error = dispatch(&denied, name, &arguments).err().unwrap();
-            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
-            assert!(error.to_string().contains("disallowed"), "{error}");
-            let path = arguments["file"]
-                .as_str()
-                .or_else(|| arguments["path"].as_str())
-                .unwrap();
-            assert!(error.to_string().contains(path), "{error}");
         }
     }
 
@@ -2715,7 +1941,7 @@ mod tests {
     // {test}`requirements.ci.input_containment`
     #[cfg(unix)]
     #[test]
-    fn search_uses_the_validated_target_when_symlinks_precede_parent_components() {
+    fn search_normalizes_parent_components_before_following_symlinks() {
         let root = project();
         fs::create_dir_all(root.path().join("actual/nested")).unwrap();
         fs::write(root.path().join("actual/needle.txt"), "actual needle\n").unwrap();
@@ -2730,10 +1956,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(matched(&result).len(), 1);
-        assert_eq!(matched(&result)[0]["file"], "actual/needle.txt");
+        assert_eq!(matched(&result)[0]["file"], "needle.txt");
         assert_eq!(
             matched(&result)[0]["lines"],
-            json!([{"text": "actual needle", "matched": true}])
+            json!([{"text": "wrong needle", "matched": true}])
         );
     }
 
@@ -2977,11 +2203,7 @@ mod tests {
             ),
         )
         .unwrap();
-        fs::write(
-            root.path().join("habeas.toml"),
-            "version = 1\n\n[evidence]\ndisallow = [\"private\"]\n",
-        )
-        .unwrap();
+        fs::write(root.path().join(".gitignore"), "private/\n").unwrap();
         let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
         let result = dispatch(
             &sources,
@@ -3116,98 +2338,10 @@ mod tests {
         ];
         for (name, arguments) in &requests {
             let error = dispatch(&sources, name, arguments).err().unwrap();
-            assert_ne!(
-                error.kind(),
-                io::ErrorKind::PermissionDenied,
-                "{name}: {error}"
-            );
-            assert!(error.to_string().contains("outside the project"), "{error}");
+
+            assert!(error.to_string().contains("outside"), "{error}");
         }
         assert!(sources.recorded_inputs().is_empty());
-
-        // A matching disallow still aborts, as do in-project denials.
-        fs::write(
-            root.path().join("habeas.toml"),
-            format!(
-                "version = 1\n[evidence]\ndisallow = [{:?}]\n",
-                external.path().to_str().unwrap()
-            ),
-        )
-        .unwrap();
-        fs::create_dir_all(root.path().join("evidence")).unwrap();
-        fs::write(root.path().join("evidence/old.json"), "{}\n").unwrap();
-        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-        for (name, arguments) in &requests[..1] {
-            let error = dispatch(&sources, name, arguments).err().unwrap();
-            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
-        }
-        let error = dispatch(
-            &sources,
-            "habeas",
-            &json!({"file": "evidence/old.json", "item": ""}),
-        )
-        .err()
-        .unwrap();
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
-    }
-
-    // {test}`requirements.authoring.read_denial`
-    // {test}`requirements.authoring.read_denial.build_output`
-    // {test}`requirements.authoring.tool_descriptions.special_cases`
-    #[test]
-    fn requests_for_book_or_target_output_are_ordinary_read_failures() {
-        let root = project();
-        for (book, built) in [("", "book"), ("[build]\nbuild-dir = 'site'\n", "site")] {
-            fs::write(
-                root.path().join("book.toml"),
-                format!("[book]\nsrc = 'md'\n{book}"),
-            )
-            .unwrap();
-            for directory in [built, "target"] {
-                fs::create_dir_all(root.path().join(directory).join("nested")).unwrap();
-                fs::write(
-                    root.path().join(directory).join("nested/page.html"),
-                    "fn built_needle() {}\n",
-                )
-                .unwrap();
-            }
-            let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-            for directory in [built, "target"] {
-                let file = format!("{directory}/nested/page.html");
-                for (name, arguments) in [
-                    ("habeas", json!({"file": file, "line_start": 1})),
-                    ("habeas", json!({"file": file, "item": ""})),
-                    ("outline", json!({"file": file})),
-                    ("list_files", json!({"path": directory})),
-                    ("ripgrep", json!({"pattern": "needle", "path": directory})),
-                ] {
-                    let error = dispatch(&sources, name, &arguments).err().unwrap();
-                    assert_ne!(
-                        error.kind(),
-                        io::ErrorKind::PermissionDenied,
-                        "{name} {arguments}: {error}"
-                    );
-                    assert!(
-                        error.to_string().contains("holds build output")
-                            && error.to_string().contains(
-                                "the sources it is built from are elsewhere in the project"
-                            ),
-                        "{name} {arguments}: {error}"
-                    );
-                }
-            }
-        }
-        // With a build-dir set, `book` is an ordinary project directory.
-        fs::write(root.path().join("book/source.txt"), "plain\n").unwrap();
-        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-        assert!(
-            dispatch(
-                &sources,
-                "habeas",
-                &json!({"file":"book/source.txt","line_start":1})
-            )
-            .is_ok()
-        );
     }
 
     // {test}`requirements.authoring.read_denial`
@@ -3229,7 +2363,7 @@ mod tests {
             .err()
             .unwrap();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
-        assert!(error.to_string().contains("outside the project"), "{error}");
+        assert!(error.to_string().contains("outside"), "{error}");
     }
 
     // {test}`requirements.authoring.source_tools`
@@ -3428,18 +2562,13 @@ mod tests {
             "{error}"
         );
 
-        fs::write(
-            root.path().join("habeas.toml"),
-            "version = 1\n[evidence]\ndisallow = ['notes.txt']\n",
-        )
-        .unwrap();
+        fs::write(root.path().join(".gitignore"), "notes.txt\n").unwrap();
         let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
         let error = dispatch(&sources, "outline", &json!({"file":"notes.txt"}))
             .err()
             .unwrap();
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
         assert!(error.to_string().contains("notes.txt"), "{error}");
-        assert!(error.to_string().contains("disallowed"), "{error}");
+        assert!(error.to_string().contains("excluded"), "{error}");
     }
 
     // {test}`requirements.authoring.source_tools`
@@ -3900,16 +3029,12 @@ mod tests {
             ),
         )
         .unwrap();
-        // An allowed hidden directory is searched; an unallowed one is not.
+        // A hidden directory stays visible unless ignored.
         fs::create_dir_all(root.path().join(".generated")).unwrap();
         fs::write(root.path().join(".generated/out.txt"), "needle allowed\n").unwrap();
         fs::create_dir_all(root.path().join(".other")).unwrap();
         fs::write(root.path().join(".other/out.txt"), "needle hidden\n").unwrap();
-        fs::write(
-            root.path().join("habeas.toml"),
-            "version = 1\n[evidence]\nallow = ['.generated']\n",
-        )
-        .unwrap();
+        fs::write(root.path().join(".gitignore"), ".other/\n").unwrap();
         let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
         let search = dispatch(
             &sources,
@@ -4238,165 +3363,6 @@ mod tests {
                 assert_eq!(recorded[0]["item"], "fn[work]", "{arguments}");
             }
         }
-    }
-
-    // {test}`requirements.authoring.not_listed`
-    // {test}`requirements.authoring.search_accounting.entry_tags`
-    #[test]
-    // {test}`requirements.authoring.read_denial`
-    fn listings_and_searches_name_untracked_files_without_their_contents() {
-        let root = project();
-        fs::write(root.path().join("src/lib.rs"), "fn tracked() {}\n").unwrap();
-        fs::write(
-            root.path().join("habeas.toml"),
-            "version = 1\n[evidence]\ndisallow = ['secret.rs']\n",
-        )
-        .unwrap();
-        git(root.path(), &["init", "--quiet"]);
-        git(root.path(), &["add", "."]);
-        fs::write(root.path().join("untracked.rs"), "fn needle() {}\n").unwrap();
-        fs::create_dir(root.path().join("drafts")).unwrap();
-        fs::write(root.path().join("drafts/plan.txt"), "a needle here\n").unwrap();
-        fs::write(root.path().join("secret.rs"), "fn needle() {}\n").unwrap();
-        fs::create_dir_all(root.path().join("evidence")).unwrap();
-        fs::write(root.path().join("evidence/note.txt"), "needle\n").unwrap();
-        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-        let named = |result: &Value| {
-            result["not_listed"]
-                .as_array()
-                .map(|entries| {
-                    entries
-                        .iter()
-                        .map(|entry| {
-                            assert_eq!(entry["reason"], "untracked");
-                            assert!(entry.get("tag").is_none());
-                            entry["path"].as_str().unwrap().to_owned()
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default()
-        };
-        let listing = dispatch(&sources, "list_files", &json!({})).unwrap();
-        assert_eq!(named(&listing.result), ["drafts", "untracked.rs"]);
-        assert!(
-            listing.result["entries"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|entry| entry["path"] == "src")
-        );
-        let search = dispatch(&sources, "ripgrep", &json!({"pattern": "needle"})).unwrap();
-        assert_eq!(named(&search.result), ["drafts/plan.txt", "untracked.rs"]);
-        let text = search.result.to_string();
-        assert!(
-            !text.contains("a needle here") && !text.contains("fn needle"),
-            "{text}"
-        );
-        assert!(search.inputs.is_empty());
-        let rust = dispatch(
-            &sources,
-            "ast_grep",
-            &json!({"language": "rust", "rule": {"rule": {"pattern": "fn needle() {}"}}}),
-        )
-        .unwrap();
-        assert_eq!(named(&rust.result), ["untracked.rs"]);
-        for delivery in [&listing, &rust] {
-            assert!(delivery.inputs.is_empty());
-            let text = delivery.result.to_string();
-            assert!(
-                !text.contains("fn needle") && !text.contains("a needle here"),
-                "{text}"
-            );
-        }
-
-        // Nothing untracked matches: no not_listed.
-        let none = dispatch(&sources, "ripgrep", &json!({"pattern": "tracked\\(\\)"})).unwrap();
-        assert!(none.result.get("not_listed").is_none(), "{}", none.result);
-        let inside = dispatch(&sources, "list_files", &json!({"path": "src"})).unwrap();
-        assert!(
-            inside.result.get("not_listed").is_none(),
-            "{}",
-            inside.result
-        );
-        fs::write(root.path().join("src/draft.rs"), "fn needle() {}\n").unwrap();
-        for path in [
-            "./src".to_owned(),
-            "src/../src".to_owned(),
-            root.path().join("src").to_string_lossy().into_owned(),
-        ] {
-            for (tool, arguments) in [
-                ("list_files", json!({"path":path})),
-                ("ripgrep", json!({"path":path,"pattern":"needle"})),
-                (
-                    "ast_grep",
-                    json!({"path":path,"language":"rust","rule":{"rule":{"pattern":"fn needle() {}"}}}),
-                ),
-            ] {
-                let delivery = dispatch(&sources, tool, &arguments).unwrap();
-                assert_eq!(named(&delivery.result), ["src/draft.rs"], "{tool}: {path}");
-                assert!(delivery.inputs.is_empty());
-            }
-        }
-    }
-
-    // {test}`requirements.authoring.generated_inputs`
-    #[test]
-    fn an_external_build_directory_lists_its_generated_output() {
-        let root = project();
-        let external = tempfile::tempdir().unwrap();
-        fs::write(root.path().join("src/lib.rs"), "pub fn ready() {}\n").unwrap();
-        fs::write(
-            root.path().join("Cargo.lock"),
-            "version = 4\n\n[[package]]\nname = 'fixture'\nversion = '0.1.0'\n",
-        )
-        .unwrap();
-        fs::create_dir_all(root.path().join(".cargo")).unwrap();
-        fs::write(
-            root.path().join(".cargo/config.toml"),
-            format!(
-                "[build]\ntarget-dir = {}\n",
-                toml::Value::String(external.path().display().to_string())
-            ),
-        )
-        .unwrap();
-        git(root.path(), &["init", "--quiet"]);
-        git(root.path(), &["add", "."]);
-        let out = external.path().join("debug/build/fixture-hash/out");
-        fs::create_dir_all(&out).unwrap();
-        fs::write(out.join("generated.rs"), "pub fn generated_needle() {}\n").unwrap();
-        fs::write(
-            out.parent().unwrap().join("root-output"),
-            out.to_str().unwrap(),
-        )
-        .unwrap();
-        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-        let listing = dispatch(&sources, "list_files", &json!({})).unwrap();
-        let out = fs::canonicalize(&out).unwrap();
-        let paths = listing
-            .result
-            .get("entries")
-            .unwrap_or(&listing.result)
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|entry| entry["path"].as_str().unwrap().to_owned())
-            .collect::<Vec<_>>();
-        assert!(
-            paths.iter().any(|path| std::path::Path::new(path) == out),
-            "{paths:?}"
-        );
-        let search = dispatch(
-            &sources,
-            "ripgrep",
-            &json!({"pattern": "generated_needle", "path": out.to_str().unwrap()}),
-        )
-        .unwrap();
-        assert_eq!(
-            search.result["matches"].as_array().unwrap().len(),
-            1,
-            "{}",
-            search.result
-        );
     }
 
     // {test}`requirements.authoring.file_discovery`

@@ -101,8 +101,7 @@ in project source files, where {cite}`requirements.references.reference_contexts
 says they count, and MUST fail with the source file and line if a
 name has no matching `{req}` or `{example}` definition. In Markdown, escaped
 roles and roles in code examples MUST remain literal. Reference discovery MUST
-consider exactly the project sources that source-access policy permits under
-{cite}`requirements.authoring.source_tools`: in a Git worktree, files present in
+consider the following files: in a Git worktree, files present in
 the Git index, including staged new files; outside Git, all project files; in
 both cases excluding the project-root `book` and `evidence` directories, `.git`
 and `target` directories at any depth, and paths disallowed by

@@ -1227,6 +1227,7 @@ fn a_denied_read_returns_an_error_and_its_assessment_continues() {
         "generated output\n",
     )
     .unwrap();
+    fs::write(fixture.project.join(".gitignore"), "evidence/private.txt\n").unwrap();
     let output = fixture.run(&["author", "--all"]);
     assert!(output.status.success(), "{output:?}");
     let subjects = server.subjects();
@@ -1283,13 +1284,7 @@ fn a_denied_mandatory_input_aborts_only_its_assessment() {
     // One at a time, so the assessments after the aborted one were queued.
     let fixture = Fixture::new(&server.endpoint, Some(1));
     fs::write(fixture.project.join("private.txt"), "private\n").unwrap();
-    fs::write(
-        fixture.project.join("habeas.toml"),
-        "version = 1\n\n[evidence]\ndisallow = [\"private.txt\"]\n",
-    )
-    .unwrap();
-    // The workspace disallows this anchor, a mandatory input of
-    // `requirements.alpha`.
+    fs::write(fixture.project.join(".gitignore"), "private.txt\n").unwrap();
     let chapter = fixture.project.join("md/requirements.md");
     let text = fs::read_to_string(&chapter).unwrap();
     fs::write(
@@ -1305,8 +1300,7 @@ fn a_denied_mandatory_input_aborts_only_its_assessment() {
     assert!(!output.status.success(), "{output:?}");
     let diagnostic = String::from_utf8_lossy(&output.stderr);
     assert!(diagnostic.contains("private.txt"), "{diagnostic}");
-    assert!(diagnostic.contains("disallowed"), "{diagnostic}");
-    assert!(diagnostic.contains("habeas.toml rule"), "{diagnostic}");
+    assert!(diagnostic.contains("excluded"), "{diagnostic}");
     // It made no request; the others ran and kept their evidence.
     let subjects = server.subjects();
     assert!(
@@ -1343,9 +1337,8 @@ fn a_denied_mandatory_input_aborts_only_its_assessment() {
 }
 
 // {test}`requirements.authoring.read_denial.mandatory`
-// {test}`requirements.authoring.read_denial.untracked`
 #[test]
-fn an_untracked_mandatory_input_is_reported_with_how_to_stage_it() {
+fn an_untracked_mandatory_input_can_be_authored() {
     let server = Server::start_with(
         false,
         Behavior::Judgments {
@@ -1370,12 +1363,9 @@ fn an_untracked_mandatory_input_is_reported_with_how_to_stage_it() {
     }
     fs::write(fixture.project.join("notes.txt"), "notes\n").unwrap();
     let output = fixture.run(&["author", "requirements.alpha", "--stdout"]);
-    assert!(!output.status.success(), "{output:?}");
-    let diagnostic = String::from_utf8_lossy(&output.stderr);
-    for text in ["notes.txt", "untracked", "git add", "allow rule"] {
-        assert!(diagnostic.contains(text), "{text}: {diagnostic}");
-    }
-    assert!(server.subjects().is_empty());
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("notes.txt"));
+    assert!(!server.subjects().is_empty());
 }
 
 // {test}`requirements.authoring.batch`

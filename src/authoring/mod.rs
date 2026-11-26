@@ -2097,7 +2097,7 @@ mod tests {
         assert_eq!(requests.len(), 2);
         let delivered = requests[1].to_string();
         assert!(delivered.contains("src/escape.rs"), "{delivered}");
-        assert!(delivered.contains("outside the project"), "{delivered}");
+        assert!(delivered.contains("outside"), "{delivered}");
         assert!(!delivered.contains("fn secret"), "{delivered}");
         assert!(!evidence.to_string().contains("escape.rs"), "{evidence}");
     }
@@ -5652,16 +5652,12 @@ no_match:
             format!("// {role}\nfn api() {{}}\n"),
         )
         .unwrap();
-        fs::write(
-            root.path().join("habeas.toml"),
-            "version=1\n[evidence]\ndisallow=['src/lib.rs']\n",
-        )
-        .unwrap();
+        fs::write(root.path().join(".gitignore"), "src/lib.rs\n").unwrap();
         let error = AssessmentSources::prepare(root.path(), "requirements.ready")
             .err()
             .unwrap();
-        assert!(error.to_string().contains("disallowed"), "{error}");
-        fs::remove_file(root.path().join("habeas.toml")).unwrap();
+        assert!(error.to_string().contains("excluded"), "{error}");
+        fs::remove_file(root.path().join(".gitignore")).unwrap();
         fs::write(
             root.path().join("md/requirements.md"),
             ":::{req} ready\n:impl: src/lib.rs#fn[missing]\nStructure.\n:::\n",
@@ -5683,13 +5679,6 @@ no_match:
         )
         .unwrap();
         fs::write(root.path().join("src/lib.rs"), "fn unreferenced() {}\n").unwrap();
-        let omitted = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-        assert!(!omitted.structural);
-        fs::write(
-            root.path().join("habeas.toml"),
-            "version=1\n[evidence]\nallow=['evidence/generated.rs']\n",
-        )
-        .unwrap();
         let allowed = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
         assert!(allowed.structural);
         assert!(
@@ -5697,51 +5686,6 @@ no_match:
                 .mandatory_inputs()
                 .iter()
                 .any(|input| input["file"] == "evidence/generated.rs")
-        );
-        // An omitted generated test edge cannot override a real implementation.
-        fs::remove_file(root.path().join("habeas.toml")).unwrap();
-        fs::write(
-            root.path().join("src/lib.rs"),
-            format!("// {role}\nfn api() {{}}\n"),
-        )
-        .unwrap();
-        fs::write(
-            root.path().join("md/requirements.md"),
-            ":::{req} ready\n:test: evidence/generated.rs\nStructure.\n:::\n",
-        )
-        .unwrap();
-        assert!(
-            AssessmentSources::prepare(root.path(), "requirements.ready")
-                .unwrap()
-                .structural
-        );
-        fs::write(
-            root.path().join("habeas.toml"),
-            "version=1\n[evidence]\nallow=['evidence/generated.rs']\n",
-        )
-        .unwrap();
-        assert!(
-            !AssessmentSources::prepare(root.path(), "requirements.ready")
-                .unwrap()
-                .structural
-        );
-        fs::remove_file(root.path().join("habeas.toml")).unwrap();
-        // A plain-text implementation alone is not a supported code profile.
-        fs::write(root.path().join("src/lib.rs"), "fn unreferenced() {}\n").unwrap();
-        fs::write(
-            root.path().join("src/details.txt"),
-            format!("{role}\nPlain content.\n"),
-        )
-        .unwrap();
-        fs::write(
-            root.path().join("md/requirements.md"),
-            ":::{req} ready\n:impl: src/details.txt\nStructure.\n:::\n",
-        )
-        .unwrap();
-        assert!(
-            !AssessmentSources::prepare(root.path(), "requirements.ready")
-                .unwrap()
-                .structural
         );
     }
 

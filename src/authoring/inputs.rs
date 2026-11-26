@@ -100,10 +100,11 @@ impl AssessmentSources {
         github: GithubIssues,
     ) -> io::Result<Self> {
         let root = domain.root.to_path_buf();
+        let access = std::sync::Arc::new(SourceAccess::new(&root));
+        domain.outlines = domain.outlines.for_authoring(access.clone());
         let catalog_definitions = domain.definitions.clone();
         let definitions = catalog_definitions.as_ref();
         let outlines = domain.outlines.clone();
-        let access = outlines.source_access(&root)?;
         let subject = definitions
             .get(subject_name)
             .filter(|definition| definition.kind != DefinitionKind::Term)
@@ -169,11 +170,9 @@ impl AssessmentSources {
             &sites,
         );
         entries.sort();
-        let structural =
-            crate::evidence::structural_assessment(&root, &outlines, subject, &entries);
+        let structural = crate::evidence::structural_assessment(subject, &entries);
         let subject_node = crate::sdk::HabeasNode::Requirement(id);
-        let reference_set =
-            crate::evidence::digest_definition_entries(&root, &outlines, subject, entries);
+        let reference_set = crate::evidence::digest_definition_entries(subject, entries);
         // {impl}`requirements.authoring.structural_inputs`
         // :::{fixme} requirements.authoring.structural_inputs
         // :github: nikomatsakis/habeas-codicem#51
@@ -188,11 +187,6 @@ impl AssessmentSources {
             reference.name == subject_name
                 && matches!(reference.kind, ReferenceKind::Impl | ReferenceKind::Test)
         }) {
-            // Generated evidence, including symlink aliases, is omitted by
-            // default rather than denied.
-            if access.omit_generated_evidence(&root, &reference.file) {
-                continue;
-            }
             let selector = reference_selector(&root, &definitions, &outlines, reference)?;
             if structural
                 || reference.kind == ReferenceKind::Test
@@ -205,9 +199,6 @@ impl AssessmentSources {
 
         // {impl}`requirements.references.anchors`
         for anchor in &subject.anchors {
-            if access.omit_generated_evidence(&root, Path::new(&anchor.file)) {
-                continue;
-            }
             let selector = access
                 .file(&root, Path::new(&anchor.file))
                 .and_then(|_| {
@@ -238,7 +229,6 @@ impl AssessmentSources {
             references.iter().filter(|reference| {
                 reference.name == subject_name
                     && !crate::sites::in_own_site(&root, &sites, reference)
-                    && !access.omit_generated_evidence(&root, &reference.file)
             }),
         )
         .map_err(io::Error::other)?;
@@ -250,15 +240,13 @@ impl AssessmentSources {
         // not carried forward.
         let mut mandatory = Vec::new();
         for selector in selectors {
-            if !generated_evidence_selector(&root, &access, &selector) {
-                mandatory.push(source_input(
-                    &root,
-                    &access,
-                    &definitions,
-                    &outlines,
-                    &selector,
-                )?);
-            }
+            mandatory.push(source_input(
+                &root,
+                &access,
+                &definitions,
+                &outlines,
+                &selector,
+            )?);
         }
         // The dependency collector receives bodies separately so Markdown and
         // non-Markdown reference-literal rules keep their source semantics.
@@ -323,7 +311,7 @@ impl AssessmentSources {
         Ok(Self {
             domain,
             root,
-            access: access.into(),
+            access,
             subject_name: subject_name.to_owned(),
             structural,
             has_applicable_fixme: !acknowledgments.is_empty(),
@@ -349,12 +337,13 @@ impl AssessmentSources {
     // {impl}`requirements.authoring.citation_prompt`
     // {impl}`requirements.authoring.mandatory_inputs`
     pub(crate) fn prepare_citation(
-        domain: crate::sdk::HabeasDomain,
+        mut domain: crate::sdk::HabeasDomain,
         file: &str,
         item: &str,
     ) -> io::Result<Self> {
         let root = domain.root.to_path_buf();
-        let access = domain.outlines.source_access(&root)?;
+        let access = std::sync::Arc::new(SourceAccess::new(&root));
+        domain.outlines = domain.outlines.for_authoring(access.clone());
         let definitions = domain.definitions.clone();
         let outlines = domain.outlines.clone();
         let catalog = outlines.reference_catalog(&root);
@@ -429,7 +418,7 @@ impl AssessmentSources {
         Ok(Self {
             domain,
             root,
-            access: access.into(),
+            access,
             subject_name,
             subject_kind: AssessmentKind::Citation(citation),
             structural: false,
@@ -455,13 +444,14 @@ impl AssessmentSources {
     // {impl}`requirements.references.builtin_definitions`
     // {impl}`requirements.references.site_review`
     pub(crate) fn prepare_site(
-        domain: crate::sdk::HabeasDomain,
+        mut domain: crate::sdk::HabeasDomain,
         requirement: &str,
         file: &str,
         item: &str,
     ) -> io::Result<Self> {
         let root = domain.root.to_path_buf();
-        let access = domain.outlines.source_access(&root)?;
+        let access = std::sync::Arc::new(SourceAccess::new(&root));
+        domain.outlines = domain.outlines.for_authoring(access.clone());
         let definitions = domain.definitions.clone();
         let subject_name = crate::sites::subject_label(requirement, file, item);
         let declaration = definitions
@@ -545,7 +535,7 @@ impl AssessmentSources {
         Ok(Self {
             domain,
             root,
-            access: access.into(),
+            access,
             subject_name,
             has_applicable_fixme: !fixmes.is_empty(),
             subject_kind: AssessmentKind::Site(site, fixmes),
@@ -634,17 +624,6 @@ impl AssessmentSources {
     /// absolute path relative to the project.
     pub(crate) fn read_selector(&self, selector: &InputSelector) -> io::Result<Value> {
         let definitions = &self.domain.definitions;
-        let relative;
-        let selector = match selector {
-            InputSelector::Outline { file, item } => {
-                relative = InputSelector::Outline {
-                    file: crate::inputs::project_relative(&self.root, file),
-                    item: item.clone(),
-                };
-                &relative
-            }
-            _ => selector,
-        };
         source_input(
             &self.root,
             &self.access,
@@ -744,22 +723,6 @@ impl AssessmentSources {
 }
 
 // {impl}`requirements.authoring.mandatory_inputs`
-// {impl}`requirements.configuration.evidence_paths`
-fn generated_evidence_selector(
-    root: &Path,
-    access: &SourceAccess,
-    selector: &InputSelector,
-) -> bool {
-    match selector {
-        InputSelector::Outline { file, .. } => {
-            access.omit_generated_evidence(root, Path::new(file))
-        }
-        InputSelector::Requirements { .. } | InputSelector::Definition { .. } => false,
-    }
-}
-
-// {impl}`requirements.authoring.mandatory_inputs`
-// {impl}`requirements.configuration.evidence_paths`
 // {impl}`requirements.references.definition_globs`
 fn source_input(
     root: &Path,
@@ -768,14 +731,26 @@ fn source_input(
     outlines: &OutlineCache,
     selector: &InputSelector,
 ) -> io::Result<Value> {
-    match selector {
-        InputSelector::Outline { file, .. } => {
-            access.file(root, Path::new(file))?;
+    let normalized;
+    let selector = match selector {
+        InputSelector::Outline { file, item } => {
+            let path = crate::inputs::project_relative(root, file);
+            let relative = SourceAccess::relative(root, Path::new(&path))?;
+            normalized = InputSelector::Outline {
+                file: relative
+                    .to_str()
+                    .ok_or_else(|| io::Error::other("source path is not UTF-8"))?
+                    .to_owned(),
+                item: item.clone(),
+            };
+            access.file(root, &relative)?;
+            &normalized
         }
         InputSelector::Definition { definition } => {
             if let Some(definition) = definitions.get(definition) {
                 access.file(root, Path::new(&definition.file))?;
             }
+            selector
         }
         InputSelector::Requirements { requirements } => {
             for (name, definition) in definitions {
@@ -785,8 +760,9 @@ fn source_input(
                     access.file(root, Path::new(&definition.file))?;
                 }
             }
+            selector
         }
-    }
+    };
     let resolved = crate::sdk::resolve_input(root, definitions, outlines, selector)
         .map_err(io::Error::other)?;
     for range in &resolved.ranges {
@@ -1168,18 +1144,11 @@ pub(crate) mod tests {
     // {test}`requirements.authoring.read_denial`
     // {test}`requirements.references.discovery`
     #[test]
-    fn mandatory_git_inputs_require_staging_declarations_sources_and_terms() {
+    fn mandatory_inputs_can_read_untracked_declarations_and_terms() {
         let root = project();
         git(root.path(), &["init", "--quiet"]);
         git(root.path(), &["add", "Cargo.toml", "book.toml"]);
-        let error = AssessmentSources::prepare(root.path(), "requirements.ready")
-            .err()
-            .unwrap();
-        assert!(
-            error.to_string().contains("md/requirements.md")
-                && error.to_string().contains("git add"),
-            "{error}"
-        );
+        AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
         git(root.path(), &["add", "md"]);
         fs::write(
             root.path().join("src/lib.rs"),
@@ -1212,14 +1181,6 @@ pub(crate) mod tests {
             ),
         )
         .unwrap();
-        let error = AssessmentSources::prepare(root.path(), "requirements.ready")
-            .err()
-            .unwrap();
-        assert!(
-            error.to_string().contains("md/terms.md") && error.to_string().contains("git add"),
-            "{error}"
-        );
-        git(root.path(), &["add", "md/terms.md"]);
         let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
         assert!(
             sources
@@ -1252,7 +1213,7 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
         assert!(error.to_string().contains("src/escape.rs"), "{error}");
-        assert!(error.to_string().contains("outside the project"), "{error}");
+        assert!(error.to_string().contains("outside"), "{error}");
     }
 
     // {test}`requirements.configuration.evidence_paths`
@@ -1261,11 +1222,7 @@ pub(crate) mod tests {
     #[test]
     fn disallowed_mandatory_inputs_abort_preparation() {
         let root = project();
-        fs::write(
-            root.path().join("habeas.toml"),
-            "version = 1\n[evidence]\ndisallow = ['md/requirements.md']\n",
-        )
-        .unwrap();
+        fs::write(root.path().join(".gitignore"), "md/requirements.md\n").unwrap();
         let error = AssessmentSources::prepare(root.path(), "requirements.ready")
             .err()
             .unwrap();
@@ -1330,11 +1287,7 @@ pub(crate) mod tests {
         assert_eq!(inputs.len(), 5, "{inputs:#?}");
 
         // An unresolvable mandatory input aborts preparation.
-        fs::write(
-            root.path().join("habeas.toml"),
-            "version = 1\n[evidence]\ndisallow = ['md/terms.md']\n",
-        )
-        .unwrap();
+        fs::write(root.path().join(".gitignore"), "md/terms.md\n").unwrap();
         let error = AssessmentSources::prepare_citation(
             crate::sdk::HabeasDomain::discover(root.path()).unwrap(),
             "src/lib.rs",
@@ -1493,7 +1446,7 @@ pub(crate) mod tests {
     // {test}`requirements.references.anchors`
     // {test}`requirements.authoring.read_denial.mandatory`
     #[test]
-    fn outside_test_anchors_follow_explicit_allow_and_disallow_rules() {
+    fn outside_test_anchors_stay_outside_the_project_with_an_allow_rule() {
         let root = project();
         let outside = tempfile::tempdir().unwrap();
         let path = outside.path().join("check.txt");
@@ -1514,33 +1467,13 @@ pub(crate) mod tests {
                 .err()
                 .unwrap();
             assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
-            assert!(error.to_string().contains("outside the project"), "{error}");
+            assert!(error.to_string().contains("outside"), "{error}");
             fs::write(
                 &config,
                 format!("version = 1\n[evidence]\nallow = ['{}']\n", path.display()),
             )
             .unwrap();
-            let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-            assert!(
-                super::super::initial_prompt(&sources)
-                    .unwrap()
-                    .joined()
-                    .contains("CHECK_OUTSIDE_SOURCE")
-            );
-            fs::write(
-                &config,
-                format!(
-                    "version = 1\n[evidence]\nallow = ['{}']\ndisallow = ['{}']\n",
-                    path.display(),
-                    path.display()
-                ),
-            )
-            .unwrap();
-            let error = AssessmentSources::prepare(root.path(), "requirements.ready")
-                .err()
-                .unwrap();
-            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
-            assert!(error.to_string().contains("disallowed"), "{error}");
+            assert!(AssessmentSources::prepare(root.path(), "requirements.ready").is_err());
         }
     }
 
@@ -1669,11 +1602,7 @@ pub(crate) mod tests {
             ":::{req} ready\n:impl: private/skill.md\nThe project MUST be ready.\n:::\n",
         )
         .unwrap();
-        fs::write(
-            root.path().join("habeas.toml"),
-            "version = 1\n[evidence]\ndisallow = ['private']\n",
-        )
-        .unwrap();
+        fs::write(root.path().join(".gitignore"), "private\n").unwrap();
         let error = AssessmentSources::prepare(root.path(), "requirements.ready")
             .err()
             .unwrap();
@@ -1856,7 +1785,7 @@ pub(crate) mod tests {
     // {test}`requirements.authoring.mandatory_inputs`
     // {test}`requirements.authoring.read_denial`
     #[test]
-    fn generated_evidence_anchors_are_omitted_unless_allowed_and_abort_when_disallowed() {
+    fn evidence_anchors_and_aliases_follow_project_ignore_rules() {
         let root = project();
         fs::create_dir_all(root.path().join("evidence")).unwrap();
         fs::write(root.path().join("evidence/report.md"), "# Report\n").unwrap();
@@ -1876,54 +1805,16 @@ pub(crate) mod tests {
                 .any(|input| input["file"] == file)
         };
 
-        // Default exclusion omits the anchor instead of aborting.
         declaration("evidence/report.md");
         let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-        assert!(
-            !has_file(&sources, "evidence/report.md"),
-            "{:#?}",
-            sources.mandatory_inputs()
-        );
-        assert_eq!(sources.mandatory_inputs().len(), 1);
-
-        // A symlink alias into `evidence/` is omitted too.
+        assert!(has_file(&sources, "evidence/report.md"));
+        fs::write(root.path().join(".gitignore"), "/evidence/\n").unwrap();
+        assert!(AssessmentSources::prepare(root.path(), "requirements.ready").is_err());
         #[cfg(unix)]
         {
             declaration("alias/report.md");
-            let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-            assert!(
-                !has_file(&sources, "alias/report.md"),
-                "{:#?}",
-                sources.mandatory_inputs()
-            );
-            assert_eq!(sources.mandatory_inputs().len(), 1);
+            assert!(AssessmentSources::prepare(root.path(), "requirements.ready").is_err());
         }
-
-        // An explicit allow permits the selection.
-        declaration("evidence/report.md");
-        fs::write(
-            root.path().join("habeas.toml"),
-            "version = 1\n[evidence]\nallow = ['evidence/report.md']\n",
-        )
-        .unwrap();
-        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-        assert!(
-            has_file(&sources, "evidence/report.md"),
-            "{:#?}",
-            sources.mandatory_inputs()
-        );
-
-        // An explicit disallow aborts before inference.
-        fs::write(
-            root.path().join("habeas.toml"),
-            "version = 1\n[evidence]\ndisallow = ['evidence']\n",
-        )
-        .unwrap();
-        let error = AssessmentSources::prepare(root.path(), "requirements.ready")
-            .err()
-            .unwrap();
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
-        assert!(error.to_string().contains("evidence/report.md"), "{error}");
     }
 
     // {test}`requirements.authoring.mandatory_inputs`

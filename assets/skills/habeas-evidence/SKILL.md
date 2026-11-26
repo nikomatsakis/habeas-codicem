@@ -10,8 +10,8 @@ description: Use when Habeas evidence needs creating or refreshing, or when `hab
 Run commands from the project root, the directory with `book.toml` and
 `Cargo.toml`.
 
-- [ ] 1. `git add` new source files. Authoring and reference discovery read only
-      files in the Git index; unstaged edits to tracked files are read.
+- [ ] 1. Use `git add` for new files whose references belong in the graph.
+      Authoring reads the working tree, including untracked files visible under `.gitignore`.
 - [ ] 2. `habeas status` lists what needs attention; `habeas info <name>` shows
       one definition's judgment, rationale, and findings. Fix what the findings
       name (see "Fixing findings").
@@ -167,9 +167,6 @@ the same kind of finding.
   Make related edits to shared helpers together before authoring.
 - After a fix the hash does not see, such as one only in an ordinary comment,
   run `habeas author --force <full-name>`.
-- A false rationale saying the reviewer could not read a file you created means
-  the file is untracked: `git add` it and run `habeas author --force <name>`.
-  The inputs changed, so this is not a re-run for a different result.
 - If authoring fails on configuration, credentials, throttling, or a denied
   mandatory input, read
   [references/authoring-failures.md](references/authoring-failures.md).

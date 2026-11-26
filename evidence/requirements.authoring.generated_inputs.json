@@ -1,8 +1,8 @@
 {
-  "requirement": "Habeas MUST permit existing Cargo build-script output directories as an exception\nto default Git tracking and containment restrictions. It MUST discover the Cargo\nbuild directory using metadata and inspect existing build-script output records,\nwithout running a build or executing build scripts. It MUST NOT treat its own\ninherited `OUT_DIR` environment variable as the workspace's output directory.\nOnly discovered output directories and their contents MUST receive this default\npermission; unrelated build artifacts MUST remain subject to ordinary rules.\nWorkspace disallow entries MUST override this permission.\n\nDiscovery MUST tolerate missing builds or unavailable metadata; callers MUST be\nable to allow undiscovered outputs explicitly using `habeas.toml`. The model's\nroot directory listing MUST expose available generated-output directories,\nincluding external ones. Generated inputs MUST use outline inputs and receive\nordinary freshness checks. Validation MUST NOT\ninvoke a build to materialize an input.",
+  "requirement": "When validating a saved evidence input in a Cargo build-script output directory,\nHabeas MUST accept existing output discovered from Cargo metadata and its\nbuild-script output records, subject to {cite}`requirements.configuration.evidence_paths`.\nIt MUST check freshness using the recorded selector and MUST NOT run a build.",
   "determination": true,
-  "rationale": "I found no test-adequacy gap in the tests marked for `requirements.authoring.generated_inputs`. They cover each obligation as follows.\n\n- **Discovery from build-script records, and scope of the permission.** `src/authoring/access/policy.rs#mod[tests]/fn[generated_discovery_accepts_out_directories_but_not_arbitrary_root_output_targets]` asserts the exact result of `discover_generated_roots`. It accepts an `out` directory recorded in `root-output`, including a cross-target-triple one. It rejects a fake build directory whose `root-output` points at an unrelated temp directory. `src/authoring/tools.rs#mod[tests]/fn[cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files]` shows that `root-output` itself, which sits under `target` outside `out`, still fails with \"holds build output\". That covers \"only discovered output directories and their contents\", with unrelated artifacts left under the ordinary rules.\n- **Exception to Git tracking and containment.**\n  - Git tracking: the same tools test has `target/` in `.gitignore`. It reads, searches and lists `generated.rs` under the discovered `out` directory.\n  - Containment: `an_external_build_directory_lists_its_generated_output` and `tests/evidence_boundaries.rs#fn[discovered_external_cargo_outputs_validate_freshness_and_obey_disallow]` use an external `target-dir` and `build-dir`. Both read the generated output from outside the project.\n- **No build run, and no build at validation.** The tools test asserts that `target` does not exist after preparing sources. `discovered_external_cargo_outputs_validate_freshness_and_obey_disallow` asserts that the external `target` directory does not exist after validation.\n- **Inherited `OUT_DIR` ignored.** `src/authoring/access.rs#mod[tests]/fn[inherited_out_dir_is_ignored_and_metadata_failure_preserves_ordinary_reads]` re-runs itself in a subprocess with `OUT_DIR` set to an unrelated directory. It asserts that `extra_roots` is empty and that reading a file under that directory gives `PermissionDenied`.\n- **Tolerating missing builds or unavailable metadata.**\n  - Missing build: the tools test prepares sources before any `target` exists and still reads `src/lib.rs`.\n  - Unavailable metadata: the inherited-`OUT_DIR` test uses an invalid `Cargo.toml`. It asserts that `load_source_access` succeeds and that a tracked file stays readable.\n- **Explicit allow in `habeas.toml`.** `explicit_allow_overrides_the_build_output_refusal` shows that `target/doc` and `book/page.html` are refused as build output by default. It shows they are readable once listed in `[evidence] allow`. I read the \"undiscovered outputs\" wording as covering this case. Allow of external paths is exercised in other tests too, though those are not marked for this requirement.\n- **Disallow overrides the permission.** The tools test disallows the discovered `out` directory and checks the following:\n  - The root listing no longer shows it.\n  - `ripgrep` and `ast_grep` return no matches.\n  - Direct `habeas`, `list_files`, `ripgrep` and `ast_grep` requests return `PermissionDenied` with \"disallowed\" and the path.\n\n  The validation test also disallows the resolved target of an alias, and the external build directory itself.\n- **Root listing exposes generated-output directories, external ones included.** The tools test checks the in-project `target/.../out` entry. The external-build test checks the canonical external `out` path.\n- **Outline inputs and ordinary freshness checks.** The validation test records an `fn[generated]` outline input for a file in the discovered output and validates it cleanly. After the file changes it expects \"outline input changed\". After restoring the file, a disallow produces \"disallowed\". It also checks symlink aliases: ones inside the project that resolve to generated output are accepted, and ones that resolve outside are rejected.\n\nThe obligation not to execute build scripts has no code path to exercise. The assertion that no target directory appears covers the observable effect.",
-  "references": "9ca6e5defb9d3c01cf7ce0343d243b747a60415124fbc27595aff9158dfca868",
+  "rationale": "The two marked tests cover every obligation in `requirements.authoring.generated_inputs`.\n\n**Acceptance of discovered output.** `tests/evidence_boundaries.rs#fn[discovered_external_cargo_outputs_validate_freshness_and_obey_disallow]` points `.cargo/config.toml` at an external `build-dir`. It creates `debug/build/fixture-hash/out` with a `root-output` record and a `generated.rs` file. It writes an outline input for that file and asserts that `validate_repository` returns no errors. That covers existing output discovered through Cargo metadata and build-script output records.\n- The same test accepts a symlink inside the output directory.\n- It accepts a project-local symlink that resolves into discovered output.\n- It rejects an external alias that resolves outside the project and outside generated output. It rejects an unrelated project symlink the same way. Both assert \"outside the repository\".\n\n**Discovery rules.** `src/authoring/access/policy.rs#mod[tests]/fn[generated_discovery_accepts_out_directories_but_not_arbitrary_root_output_targets]` tests `discover_generated_roots` directly.\n- It asserts that a profile layout (`debug/build/<pkg>/out`) and a cross-target layout (`<triple>/custom/build/<pkg>/out`) are discovered.\n- It asserts that a `root-output` record pointing at an unrelated directory is not accepted. This is the \"arbitrary root output targets\" negative case.\n\n**Freshness by the recorded selector.** The integration test changes the body of `fn[generated]` and asserts the error contains \"outline input changed\". It then restores the file. This shows that freshness is checked against the recorded outline selector.\n\n**Subject to `requirements.configuration.evidence_paths`.**\n- The test adds a disallow rule for the resolved target `generated.rs` and asserts a \"disallowed\" error naming that file.\n- It adds a disallow rule on the external build directory (`../external-build`) and asserts a \"disallowed\" error.\n- Both cases show that a disallow rule overrides discovery.\n- The requirement's allow rule is about authorizing external inputs that discovery did not find. The subject does not require an allow rule for discovered output, and the test correctly passes with no allow rule.\n\n**No build run.** The test configures an external `target-dir` and finishes with `assert!(!target.exists(), \"metadata must not run a build\")`. A build would have created that directory, so the assertion rules one out.\n\n**Not covered.** The `target_directory` fallback when Cargo metadata has no `build_directory` is not tested separately. The requirement does not distinguish the two keys, so I did not count this as a gap.\n\nI found no unacknowledged gap.",
+  "references": "8e79af9dd332cd8875d27d698a47f1dceb7aa771c371c47dda039e983264bf1a",
   "inputs": [
     {
       "requirements": "requirements.authoring.generated_inputs",
@@ -11,21 +11,35 @@
       ],
       "text": [
         ":::{req} generated_inputs",
-        "Habeas MUST permit existing Cargo build-script output directories as an exception",
-        "to default Git tracking and containment restrictions. It MUST discover the Cargo",
-        "build directory using metadata and inspect existing build-script output records,",
-        "without running a build or executing build scripts. It MUST NOT treat its own",
-        "inherited `OUT_DIR` environment variable as the workspace's output directory.",
-        "Only discovered output directories and their contents MUST receive this default",
-        "permission; unrelated build artifacts MUST remain subject to ordinary rules.",
-        "Workspace disallow entries MUST override this permission.",
+        "When validating a saved evidence input in a Cargo build-script output directory,",
+        "Habeas MUST accept existing output discovered from Cargo metadata and its",
+        "build-script output records, subject to {cite}`requirements.configuration.evidence_paths`.",
+        "It MUST check freshness using the recorded selector and MUST NOT run a build.",
+        ":::"
+      ]
+    },
+    {
+      "requirements": "requirements.configuration.evidence_paths",
+      "matches": [
+        "requirements.configuration.evidence_paths"
+      ],
+      "text": [
+        ":::{req} evidence_paths",
+        "The workspace `[evidence]` table MUST serialize EvidenceConfig. `allow` and",
+        "`disallow` MUST be arrays of nonempty literal paths, each naming a file or a",
+        "directory subtree. Relative paths MUST resolve from the selected `habeas.toml`",
+        "directory; absolute paths MUST be supported. These paths are not glob patterns.",
+        "An omitted `allow` or `disallow` MUST mean an empty array, and an absent",
+        "`[evidence]` table MUST mean both are empty, so only the default source-access",
+        "rules apply. No operation requires the section. The table has no user-file",
+        "counterpart, and these rules have no invocation options. This section refines",
+        "{impl}`requirements.configuration.feature_sections` for the evidence feature.",
         "",
-        "Discovery MUST tolerate missing builds or unavailable metadata; callers MUST be",
-        "able to allow undiscovered outputs explicitly using `habeas.toml`. The model's",
-        "root directory listing MUST expose available generated-output directories,",
-        "including external ones. Generated inputs MUST use outline inputs and receive",
-        "ordinary freshness checks. Validation MUST NOT",
-        "invoke a build to materialize an input.",
+        "Authoring source visibility follows {cite}`requirements.sdk.sources.local_provider`.",
+        "For validation of recorded inputs, a matching disallow MUST reject the requested",
+        "path or its resolved symlink target. A matching allow MUST authorize an external",
+        "input when neither path matches a disallow rule. Validation checks the recorded inputs' existence and contents. Loading path policy MUST NOT",
+        "resolve credentials or validate unused authoring settings.",
         ":::"
       ]
     },
@@ -35,39 +49,19 @@
       "hash": "3e8d50f15120781e88f7843939881d3d7f03976caf704fa4dae534cd5d903e6e"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[explicit_allow_overrides_the_build_output_refusal]",
-      "hash": "f5a493fd39b56f1ffb3fd09c95871d0e95c746baa251ac418c9c353a164b5a78"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[inherited_out_dir_is_ignored_and_metadata_failure_preserves_ordinary_reads]",
-      "hash": "2fa4bee63d84ddf5a4d46bae8ede2c885eb4ee8c01358564f14a57fb0ba7ffdb"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files]",
-      "hash": "9f3d280de13de68d69ef164801288398eeeb182246ec6b83de4f2cddaafa9e46"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[an_external_build_directory_lists_its_generated_output]",
-      "hash": "f9a44e6207b7be81f7e495cc0327145930929070a402889cadb8cee14678c24b"
-    },
-    {
       "file": "tests/evidence_boundaries.rs",
       "item": "fn[discovered_external_cargo_outputs_validate_freshness_and_obey_disallow]",
       "hash": "1efd7ca613e40ea841b16e3cb287bc0adc6a17b5b58a193391c79cf9bb6a73c7"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets]",
-      "hash": "77e14ef8e61d80d9dfd9016b1227fd7899f71872ddedff642444ed42d3166673"
+      "file": "src/authoring/access/policy.rs",
+      "item": "fn[generated_roots]",
+      "hash": "db7b71ba7c8f8251375f3a091106b93f29f934b969d769d9fdd4684b037a64c5"
     },
     {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not]",
-      "hash": "e787cf91d3c8c707d00fb240b90d87c30510bf76d8dca3ecabb2c3785094e3bf"
+      "file": "src/authoring/access/policy.rs",
+      "item": "fn[discover_generated_roots]",
+      "hash": "c841d9d538fd8ff27cc1a0e979a7c0a85848034f579cd5c58ce0f087c08f9488"
     }
   ],
   "format_version": 1,
@@ -80,7 +74,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "9ca6e5defb9d3c01cf7ce0343d243b747a60415124fbc27595aff9158dfca868"
+          "value": "8e79af9dd332cd8875d27d698a47f1dceb7aa771c371c47dda039e983264bf1a"
         }
       ]
     },
@@ -92,7 +86,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "5b79d9f83b96067afa608d06274bc296dc4ef787dd7ea0fa760495f302e6d660"
+          "value": "fdad41538782d3b51af00f883499a0c649a21b8a9a5d19614df108007f6d3eb2"
         }
       ]
     },
@@ -103,7 +97,18 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "99b180e2748ae7e189da9f6ecafb4468cee5aac2903a27805c7ac9ee3b5570be"
+          "value": "335d3adec1854c73ec574867845fbb981601daae9dc0869963745d5b64ac5815"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.configuration.evidence_paths"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "3c6b507aa6f98bbf0cc25cce79e7116d6255bdef5e261a4f408cd594e744c401"
         }
       ]
     },
@@ -130,74 +135,6 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "src/authoring/access.rs"
-            },
-            "selector": "mod[tests]/fn[explicit_allow_overrides_the_build_output_refusal]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "4e7fa989798a7e9979fdda1452dbfae13dca335e4e2d19add47c20abcf0cdf2c"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/access.rs"
-            },
-            "selector": "mod[tests]/fn[inherited_out_dir_is_ignored_and_metadata_failure_preserves_ordinary_reads]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "e3b8025b6ce0f30fad041bf9704942a28f41affa50be8008114c88b123836c91"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/tools.rs"
-            },
-            "selector": "mod[tests]/fn[cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "846fa385546db8a96db1783bdba6f2203a2022e1c03736cf904b2d211557346c"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/tools.rs"
-            },
-            "selector": "mod[tests]/fn[an_external_build_directory_lists_its_generated_output]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "6207eef1c34e256bd1e7cc2a500460522b06d689766f23d3329cc42f8c1b9e41"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
               "location": "tests/evidence_boundaries.rs"
             },
             "selector": "fn[discovered_external_cargo_outputs_validate_freshness_and_obey_disallow]"
@@ -215,14 +152,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "src/authoring/access.rs"
+              "location": "src/authoring/access/policy.rs"
             },
-            "selector": "mod[tests]/fn[explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets]"
+            "selector": "fn[generated_roots]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c6d80d99d0da5f5db63a665d799e6c699486a78932f66954642d4368fc8f129a"
+          "value": "cfa9e495d3794859df9cdc73a33e350a0e6ee60fc58c6e791ae74aa56de5ae85"
         }
       ]
     },
@@ -232,14 +169,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "src/authoring/tools.rs"
+              "location": "src/authoring/access/policy.rs"
             },
-            "selector": "mod[tests]/fn[allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not]"
+            "selector": "fn[discover_generated_roots]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "42ab649387529399a26bfec5464bb2fa91d8e1bd74be8a9d552fd0d94423ba0b"
+          "value": "08d0c43eb2a37d44a81243b7fe020004032edbd2c9238cc4e31f5091eeb3f057"
         }
       ]
     }
