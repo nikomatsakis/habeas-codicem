@@ -182,6 +182,7 @@ fn unknown_extensions_keep_nonblank_lines_and_content_selectors() {
         "\n alpha \n beta\nalpha\n".into(),
     )
     .unwrap();
+    assert_eq!(first.structural_hash(), reflow.structural_hash());
     assert_eq!(first.fingerprint(), reflow.fingerprint());
     assert_eq!(alpha.selector, reflow.outline().items[1].selector);
     let reordered = OutlineContent::from_source(

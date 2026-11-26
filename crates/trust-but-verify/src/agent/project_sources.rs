@@ -263,6 +263,7 @@ mod tests {
     }
 
     // {test}`requirements.sdk.graph.validation-context.read_node.mcp`
+    // {test}`requirements.sdk.sources.source_nodes`
     // {test}`requirements.sdk.graph.validation-context.file_node_arguments`
     // {test}`requirements.sdk.graph.validation-context.node_reference.consistency`
     // {test}`requirements.sdk.graph.validation-context.node_reference`
