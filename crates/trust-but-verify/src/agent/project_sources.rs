@@ -120,18 +120,28 @@ mod tests {
         read_nodes: Vec<String>,
         record: Option<Record<String>>,
         fail_read: bool,
+        outline_root: Option<std::path::PathBuf>,
     }
 
     #[derive(Clone)]
     struct Project(Arc<Mutex<State>>, crate::domain::ValidationCache<Self>);
 
-    struct Content(String);
+    enum Content {
+        Text(String),
+        Outline(crate::outline::OutlineContent),
+    }
     impl NodeContents for Content {
         fn fingerprint(&self) -> Fingerprint {
-            crate::procedure::context_fingerprint(&self.0)
+            match self {
+                Self::Text(text) => crate::procedure::context_fingerprint(text),
+                Self::Outline(item) => item.fingerprint(),
+            }
         }
         fn format(&self) -> String {
-            self.0.clone()
+            match self {
+                Self::Text(text) => text.clone(),
+                Self::Outline(item) => item.format(),
+            }
         }
     }
     impl Domain for Project {
@@ -177,7 +187,18 @@ mod tests {
             if state.fail_read {
                 return Err(io::Error::other("prepared source read failed"));
             }
-            Ok(Content(state.text.clone()))
+            if let Some(root) = &state.outline_root {
+                let address = self.source_address(node).unwrap();
+                let file = crate::outline::OutlineContent::from_path(
+                    self.cache(),
+                    root.join(address.path),
+                )
+                .map_err(io::Error::other)?;
+                return Ok(Content::Outline(
+                    file.select(&address.selector).map_err(io::Error::other)?,
+                ));
+            }
+            Ok(Content::Text(state.text.clone()))
         }
         // :::{cite} habeas:coverage
         // This source-only fixture has no graph edges; graph-selection regressions use other fixtures.
@@ -235,6 +256,7 @@ mod tests {
                 read_nodes: Vec::new(),
                 record: None,
                 fail_read: false,
+                outline_root: None,
             })),
             Default::default(),
         )
@@ -245,6 +267,7 @@ mod tests {
     // {test}`requirements.sdk.graph.validation-context.node_reference`
     // {test}`requirements.sdk.graph.validation-context.read_node.source_children`
     #[tokio::test]
+    // {test}`requirements.sdk.graph.validation-context.reading_an_outline_parent`
     async fn agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -252,7 +275,23 @@ mod tests {
             "impl Parser { fn parse() {} }",
         )
         .unwrap();
-        let tools = ProjectSources::new(project("domain content"), Sources::new(root.path()));
+        let domain = project("");
+        domain.0.lock().unwrap().outline_root = Some(root.path().to_owned());
+        let tools = ProjectSources::new(domain, Sources::new(root.path()));
+        let file = crate::outline::OutlineContent::from_path(
+            tools.domain.cache(),
+            root.path().join("parser.rs"),
+        )
+        .unwrap();
+        let expected = |selector: &str| {
+            Dependency::Node(
+                tools
+                    .domain
+                    .cache()
+                    .intern_node(format!("parser.rs#{selector}")),
+                file.select(selector).unwrap().fingerprint(),
+            )
+        };
         let mut session = SessionTools::new(tools.session());
         let cx = ValidationContext::new(
             tools.domain.as_ref(),
@@ -261,9 +300,14 @@ mod tests {
         let parent = session
             .read_node(&cx, &json!({"data":"parser.rs#impl[Parser]"}))
             .unwrap();
+        assert_eq!(parent.dependencies, [expected("impl[Parser]")]);
         let parent: Value = serde_json::from_str(&parent.text).unwrap();
+        assert_eq!(parent["file"], "parser.rs");
+        assert_eq!(parent["text"], "impl Parser { … }");
+        assert_eq!(parent["children"].as_array().unwrap().len(), 1);
         assert_eq!(parent["selector"], "impl[Parser]");
         let child = &parent["children"][0];
+        assert_eq!(child["file"], "parser.rs");
         assert_eq!(child["selector"], "impl[Parser]/fn[parse]");
         let read = session
             .read_node(
@@ -272,6 +316,7 @@ mod tests {
             )
             .unwrap();
         let by_id = session.read_node(&cx, child).unwrap();
+        assert_eq!(read.dependencies, [expected("impl[Parser]/fn[parse]")]);
         assert_eq!(read.dependencies, by_id.dependencies);
         assert_eq!(
             serde_json::from_str::<Value>(&read.text).unwrap()["children"],
@@ -298,6 +343,7 @@ mod tests {
             json!({"node":10000,"data":entry["data"]}),
             json!({"node":-1}),
             json!({"data":false}),
+            json!({"node":entry["node"],"data":false}),
             json!({"path":"parser.rs","data":entry["data"]}),
             json!({"path":"parser.rs","node":entry["node"]}),
             json!({"location":"impl[Parser]"}),
@@ -313,6 +359,7 @@ mod tests {
     // {test}`requirements.sdk.graph.search.search_text.mcp`
     // {test}`requirements.sdk.graph.search.finish_search.inputs`
     #[tokio::test]
+    // {test}`requirements.sdk.graph.search.agent_search`
     async fn scoped_search_accounts_for_visible_descendant_text() {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir(root.path().join("src")).unwrap();
@@ -325,6 +372,18 @@ mod tests {
         }
         let tools = ProjectSources::new(project(""), Sources::new(root.path()));
         let mut session = SessionTools::new(tools.session());
+        let fixture = root.path().join("src/code.rs");
+        let original =
+            crate::outline::OutlineContent::from_path(tools.domain.cache(), &fixture).unwrap();
+        let dependency = |selector: &str| {
+            Dependency::Node(
+                tools
+                    .domain
+                    .cache()
+                    .intern_node(format!("src/code.rs#{selector}")),
+                original.select(selector).unwrap().fingerprint(),
+            )
+        };
         for (tool, args, selector, expected) in [
             (
                 "search_structure",
@@ -350,6 +409,7 @@ mod tests {
             assert_eq!(page["matches"].as_array().unwrap().len(), 1, "{page}");
             assert_eq!(page["matches"][0]["file"], "src/code.rs");
             assert_eq!(page["matches"][0]["selector"], selector);
+            std::fs::write(&fixture, "impl Parser { fn parse() { changed(); } }").unwrap();
             let tracked = session
                 .dispatch(
                     "finish_search",
@@ -357,7 +417,11 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            assert_eq!(tracked.dependencies.len(), expected, "{page}");
+            let mut inputs = vec![dependency(selector)];
+            if expected == 2 {
+                inputs.push(dependency("impl[Parser]/fn[parse]"));
+            }
+            assert_eq!(tracked.dependencies, inputs, "{page}");
         }
     }
 
@@ -649,6 +713,7 @@ mod tests {
     // {test}`requirements.sdk.graph.search.enclosing_item`
     // {test}`requirements.sdk.graph.agent-harness.fixed_tools`
     // {test}`requirements.sdk.graph.search.StructuralRule`
+    // {test}`requirements.sdk.graph.search.search_structure.mcp`
     async fn structural_tags_select_only_the_original_enclosing_item() {
         let root = tempfile::tempdir().unwrap();
         let code = root.path().join("code.rs");
@@ -711,7 +776,7 @@ mod tests {
             read.dependencies,
             [Dependency::Node(
                 hits.matches[1].node.clone(),
-                Content(String::new()).fingerprint()
+                Content::Text(String::new()).fingerprint()
             )]
         );
         let tag = &matches
@@ -755,6 +820,7 @@ mod tests {
     // {test}`requirements.sdk.graph.validation-context.pages.behavior`
     #[tokio::test]
     // {test}`requirements.sdk.graph.agent-harness.fixed_tools`
+    // {test}`requirements.sdk.graph.validation-context.read_node.source_children`
     async fn outline_continuations_keep_the_file_and_complete_ordered_items() {
         let root = tempfile::tempdir().unwrap();
         let names: Vec<_> = (0..400).map(|i| format!("item_{i}")).collect();
@@ -768,12 +834,8 @@ mod tests {
             domain: project("fn item_4() {}").into(),
         };
         let mut session = SessionTools::new(tools.session());
-        session.dispatch("list_sources", &json!({})).await.unwrap();
         let mut delivery = session
-            .dispatch(
-                "outline_source",
-                &json!({"node":tools.domain.cache().intern_node("code.rs#".into())}),
-            )
+            .dispatch("outline_source", &json!({"path":"code.rs"}))
             .await
             .unwrap();
         std::fs::write(root.path().join("code.rs"), "fn changed() {}").unwrap();
@@ -824,6 +886,15 @@ mod tests {
                 } else {
                     format!("code.rs#fn[{}]", names[i - 1])
                 }))
+            );
+            assert_eq!(item["file"], "code.rs");
+            assert_eq!(
+                item["selector"],
+                if i == 0 {
+                    String::new()
+                } else {
+                    format!("fn[{}]", names[i - 1])
+                }
             );
             assert_eq!(item["kind"], if i == 0 { "" } else { "fn" });
         }
@@ -996,7 +1067,7 @@ mod tests {
             read.dependencies,
             [Dependency::Node(
                 results.matches[1].node.clone(),
-                Content(String::new()).fingerprint()
+                Content::Text(String::new()).fingerprint()
             )]
         );
         let unused = session
@@ -1076,6 +1147,7 @@ mod tests {
     // {test}`requirements.sdk.graph.search.file_root`
     // {test}`requirements.sdk.graph.search.utf8_window`
     #[tokio::test]
+    // {test}`requirements.sdk.graph.search.agent_search`
     async fn root_hits_clip_context_to_utf8_boundaries() {
         let root = tempfile::tempdir().unwrap();
         for (source, pattern, small) in
@@ -1300,7 +1372,7 @@ mod tests {
             first.dependencies(),
             &[Dependency::Node(
                 domain.cache().intern_node("source-node".into()),
-                Content("first".into()).fingerprint()
+                Content::Text("first".into()).fingerprint()
             )]
         );
         let saved = validation::refresh_evidence(
@@ -1384,6 +1456,7 @@ mod tests {
     // {test}`requirements.sdk.graph.search.search_structure.inputs`
     // {test}`requirements.sdk.graph.search.search_text.mcp`
     #[tokio::test]
+    // {test}`requirements.sdk.graph.search.search_structure.mcp`
     async fn search_excerpts_redact_credentials_before_serialization_and_paging() {
         let root = tempfile::tempdir().unwrap();
         let token = format!("gh{}_{}", "p", "16C7e42F292c6912E7710c838347Ae178B4a");
@@ -1476,6 +1549,7 @@ mod tests {
     // {test}`requirements.sdk.graph.validation-context.outline_source.inputs`
     // {test}`requirements.sdk.sources.local_provider`
     #[tokio::test]
+    // {test}`requirements.sdk.graph.validation-context.outline_source.mcp`
     async fn outline_tool_rejects_excluded_and_unreadable_sources_without_domain_reads() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("source.txt"), "first\nsecond\n").unwrap();
