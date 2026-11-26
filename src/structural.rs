@@ -8,8 +8,19 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-pub(crate) use trust_but_verify::structural::QueryLanguage;
-pub(crate) use trust_but_verify::structural::StructuralRule;
+use trust_but_verify::sources::StructuralRule;
+
+/// Whether this file has one of the rule's language extensions.
+// {impl}`requirements.references.distributed`
+pub(crate) fn covers(rule: &StructuralRule, path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            rule.extensions()
+                .iter()
+                .any(|candidate| ext.eq_ignore_ascii_case(candidate))
+        })
+}
 
 // {impl}`requirements.references.distributed`
 /// Which directive declares a query.
@@ -284,7 +295,7 @@ pub(crate) fn query_matches(
                 .strip_prefix(&canonical)
                 .or_else(|_| file.strip_prefix(root))
                 .unwrap_or(file);
-            (rule.language().covers(file) && query.body.searches(relative))
+            (covers(&rule, file) && query.body.searches(relative))
                 .then(|| (relative.to_string_lossy().into_owned(), file))
         })
         .collect::<Vec<_>>();
@@ -313,7 +324,7 @@ pub(crate) fn query_matches(
         });
         let outline = &parsed.outline.ownership;
         for range in ranges {
-            let owner = outline.owner(&range);
+            let owner = outline.owner(&(range.start..range.end));
             let Some(index) = owning_site(outline, owner, within_nodes.as_deref()) else {
                 continue;
             };
@@ -327,7 +338,7 @@ pub(crate) fn query_matches(
                 },
                 line_start: outline.line_at(range.start),
                 line_end: outline.line_at(range.end.saturating_sub(1).max(range.start)),
-                text: text[range].to_owned(),
+                text: text.as_str()[range].to_owned(),
             });
         }
     }
@@ -378,7 +389,7 @@ pub(crate) fn snippet_matches(
     site_rule: Option<&StructuralRule>,
     snippet: &str,
 ) -> Result<usize, String> {
-    let filename = format!("snippet.{}", rule.language().extensions()[0]);
+    let filename = format!("snippet.{}", rule.extensions()[0]);
     let outline = crate::outline_items::for_file(cache, Path::new(&filename), snippet)
         .map_err(|error| format!("does not parse as {language}: {error}"))?;
     if let Some(error) = &outline.diagnostic {
@@ -388,13 +399,20 @@ pub(crate) fn snippet_matches(
         site_rule
             .matches(snippet)
             .iter()
-            .map(|range| outline.owner(range))
+            .map(|range| outline.owner(&(range.start..range.end)))
             .collect::<Vec<_>>()
     });
     Ok(rule
         .matches(snippet)
         .iter()
-        .filter(|range| owning_site(&outline, outline.owner(range), within.as_deref()).is_some())
+        .filter(|range| {
+            owning_site(
+                &outline,
+                outline.owner(&(range.start..range.end)),
+                within.as_deref(),
+            )
+            .is_some()
+        })
         .count())
 }
 

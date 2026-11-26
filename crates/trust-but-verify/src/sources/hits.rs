@@ -1,10 +1,10 @@
+use super::StructuralRule;
 use super::{
     SearchHit, SearchResults, SourceError, SourceProject, SourceScope, StructuralQuery, TextQuery,
 };
 use crate::domain::Domain;
 use crate::domain::NodeId;
 use crate::outline::{OutlineContent, OutlineData, Span};
-use crate::structural::StructuralRule;
 
 impl<D: Domain> SourceProject<D> {
     // {impl}`requirements.sdk.graph.search.occurrence`
@@ -20,18 +20,19 @@ impl<D: Domain> SourceProject<D> {
             regex
                 .find_iter(text)
                 .take(query.limit.unwrap_or(usize::MAX).saturating_add(1))
-                .map(|m| m.range())
+                .map(|m| Span::from_range(m.range()))
                 .collect()
         })
         .await
     }
 
+    // {impl}`requirements.sdk.graph.search.StructuralRule`
     pub async fn search_structure(
         &self,
         query: &StructuralQuery,
     ) -> Result<SearchResults<SearchHit<NodeId<D>>>, SourceError> {
         let lang = query.language.as_str();
-        let rule = StructuralRule::compile(lang, &query.rule).map_err(SourceError::Invalid)?;
+        let rule = StructuralRule::compile(lang, &query.rule)?;
         self.find_hits(&query.scope, query.limit, Some(lang), |text| {
             rule.matches(text)
         })
@@ -45,7 +46,7 @@ impl<D: Domain> SourceProject<D> {
         scope: &SourceScope,
         limit: Option<usize>,
         language: Option<&str>,
-        ranges: impl Fn(&str) -> Vec<std::ops::Range<usize>>,
+        ranges: impl Fn(&str) -> Vec<Span>,
     ) -> Result<SearchResults<SearchHit<NodeId<D>>>, SourceError> {
         let mut hits = Vec::new();
         for path in self.sources.list(scope).await? {
@@ -75,11 +76,11 @@ impl<D: Domain> SourceProject<D> {
             }
             let file = OutlineContent::from_path(self.domain.cache(), &absolute)
                 .map_err(|error| SourceError::Invalid(error.to_string()))?;
-            for range in matches {
+            for span in matches {
                 if limit == Some(hits.len()) {
                     return Ok(SearchResults::new(hits, false));
                 }
-                let item = file.at_offset(range.start);
+                let item = file.at_offset(span.start);
                 let id = OutlineData {
                     path: path.clone(),
                     selector: item.id().selector.clone(),
@@ -88,11 +89,7 @@ impl<D: Domain> SourceProject<D> {
                     .domain
                     .cache()
                     .intern_node(self.domain.source_node(&id)?);
-                hits.push(SearchHit::new(
-                    node,
-                    Span::new(range.start, range.end),
-                    item,
-                )?);
+                hits.push(SearchHit::new(node, span, item)?);
             }
         }
         Ok(SearchResults::new(hits, true))

@@ -1452,6 +1452,7 @@ fn custom_provider_handles_generated_content_and_structural_search() {
     let rule = serde_json::json!({"rule": {"pattern": "fn $NAME() {}"}});
     let rule = StructuralRule::compile_with(provider, rule.as_object().unwrap()).unwrap();
     assert_eq!(rule.matches(source), vec![0..source.len()]);
-    assert!(rule.language().covers(Path::new("generated.APP")));
-    assert!(!rule.language().covers(Path::new("other.rs")));
+    assert_eq!(rule.language().extensions(), ["app"]);
+    assert!(registry.for_path(Path::new("generated.APP")).is_some());
+    assert!(registry.for_path(Path::new("other.rs")).is_none());
 }

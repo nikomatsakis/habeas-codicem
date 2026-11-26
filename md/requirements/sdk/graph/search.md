@@ -212,6 +212,32 @@ impl StructuralQuery {
 ```
 :::
 
+:::{req} StructuralRule
+A `sources::StructuralRule` is a structural query compiled for repeated searches
+of text supplied by the caller. `languages` lists the bundled grammar names
+accepted by `compile`. Compilation reports an unknown language or an invalid
+ast-grep rule core, even when there is no source to search. `extensions` lists
+the language's filename extensions without leading dots and contains at least one entry.
+
+`matches` searches the supplied UTF-8 text and returns distinct half-open byte
+spans ordered by start, then end. Offsets refer to that input on each call.
+`SourceProject::search_structure` uses the same matcher for project files.
+
+```rust,ignore
+pub struct StructuralRule { /* private fields */ }
+
+impl StructuralRule {
+    pub fn languages() -> Vec<&'static str>;
+    pub fn compile(
+        language: &str,
+        rule: &Map<String, Value>,
+    ) -> Result<Self, SourceError>;
+    pub fn extensions(&self) -> &[&str];
+    pub fn matches(&self, source: &str) -> Vec<Span>;
+}
+```
+:::
+
 :::{req} StructuralMatch
 :test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
 

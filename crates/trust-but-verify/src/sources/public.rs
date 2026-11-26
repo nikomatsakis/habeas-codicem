@@ -183,6 +183,40 @@ impl TextMatch {
         }
     }
 }
+/// A reusable structural search rule for source text in a bundled language.
+// {impl}`requirements.sdk.graph.search.StructuralRule`
+pub struct StructuralRule {
+    inner: crate::structural::StructuralRule,
+}
+
+impl StructuralRule {
+    /// Names accepted by the structural rule compiler.
+    pub fn languages() -> Vec<&'static str> {
+        crate::structural::QueryLanguage::names()
+    }
+
+    /// Compile an ast-grep rule core before searching any source.
+    pub fn compile(language: &str, rule: &Map<String, Value>) -> Result<Self, SourceError> {
+        let inner = crate::structural::StructuralRule::compile(language, rule)
+            .map_err(SourceError::Invalid)?;
+        Ok(Self { inner })
+    }
+
+    /// Filename extensions of the rule's language, without the leading dot.
+    pub fn extensions(&self) -> &[&str] {
+        self.inner.language().extensions()
+    }
+
+    /// Distinct half-open byte spans in the supplied text, in source order.
+    pub fn matches(&self, source: &str) -> Vec<crate::outline::Span> {
+        self.inner
+            .matches(source)
+            .into_iter()
+            .map(crate::outline::Span::from_range)
+            .collect()
+    }
+}
+
 // {cite}`habeas:util`
 #[non_exhaustive]
 pub struct StructuralQuery {

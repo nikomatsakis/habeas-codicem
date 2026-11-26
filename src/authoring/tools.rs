@@ -10,7 +10,7 @@ use serde_json::{Map, Value, json};
 use super::inputs::AssessmentSources;
 use super::pages::{Listing, ResultPages};
 use crate::inputs::InputSelector;
-use crate::structural::StructuralRule;
+use trust_but_verify::sources::StructuralRule;
 
 // {impl}`requirements.authoring.delivered_inputs`
 pub(crate) struct ToolDelivery {
@@ -59,7 +59,7 @@ pub(crate) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name":"ast_grep", "description":"Search syntax trees in process with an ast-grep rule. Use ripgrep for text patterns, ast_grep for syntax-tree rules, and references for requirement-reference sites. Supply exactly one form: {language, rule, path (default .), referencing (optional)} or {query}. language is one of rust, python, typescript, tsx, css, markdown, toml, or yaml, matched with Habeas's pinned grammars; only files of that language are searched. rule is an object holding the keys of an ast-grep rule file's rule core, written as JSON: rule (required), and optional utils (named rules) and constraints (metavariable name to rule). A rule object combines atomic rules: pattern (code with metavariables, where $A matches one node, $$$A any number of nodes, and $_ one node without capturing), kind (a grammar node kind such as function_item), regex (a Rust regex the node's whole text must match), and nthChild; relational rules: inside, has, precedes, and follows, each taking a rule plus optional stopBy (neighbor, the default, end, or a rule) and field; and composite rules: all, any, not, and matches (a utils name). Patterns parse as standalone code, so a fragment that does not parse on its own, such as a type or parameter, needs the context and selector form: pattern: {context: \"fn f(x: &mut Vec<String>) {}\", selector: reference_type} parses context and matches the node of kind selector within it. Example: {\"language\":\"rust\",\"rule\":{\"rule\":{\"pattern\":\"$X.unwrap()\",\"inside\":{\"kind\":\"function_item\",\"stopBy\":\"end\"}}}}. path selects a project-relative file or directory (default .); referencing works as for ripgrep, and results are ordered by path and then line. The query form, e.g. {\"query\":\"requirements.ci.errors/error_accumulators\"}, runs a query a distributed requirement declares, named <full-name>/<query-name>, exactly as validation runs it, including its paths, exclude, and within, and returns each match's site. The result has ripgrep's form, {search_id, matches: [{tag, file, item, kind, lines: [{text, matched}]}]}: one entry for each innermost outline node containing a match (a match in a comment belongs to the node the comment belongs to; a query match belongs to its site), with the node's item selector and kind, and the matched lines, without line numbers. Results carry no definitions. Before submitting, call finish_search with the result UUID and the tags whose snippets you used to justify your conclusion without an additional source read. Entries whose source you also read may be omitted; including them is harmless. Use an empty used list if no entries qualify. Selected items become evidence dependencies without another source read. No matches returns an empty matches array.",
-            "parameters":{"type":"object","properties":{"language":{"type":"string","enum":crate::structural::QueryLanguage::names()},"rule":{"type":"object"},"path":{"type":"string","default":"."},"referencing":reference_scope_schema(),"query":{"type":"string"}},"additionalProperties":false}
+            "parameters":{"type":"object","properties":{"language":{"type":"string","enum":StructuralRule::languages()},"rule":{"type":"object"},"path":{"type":"string","default":"."},"referencing":reference_scope_schema(),"query":{"type":"string"}},"additionalProperties":false}
         }),
         json!({
             "name":"references", "description":"Locate definitions and reference sites without reading their text. Without selection, return every requirement and named example name with its kind and empty sites. With selection (a full name or a glob where * matches any characters including dots), return the selected names/kinds plus reference sites: definition name, role, file, and item selector, without line numbers. roles filters sites and anchors by impl, cite, or test (default all three); {impl} marks implementations, {cite} related sources, and {test} tests. For example {\"selection\":\"requirements.cli.status\",\"roles\":[\"impl\"]} locates only implementations. Repeated roles have no effect; [] returns names/kinds only. An :impl: or :test: anchor is reported with item null for a whole file or its selector for a node. Results contain no requirement text, example text, commentary, or source text and are not evidence inputs. Request needed source with habeas to read and record it.",
@@ -223,7 +223,7 @@ fn with_not_listed(
             }
             NotListed::Rule(rule) => {
                 let Some(rule) = rule else { continue };
-                if !rule.language().covers(&file) {
+                if !crate::structural::covers(rule, &file) {
                     continue;
                 }
                 let Ok(text) = fs::read_to_string(&file) else {
@@ -1143,7 +1143,8 @@ fn structural(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
         sources,
         path,
         &|file, path| {
-            rule.language().covers(path) && regions.as_ref().is_none_or(|regions| regions.has(file))
+            crate::structural::covers(&rule, path)
+                && regions.as_ref().is_none_or(|regions| regions.has(file))
         },
         &|_, path| {
             let text = fs::read_to_string(path).map_err(|error| {
@@ -1168,12 +1169,12 @@ fn structural(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
                 "{file} changed during the search; retry it"
             )));
         }
-        let line_of = |byte: usize| text[..byte].matches('\n').count() + 1;
+        let ownership = &parsed.outline.ownership;
         let mut nodes = SearchNodes::default();
         for range in ranges {
             let (first, last) = (
-                line_of(range.start),
-                line_of(range.end.saturating_sub(1).max(range.start)),
+                ownership.line_at(range.start),
+                ownership.line_at(range.end.saturating_sub(1).max(range.start)),
             );
             if regions
                 .as_ref()
@@ -1181,7 +1182,7 @@ fn structural(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
             {
                 continue;
             }
-            let index = parsed.outline.ownership.owner(&range);
+            let index = ownership.owner(&(range.start..range.end));
             nodes.add(index, first..=last, first..=last);
         }
         entries.extend(nodes.entries(&file, parsed));

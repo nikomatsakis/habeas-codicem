@@ -504,6 +504,7 @@ mod tests {
     // {test}`requirements.sdk.graph.search.agent_search_accounting`
     // {test}`requirements.sdk.graph.search.enclosing_item`
     // {test}`requirements.sdk.graph.agent-harness.fixed_tools`
+    // {test}`requirements.sdk.graph.search.StructuralRule`
     async fn structural_tags_select_only_the_original_enclosing_item() {
         let root = tempfile::tempdir().unwrap();
         let code = root.path().join("code.rs");
@@ -517,6 +518,12 @@ mod tests {
         let args = json!({"language":"rust","rule":{"rule":{"pattern":"call()"}}});
         let query = StructuralQuery::new("rust".into(), args["rule"].as_object().unwrap().clone());
         let hits = tools.search_structure(&query).await.unwrap();
+        let rule =
+            crate::sources::StructuralRule::compile(query.language.as_str(), &query.rule).unwrap();
+        assert_eq!(
+            rule.matches(&std::fs::read_to_string(&code).unwrap()),
+            hits.matches.iter().map(|hit| hit.span).collect::<Vec<_>>()
+        );
         assert_eq!(
             hits.matches
                 .iter()

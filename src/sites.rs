@@ -346,17 +346,17 @@ fn validate_queries<'a>(
         {
             problems.push(error.clone());
         }
-        let rule = crate::structural::StructuralRule::compile(
+        let rule = trust_but_verify::sources::StructuralRule::compile(
             &query.body.language,
             &query.body.rule_core(),
         );
         match (rule, within) {
-            (Err(error), _) => problems.push(error),
+            (Err(error), _) => problems.push(error.to_string()),
             (Ok(rule), Ok(target)) => {
                 // A target's compilation error is reported at its declaration.
                 let site_rule = target
                     .map(|target| {
-                        crate::structural::StructuralRule::compile(
+                        trust_but_verify::sources::StructuralRule::compile(
                             &target.body.language,
                             &target.body.rule_core(),
                         )

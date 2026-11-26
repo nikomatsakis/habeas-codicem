@@ -282,6 +282,11 @@ documented TBV public API.
       - `node`
       - `excerpt`
       - `new()`
+    - `struct StructuralRule` — [Declaration](graph/search.md#habeas-req-requirements.sdk.graph.search.StructuralRule)
+      - `languages()`
+      - `compile()`
+      - `extensions()`
+      - `matches()`
     - `struct StructuralQuery` — [Declaration](graph/search.md#habeas-req-requirements.sdk.graph.search.StructuralQuery) · [Search source structure](graph/search.md#searching-source-structure)
       - `scope`
       - `language`

@@ -27,7 +27,7 @@ mod source_engine;
 
 // :::{fixme} requirements.sdk.public-api.exports
 // Habeas still enables the `habeas-integration` Cargo feature to reach TBV's
-// structural search and agent internals. The public API
+// agent internals. The public API
 // inventory test covers the documented exports. It does not yet check that
 // the manifest defines no features or that Habeas builds using those exports alone.
 // :::
@@ -48,12 +48,6 @@ mod redaction;
 mod resource;
 mod search;
 
-#[cfg(feature = "habeas-integration")]
-#[doc(hidden)]
-#[path = "structural.rs"]
-pub mod structural;
-#[cfg(not(feature = "habeas-integration"))]
-#[path = "structural.rs"]
 mod structural;
 
 use request as procedure;
