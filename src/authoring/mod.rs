@@ -3819,6 +3819,7 @@ mod tests {
 
     // {test}`requirements.authoring.confirmation`
     // {test}`requirements.authoring.usage_storage`
+    // {test}`requirements.authoring.citation_prompt`
     #[tokio::test]
     async fn citation_reviews_are_confirmed_with_fresh_targeted_conversations() {
         let project = inputs::tests::project();
@@ -3869,6 +3870,45 @@ mod tests {
             .collect();
         assert_eq!(logs.len(), 2);
         assert_ne!(logs[0]["run_id"], logs[1]["run_id"]);
+    }
+
+    // {test}`requirements.authoring.citation_prompt`
+    #[tokio::test]
+    async fn citation_submission_requires_a_boolean_and_nonempty_rationale() {
+        let project = inputs::tests::project();
+        fs::write(
+            project.path().join("src/lib.rs"),
+            "// {cite}`requirements.ready`\nfn helper() {}\n",
+        )
+        .unwrap();
+        let subject = AuthoringSubject::parse("citations:src/lib.rs#fn[helper]");
+        let state = tempfile::tempdir().unwrap();
+        for result in [
+            json!({"determination":{"FIXME":["#1"]},"rationale":"A gap."}),
+            json!({"determination":"true","rationale":"Covered."}),
+            json!({"determination":true,"rationale":""}),
+            json!({"determination":false,"rationale":"  "}),
+        ] {
+            let provider =
+                RecordingProvider::new(vec![("submit_result", json!({"result": result}))]);
+            let mut sources = subject.sources(project.path()).unwrap();
+            let mut log = UsageLog::start(state.path(), project.path(), &subject.label()).unwrap();
+            assert!(
+                assess(&provider, &mut sources, &mut log).await.is_err(),
+                "{result}"
+            );
+            let requests = provider.requests.lock().unwrap();
+            let tool = requests[0]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["name"] == "submit_result")
+                .unwrap();
+            let fields = &tool["parameters"]["properties"]["result"]["properties"];
+            assert_eq!(fields["determination"]["type"], "boolean");
+            assert_eq!(fields["rationale"]["minLength"], 1);
+            assert!(fields.get("applies").is_none());
+        }
     }
 
     // {test}`requirements.authoring.verifier_prompt`
@@ -4139,22 +4179,27 @@ mod tests {
             format!("// {cite}\n// :::{{cite}} habeas:util\n// Formats output.\n// :::\nfn helper() {{}}\n"),
         )
         .unwrap();
-        for (subject, header, named) in [
+        for (subject, header, named, submission) in [
             (
                 "requirements.case",
                 "The reviewer judged example requirements.case as false.",
                 "Subject: example requirements.case",
+                "submit_verification",
             ),
             (
                 "citations:src/lib.rs#fn[helper]",
                 "The reviewer judged citation review citations:src/lib.rs#fn[helper] as false.",
                 "Item under review: src/lib.rs fn[helper]\nReview kind: source_item\nCitations to check:",
+                "submit_result with your verification in result",
             ),
         ] {
             let sources = AuthoringSubject::parse(subject)
                 .sources(project.path())
                 .unwrap();
             let parts = verification_prompt(&sources, &Judgment::False, "A claimed gap.").unwrap();
+            assert!(parts.system.contains(&format!(
+                "You MUST end by calling {submission} until one submission is accepted."
+            )));
             let prompt = parts.joined();
             let initial = initial_prompt(&sources).unwrap();
             // The reviewer's criteria are its subject message between the
