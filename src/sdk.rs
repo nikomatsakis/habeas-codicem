@@ -222,6 +222,7 @@ impl Domain for HabeasDomain {
             item: item.selector.clone(),
         }))
     }
+    // {impl}`requirements.sdk.sources.source_nodes`
     fn source_address(
         &self,
         data: &Self::NodeData,
@@ -723,6 +724,7 @@ mod tests {
         assert!(text.contains("missing.rs"));
     }
 
+    // {test}`requirements.sdk.sources.source_nodes`
     // {test}`requirements.sdk.graph.node_path_method`
     // {test}`requirements.sdk.graph.node_path_struct`
     // {test}`requirements.sdk.graph.domain_types`
@@ -739,6 +741,15 @@ mod tests {
             },
             selector: "".into(),
         };
+        let method = trust_but_verify::outline::OutlineData::new(
+            "src/parser.rs",
+            "impl[Parser]/fn[parse]".into(),
+        )
+        .unwrap();
+        assert_eq!(
+            domain.source_address(&domain.source_node(&method).unwrap()),
+            Some(method)
+        );
         let cases = [
             (
                 HabeasNode::Requirement(RequirementId("same".into())),
@@ -774,6 +785,7 @@ mod tests {
         ];
         let mut paths = std::collections::HashSet::new();
         for (node, expected) in cases {
+            assert_eq!(domain.source_address(&node), None);
             let path = domain.node_path(&domain.cache().intern_node(node.clone()));
             assert_eq!(path.segments(), expected);
             assert!(paths.insert(path.clone()));
