@@ -7,6 +7,51 @@ use crate::domain::NodeId;
 use crate::outline::{OutlineContent, OutlineData, Span};
 
 impl<D: Domain> SourceProject<D> {
+    // {impl}`requirements.sdk.sources.source_nodes`
+    pub(crate) fn intern_source(&self, address: &OutlineData) -> Result<NodeId<D>, SourceError> {
+        let cache = self.domain.cache();
+        let node = cache.intern_node(self.domain.source_node(address)?);
+        cache
+            .source_addresses
+            .lock()
+            .expect("source address lock poisoned")
+            .insert(node, address.clone());
+        Ok(node)
+    }
+
+    // {impl}`requirements.sdk.sources.source_nodes`
+    pub(crate) fn address(&self, node: NodeId<D>) -> Option<OutlineData> {
+        let cache = self.domain.cache();
+        let known = cache
+            .source_addresses
+            .lock()
+            .expect("source address lock poisoned")
+            .get(&node)
+            .cloned();
+        known.or_else(|| self.domain.source_address(cache.node_data(node)?.as_ref()))
+    }
+
+    // {impl}`requirements.sdk.graph.validation-context.node_reference`
+    pub(crate) fn resolve_outline(
+        &self,
+        address: &OutlineData,
+    ) -> Result<OutlineContent, SourceError> {
+        let provider = &self.sources.analysis.provider;
+        let full = provider.visible_path(
+            address
+                .path
+                .to_str()
+                .ok_or_else(|| SourceError::Invalid("non-UTF-8 source path".into()))?,
+        )?;
+        let relative = full
+            .strip_prefix(provider.project_directory()?)
+            .map_err(|error| SourceError::Invalid(error.to_string()))?;
+        let item = OutlineContent::from_path(self.domain.cache(), &full)
+            .and_then(|root| root.select(&address.selector))
+            .map_err(|e| SourceError::Invalid(e.to_string()))?;
+        Ok(item.with_path(relative))
+    }
+
     // {impl}`requirements.sdk.graph.search.occurrence`
     pub async fn search_text(
         &self,
@@ -80,15 +125,8 @@ impl<D: Domain> SourceProject<D> {
                 if limit == Some(hits.len()) {
                     return Ok(SearchResults::new(hits, false));
                 }
-                let item = file.at_offset(span.start);
-                let id = OutlineData {
-                    path: path.clone(),
-                    selector: item.id().selector.clone(),
-                };
-                let node = self
-                    .domain
-                    .cache()
-                    .intern_node(self.domain.source_node(&id)?);
+                let item = file.at_offset(span.start).with_path(&path);
+                let node = self.intern_source(item.id())?;
                 hits.push(SearchHit::new(node, span, item)?);
             }
         }

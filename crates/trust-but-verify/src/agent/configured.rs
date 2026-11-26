@@ -18,6 +18,7 @@ pub(crate) struct ConfiguredAgent {
 impl<D> Agent<D> for ConfiguredAgent
 where
     D: Domain,
+    D::NodeData: serde::Serialize + serde::de::DeserializeOwned + schemars::JsonSchema,
     D::EdgeLabel: serde::de::DeserializeOwned + schemars::JsonSchema + PartialEq,
     D::Error: std::fmt::Display,
 {
@@ -1291,10 +1292,7 @@ mod tests {
                     2 => {
                         let listing: Value =
                             serde_json::from_str(last_output(&requests[turn - 1])).unwrap();
-                        (
-                            "read_node",
-                            serde_json::json!({"node":listing["files"][selected_index]}),
-                        )
+                        ("read_node", listing["files"][selected_index].clone())
                     }
                     3 | 4 => (
                         "search_text",
@@ -1451,7 +1449,7 @@ mod tests {
                     .lock()
                     .unwrap()
                     .iter()
-                    .filter(|id| id.path.starts_with("visible"))
+                    .filter(|id| id.path.starts_with("visible") && id.selector.is_empty())
                     .cloned()
                     .collect::<Vec<_>>(),
                 [
@@ -1505,7 +1503,7 @@ mod tests {
                     .as_array()
                     .unwrap()
                     .iter()
-                    .all(|n| n.is_u64())
+                    .all(|entry| entry["node"].is_u64() && entry["data"]["id"].is_u64())
             );
             let rejected = output(&requests[first + 2], "read_node");
             assert!(rejected.contains("invalid node ID"));

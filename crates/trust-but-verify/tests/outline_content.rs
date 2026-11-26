@@ -190,14 +190,16 @@ fn unknown_extensions_keep_nonblank_lines_and_content_selectors() {
         "beta\nalpha\nalpha\n".into(),
     )
     .unwrap();
-    assert_ne!(first.fingerprint(), reordered.fingerprint());
+    assert_ne!(first.structural_hash(), reordered.structural_hash());
+    assert_eq!(first.fingerprint(), reordered.fingerprint());
     let joined = OutlineContent::from_source(
         &ValidationCache::new(),
         "missing.unclaimed",
         "alpha beta\nalpha\n".into(),
     )
     .unwrap();
-    assert_ne!(first.fingerprint(), joined.fingerprint());
+    assert_ne!(first.structural_hash(), joined.structural_hash());
+    assert_eq!(first.fingerprint(), joined.fingerprint());
     let empty =
         OutlineContent::from_source(&ValidationCache::new(), "missing", Arc::from("")).unwrap();
     assert_eq!(empty.outline().items.len(), 1);
@@ -227,7 +229,10 @@ fn selected_contents_outlive_handles_and_later_file_edits() {
     assert_eq!(selected.text(), "second");
     assert_eq!(selected.format(), "second");
     assert_eq!(selected.structural_hash(), selected.fingerprint().value);
-    assert_eq!(selected.fingerprint_scheme(), selected.fingerprint().scheme);
+    assert_eq!(
+        selected.fingerprint().scheme,
+        format!("{}:own-v1", selected.fingerprint_scheme())
+    );
     assert_eq!(selected.outline().items.len(), 3);
     let original = selected.fingerprint();
     drop(file);
@@ -849,7 +854,8 @@ fn directive_prose_hashes_words_across_reflow_without_joining_them() {
     let reflowed = directive("# H\n:::{note}\n two\n words \n:::\n");
     let joined = directive("# H\n:::{note}\ntwowords\n:::\n");
     assert_eq!(original.fingerprint(), reflowed.fingerprint());
-    assert_ne!(original.fingerprint(), joined.fingerprint());
+    assert_ne!(original.structural_hash(), joined.structural_hash());
+    assert_eq!(original.fingerprint(), joined.fingerprint());
 }
 
 // {test}`requirements.sdk.sources.css.items`
@@ -1185,12 +1191,13 @@ fn structural_fingerprint_example_tracks_the_selected_function() {
 // {test}`requirements.sdk.outlines.attachments.fingerprint`
 #[test]
 fn bundled_fingerprints_exclude_comments_and_preserve_word_boundaries() {
-    fn fingerprint(path: &str, text: &str, selector: &str) -> trust_but_verify::graph::Fingerprint {
+    fn fingerprint(path: &str, text: &str, selector: &str) -> String {
         OutlineContent::from_source(&ValidationCache::new(), path, text.into())
             .unwrap()
             .select(selector)
             .unwrap()
-            .fingerprint()
+            .structural_hash()
+            .to_owned()
     }
     let cases = [
         (
@@ -1252,11 +1259,8 @@ fn bundled_fingerprints_exclude_comments_and_preserve_word_boundaries() {
     ];
     for (path, selector, original, comments_and_space, joined_words) in cases {
         let saved = fingerprint(path, original, selector);
-        assert_eq!(saved.value.len(), 64, "{path}");
-        assert!(
-            saved.value.bytes().all(|byte| byte.is_ascii_hexdigit()),
-            "{path}"
-        );
+        assert_eq!(saved.len(), 64, "{path}");
+        assert!(saved.bytes().all(|byte| byte.is_ascii_hexdigit()), "{path}");
         assert_eq!(
             saved,
             fingerprint(path, comments_and_space, selector),
@@ -1460,7 +1464,7 @@ fn plain_line_fingerprints_use_sha256_words_without_losing_boundaries() {
     );
     assert_eq!(line("two words"), line(" two \t words "));
     assert_ne!(line("two words"), line("twowords"));
-    assert_eq!(line("two words").scheme, "plain-text-structural-v1");
+    assert_eq!(line("two words").scheme, "plain-text-structural-v1:own-v1");
 }
 
 // {test}`requirements.sdk.sources.redaction`
@@ -1478,7 +1482,7 @@ fn formatted_contents_redact_credentials_while_retaining_raw_text_and_spans() {
     )
     .unwrap();
     assert_eq!(contents.text(), source);
-    assert!(contents.format().contains("[REDACTED:GitHub Token]"));
+    assert!(!contents.format().contains("credential"));
     assert!(!contents.format().contains(&token));
     assert_eq!(contents.format().lines().count(), source.lines().count());
     let changed = OutlineContent::from_source(
@@ -1492,6 +1496,7 @@ fn formatted_contents_redact_credentials_while_retaining_raw_text_and_spans() {
         .select(&contents.outline().items[1].selector)
         .unwrap();
     assert!(selected.text().contains(&token));
+    assert!(selected.format().contains("[REDACTED:GitHub Token]"));
     assert!(!selected.format().contains(&token));
 }
 
@@ -1893,4 +1898,32 @@ fn language_name_spans_retain_original_bytes_when_selectors_are_normalized() {
             assert_ne!(items[1].name_span, items[2].name_span);
         }
     }
+}
+
+// {test}`requirements.sdk.graph.validation-context.reading_an_outline_parent`
+// {test}`requirements.sdk.outlines.node_contents`
+#[test]
+fn parent_reads_cover_own_source_independently_of_children() {
+    let parse = |source: &str| {
+        OutlineContent::from_source(&ValidationCache::new(), "parser.rs", source.into())
+            .unwrap()
+            .select("impl[Parser]")
+            .unwrap()
+    };
+    let empty = parse("impl Parser { }");
+    let parent = parse("impl Parser { fn parse() { first(); } }");
+    let changed = parse("impl Parser { fn parse() { second(); } fn extra() {} }");
+    assert_eq!(parent.format(), "impl Parser { … }");
+    assert_eq!(parent.fingerprint(), empty.fingerprint());
+    assert_eq!(parent.fingerprint(), changed.fingerprint());
+    assert_ne!(parent.structural_hash(), changed.structural_hash());
+    assert_ne!(
+        parent.fingerprint(),
+        parse("unsafe impl Parser { }").fingerprint()
+    );
+    let child = "impl[Parser]/fn[parse]";
+    assert_ne!(
+        parent.select(child).unwrap().fingerprint(),
+        changed.select(child).unwrap().fingerprint()
+    );
 }

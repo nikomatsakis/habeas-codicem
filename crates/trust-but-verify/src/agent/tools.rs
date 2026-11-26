@@ -21,6 +21,9 @@ pub struct ToolDelivery<N, L = ()> {
 pub trait ToolSession<D: Domain>: Send {
     // {cite}`habeas:util`
     fn definitions(&self) -> io::Result<Vec<ToolDefinition>>;
+    fn project(&self) -> Option<&crate::sources::SourceProject<D>> {
+        None
+    }
     // {cite}`habeas:util`
     fn dispatch<'a>(
         &'a mut self,
@@ -49,6 +52,7 @@ impl<'a, D: Domain> SessionTools<'a, D> {
 
     // {impl}`requirements.sdk.graph.validation-context.read_node.behavior`
     // {impl}`requirements.sdk.graph.validation-context.read_node.inputs`
+    // {impl}`requirements.sdk.graph.validation-context.read_node.source_children`
     pub(super) fn read_node(
         &mut self,
         inspection: &ValidationContext<'_, D>,
@@ -56,16 +60,42 @@ impl<'a, D: Domain> SessionTools<'a, D> {
     ) -> io::Result<ToolDelivery<NodeId<D>, D::EdgeLabel>>
     where
         D::Error: std::fmt::Display,
+        D::NodeData: serde::de::DeserializeOwned,
     {
-        let node = node_argument(inspection.graph(), arguments)?;
+        let project = self.extra.project();
+        let node = node_argument(inspection.graph(), project, arguments)?;
+        let mut source = None;
+        if let Some(project) = project
+            && let Some(address) = project.address(node)
+        {
+            let item = project.resolve_outline(&address)?;
+            let mut children = Vec::new();
+            for child in item.children() {
+                let id = crate::outline::OutlineData::new(&address.path, child.selector.clone())
+                    .map_err(io::Error::other)?;
+                let child_node = project.intern_source(&id)?;
+                children
+                    .push(json!({"node":child_node,"file":address.path,"selector":child.selector}));
+            }
+            source = Some((
+                json!({"file":address.path,"selector":item.id().selector}),
+                children,
+            ));
+        }
         let snapshot = inspection
             .prepare_read(&node)
             .map_err(|error| io::Error::other(error.to_string()))?;
         let text = crate::sources::redact_text(&snapshot.content.format()).into_owned();
         let observation = Dependency::Node(node, snapshot.fingerprint);
-        Ok(self
-            .pages
-            .prepare(json!({}), "text", Value::String(text), vec![observation]))
+        Ok(match source {
+            Some((metadata, children)) => {
+                self.pages
+                    .source_read(metadata, text, children, observation)
+            }
+            None => self
+                .pages
+                .prepare(json!({}), "text", Value::String(text), vec![observation]),
+        })
     }
 
     pub(super) async fn dispatch(
@@ -151,6 +181,7 @@ impl<P, T> ToolAgent<P, T> {
 impl<D, P, T> Agent<D> for ToolAgent<P, T>
 where
     D: Domain,
+    D::NodeData: serde::Serialize + serde::de::DeserializeOwned + schemars::JsonSchema,
     D::EdgeLabel: serde::de::DeserializeOwned + schemars::JsonSchema + PartialEq,
     D::Error: std::fmt::Display,
     P: CompletionProvider,
@@ -176,6 +207,7 @@ impl<P: CompletionProvider, T> ToolAgent<P, T> {
     ) -> BoxFuture<'a, io::Result<Value>>
     where
         D: Domain,
+        D::NodeData: serde::Serialize + serde::de::DeserializeOwned + schemars::JsonSchema,
         D::EdgeLabel: serde::de::DeserializeOwned + schemars::JsonSchema + PartialEq,
         D::Error: std::fmt::Display,
         T: ToolFactory<D>,
@@ -234,6 +266,7 @@ struct GraphSession<'a, 'd, D: Domain> {
 impl<D> Conversation for GraphSession<'_, '_, D>
 where
     D: Domain,
+    D::NodeData: serde::Serialize + serde::de::DeserializeOwned + schemars::JsonSchema,
     D::EdgeLabel: serde::de::DeserializeOwned + schemars::JsonSchema + PartialEq,
     D::Error: std::fmt::Display,
 {
@@ -250,10 +283,10 @@ where
     // {impl}`requirements.sdk.graph.agent-harness.fixed_tools`
     fn tools(&self) -> io::Result<Vec<ToolDefinition>> {
         let mut tools: Vec<ToolDefinition> = [
-            json!({"name":"read_node","description":"Read a graph node by its domain ID. Returns text and, when more remains, a next UUID. A delivered page records its enclosing node.",
-                "parameters":node_parameters::<NodeId<D>>(None)}),
+            json!({"name":"read_node","description":"Read a graph node by ID, source address, or node data. Returns text and, when more remains, a next UUID. A delivered page records its enclosing node.",
+                "parameters":node_parameters::<NodeId<D>,D::NodeData>(None)}),
             json!({"name":"outgoing_edges","description":"Inspect a known node's outgoing targets for the requested label, making those targets available to read_node.",
-                "parameters":node_parameters::<NodeId<D>>(Some(schemars::SchemaGenerator::subschema_for::<D::EdgeLabel>))}),
+                "parameters":node_parameters::<NodeId<D>,D::NodeData>(Some(schemars::SchemaGenerator::subschema_for::<D::EdgeLabel>))}),
             json!({"name":"get_next_page","description":"Pass the UUID from next to read the next page in the same format. When next is absent, this is the last page.",
                 "parameters":{"type":"object","required":["uuid"],"properties":{"uuid":{"type":"string","format":"uuid"}}}}),
             json!({"name":"submit_result","description":"Finish by submitting your structured result in result. Exactly one accepted submission ends this call.",
@@ -309,7 +342,11 @@ where
                 Ok(delivery.text)
             }
             "outgoing_edges" => {
-                let node = node_argument(self.inspection.graph(), arguments)?;
+                let node = node_argument(
+                    self.inspection.graph(),
+                    self.tools.extra.project(),
+                    arguments,
+                )?;
                 let label: D::EdgeLabel =
                     serde_json::from_value(arguments["label"].clone()).map_err(io::Error::other)?;
                 let snapshot = self
@@ -403,30 +440,79 @@ mod submission_tests {
 }
 
 // {impl}`requirements.sdk.graph.validation-context.node_reference`
-pub(super) fn node_argument<D: Domain>(domain: &D, args: &Value) -> io::Result<NodeId<D>> {
-    let node = args
-        .get("node")
-        .ok_or_else(|| io::Error::other("missing node ID"))?;
-    let id = serde_json::from_value(node.clone())
-        .map_err(|err| io::Error::other(format!("invalid node ID: {err}")))?;
-    domain
-        .cache()
-        .node_data(id)
-        .ok_or_else(|| io::Error::other("unassigned node ID"))?;
-    Ok(id)
+// {impl}`requirements.sdk.graph.validation-context.node_reference.consistency`
+pub(super) fn node_argument<D: Domain>(
+    domain: &D,
+    project: Option<&crate::sources::SourceProject<D>>,
+    args: &Value,
+) -> io::Result<NodeId<D>>
+where
+    D::NodeData: serde::de::DeserializeOwned,
+{
+    if let Some(path) = args.get("path") {
+        if args.get("node").is_some() || args.get("data").is_some() {
+            return Err(io::Error::other(
+                "path cannot be combined with node or data",
+            ));
+        }
+        let path = path
+            .as_str()
+            .ok_or_else(|| io::Error::other("path must be a string"))?;
+        let location = args
+            .get("location")
+            .map(|v| {
+                v.as_str()
+                    .ok_or_else(|| io::Error::other("location must be a selector string"))
+            })
+            .transpose()?
+            .unwrap_or("");
+        let project =
+            project.ok_or_else(|| io::Error::other("project sources are not configured"))?;
+        let id =
+            crate::outline::OutlineData::new(path, location.into()).map_err(io::Error::other)?;
+        let item = project.resolve_outline(&id)?;
+        return Ok(project.intern_source(item.id())?);
+    }
+    if args.get("location").is_some() {
+        return Err(io::Error::other("location requires path"));
+    }
+    let data = args
+        .get("data")
+        .cloned()
+        .map(serde_json::from_value::<D::NodeData>)
+        .transpose()?;
+    if let Some(value) = args.get("node") {
+        let id = serde_json::from_value(value.clone())
+            .map_err(|err| io::Error::other(format!("invalid node ID: {err}")))?;
+        let stored = domain
+            .cache()
+            .node_data(id)
+            .ok_or_else(|| io::Error::other("unassigned node ID"))?;
+        if data.as_ref().is_some_and(|given| given != stored.as_ref()) {
+            return Err(io::Error::other(
+                "node ID and data identify different nodes",
+            ));
+        }
+        return Ok(id);
+    }
+    data.map(|value| domain.cache().intern_node(value))
+        .ok_or_else(|| io::Error::other("expected node, data, or path"))
 }
 
 // {impl}`requirements.sdk.graph.validation-context.node_reference`
-pub(super) fn node_parameters<N: schemars::JsonSchema>(
+pub(super) fn node_parameters<N: schemars::JsonSchema, Data: schemars::JsonSchema>(
     label_schema: Option<fn(&mut schemars::SchemaGenerator) -> schemars::Schema>,
 ) -> Value {
     let mut generator = schemars::SchemaGenerator::default();
     let mut parameters = json!({
-        "type": "object", "required": ["node"],
-        "properties": {"node": generator.subschema_for::<N>()}
+        "type":"object", "oneOf":[
+            {"required":["node"],"not":{"anyOf":[{"required":["path"]},{"required":["location"]}]}},
+            {"required":["data"],"not":{"anyOf":[{"required":["node"]},{"required":["path"]},{"required":["location"]}]}},
+            {"required":["path"],"not":{"anyOf":[{"required":["node"]},{"required":["data"]}]}}
+        ], "properties":{"node":generator.subschema_for::<N>(),"data":generator.subschema_for::<Data>(),"path":{"type":"string"},"location":{"type":"string"}}
     });
     if let Some(label) = label_schema {
-        parameters["required"] = json!(["node", "label"]);
+        parameters["required"] = json!(["label"]);
         parameters["properties"]["label"] = json!(label(&mut generator));
     }
     let definitions = generator.take_definitions(true);
@@ -460,7 +546,7 @@ mod tests {
         };
         assert_eq!(label.metadata.kind, "tests");
         let parameters =
-            node_parameters::<u32>(Some(schemars::SchemaGenerator::subschema_for::<Label>));
+            node_parameters::<u32, String>(Some(schemars::SchemaGenerator::subschema_for::<Label>));
         let label = parameters
             .pointer(
                 parameters["properties"]["label"]["$ref"]
@@ -476,8 +562,9 @@ mod tests {
             .unwrap();
         assert_eq!(definition["properties"]["kind"]["type"], "string");
         assert!(parameters["properties"]["label"].get("$defs").is_none());
-        assert_eq!(parameters["required"], json!(["node", "label"]));
-        let unit = node_parameters::<u32>(Some(schemars::SchemaGenerator::subschema_for::<()>));
+        assert_eq!(parameters["required"], json!(["label"]));
+        let unit =
+            node_parameters::<u32, String>(Some(schemars::SchemaGenerator::subschema_for::<()>));
         assert_eq!(unit["properties"]["label"]["type"], "null");
         assert!(unit.get("$defs").is_none());
     }

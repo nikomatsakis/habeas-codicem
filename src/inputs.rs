@@ -8,7 +8,6 @@ use serde_json::{Value, json};
 use crate::definition_glob;
 use crate::evidence::Declaration;
 use crate::outline_items::EvidenceOutline;
-use trust_but_verify::domain::NodeContents;
 
 // {cite}`habeas:util`
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -237,7 +236,10 @@ impl OutlineCache {
             let items = crate::outline_items::OutlineItems::new(public, &source);
             let outline = EvidenceOutline::new(public, items, snapshot.language(), &source);
             Ok(ParsedSource {
-                redacted: snapshot.format(),
+                redacted: snapshot
+                    .source_span_redacted(public.items[0].span)
+                    .expect("validated file-root span")
+                    .into_owned(),
                 snapshot,
                 path: fs::canonicalize(&path).unwrap_or(path),
                 source,

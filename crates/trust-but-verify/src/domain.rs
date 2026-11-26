@@ -52,6 +52,7 @@ impl<D: Domain> std::hash::Hash for NodeId<D> {
 // {impl}`requirements.sdk.validation-cache.ValidationCache`
 pub struct ValidationCache<D: Domain> {
     nodes: Arc<Mutex<indexmap::IndexSet<Arc<D::NodeData>>>>,
+    pub(crate) source_addresses: Arc<Mutex<HashMap<NodeId<D>, crate::outline::OutlineData>>>,
     pub(crate) outlines: Arc<Mutex<HashMap<PathBuf, CachedFile>>>,
     pub(crate) sources: Option<Arc<crate::sources::Sources>>,
     pub(crate) agent: Option<Arc<CachedAgent<D>>>,
@@ -72,6 +73,7 @@ impl<D: Domain> Clone for ValidationCache<D> {
     fn clone(&self) -> Self {
         Self {
             nodes: self.nodes.clone(),
+            source_addresses: self.source_addresses.clone(),
             outlines: self.outlines.clone(),
             sources: self.sources.clone(),
             agent: self.agent.clone(),
@@ -83,6 +85,7 @@ impl<D: Domain> Default for ValidationCache<D> {
     fn default() -> Self {
         Self {
             nodes: Default::default(),
+            source_addresses: Default::default(),
             outlines: Default::default(),
             sources: None,
             agent: None,
@@ -130,6 +133,7 @@ impl<D: Domain> ValidationCache<D> {
     // {impl}`requirements.sdk.validation-cache.with_agent`
     pub fn with_agent(config: impl AgentSettings<D>) -> Self
     where
+        D::NodeData: serde::Serialize + serde::de::DeserializeOwned + schemars::JsonSchema,
         D::EdgeLabel: serde::de::DeserializeOwned + schemars::JsonSchema + PartialEq,
         D::Error: std::fmt::Display,
     {
@@ -171,6 +175,12 @@ pub trait Domain: Clone + Send + Sync {
         Err(crate::sources::SourceError::Invalid(format!(
             "domain has no source node mapping for {item:?}"
         )))
+    }
+
+    /// Recover a source address for a domain identity supplied independently of discovery.
+    // {impl}`requirements.sdk.sources.source_nodes`
+    fn source_address(&self, _data: &Self::NodeData) -> Option<crate::outline::OutlineData> {
+        None
     }
 
     /// Application-defined errors from domain operations.

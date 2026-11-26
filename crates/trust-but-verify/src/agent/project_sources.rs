@@ -36,7 +36,7 @@ fn excerpt(
     item: &crate::outline::OutlineContent,
     hits: &[crate::outline::Span],
     window: usize,
-) -> String {
+) -> (String, Vec<crate::outline::Span>) {
     let info = item.item();
     let bounds = info.span;
     let source = item.text();
@@ -63,7 +63,7 @@ fn excerpt(
     spans.sort_unstable_by_key(|s| s.start);
     let mut cursor = bounds.start;
     let mut result = String::new();
-    for span in spans {
+    for span in &spans {
         if span.start > cursor {
             result.push_str("...");
         }
@@ -80,7 +80,21 @@ fn excerpt(
     if cursor < bounds.end {
         result.push_str("...");
     }
-    result
+    (result, spans)
+}
+
+// {impl}`requirements.sdk.graph.search.finish_search.inputs`
+fn excerpt_dependencies<D: crate::domain::Domain>(
+    project: &ProjectSources<D>,
+    hit: &crate::sources::SearchHit<NodeId<D>>,
+    spans: &[crate::outline::Span],
+) -> io::Result<Vec<Dependency<NodeId<D>, D::EdgeLabel>>> {
+    let mut inputs = vec![Dependency::Node(hit.node, hit.item.fingerprint())];
+    for item in hit.item.excerpt_items(spans) {
+        let node = project.intern_source(item.id())?;
+        inputs.push(Dependency::Node(node, item.fingerprint()));
+    }
+    Ok(inputs)
 }
 
 #[cfg(test)]
@@ -132,6 +146,11 @@ mod tests {
                 return Ok("source-node".into());
             }
             Ok(format!("{path}#{}", item.selector))
+        }
+
+        fn source_address(&self, data: &String) -> Option<OutlineData> {
+            let (path, selector) = data.split_once('#')?;
+            OutlineData::new(path, selector.into()).ok()
         }
 
         fn cache(&self) -> &crate::domain::ValidationCache<Self> {
@@ -219,6 +238,127 @@ mod tests {
             })),
             Default::default(),
         )
+    }
+
+    // {test}`requirements.sdk.graph.validation-context.file_node_arguments`
+    // {test}`requirements.sdk.graph.validation-context.node_reference.consistency`
+    // {test}`requirements.sdk.graph.validation-context.node_reference`
+    // {test}`requirements.sdk.graph.validation-context.read_node.source_children`
+    #[tokio::test]
+    async fn agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("parser.rs"),
+            "impl Parser { fn parse() {} }",
+        )
+        .unwrap();
+        let tools = ProjectSources::new(project("domain content"), Sources::new(root.path()));
+        let mut session = SessionTools::new(tools.session());
+        let cx = ValidationContext::new(
+            tools.domain.as_ref(),
+            tools.domain.cache().intern_node("criterion".into()),
+        );
+        let parent = session
+            .read_node(&cx, &json!({"data":"parser.rs#impl[Parser]"}))
+            .unwrap();
+        let parent: Value = serde_json::from_str(&parent.text).unwrap();
+        assert_eq!(parent["selector"], "impl[Parser]");
+        let child = &parent["children"][0];
+        assert_eq!(child["selector"], "impl[Parser]/fn[parse]");
+        let read = session
+            .read_node(
+                &cx,
+                &json!({"path":"parser.rs", "location":child["selector"]}),
+            )
+            .unwrap();
+        let by_id = session.read_node(&cx, child).unwrap();
+        assert_eq!(read.dependencies, by_id.dependencies);
+        assert_eq!(
+            serde_json::from_str::<Value>(&read.text).unwrap()["children"],
+            json!([])
+        );
+        let listed = session.dispatch("list_sources", &json!({})).await.unwrap();
+        assert!(listed.dependencies.is_empty());
+        let entry = &serde_json::from_str::<Value>(&listed.text).unwrap()["files"][0];
+        let from_entry = session.read_node(&cx, entry).unwrap();
+        for address in [
+            json!({"node":entry["node"]}),
+            json!({"data":entry["data"]}),
+            json!({"path":"parser.rs"}),
+        ] {
+            assert_eq!(
+                session.read_node(&cx, &address).unwrap().dependencies,
+                from_entry.dependencies
+            );
+        }
+        let reads = tools.domain.0.lock().unwrap().reads;
+        for invalid in [
+            json!({}),
+            json!({"node":entry["node"],"data":"unknown"}),
+            json!({"node":10000,"data":entry["data"]}),
+            json!({"node":-1}),
+            json!({"data":false}),
+            json!({"path":"parser.rs","data":entry["data"]}),
+            json!({"path":"parser.rs","node":entry["node"]}),
+            json!({"location":"impl[Parser]"}),
+            json!({"path":"parser.rs","location":"fn[absent]"}),
+            json!({"path":"absent.rs"}),
+        ] {
+            assert!(session.read_node(&cx, &invalid).is_err(), "{invalid}");
+        }
+        assert_eq!(tools.domain.0.lock().unwrap().reads, reads);
+    }
+
+    // {test}`requirements.sdk.graph.search.search_structure.mcp`
+    // {test}`requirements.sdk.graph.search.search_text.mcp`
+    // {test}`requirements.sdk.graph.search.finish_search.inputs`
+    #[tokio::test]
+    async fn scoped_search_accounts_for_visible_descendant_text() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("src")).unwrap();
+        for path in ["src/code.rs", "other.rs"] {
+            std::fs::write(
+                root.path().join(path),
+                "impl Parser { fn parse() { hit(); } }",
+            )
+            .unwrap();
+        }
+        let tools = ProjectSources::new(project(""), Sources::new(root.path()));
+        let mut session = SessionTools::new(tools.session());
+        for (tool, args, selector, expected) in [
+            (
+                "search_structure",
+                json!({"language":"rust","rule":{"rule":{"pattern":"hit()"}},"path":"src"}),
+                "impl[Parser]/fn[parse]",
+                1,
+            ),
+            (
+                "search_text",
+                json!({"pattern":"impl Parser","path":"src/code.rs"}),
+                "impl[Parser]",
+                2,
+            ),
+            (
+                "search_text",
+                json!({"pattern":"impl Parser","path":"src","window_bytes":0}),
+                "impl[Parser]",
+                1,
+            ),
+        ] {
+            let delivery = session.dispatch(tool, &args).await.unwrap();
+            let page: Value = serde_json::from_str(&delivery.text).unwrap();
+            assert_eq!(page["matches"].as_array().unwrap().len(), 1, "{page}");
+            assert_eq!(page["matches"][0]["file"], "src/code.rs");
+            assert_eq!(page["matches"][0]["selector"], selector);
+            let tracked = session
+                .dispatch(
+                    "finish_search",
+                    &json!({"search_id":page["search_id"], "used":["1"]}),
+                )
+                .await
+                .unwrap();
+            assert_eq!(tracked.dependencies.len(), expected, "{page}");
+        }
     }
 
     // {test}`requirements.sdk.graph.search.agent_search_accounting`
@@ -444,7 +584,7 @@ mod tests {
         assert_eq!(
             search.parameters,
             json!({"type":"object","required":["pattern"],"properties":{
-                "pattern":{"type":"string"},
+                "pattern":{"type":"string"}, "path":{"type":"string"},
                 "window_bytes":{"type":"integer","minimum":0,"default":128}, "limit":{"type":"integer","minimum":0}
             }})
         );
@@ -460,7 +600,11 @@ mod tests {
             .search_text(&TextQuery::new("hit".into()))
             .await
             .unwrap();
-        let mut nodes: Vec<_> = hits.matches.into_iter().map(|hit| hit.node).collect();
+        let mut nodes: Vec<_> = hits
+            .matches
+            .into_iter()
+            .map(|hit| (hit.node, hit.item.id().selector.clone()))
+            .collect();
         nodes.dedup();
         let mut delivery = session
             .dispatch("search_text", &json!({"pattern":"hit"}))
@@ -479,7 +623,7 @@ mod tests {
             for (index, entry) in matches.iter().enumerate() {
                 assert_eq!(
                     entry,
-                    &json!({"node":nodes[count], "excerpt":lines[count], "tag":(index+1).to_string()})
+                    &json!({"node":nodes[count].0, "file":"source.txt", "selector":nodes[count].1, "excerpt":lines[count], "tag":(index+1).to_string()})
                 );
                 count += 1;
             }
@@ -687,12 +831,39 @@ mod tests {
             tools.domain.as_ref(),
             tools.domain.as_ref().cache().intern_node(String::new()),
         );
+        let mut root_read = session
+            .read_node(&context, &json!({"path":"code.rs"}))
+            .unwrap();
+        let mut children = Vec::new();
+        loop {
+            let page: Value = serde_json::from_str(&root_read.text).unwrap();
+            assert_eq!(root_read.dependencies.len(), 1);
+            children.extend(
+                page["children"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|child| child["node"].clone()),
+            );
+            let Some(next) = page.get("next") else { break };
+            root_read = session
+                .dispatch("get_next_page", &json!({"uuid":next}))
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            children,
+            items[1..]
+                .iter()
+                .map(|item| item["node"].clone())
+                .collect::<Vec<_>>()
+        );
         let read = session.read_node(&context, &items[5]).unwrap();
         let text: Value = serde_json::from_str(&read.text).unwrap();
         assert_eq!(text["text"], "fn item_4() {}");
         assert_eq!(
             tools.domain.0.lock().unwrap().read_nodes,
-            ["code.rs#fn[item_4]"]
+            ["code.rs#", "code.rs#fn[item_4]"]
         );
     }
 
@@ -721,9 +892,14 @@ mod tests {
         std::fs::write(root.path().join("added.rs"), "").unwrap();
         let mut files = Vec::new();
         loop {
-            files.extend(
-                serde_json::from_value::<Vec<NodeId<Project>>>(page["files"].take()).unwrap(),
-            );
+            for entry in page["files"].as_array().unwrap() {
+                let node: NodeId<Project> = serde_json::from_value(entry["node"].clone()).unwrap();
+                assert_eq!(
+                    entry["data"],
+                    **tools.domain.cache().node_data(node).as_ref().unwrap()
+                );
+                files.push(node);
+            }
             let Some(uuid) = page.get("next") else { break };
             let delivery = session
                 .dispatch("get_next_page", &json!({"uuid":uuid}))
@@ -807,8 +983,8 @@ mod tests {
         assert_eq!(
             page["matches"],
             json!([
-                {"tag":"1", "node":results.matches[0].node, "excerpt":"const A: &str = \"éhit\";"},
-                {"tag":"2", "node":results.matches[1].node, "excerpt":"const B: &str = \"hit hit\";"}
+                {"tag":"1", "node":results.matches[0].node, "file":"code.rs", "selector":"const[A]", "excerpt":"const A: &str = \"éhit\";"},
+                {"tag":"2", "node":results.matches[1].node, "file":"code.rs", "selector":"const[B]", "excerpt":"const B: &str = \"hit hit\";"}
             ])
         );
         let context = ValidationContext::new(
@@ -928,7 +1104,7 @@ mod tests {
                 let page: Value = serde_json::from_str(&result.text).unwrap();
                 assert_eq!(
                     page["matches"],
-                    json!([{"tag":"1", "node":hits.matches[0].node, "excerpt":expected}])
+                    json!([{"tag":"1", "node":hits.matches[0].node, "file":"fragment.rs", "selector":"", "excerpt":expected}])
                 );
                 let read = session.read_node(&cx, &page["matches"][0]).unwrap();
                 let payload: Value = serde_json::from_str(&read.text).unwrap();
@@ -975,7 +1151,7 @@ mod tests {
             OutlineContent::from_source(project("").cache(), "code.rs", "  hit    hit  ".into())
                 .unwrap();
         assert_eq!(
-            excerpt(&item, &[Span::new(2, 5), Span::new(9, 12)], 2),
+            excerpt(&item, &[Span::new(2, 5), Span::new(9, 12)], 2).0,
             item.text()
         );
     }
@@ -1089,7 +1265,7 @@ mod tests {
             let page: Value = serde_json::from_str(&page.text).unwrap();
             assert_eq!(
                 page["matches"],
-                json!([{"tag":"1", "node":project.domain.cache().intern_node("runner.rs#impl[Runner]/fn[run]".into()), "excerpt":expected}])
+                json!([{"tag":"1", "node":project.domain.cache().intern_node("runner.rs#impl[Runner]/fn[run]".into()), "file":"runner.rs", "selector":"impl[Runner]/fn[run]", "excerpt":expected}])
             );
             let read = session.read_node(&context, &page["matches"][0]).unwrap();
             let read: Value = serde_json::from_str(&read.text).unwrap();
@@ -1321,13 +1497,10 @@ mod tests {
             .position(|p| p == std::path::Path::new("source.txt"))
             .unwrap();
         let reference = &listing["files"][index];
-        let allowed = session
-            .dispatch("outline_source", &json!({"node":reference}))
-            .await
-            .unwrap();
+        let allowed = session.dispatch("outline_source", reference).await.unwrap();
         assert!(allowed.dependencies.is_empty());
         let outline: Value = serde_json::from_str(&allowed.text).unwrap();
-        assert_eq!(&outline["node"], reference);
+        assert_eq!(outline["node"], reference["node"]);
         assert!(outline["items"][0]["node"].is_u64());
         assert_eq!(outline["items"].as_array().unwrap().len(), 3);
         for args in [
@@ -1351,7 +1524,7 @@ mod tests {
             .position(|p| p == std::path::Path::new("invalid.rs"))
             .unwrap();
         let recovered = session
-            .dispatch("outline_source", &json!({"node":listing["files"][index]}))
+            .dispatch("outline_source", &listing["files"][index])
             .await
             .unwrap();
         let outline: Value = serde_json::from_str(&recovered.text).unwrap();
@@ -1363,28 +1536,30 @@ mod tests {
 impl<D: crate::domain::Domain> ToolFactory<D> for ProjectSources<D>
 where
     D::Error: std::fmt::Display,
+    D::NodeData: serde::Serialize + serde::de::DeserializeOwned + schemars::JsonSchema,
 {
     fn session<'a>(&'a self) -> Box<dyn ToolSession<D> + 'a>
     where
         NodeId<D>: 'a,
         D::EdgeLabel: 'a,
     {
-        Box::new(Session {
-            tools: self,
-            files: std::collections::HashMap::new(),
-        })
+        Box::new(Session { tools: self })
     }
 }
 
 struct Session<'a, D: crate::domain::Domain> {
     tools: &'a ProjectSources<D>,
-    files: std::collections::HashMap<Value, std::path::PathBuf>,
 }
 
 impl<D: crate::domain::Domain> ToolSession<D> for Session<'_, D>
 where
     D::Error: std::fmt::Display,
+    D::NodeData: serde::Serialize + serde::de::DeserializeOwned + schemars::JsonSchema,
 {
+    fn project(&self) -> Option<&ProjectSources<D>> {
+        Some(self.tools)
+    }
+
     // {impl}`requirements.sdk.graph.validation-context.list_sources.mcp`
     // {impl}`requirements.sdk.graph.validation-context.list_sources.mcp.description`
     // {impl}`requirements.sdk.graph.validation-context.outline_source.mcp`
@@ -1398,9 +1573,9 @@ where
     fn definitions(&self) -> io::Result<Vec<ToolDefinition>> {
         [
             json!({"name":LIST_SOURCES,"description":"List available project file nodes.", "parameters":{"type":"object","properties":{}}}),
-            json!({"name":OUTLINE_SOURCE,"description":"Inspect the outline of a listed file node.","parameters":super::tools::node_parameters::<NodeId<D>>(None)}),
-            json!({"name":SEARCH_TEXT,"description":"Find regular-expression matches in available files. Read selected nodes separately.","parameters":{"type":"object","required":["pattern"],"properties":{"pattern":{"type":"string"},"window_bytes":{"type":"integer","minimum":0,"default":128},"limit":{"type":"integer","minimum":0}}}}),
-            json!({"name":SEARCH_STRUCTURE,"description":"Find structural matches in available files. Read selected nodes separately.","parameters":{"type":"object","required":["language","rule"],"properties":{"language":{"type":"string"},"rule":{"type":"object"},"limit":{"type":"integer","minimum":0}}}}),
+            json!({"name":OUTLINE_SOURCE,"description":"Inspect the outline of a file node.","parameters":super::tools::node_parameters::<NodeId<D>, D::NodeData>(None)}),
+            json!({"name":SEARCH_TEXT,"description":"Find regular-expression matches in available files, optionally within a file or directory. Read selected nodes separately.","parameters":{"type":"object","required":["pattern"],"properties":{"pattern":{"type":"string"},"path":{"type":"string"},"window_bytes":{"type":"integer","minimum":0,"default":128},"limit":{"type":"integer","minimum":0}}}}),
+            json!({"name":SEARCH_STRUCTURE,"description":"Find structural matches in available files, optionally within a file or directory. Read selected nodes separately.","parameters":{"type":"object","required":["language","rule"],"properties":{"language":{"type":"string"},"rule":{"type":"object"},"path":{"type":"string"},"limit":{"type":"integer","minimum":0}}}}),
         json!({
             "name":FINISH_SEARCH,
             "description":"Close a delivered search and record dependencies for snippets you used to justify your conclusion without an additional source read. search_id is the result's UUID and used is an array of its short entry tags, e.g. {\"search_id\":\"11111111-1111-4111-8111-111111111111\",\"used\":[\"1\"]}. Entries whose source you also read may be omitted; including them is harmless. Use used:[] when no entries qualify, including an empty search. Every delivered search must be finished before submission. The result is {search_id, finished:true}; no additional source is delivered.",
@@ -1456,7 +1631,12 @@ where
                     })
                     .transpose()
             };
-            let scope = SourceScope::all();
+            let search_scope = || -> io::Result<SourceScope> {
+                match args.get("path") {
+                    Some(_) => Ok(SourceScope::under(string("path")?)),
+                    None => Ok(SourceScope::all()),
+                }
+            };
             let limit = optional_number("limit")?;
             let (metadata, field, contents) = match name {
                 LIST_SOURCES => {
@@ -1464,65 +1644,52 @@ where
                     for path in self
                         .tools
                         .sources
-                        .list(&scope)
+                        .list(&SourceScope::all())
                         .await
                         .map_err(io::Error::other)?
                     {
                         let id = OutlineData::root(&path);
-                        let node = self
+                        let node = self.tools.intern_source(&id)?;
+                        let data = self
                             .tools
                             .domain
-                            .source_node(&id)
-                            .map(|data| self.tools.domain.cache().intern_node(data))
-                            .map_err(io::Error::other)?;
-                        let reference = serde_json::to_value(&node)?;
-                        self.files.insert(reference.clone(), path);
-                        files.push(reference);
+                            .cache()
+                            .node_data(node)
+                            .expect("interned source");
+                        files.push(json!({"node":node,"data":data.as_ref()}));
                     }
                     (json!({}), "files", json!(files))
                 }
                 OUTLINE_SOURCE => {
-                    let node: NodeId<D> =
-                        super::tools::node_argument(self.tools.domain.as_ref(), args)?;
-                    let id = serde_json::to_value(node)?;
-                    let path = self
-                        .files
-                        .get(&id)
-                        .ok_or_else(|| io::Error::other("expected a listed file node"))?;
-                    let full = self
+                    let node = super::tools::node_argument(
+                        self.tools.domain.as_ref(),
+                        Some(self.tools),
+                        args,
+                    )?;
+                    let address = self
                         .tools
-                        .sources
-                        .analysis
-                        .provider
-                        .visible_path(
-                            path.to_str()
-                                .ok_or_else(|| io::Error::other("invalid path"))?,
-                        )
-                        .map_err(io::Error::other)?;
-                    let contents =
-                        crate::outline::OutlineContent::from_path(self.tools.domain.cache(), full)
-                            .map_err(io::Error::other)?;
+                        .address(node)
+                        .filter(|id| id.selector.is_empty())
+                        .ok_or_else(|| io::Error::other("expected a file-root node"))?;
+                    let contents = self.tools.resolve_outline(&address)?;
+                    let path = &address.path;
                     let mut items = Vec::new();
                     for item in &contents.outline().items {
                         let id = OutlineData {
                             path: path.clone(),
                             selector: item.selector.clone(),
                         };
-                        let node = self
-                            .tools
-                            .domain
-                            .source_node(&id)
-                            .map(|data| self.tools.domain.cache().intern_node(data))
-                            .map_err(io::Error::other)?;
-                        items.push(json!({"node":serde_json::to_value(&node)?,"kind":item.kind}));
+                        let node = self.tools.intern_source(&id)?;
+                        items.push(json!({"node":node,"kind":item.kind,"file":path,"selector":item.selector}));
                     }
-                    (json!({"node":id}), "items", json!(items))
+                    (json!({"node":node}), "items", json!(items))
                 }
                 FINISH_SEARCH => return pages.finish_search(args),
                 SEARCH_TEXT => {
                     let window = optional_number("window_bytes")?.unwrap_or(128);
                     let mut query = TextQuery::new(string("pattern")?.to_owned());
                     query.limit = limit;
+                    query.scope = search_scope()?;
                     let found = self
                         .tools
                         .search_text(&query)
@@ -1552,12 +1719,12 @@ where
                     let entries = groups
                         .into_iter()
                         .map(|(hit, spans)| {
-                            let text = excerpt(&hit.item, &spans, window);
+                            let (text, visible) = excerpt(&hit.item, &spans, window);
                             let entry =
-                                json!({"node":serde_json::to_value(&hit.node)?,"excerpt":text});
+                                json!({"node":serde_json::to_value(&hit.node)?,"file":hit.item.id().path,"selector":hit.item.id().selector,"excerpt":text});
                             Ok((
                                 entry,
-                                Ok(Dependency::Node(hit.node, hit.item.fingerprint())),
+                                excerpt_dependencies(self.tools, &hit, &visible)?,
                             ))
                         })
                         .collect::<io::Result<Vec<_>>>()?;
@@ -1572,6 +1739,7 @@ where
                         .clone();
                     let mut query = StructuralQuery::new(string("language")?.into(), rule);
                     query.limit = limit;
+                    query.scope = search_scope()?;
                     let found = self
                         .tools
                         .search_structure(&query)
@@ -1586,10 +1754,10 @@ where
                                 .item
                                 .source_span_redacted(hit.span)
                                 .ok_or_else(|| io::Error::other("invalid structural match span"))?;
-                            let entry = json!({"node": node, "excerpt": excerpt});
+                            let entry = json!({"node": node,"file":hit.item.id().path,"selector":hit.item.id().selector, "excerpt": excerpt});
                             Ok((
                                 entry,
-                                Ok(Dependency::Node(hit.node, hit.item.fingerprint())),
+                                excerpt_dependencies(self.tools, &hit, &[hit.span])?,
                             ))
                         })
                         .collect::<io::Result<Vec<_>>>()?;

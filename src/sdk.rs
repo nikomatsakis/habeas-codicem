@@ -222,6 +222,18 @@ impl Domain for HabeasDomain {
             item: item.selector.clone(),
         }))
     }
+    fn source_address(
+        &self,
+        data: &Self::NodeData,
+    ) -> Option<trust_but_verify::outline::OutlineData> {
+        let HabeasNode::Source(id) = data else {
+            return None;
+        };
+        if id.resource.scheme != "repo" {
+            return None;
+        }
+        trust_but_verify::outline::OutlineData::new(&id.resource.location, id.selector.clone()).ok()
+    }
     fn cache(&self) -> &ValidationCache<Self> {
         &self.outlines.validation
     }

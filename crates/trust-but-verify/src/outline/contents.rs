@@ -126,6 +126,7 @@ pub struct OutlineItem {
     pub header_span: Option<Span>,
     pub trailer_span: Option<Span>,
     pub structural_hash: String,
+    own_hash: Option<String>,
     pub attachments: Vec<OutlineAttachment>,
 }
 
@@ -140,8 +141,16 @@ impl OutlineItem {
             header_span: None,
             trailer_span: None,
             structural_hash,
+            own_hash: None,
             attachments: Vec::new(),
         }
+    }
+
+    /// Set the fingerprint digest for this item with its outline descendants excluded.
+    // {impl}`requirements.sdk.outlines.node_contents`
+    pub fn with_own_hash(mut self, hash: String) -> Self {
+        self.own_hash = Some(hash);
+        self
     }
 
     /// Set the source highlight for a named item.
@@ -225,6 +234,7 @@ pub trait OutlineLang: Clone + Send + Sync {
 struct Snapshot {
     source: Arc<str>,
     outline: Outline,
+    children: Vec<Vec<usize>>,
     language: String,
     scheme: String,
     redaction: crate::redaction::Redaction,
@@ -436,6 +446,21 @@ impl OutlineContent {
     ) -> Result<Self, OutlineError> {
         validate_outline(&outline, &source)?;
         let redaction = crate::redaction::Redaction::of_text(&source);
+        let mut children = vec![Vec::new(); outline.items.len()];
+        let mut ancestors = vec![0usize];
+        for (index, item) in outline.items.iter().enumerate().skip(1) {
+            while ancestors.len() > 1
+                && !item
+                    .selector
+                    .strip_prefix(&outline.items[*ancestors.last().unwrap()].selector)
+                    .is_some_and(|suffix| suffix.starts_with('/'))
+            {
+                ancestors.pop();
+            }
+            let parent = *ancestors.last().unwrap();
+            children[parent].push(index);
+            ancestors.push(index);
+        }
         Ok(Self {
             id: OutlineData {
                 path: filename.to_path_buf(),
@@ -444,6 +469,7 @@ impl OutlineContent {
             snapshot: Arc::new(Snapshot {
                 source,
                 outline,
+                children,
                 language: language.to_owned(),
                 scheme: scheme.to_owned(),
                 redaction,
@@ -561,6 +587,61 @@ impl OutlineContent {
         )
     }
 
+    pub(crate) fn with_path(mut self, path: &Path) -> Self {
+        self.id.path = path.to_owned();
+        self
+    }
+
+    pub(crate) fn children(&self) -> impl Iterator<Item = &OutlineItem> {
+        self.snapshot.children[self.selected]
+            .iter()
+            .map(|&index| &self.snapshot.outline.items[index])
+    }
+
+    /// Nodes whose own source contributed bytes to a displayed search excerpt.
+    // {impl}`requirements.sdk.graph.search.finish_search.inputs`
+    pub(crate) fn excerpt_items(&self, spans: &[Span]) -> Vec<Self> {
+        let intersects = |start, end| {
+            spans
+                .iter()
+                .any(|s| start < end && s.start < end && start < s.end)
+        };
+        let bounds = self.item().span;
+        let root = if spans
+            .iter()
+            .all(|s| bounds.start <= s.start && s.end <= bounds.end)
+        {
+            self.selected
+        } else {
+            0
+        };
+        let mut pending = vec![root];
+        let mut items = Vec::new();
+        while let Some(index) = pending.pop() {
+            let item = &self.snapshot.outline.items[index];
+            if !intersects(item.span.start, item.span.end) {
+                continue;
+            }
+            let mut cursor = item.span.start;
+            let mut visible = false;
+            for &child in &self.snapshot.children[index] {
+                let child_span = self.snapshot.outline.items[child].span;
+                visible |= intersects(cursor, child_span.start);
+                cursor = cursor.max(child_span.end);
+                if intersects(child_span.start, child_span.end) {
+                    pending.push(child);
+                }
+            }
+            if index != self.selected && (visible || intersects(cursor, item.span.end)) {
+                let mut content = self.clone();
+                content.selected = index;
+                content.id.selector = item.selector.clone();
+                items.push(content);
+            }
+        }
+        items
+    }
+
     pub(crate) fn item(&self) -> &OutlineItem {
         &self.snapshot.outline.items[self.selected]
     }
@@ -569,18 +650,46 @@ impl OutlineContent {
 // {impl}`requirements.sdk.outlines.node_contents`
 impl NodeContents for OutlineContent {
     fn fingerprint(&self) -> Fingerprint {
-        Fingerprint {
-            scheme: self.snapshot.scheme.clone(),
-            value: self.structural_hash().to_owned(),
+        match &self.item().own_hash {
+            Some(digest) => Fingerprint::new(
+                format!("{}:own-v1", self.fingerprint_scheme()),
+                digest.clone(),
+            ),
+            None => Fingerprint::new(
+                self.fingerprint_scheme().into(),
+                self.structural_hash().into(),
+            ),
         }
     }
 
     // {impl}`requirements.sdk.sources.redaction`
     fn format(&self) -> String {
-        self.snapshot
-            .redaction
-            .slice(&self.snapshot.source, self.item().span.range())
-            .into_owned()
+        let bounds = self.item().span;
+        let mut cursor = bounds.start;
+        let mut text = String::new();
+        for child in self.children() {
+            let start = child.span.start.clamp(cursor, bounds.end);
+            if start > cursor {
+                text.push_str(
+                    &self
+                        .snapshot
+                        .redaction
+                        .slice(&self.snapshot.source, cursor..start),
+                );
+            }
+            let end = child.span.end.clamp(start, bounds.end);
+            if end > start {
+                text.push('…');
+            }
+            cursor = end;
+        }
+        text.push_str(
+            &self
+                .snapshot
+                .redaction
+                .slice(&self.snapshot.source, cursor..bounds.end),
+        );
+        text
     }
 }
 
@@ -601,6 +710,7 @@ impl Outline {
                     Span::new(node.source_start, node.byte_end),
                     node.structural_hash,
                 );
+                item.own_hash = Some(node.identity_hash);
                 item.name_span = node.name_span;
                 item.header_span = node.header_span;
                 item.trailer_span = node.trailer_span;

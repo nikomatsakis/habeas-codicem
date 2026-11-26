@@ -9,12 +9,12 @@ const PAGE_SIZE: usize = 8192;
 
 const INSTRUCTIONS: &str = "Before submitting, close every delivered search page with finish_search({search_id, used:[tags]}). Include tags for excerpts you relied on without a separate source read. Use used:[] if none qualify, including an empty result. Submission waits for every open search. Finishing records the selected inputs without reading more source.";
 
-pub(super) type SearchEntry<N, L> = (Value, Result<Dependency<N, L>, String>);
+pub(super) type SearchEntry<N, L> = (Value, Vec<Dependency<N, L>>);
 
 struct SearchPage<N, L> {
     delivered: bool,
     finished: bool,
-    entries: BTreeMap<String, Result<Dependency<N, L>, String>>,
+    entries: BTreeMap<String, Vec<Dependency<N, L>>>,
 }
 
 /// Continuations for one model conversation, keyed by the UUID supplied in `next`.
@@ -45,11 +45,46 @@ impl<N: Clone, L: Clone> Pages<N, L> {
             Value::Array(entries) => entry_pages(entries),
             _ => unreachable!("only text and sequences are paged"),
         };
+        let pages = parts
+            .into_iter()
+            .map(|part| {
+                let mut page = metadata.clone();
+                page[field] = part;
+                page
+            })
+            .collect();
+        self.retain(pages, dependencies)
+    }
+
+    // {impl}`requirements.sdk.graph.validation-context.read_node.source_children`
+    pub(super) fn source_read(
+        &mut self,
+        metadata: Value,
+        text: String,
+        children: Vec<Value>,
+        dependency: Dependency<N, L>,
+    ) -> ToolDelivery<N, L> {
+        let mut text = text_pages(text).into_iter();
+        let mut children = entry_pages(children).into_iter();
+        let pages = (0..text.len().max(children.len()))
+            .map(|_| {
+                let mut page = metadata.clone();
+                page["text"] = text.next().unwrap_or_else(|| json!(""));
+                page["children"] = children.next().unwrap_or_else(|| json!([]));
+                page
+            })
+            .collect();
+        self.retain(pages, vec![dependency])
+    }
+
+    fn retain(
+        &mut self,
+        pages: Vec<Value>,
+        dependencies: Vec<Dependency<N, L>>,
+    ) -> ToolDelivery<N, L> {
         // Build backwards so replaying a page always yields the same successor.
         let mut next = None;
-        for (index, part) in parts.into_iter().enumerate().rev() {
-            let mut page = metadata.clone();
-            page[field] = part;
+        for (index, mut page) in pages.into_iter().enumerate().rev() {
             if let Some(uuid) = next {
                 page["next"] = Value::String(uuid);
             }
@@ -156,7 +191,7 @@ impl<N: Clone, L: Clone> Pages<N, L> {
                 .entries
                 .get(&tag)
                 .ok_or_else(|| io::Error::other(format!("unknown search tag {tag:?}")))?;
-            dependencies.push(input.clone().map_err(io::Error::other)?);
+            dependencies.extend(input.iter().cloned());
         }
         page.finished = true;
         Ok(ToolDelivery {
