@@ -219,6 +219,10 @@ impl QueryKind {
 #[derive(Clone, Debug)]
 pub(crate) struct QueryMatch {
     pub(crate) site: Site,
+    /// Half-open source range of the site, in one-based lines and byte columns.
+    pub(crate) site_range: Range<(usize, usize)>,
+    /// Innermost item containing the actual match, including for `within` queries.
+    pub(crate) item: String,
     /// Inclusive one-based lines of the match.
     pub(crate) line_start: usize,
     pub(crate) line_end: usize,
@@ -307,20 +311,22 @@ pub(crate) fn query_matches(
                 .filter(|index| selected.contains(&parsed.outline.nodes[*index].selector))
                 .collect::<Vec<_>>()
         });
-        let line_of = |byte: usize| text[..byte].matches('\n').count() + 1;
+        let outline = &parsed.outline.ownership;
         for range in ranges {
-            let Some(index) =
-                owning_site(&parsed.outline.ownership, &range, within_nodes.as_deref())
-            else {
+            let owner = outline.owner(&range);
+            let Some(index) = owning_site(outline, owner, within_nodes.as_deref()) else {
                 continue;
             };
+            let node = &parsed.outline.nodes[index];
             found.push(QueryMatch {
+                item: parsed.outline.nodes[owner].selector.clone(),
+                site_range: outline.position(node.byte_start)..outline.position(node.byte_end),
                 site: Site {
                     file: relative.clone(),
-                    item: parsed.outline.nodes[index].selector.clone(),
+                    item: node.selector.clone(),
                 },
-                line_start: line_of(range.start),
-                line_end: line_of(range.end.saturating_sub(1).max(range.start)),
+                line_start: outline.line_at(range.start),
+                line_end: outline.line_at(range.end.saturating_sub(1).max(range.start)),
                 text: text[range].to_owned(),
             });
         }
@@ -350,12 +356,8 @@ pub(crate) fn within_query<'a>(
 
 /// The site a match belongs to: the innermost outline node containing it,
 /// or, with `within`, the innermost of those nodes containing it.
-fn owning_site(
-    outline: &OutlineItems,
-    range: &Range<usize>,
-    within: Option<&[usize]>,
-) -> Option<usize> {
-    let mut node = Some(outline.owner(range));
+fn owning_site(outline: &OutlineItems, owner: usize, within: Option<&[usize]>) -> Option<usize> {
+    let mut node = Some(owner);
     if let Some(within) = within {
         while let Some(index) = node
             && !within.contains(&index)
@@ -376,7 +378,7 @@ pub(crate) fn snippet_matches(
     site_rule: Option<&StructuralRule>,
     snippet: &str,
 ) -> Result<usize, String> {
-    let filename = format!("snippet.{}", rule.language().profile.extensions[0]);
+    let filename = format!("snippet.{}", rule.language().extensions()[0]);
     let outline = crate::outline_items::for_file(cache, Path::new(&filename), snippet)
         .map_err(|error| format!("does not parse as {language}: {error}"))?;
     if let Some(error) = &outline.diagnostic {
@@ -392,7 +394,7 @@ pub(crate) fn snippet_matches(
     Ok(rule
         .matches(snippet)
         .iter()
-        .filter(|range| owning_site(&outline, range, within.as_deref()).is_some())
+        .filter(|range| owning_site(&outline, outline.owner(range), within.as_deref()).is_some())
         .count())
 }
 

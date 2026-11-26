@@ -5,6 +5,7 @@ use std::path::{Component, Path, PathBuf};
 
 use serde_json::{Map, Value};
 use toml_edit::DocumentMut;
+use trust_but_verify::outline::languages::name_for_path;
 
 use crate::inputs::{InputSelector, OutlineCache, ResolvedInput, ResolvedNode};
 use crate::judgment::Judgment;
@@ -1149,6 +1150,8 @@ pub(crate) struct SourceReference {
     pub(crate) file: PathBuf,
     /// Line of the reference, or of a fenced reference's opening fence.
     pub(crate) line: usize,
+    /// One-based UTF-8 byte column of the role or opening fence.
+    pub(crate) column: usize,
     /// A fenced reference's body without comment delimiters; `None` for an
     /// inline reference.
     pub(crate) commentary: Option<String>,
@@ -1200,7 +1203,7 @@ pub(crate) fn fixme_acknowledgments<'a>(
             let parsed = outlines.parse(root, &file);
             let parsed = parsed.as_ref().as_ref().map_err(Clone::clone)?;
             let item = if parsed.outline.language != "plain-text" {
-                let index = parsed.reference_owner_at_line(reference.line);
+                let index = parsed.reference_owner(reference.line, reference.column);
                 parsed.outline.nodes[index].selector.as_str()
             } else {
                 ""
@@ -1286,8 +1289,11 @@ pub(crate) fn structural_assessment(
             .filter(considered)
             .any(|entry| entry.role == "test")
         && entries.iter().filter(considered).any(|entry| {
-            let profile = crate::outline::profile_for_path(Path::new(&entry.file));
-            entry.role == "impl" && profile.language.is_some() && profile.name != "markdown"
+            entry.role == "impl"
+                && !matches!(
+                    name_for_path(Path::new(&entry.file)),
+                    "plain-text" | "markdown"
+                )
         })
 }
 
@@ -1350,7 +1356,7 @@ pub(crate) fn reference_set_entries<'a>(
         let parsed = outlines.parse(root, &file);
         let item = match parsed.as_ref() {
             Ok(parsed) if parsed.outline.language != "plain-text" => {
-                let index = parsed.reference_owner_at_line(reference.line);
+                let index = parsed.reference_owner(reference.line, reference.column);
                 parsed.outline.nodes[index].selector.clone()
             }
             // Plain-text files have only a root node; a source that cannot be
@@ -1947,7 +1953,7 @@ fn validate_committed_credentials(root: &Path, errors: &mut Vec<String>) {
         };
         let settings = fields
             .iter()
-            .map(|field| format!("`{}`", field.setting))
+            .map(|setting| format!("`{setting}`"))
             .collect::<Vec<_>>()
             .join(", ");
         errors.push(format!(
@@ -2040,16 +2046,16 @@ pub(crate) enum ReferenceContexts {
 
 impl ReferenceContexts {
     pub(crate) fn parse(cache: &crate::inputs::SourceCache, file: &Path, content: &str) -> Self {
-        let profile = crate::outline::profile_for_path(file);
-        if profile.language.is_none() || profile.name == "markdown" {
+        let language = name_for_path(file);
+        if matches!(language, "plain-text" | "markdown") {
             return Self::Text {
-                markdown: profile.name == "markdown",
+                markdown: language == "markdown",
             };
         }
         match crate::outline_items::for_file(cache, file, content) {
             Ok(items) => Self::Parsed {
                 items,
-                rust: profile.name == "rust",
+                rust: language == "rust",
             },
             Err(_) => Self::Unavailable,
         }
@@ -2113,6 +2119,7 @@ pub(crate) fn file_references(
             kind: role.kind,
             file: file.to_owned(),
             line,
+            column: content[..role.start].rsplit('\n').next().unwrap().len() + 1,
             commentary: None,
             closed: true,
             in_book,
@@ -2131,12 +2138,13 @@ pub(crate) fn file_references(
             kind: fence.kind,
             file: file.to_owned(),
             line: fence.line,
+            column: fence.column,
             commentary: Some(fence.body),
             closed: fence.closed,
             in_book,
         });
     }
-    references.sort_by_key(|reference| reference.line);
+    references.sort_by_key(|reference| (reference.line, reference.column));
     references
 }
 
@@ -2463,7 +2471,22 @@ pub(crate) mod tests {
         let temp = fixture();
         let root = temp.path();
         fs::create_dir_all(root.join("tools")).unwrap();
-        let config = "version = 1\n[authoring.configs.cloud]\nbackend = 'bedrock'\nmodel = 'm'\n[authoring.configs.cloud.credentials]\naccess_key_id = 'PRIVATE_ACCESS'\nsecret_access_key = 'PRIVATE_SECRET'\n";
+        let config = "version = 1
+[authoring.configs.cloud]
+backend = 'bedrock'
+model = 'm'
+[authoring.configs.cloud.credentials]
+access_key_id = 'PRIVATE_ACCESS'
+secret_access_key = 'PRIVATE_SECRET'
+[authoring.configs.local]
+backend = 'ollama'
+model = 'm'
+api_key = 'PRIVATE_LOCAL'
+[authoring.configs.remote]
+backend = 'openai'
+model = 'm'
+api_key = 'PRIVATE_REMOTE'
+";
         fs::write(root.join("habeas.toml"), config).unwrap();
         fs::write(root.join("tools/habeas.toml"), config).unwrap();
         crate::authoring::access::tests::git(root, &["init", "--quiet"]);
@@ -2480,6 +2503,12 @@ pub(crate) mod tests {
         assert_eq!(found.len(), 1, "{:#?}", report.errors);
         assert!(found[0].starts_with("tools/habeas.toml: "), "{}", found[0]);
         assert!(found[0].contains("`authoring.configs.cloud.credentials.access_key_id`, `authoring.configs.cloud.credentials.secret_access_key`"), "{}", found[0]);
+        for setting in [
+            "authoring.configs.local.api_key",
+            "authoring.configs.remote.api_key",
+        ] {
+            assert!(found[0].contains(setting), "{}", found[0]);
+        }
         assert!(found[0].contains("aws_profile") && found[0].contains("api_key_env"));
         assert!(!found[0].contains("PRIVATE_"), "{}", found[0]);
         // Staging the workspace file reports it too; a credential-free one is fine.

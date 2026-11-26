@@ -393,21 +393,7 @@ fn outline(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result
         .map_err(io::Error::other)?;
     let outline = snapshot.outline();
     let items = crate::outline_items::OutlineItems::new(outline, snapshot.text());
-    // Configuration redaction can give anonymous items different evidence addresses.
-    let config = outline.items.iter().any(|i| i.selector.contains('@'))
-        && crate::redaction::is_configuration_file_for(
-            &snapshot.id().path,
-            crate::config::user_config_path().ok().as_deref(),
-        );
-    let legacy = config.then(|| sources.outlines.parse(&sources.root, file));
-    let evidence = legacy
-        .as_deref()
-        .map(Result::as_ref)
-        .transpose()
-        .map_err(|e| io::Error::other(e.clone()))?;
-    Ok(Listing::array(outline_entries(
-        outline, &items, evidence, 0,
-    )))
+    Ok(Listing::array(outline_entries(outline, &items, 0)))
 }
 
 /// Render names from the selector, including normalized and multipart names.
@@ -416,17 +402,16 @@ fn outline(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result
 fn outline_entries(
     outline: &trust_but_verify::outline::Outline,
     items: &crate::outline_items::OutlineItems,
-    evidence: Option<&crate::inputs::ParsedSource>,
     parent: usize,
 ) -> Vec<Value> {
     let mut entries = Vec::new();
     for &child in items.children(parent) {
         let item = &outline.items[child];
-        let selector = evidence.map_or(&item.selector, |p| &p.outline.nodes[child].selector);
+        let selector = &item.selector;
         let name = crate::outline_items::display_name(selector);
         entries.push(json!({
             "item": selector, "kind": item.kind, "name": name,
-            "children": outline_entries(outline, items, evidence, child),
+            "children": outline_entries(outline, items, child),
         }));
     }
     entries
@@ -581,7 +566,7 @@ fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
         let file = relative_path(&sources.root, &reference.file)?;
         let parsed = sources.outlines.parse(&sources.root, &file);
         let item = parsed.as_ref().as_ref().ok().map(|parsed| {
-            let index = parsed.reference_owner_at_line(reference.line);
+            let index = parsed.reference_owner(reference.line, reference.column);
             parsed.outline.nodes[index].selector.clone()
         });
         sites.push((
@@ -787,7 +772,6 @@ impl SearchNodes {
     // {impl}`requirements.authoring.no_line_numbers`
     // {impl}`requirements.authoring.search_accounting.excerpts`
     fn entries(self, file: &str, parsed: &crate::inputs::ParsedSource) -> Vec<Value> {
-        let redaction = crate::redaction::Redaction::of_file(&parsed.path, &parsed.source);
         let mut offset = 0;
         let text = parsed
             .source
@@ -808,7 +792,7 @@ impl SearchNodes {
             .into_iter()
             .map(|(index, (matched, around))| {
                 let node = &parsed.outline.nodes[index];
-                let mut first = node.source_start;
+                let mut first = node.byte_start;
                 let mut last = node.byte_end;
                 for comment in parsed
                     .outline
@@ -837,7 +821,7 @@ impl SearchNodes {
                     }
                     previous = Some(*line);
                     shown_lines.push(json!({
-                        "text": redaction.slice(&parsed.source, start..end),
+                        "text": parsed.snapshot.source_span_redacted(trust_but_verify::outline::Span::new(start, end)).expect("line and item boundaries in the same snapshot"),
                         "matched": matched.contains(line),
                     }));
                 }
@@ -1095,8 +1079,8 @@ fn referencing(
             let parsed = sources.outlines.parse(&sources.root, &file);
             match parsed.as_ref() {
                 Ok(parsed) => {
-                    let node =
-                        &parsed.outline.nodes[parsed.reference_owner_at_line(reference.line)];
+                    let node = &parsed.outline.nodes
+                        [parsed.reference_owner(reference.line, reference.column)];
                     Some((node.line_start, node.line_end))
                 }
                 Err(_) => None,
@@ -1741,7 +1725,7 @@ mod tests {
         git(root.path(), &["add", "."]);
         let leaks = |value: &Value| {
             let text = value.to_string();
-            text.contains(&token) || text.contains("plain ollama key")
+            text.contains(&token)
         };
         // Mandatory inputs, and so the initial and verification prompts.
         let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
@@ -1762,7 +1746,7 @@ mod tests {
             read.result["input"]["text"]
                 .as_array()
                 .unwrap()
-                .contains(&json!("api_key = '[REDACTED:api_key]'"))
+                .contains(&json!("api_key = 'plain ollama key'"))
         );
         let lines = dispatch(
             &sources,

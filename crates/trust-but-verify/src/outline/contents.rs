@@ -225,6 +225,7 @@ pub trait OutlineLang: Clone + Send + Sync {
 struct Snapshot {
     source: Arc<str>,
     outline: Outline,
+    language: String,
     scheme: String,
     redaction: crate::redaction::Redaction,
 }
@@ -347,6 +348,7 @@ impl OutlineContent {
                 filename,
                 source.clone(),
                 Outline::from_legacy(parse_provider(profile, &source)?),
+                profile.profile().name,
                 &format!("{}-structural-v1", profile.profile().name),
             );
         }
@@ -420,6 +422,7 @@ impl OutlineContent {
             filename.as_ref(),
             source,
             outline,
+            language.name(),
             language.fingerprint_scheme(),
         )
     }
@@ -428,6 +431,7 @@ impl OutlineContent {
         filename: &Path,
         source: Arc<str>,
         outline: Outline,
+        language: &str,
         scheme: &str,
     ) -> Result<Self, OutlineError> {
         validate_outline(&outline, &source)?;
@@ -440,6 +444,7 @@ impl OutlineContent {
             snapshot: Arc::new(Snapshot {
                 source,
                 outline,
+                language: language.to_owned(),
                 scheme: scheme.to_owned(),
                 redaction,
             }),
@@ -506,6 +511,12 @@ impl OutlineContent {
         &self.snapshot.outline
     }
 
+    /// Name of the language that produced this file snapshot.
+    // {impl}`requirements.sdk.outlines.language`
+    pub fn language(&self) -> &str {
+        &self.snapshot.language
+    }
+
     /// Retained structural digest of the selected item.
     pub fn structural_hash(&self) -> &str {
         &self.item().structural_hash
@@ -533,14 +544,21 @@ impl OutlineContent {
         content
     }
 
-    pub(crate) fn source_span(&self, span: Span) -> Option<&str> {
+    /// Original text at file-relative UTF-8 byte boundaries in the retained snapshot.
+    // {impl}`requirements.sdk.outlines.source_spans`
+    pub fn source_span(&self, span: Span) -> Option<&str> {
         self.snapshot.source.get(span.range())
     }
 
-    pub(crate) fn redacted_span(&self, span: Span) -> std::borrow::Cow<'_, str> {
-        self.snapshot
-            .redaction
-            .slice(&self.snapshot.source, span.range())
+    /// Text at the same file-relative boundaries, with whole-file credential redaction.
+    // {impl}`requirements.sdk.outlines.source_spans`
+    pub fn source_span_redacted(&self, span: Span) -> Option<std::borrow::Cow<'_, str>> {
+        self.source_span(span)?;
+        Some(
+            self.snapshot
+                .redaction
+                .slice(&self.snapshot.source, span.range()),
+        )
     }
 
     pub(crate) fn item(&self) -> &OutlineItem {

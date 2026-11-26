@@ -46,9 +46,8 @@ pub(crate) struct SiteItem {
     pub(crate) file: String,
     /// Outline selector; empty for the root node.
     pub(crate) item: String,
-    /// Inclusive lines of the site's node.
-    pub(crate) line_start: usize,
-    pub(crate) line_end: usize,
+    /// Half-open source range, in one-based lines and byte columns.
+    pub(crate) range: std::ops::Range<(usize, usize)>,
     /// The matches at the site, in query declaration and source order.
     pub(crate) matches: Vec<SiteMatch>,
 }
@@ -110,8 +109,7 @@ impl SiteItem {
     /// Whether a reference lies inside the site's node.
     pub(crate) fn contains(&self, root: &Path, reference: &SourceReference) -> bool {
         display_path(root, &reference.file) == self.file
-            && self.line_start <= reference.line
-            && reference.line <= self.line_end
+            && self.range.contains(&(reference.line, reference.column))
     }
 
     // {impl}`requirements.references.site_review`
@@ -190,53 +188,32 @@ pub(crate) fn requirement_sites(
             .map_err(|error| format!("{name}: query {}: {error}", query.name))?;
         matches.push((query, found));
     }
-    Ok(collect_sites(root, name, outlines, matches))
+    Ok(collect_sites(name, matches))
 }
 
 /// Groups query matches by site, in path and selector order.
 fn collect_sites(
-    root: &Path,
     name: &str,
-    outlines: &OutlineCache,
     matches: Vec<(&DeclaredQuery, Vec<crate::structural::QueryMatch>)>,
 ) -> Vec<SiteItem> {
     let mut sites = BTreeMap::<(String, String), SiteItem>::new();
     for (query, found) in matches {
         for found in found {
-            let parsed = outlines.parse(root, &found.site.file);
-            let parsed = parsed.as_ref().as_ref().ok();
-            let item = parsed.map_or_else(
-                || found.site.item.clone(),
-                |parsed| {
-                    let index = parsed.outline.owner_at_line(found.line_start);
-                    parsed.outline.nodes[index].selector.clone()
-                },
-            );
             let site = sites
                 .entry((found.site.file.clone(), found.site.item.clone()))
-                .or_insert_with(|| {
-                    let (line_start, line_end) = parsed
-                        .and_then(|parsed| {
-                            let index = parsed.outline.resolve(&found.site.item).ok()?;
-                            let node = &parsed.outline.nodes[index];
-                            Some((node.line_start, node.line_end))
-                        })
-                        .unwrap_or((found.line_start, found.line_end));
-                    SiteItem {
-                        requirement: name.to_owned(),
-                        file: found.site.file.clone(),
-                        item: found.site.item.clone(),
-                        line_start,
-                        line_end,
-                        matches: Vec::new(),
-                    }
+                .or_insert_with(|| SiteItem {
+                    requirement: name.to_owned(),
+                    file: found.site.file,
+                    item: found.site.item,
+                    range: found.site_range,
+                    matches: Vec::new(),
                 });
             site.matches.push(SiteMatch {
                 kind: query.kind,
                 query: query.name.clone(),
                 line_start: found.line_start,
                 line_end: found.line_end,
-                item,
+                item: found.item,
                 text: found.text,
             });
         }
@@ -318,7 +295,7 @@ pub(crate) fn discover(
                 }
             }
         }
-        sites.insert(name.clone(), collect_sites(root, name, outlines, matches));
+        sites.insert(name.clone(), collect_sites(name, matches));
     }
     sites
 }
@@ -556,7 +533,7 @@ pub(crate) fn site_fixmes(
                 .ok()
                 .filter(|parsed| parsed.outline.language != "plain-text")
                 .map(|parsed| {
-                    parsed.outline.nodes[parsed.reference_owner_at_line(reference.line)]
+                    parsed.outline.nodes[parsed.reference_owner(reference.line, reference.column)]
                         .selector
                         .clone()
                 })
@@ -618,7 +595,7 @@ pub(crate) fn validate(
                 site.file,
                 site.selector_label(),
                 site.file,
-                site.line_start
+                site.range.start.0
             ));
         }
         advance(progress);
@@ -930,8 +907,7 @@ no_match:
             requirement: "requirements.rule".to_owned(),
             file: "src/lib.rs".to_owned(),
             item: "fn[check]".to_owned(),
-            line_start: 1,
-            line_end: 1,
+            range: (1, 1)..(2, 1),
             matches: vec![
                 found(QueryKind::Sites, "fn check() {}"),
                 found(QueryKind::Violations, &format!("connect(\"{token}\")")),
@@ -1072,7 +1048,7 @@ no_match: ["fn check() { let other = 1; }"]
             ]
         );
         let nested = &sites[2];
-        assert_eq!((nested.line_start, nested.line_end), (5, 7));
+        assert_eq!(nested.range, (5, 5)..(7, 6));
         let violation = nested
             .matches
             .iter()

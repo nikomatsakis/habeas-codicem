@@ -10,6 +10,12 @@ pub(crate) mod toml;
 pub(crate) mod typescript;
 pub(crate) mod yaml;
 
+/// Name of the bundled outline language selected by the filename alone.
+// {impl}`requirements.sdk.outlines.name_for_path`
+pub fn name_for_path(path: &std::path::Path) -> &'static str {
+    crate::outline_engine::profile::profile_for_path(path).name
+}
+
 // {cite}`habeas:util`
 pub(crate) fn registry() -> crate::outline_engine::language::Registry {
     crate::outline_engine::language::Registry::new([

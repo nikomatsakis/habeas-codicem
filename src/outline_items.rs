@@ -75,6 +75,23 @@ impl OutlineItems {
         self.line_starts.partition_point(|start| *start <= byte)
     }
 
+    pub(crate) fn position(&self, byte: usize) -> (usize, usize) {
+        let line = self.line_at(byte);
+        (line, byte - self.line_starts[line - 1] + 1)
+    }
+
+    // {impl}`requirements.references.outline_comments`
+    pub(crate) fn owner_at(&self, line: usize, column: usize) -> usize {
+        let Some(start) = line
+            .checked_sub(1)
+            .and_then(|index| self.line_starts.get(index))
+        else {
+            return 0;
+        };
+        let byte = start + column - 1;
+        self.owner(&(byte..byte + 1))
+    }
+
     pub(crate) fn children(&self, item: usize) -> &[usize] {
         &self.children[item]
     }
@@ -116,7 +133,7 @@ pub(crate) fn for_file(
 pub(crate) struct EvidenceOutline {
     pub(crate) ownership: OutlineItems,
     pub(crate) nodes: Vec<EvidenceItem>,
-    pub(crate) language: &'static str,
+    pub(crate) language: String,
 }
 
 pub(crate) struct EvidenceItem {
@@ -128,7 +145,6 @@ pub(crate) struct EvidenceItem {
     pub(crate) declaration_line: usize,
     pub(crate) byte_start: usize,
     pub(crate) byte_end: usize,
-    pub(crate) source_start: usize,
     pub(crate) parent: Option<usize>,
 }
 
@@ -146,48 +162,51 @@ pub(crate) fn display_name(selector: &str) -> Option<String> {
     }
 }
 
+/// Locate the declaration within its attachment-inclusive source span.
+// {impl}`requirements.cli.fixme_issues`
+fn declaration_start(item: &trust_but_verify::outline::OutlineItem, source: &str) -> usize {
+    if let Some(span) = item.name_span.or(item.header_span) {
+        return span.start;
+    }
+    let mut start = item.span.start;
+    if !item.selector.is_empty() {
+        // Anonymous items, such as YAML sequence entries, can follow leading comments.
+        for attachment in &item.attachments {
+            if attachment.span.start != start {
+                break;
+            }
+            let rest = &source[attachment.span.end..item.span.end];
+            start = item.span.end - rest.trim_start().len();
+        }
+    }
+    start
+}
+
 impl EvidenceOutline {
-    pub(crate) fn new(
-        public: &Outline,
-        items: OutlineItems,
-        language: &'static str,
-        legacy: Option<&crate::outline::Outline>,
-    ) -> Self {
+    pub(crate) fn new(public: &Outline, items: OutlineItems, language: &str, source: &str) -> Self {
         let nodes = public
             .items
             .iter()
             .enumerate()
             .map(|(index, item)| {
-                let mut start = item.span.start;
-                let mut end = item.span.end.saturating_sub(1).max(start);
-                for attachment in &item.attachments {
-                    start = start.min(attachment.span.start);
-                    end = end.max(attachment.span.end.saturating_sub(1));
-                }
-                let core = item.header_span.map_or(item.span.start, |span| span.start);
-                let old = legacy.map(|outline| &outline.nodes[index]);
+                let start = item.span.start;
+                let end = item.span.end.saturating_sub(1).max(start);
                 EvidenceItem {
-                    selector: old.map_or(&item.selector, |n| &n.selector).clone(),
-                    structural_hash: old
-                        .map_or(&item.structural_hash, |n| &n.structural_hash)
-                        .clone(),
+                    selector: item.selector.clone(),
+                    structural_hash: item.structural_hash.clone(),
                     kind: item.kind.clone(),
-                    line_start: old.map_or_else(|| items.line_at(start), |n| n.line_start),
-                    line_end: old.map_or_else(|| items.line_at(end), |n| n.line_end),
-                    declaration_line: old.map_or_else(
-                        || items.line_at(item.name_span.map_or(core, |s| s.start)),
-                        |n| n.declaration_line,
-                    ),
-                    byte_start: old.map_or(core, |n| n.byte_start),
+                    line_start: items.line_at(start),
+                    line_end: items.line_at(end),
+                    declaration_line: items.line_at(declaration_start(item, source)),
+                    byte_start: item.span.start,
                     byte_end: item.span.end,
-                    source_start: item.span.start,
                     parent: items.parent(index),
                 }
             })
             .collect();
         Self {
             nodes,
-            language,
+            language: language.to_owned(),
             ownership: items,
         }
     }
@@ -247,21 +266,6 @@ impl EvidenceOutline {
             }
         }
         found
-    }
-
-    // {impl}`requirements.references.outline_comments`
-    pub(crate) fn owner_at_line(&self, line: usize) -> usize {
-        let items = &self.ownership;
-        if let Some(c) = items.comments.iter().find(|c| c.lines.contains(&line)) {
-            return c.owner;
-        }
-        self.innermost(line, false)
-            .into_iter()
-            .min_by_key(|&i| {
-                let n = &self.nodes[i];
-                (n.line_end - n.line_start, n.byte_end - n.byte_start)
-            })
-            .unwrap_or(0)
     }
 
     // {impl}`requirements.ci.outline_inputs`

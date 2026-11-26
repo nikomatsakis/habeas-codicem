@@ -285,8 +285,15 @@ Loaded source snapshots retain the original text for selection and spans;
 redaction applies when preparing model-visible text and structural hashes.
 Filesystem evidence storage preserves the supplied record. Applications supply
 their own answer values and remain responsible for what those answers contain.
-Habeas additionally recognizes explicit credentials in its configuration files
-under {cite}`requirements.authoring.credentials`.
+:::
+
+:::{req} redact_text
+`sources::redact_text` applies {cite}`requirements.sdk.sources.redaction` to a
+standalone string. It returns the input text when it contains no recognized credential.
+
+```rust,ignore
+pub fn redact_text(text: &str) -> Cow<'_, str>;
+```
 :::
 
 Deterministic criterion code and SDK agent tools use the same inspection

@@ -194,9 +194,10 @@ For an outline input, Habeas MUST parse `file` with its language's grammar under
 {cite}`requirements.references.outlines` and resolve `item` to exactly one
 outline node under {cite}`requirements.references.outline_selectors`. It MUST
 compare `hash` with the node's current structural hash under
-{cite}`requirements.references.structural_hash`. It MUST derive the node's
-inclusive line range, including attached comments and attributes, during
-validation for display and reference coverage. Moving the node, editing other
+{cite}`requirements.references.structural_hash`. For display and reference coverage, it MUST derive the inclusive line range
+from the first and last bytes of the SDK outline item's attachment-inclusive
+span under {cite}`requirements.sdk.outlines.attachments.item_span`. An empty
+span covers the line at its start. Moving the node, editing other
 nodes, or editing comments its profile does not hash MUST NOT invalidate the
 input. Habeas MUST report a missing file, parse failure,
 invalid or ambiguous selector, or changed hash.

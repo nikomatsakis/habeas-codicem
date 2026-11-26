@@ -12,6 +12,65 @@ use trust_but_verify::outline::OutlineLang;
 use trust_but_verify::outline::Span;
 use trust_but_verify::outline::languages;
 
+// {test}`requirements.sdk.outlines.source_spans`
+// {test}`requirements.sdk.sources.redact_text`
+#[test]
+fn selected_item_reads_checked_file_spans_with_snapshot_redaction() {
+    let token = format!("gh{}_{}", "p", "a1b2".repeat(9));
+    let source = format!("// é {token}\nfn selected() {{}}\n");
+    let root =
+        OutlineContent::from_source(&ValidationCache::new(), "file.rs", source.clone().into())
+            .unwrap();
+    let item = root.select("fn[selected]").unwrap();
+    let start = source.find(&token).unwrap();
+    let split = start + 4;
+    let end = start + token.len();
+    let first = Span::new(start, split);
+    let rest = Span::new(split, end);
+    assert_eq!(item.source_span(rest), Some(&token[4..]));
+    assert_eq!(
+        item.source_span_redacted(first).as_deref(),
+        Some("[REDACTED:GitHub Token]")
+    );
+    assert_eq!(item.source_span_redacted(rest).as_deref(), Some(""));
+    assert_eq!(
+        item.source_span_redacted(Span::new(0, source.len()))
+            .unwrap(),
+        trust_but_verify::sources::redact_text(&source)
+    );
+    for invalid in [
+        Span::new(1, 0),
+        Span::new(0, source.len() + 1),
+        Span::new(4, 5),
+        Span::new(0, 4),
+    ] {
+        assert!(item.source_span(invalid).is_none());
+        assert!(item.source_span_redacted(invalid).is_none());
+    }
+    let empty = Span::new(source.len(), source.len());
+    assert_eq!(item.source_span(empty), Some(""));
+    assert_eq!(item.source_span_redacted(empty).as_deref(), Some(""));
+}
+
+// {test}`requirements.sdk.outlines.language`
+// {test}`requirements.sdk.outlines.name_for_path`
+#[test]
+fn default_language_names_match_the_retained_outline() {
+    let temp = tempfile::tempdir().unwrap();
+    let cache = ValidationCache::new();
+    for (file, name) in [
+        ("LIB.RS", "rust"),
+        ("widget.TSX", "tsx"),
+        ("README", "plain-text"),
+        ("foo.unknown", "plain-text"),
+    ] {
+        let path = temp.path().join(file);
+        assert_eq!(languages::name_for_path(&path), name);
+        let root = OutlineContent::from_source(&cache, path, "".into()).unwrap();
+        assert_eq!(root.language(), name);
+    }
+}
+
 // {test}`requirements.sdk.outlines.Span`
 #[test]
 fn span_indexes_str_at_utf8_byte_boundaries() {
@@ -240,6 +299,7 @@ impl OutlineLang for CustomLanguage {
 }
 
 // {test}`requirements.sdk.outlines.language_provider`
+// {test}`requirements.sdk.outlines.language`
 // {test}`requirements.sdk.outlines.additional_languages`
 // {test}`requirements.sdk.outlines.language_provider.fingerprint_scheme`
 // {test}`requirements.sdk.outlines.selection`
@@ -269,6 +329,7 @@ fn explicit_languages_share_configuration_and_retain_their_scheme() {
     for root in [&loaded, &supplied] {
         assert_eq!(root.id().selector, "");
         assert_eq!(root.text(), "a hello z");
+        assert_eq!(root.language(), "custom");
         assert_eq!(root.outline().items[0].span, Span::new(0, 9));
         assert_eq!(root.fingerprint().value, "a hello z");
         assert_eq!(root.fingerprint().scheme, "custom-v2");
@@ -279,6 +340,7 @@ fn explicit_languages_share_configuration_and_retain_their_scheme() {
     assert_eq!(supplied.fingerprint_scheme(), "custom-v2");
     let selected = supplied.select("part[selected]").unwrap();
     assert_eq!(selected.text(), "hello");
+    assert_eq!(selected.language(), "custom");
     assert_eq!(selected.structural_hash(), "selected-digest");
     assert_eq!(
         loaded.select("part[selected]").unwrap().fingerprint(),

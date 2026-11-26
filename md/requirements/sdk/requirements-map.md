@@ -52,7 +52,7 @@ conversation, provider, filesystem, and search machinery private.
 | Source-node mapping | Interning the data supplied by `Domain::source_node` and tracking reads through `Domain`; every delivered source read records its node snapshot. | Source addresses, node identities, and reference relationships. |
 | Source outlines | Filename-based language selection, cheaply cloneable `OutlineLang`, and owned `OutlineContent` implementing `NodeContents`. | Choosing the source nodes needed for a review. |
 | Structural search | Optional `OutlineLang::search_structure`; outline-only languages return an unsupported-language error. | Choosing search rules for the question under review. |
-| Redaction | Fixed credential recognition in model-visible text and bundled structural hashes. | Explicit credential fields in Habeas configuration. |
+| Redaction | Fixed credential recognition in model-visible text and bundled structural hashes. | Reporting explicit credentials in tracked Habeas configuration files. |
 
 Domains without source-node mapping can still use graph inspection and
 deterministic criteria. Awaiting an agent request requires edge labels that implement

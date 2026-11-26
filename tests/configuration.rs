@@ -1410,7 +1410,7 @@ fn credential_documentation_warns_about_committed_and_explicitly_read_workspace_
         "Workspace files may be committed or read as source when explicitly allowed",
         "replace every uppercase placeholder with your own value",
         "keep the resulting file out of version control",
-        "credential values are replaced with `[REDACTED:<field>]`",
+        "can see literal values that the SDK’s built-in credential rules do not recognize",
     ] {
         assert!(
             guidance.contains(required),

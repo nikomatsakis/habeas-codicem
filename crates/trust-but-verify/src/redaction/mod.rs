@@ -17,7 +17,7 @@ const HEURISTIC: &str = "high-entropy-token";
 /// One replaced byte range of a source and the kind its marker names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 // {cite}`habeas:util`
-pub struct Region {
+struct Region {
     pub span: Range<usize>,
     pub kind: String,
 }
@@ -35,15 +35,6 @@ impl Redaction {
     // {cite}`habeas:util`
     pub fn of_text(source: &str) -> Self {
         Self::merge(secret_regions(source))
-    }
-
-    /// Add HC's explicit configuration spans to the generic rule matches.
-    ///
-    /// This bridge is available only to the Habeas integration.
-    #[cfg(feature = "habeas-integration")]
-    pub fn with_regions(mut self, regions: Vec<Region>) -> Self {
-        self.regions.extend(regions);
-        Self::merge(self.regions)
     }
 
     /// Sorts regions and joins overlapping ones under the first one's kind.
@@ -64,6 +55,7 @@ impl Redaction {
     }
 
     // {cite}`habeas:util`
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.regions.is_empty()
     }
@@ -92,7 +84,7 @@ impl Redaction {
                 output.push_str(&region.kind);
                 output.push(']');
             }
-            push_line_breaks(output, &source[start..end]);
+            push_line_breaks(output, source, start..end);
             cursor = end;
         }
         match output {
@@ -111,26 +103,15 @@ impl Redaction {
     }
 }
 
-/// Redacts recognized credentials in source or model-visible text.
+/// Preserve each line-break byte, including when the range splits a CRLF pair.
 // {cite}`habeas:util`
-pub fn redact_text(text: &str) -> Cow<'_, str> {
-    let redaction = Redaction::of_text(text);
-    if redaction.is_empty() {
-        return Cow::Borrowed(text);
-    }
-    Cow::Owned(redaction.apply(text).into_owned())
-}
-
-/// Pushes the line breaks in `text`, keeping `\r\n` pairs.
-// {cite}`habeas:util`
-fn push_line_breaks(output: &mut String, text: &str) {
-    let bytes = text.as_bytes();
-    for (index, byte) in bytes.iter().enumerate() {
-        if *byte == b'\n' {
-            if index > 0 && bytes[index - 1] == b'\r' {
-                output.push('\r');
-            }
-            output.push('\n');
+fn push_line_breaks(output: &mut String, source: &str, range: Range<usize>) {
+    let bytes = source.as_bytes();
+    for index in range {
+        match bytes[index] {
+            b'\n' => output.push('\n'),
+            b'\r' if bytes.get(index + 1) == Some(&b'\n') => output.push('\r'),
+            _ => {}
         }
     }
 }
@@ -204,4 +185,4 @@ fn secret_regions(source: &str) -> Vec<Region> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

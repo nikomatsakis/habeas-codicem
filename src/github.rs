@@ -670,7 +670,11 @@ pub(crate) fn add_issue_findings(inspection: &mut RepositoryInspection, github: 
             if !site
                 .fixmes(&root, &inspection.references)
                 .iter()
-                .any(|inside| inside.file == reference.file && inside.line == reference.line)
+                .any(|inside| {
+                    inside.file == reference.file
+                        && inside.line == reference.line
+                        && inside.column == reference.column
+                })
             {
                 continue;
             }
@@ -714,7 +718,7 @@ fn containing_item(
     if let Ok(parsed) = outlines.parse(&inspection.root, file).as_ref()
         && parsed.outline.language != "plain-text"
     {
-        let node = &parsed.outline.nodes[parsed.reference_owner_at_line(reference.line)];
+        let node = &parsed.outline.nodes[parsed.reference_owner(reference.line, reference.column)];
         if let (false, Some(name)) = (
             node.kind.is_empty(),
             crate::outline_items::display_name(&node.selector),

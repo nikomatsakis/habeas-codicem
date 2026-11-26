@@ -69,7 +69,11 @@ fn excerpt(
         }
         let start = cursor.max(span.start);
         if start < span.end {
-            result.push_str(&item.redacted_span(crate::outline::Span::new(start, span.end)));
+            result.push_str(
+                &item
+                    .source_span_redacted(crate::outline::Span::new(start, span.end))
+                    .expect("validated outline and excerpt spans"),
+            );
         }
         cursor = cursor.max(span.end);
     }
@@ -1571,7 +1575,10 @@ where
                         .into_iter()
                         .map(|hit| {
                             let node = serde_json::to_value(&hit.node)?;
-                            let excerpt = hit.item.redacted_span(hit.span);
+                            let excerpt = hit
+                                .item
+                                .source_span_redacted(hit.span)
+                                .ok_or_else(|| io::Error::other("invalid structural match span"))?;
                             let entry = json!({"node": node, "excerpt": excerpt});
                             Ok((
                                 entry,

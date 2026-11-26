@@ -1,9 +1,7 @@
-use std::{borrow::Cow, fs, ops::Range, path::Path};
+use std::borrow::Cow;
 
 use toml_edit::{Item, Value};
-use trust_but_verify::redaction::Redaction as SourceRedaction;
-use trust_but_verify::redaction::Region;
-pub(crate) use trust_but_verify::redaction::redact_text;
+pub(crate) use trust_but_verify::sources::redact_text;
 
 /// Redacts each line of a line list as one text, keeping the line count.
 // {cite}`habeas:util`
@@ -15,62 +13,6 @@ pub(crate) fn redact_lines(lines: &[String]) -> Vec<String> {
     }
 }
 
-/// HC's configuration recognition layered on the SDK's fixed secret rules.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct Redaction {
-    inner: SourceRedaction,
-    pub(crate) has_configuration_regions: bool,
-}
-
-impl Redaction {
-    /// Use generic source rules for a non-configuration observation.
-    #[cfg(test)]
-    pub(crate) fn of_text(source: &str) -> Self {
-        Self {
-            inner: SourceRedaction::of_text(source),
-            has_configuration_regions: false,
-        }
-    }
-
-    /// Apply HC configuration fields as well as the generic SDK rules.
-    pub(crate) fn of_file(path: &Path, source: &str) -> Self {
-        Self::of_file_with_config(path, source, None)
-    }
-
-    // {impl}`requirements.authoring.redaction`
-    // {impl}`requirements.authoring.credentials`
-    pub(crate) fn of_file_with_config(path: &Path, source: &str, user: Option<&Path>) -> Self {
-        let generic = SourceRedaction::of_text(source);
-        let regions = if is_configuration_file_for(path, user) {
-            configuration_regions(source)
-        } else {
-            Vec::new()
-        };
-        if regions.is_empty() {
-            Self {
-                inner: generic,
-                has_configuration_regions: false,
-            }
-        } else {
-            Self {
-                inner: generic.with_regions(regions),
-                has_configuration_regions: true,
-            }
-        }
-    }
-}
-
-impl std::ops::Deref for Redaction {
-    type Target = SourceRedaction;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
-#[cfg(test)]
-mod configuration_tests;
-
 #[cfg(test)]
 pub(crate) mod tests {
     /// A GitHub classic token shape used by frontend integration tests.
@@ -80,56 +22,11 @@ pub(crate) mod tests {
     }
 }
 
-/// An explicit credential value in a configuration file: its full setting
-/// name, such as `authoring.configs.cloud.credentials.access_key_id`, and the
-/// byte range of the value's contents.
-#[derive(Clone, Debug, PartialEq, Eq)]
-// {cite}`habeas:util`
-pub struct CredentialField {
-    pub setting: String,
-    pub field: String,
-    pub span: Range<usize>,
-}
-
-/// Whether this is a Habeas configuration file or an alias of the supplied user file.
-// {cite}`habeas:util`
-pub(crate) fn is_configuration_file_for(path: &Path, user: Option<&Path>) -> bool {
-    if path.file_name().is_some_and(|name| name == "habeas.toml") {
-        return true;
-    }
-    let Some(user) = user else {
-        return false;
-    };
-    path == user
-        || fs::canonicalize(user)
-            .is_ok_and(|user| fs::canonicalize(path).is_ok_and(|path| path == user))
-}
-
-/// Regions of the explicit credential fields of a configuration file. A file
-/// that does not parse as TOML cannot be searched by field, so all of it is
-/// redacted with the kind `configuration`.
-// {cite}`habeas:util`
-fn configuration_regions(source: &str) -> Vec<Region> {
-    match credential_fields(source) {
-        Some(fields) => fields
-            .into_iter()
-            .map(|field| Region {
-                span: field.span,
-                kind: field.field,
-            })
-            .collect(),
-        None => vec![Region {
-            span: 0..source.len(),
-            kind: "configuration".to_owned(),
-        }],
-    }
-}
-
 /// The explicit credential fields of a Habeas configuration document: every
 /// value under an authoring configuration's `credentials`, and its `api_key`.
 /// Returns `None` when the document is not valid TOML.
 // {cite}`habeas:util`
-pub fn credential_fields(source: &str) -> Option<Vec<CredentialField>> {
+pub(crate) fn credential_fields(source: &str) -> Option<Vec<String>> {
     let document = toml_edit::Document::parse(source).ok()?;
     let mut fields = Vec::new();
     let Some(configs) = document
@@ -137,7 +34,7 @@ pub fn credential_fields(source: &str) -> Option<Vec<CredentialField>> {
         .and_then(|authoring| authoring.get("configs"))
         .and_then(Item::as_table_like)
     else {
-        return Some(fields);
+        return Some(Vec::new());
     };
     for (name, config) in configs.iter() {
         let Some(config) = config.as_table_like() else {
@@ -146,34 +43,28 @@ pub fn credential_fields(source: &str) -> Option<Vec<CredentialField>> {
         for key in ["credentials", "api_key"] {
             if let Some(item) = config.get(key) {
                 let setting = format!("authoring.configs.{name}.{key}");
-                item_fields(source, item, key, &setting, &mut fields);
+                item_fields(item, &setting, &mut fields);
             }
         }
     }
-    fields.sort_by_key(|field| field.span.start);
-    Some(fields)
+    fields.sort_by_key(|(start, _)| *start);
+    Some(fields.into_iter().map(|(_, setting)| setting).collect())
 }
 
 /// Collects the leaf values under a credential item, each named by its key.
 // {cite}`habeas:util`
-fn item_fields(
-    source: &str,
-    item: &Item,
-    field: &str,
-    setting: &str,
-    fields: &mut Vec<CredentialField>,
-) {
+fn item_fields(item: &Item, setting: &str, fields: &mut Vec<(usize, String)>) {
     match item {
-        Item::Value(value) => value_fields(source, value, field, setting, fields),
+        Item::Value(value) => value_fields(value, setting, fields),
         Item::Table(table) => {
             for (key, item) in table.iter() {
-                item_fields(source, item, key, &format!("{setting}.{key}"), fields);
+                item_fields(item, &format!("{setting}.{key}"), fields);
             }
         }
         Item::ArrayOfTables(tables) => {
             for table in tables.iter() {
                 for (key, item) in table.iter() {
-                    item_fields(source, item, key, &format!("{setting}.{key}"), fields);
+                    item_fields(item, &format!("{setting}.{key}"), fields);
                 }
             }
         }
@@ -181,44 +72,24 @@ fn item_fields(
     }
 }
 
-/// Collects the leaf values of a credential value. A string is redacted
-/// inside its quotes so the replacement stays readable TOML.
+/// Collect the names of explicit credential settings in source order.
 // {cite}`habeas:util`
-fn value_fields(
-    source: &str,
-    value: &Value,
-    field: &str,
-    setting: &str,
-    fields: &mut Vec<CredentialField>,
-) {
+fn value_fields(value: &Value, setting: &str, fields: &mut Vec<(usize, String)>) {
     match value {
         Value::InlineTable(table) => {
             for (key, value) in table.iter() {
-                value_fields(source, value, key, &format!("{setting}.{key}"), fields);
+                value_fields(value, &format!("{setting}.{key}"), fields);
             }
         }
         Value::Array(values) => {
             for value in values.iter() {
-                value_fields(source, value, field, setting, fields);
+                value_fields(value, setting, fields);
             }
         }
         _ => {
-            let Some(mut span) = value.span() else {
-                return;
-            };
-            if let Value::String(_) = value {
-                let raw = &source[span.clone()];
-                let quote = ["\"\"\"", "'''", "\"", "'"]
-                    .into_iter()
-                    .find(|quote| raw.len() >= 2 * quote.len() && raw.starts_with(quote))
-                    .map_or(0, str::len);
-                span = span.start + quote..span.end - quote;
+            if let Some(span) = value.span() {
+                fields.push((span.start, setting.to_owned()));
             }
-            fields.push(CredentialField {
-                setting: setting.to_owned(),
-                field: field.to_owned(),
-                span,
-            });
         }
     }
 }

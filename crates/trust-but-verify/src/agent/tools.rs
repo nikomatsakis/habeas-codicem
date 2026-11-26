@@ -61,7 +61,7 @@ impl<'a, D: Domain> SessionTools<'a, D> {
         let snapshot = inspection
             .prepare_read(&node)
             .map_err(|error| io::Error::other(error.to_string()))?;
-        let text = crate::redaction::redact_text(&snapshot.content.format()).into_owned();
+        let text = crate::sources::redact_text(&snapshot.content.format()).into_owned();
         let observation = Dependency::Node(node, snapshot.fingerprint);
         Ok(self
             .pages

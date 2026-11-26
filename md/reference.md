@@ -222,18 +222,16 @@ occur.
 {cite}`requirements.authoring.tool_descriptions.special_cases`
 
 Source text sent to the model, and source text shown on book detail pages and by
-`habeas info`, is redacted. In a workspace `habeas.toml` or your user
-configuration file, the values of Bedrock `credentials` fields and Ollama
-`api_key` are replaced by name, whatever they contain. In every file, text
+`habeas info`, uses the same redaction rules in every file, including configuration files. Text
 matching one of the built-in credential rules of the
 [`secretshape`](https://docs.rs/secretshape) crate, such as a provider-prefixed
-token or a PEM private key header, is replaced too, extended through adjacent
+token or a PEM private key header, is replaced, extended through adjacent
 whitespace-separated text that looks random, such as the body of a private key.
 Random-looking text alone, such as a hex digest, is never redacted. Each
-replacement reads `[REDACTED:<kind>]`, naming the field or rule, and keeps the
+replacement reads `[REDACTED:<kind>]`, naming the matching rule, and keeps the
 replaced text's line breaks, so line numbers do not change. Outlines are built from
 the original file, and structural hashes use the redacted text, so evidence does
-not depend on a credential's value. Habeas pins its `secretshape` version;
+not depend on a recognized credential's value. Habeas pins its `secretshape` version;
 upgrading it is a deliberate change that may alter redaction and hashes.
 {cite}`requirements.authoring.redaction`
 
@@ -343,8 +341,8 @@ Delete `endpoint` to return to the local default, or `api_key_env` to send no ke
 Profiles and environment references are preferred. Literal Bedrock
 `credentials` or Ollama `api_key` values are supported but not recommended in
 workspace files; see the [credential examples](requirements/authoring.md#editing-the-file).
-The model may read a configuration file that contains them, with the values
-redacted. Validation reports a workspace `habeas.toml` in the Git index that
+When a model reads a configuration file as source, it can see literal values
+that the built-in credential rules do not recognize. Validation reports a workspace `habeas.toml` in the Git index that
 contains literal credentials, naming the file and its credential settings,
 because committed credentials leak; keep such a file untracked or use credential
 sources instead.

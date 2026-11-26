@@ -134,8 +134,7 @@ pub(crate) fn parse_with(
 /// Parses the original source with a given profile, hashing each text piece
 /// that overlaps a redacted region in its redacted form.
 // {impl}`requirements.references.structural_hash`
-#[doc(hidden)]
-pub fn parse_redacted(
+fn parse_redacted(
     profile: &'static Profile,
     source: &str,
     redaction: &Redaction,
@@ -998,6 +997,8 @@ impl LegacyOutline {
 
 #[cfg(test)]
 mod markdown_tests;
+#[cfg(test)]
+mod redaction_tests;
 #[cfg(test)]
 mod tests;
 

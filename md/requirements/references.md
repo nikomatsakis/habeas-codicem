@@ -447,7 +447,11 @@ no such node, the run MUST belong to the container, which is the root node at to
 level. A profile MAY bind a comment kind to its container
 instead: such a run MUST belong to the smallest node containing it. The Rust
 profile MUST bind inner doc comments (`//!`, `/*!`) to their container, so a
-file-level inner doc comment belongs to the root node. A reference in a comment MUST count for the node its run belongs to under
+file-level inner doc comment belongs to the root node. Habeas MUST retain the
+one-based line and UTF-8 byte column of each inline role’s opening brace or
+fenced reference’s first opening colon. When siblings share a line, the
+reference belongs to the item owning the comment at that position. A reference
+in a comment MUST count for the node its run belongs to under
 {cite}`requirements.references.coverage.tests` and
 {cite}`requirements.references.authoring_inputs`.
 :::

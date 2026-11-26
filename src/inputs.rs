@@ -7,9 +7,8 @@ use serde_json::{Value, json};
 
 use crate::definition_glob;
 use crate::evidence::Declaration;
-use crate::outline;
 use crate::outline_items::EvidenceOutline;
-use crate::redaction::Redaction;
+use trust_but_verify::domain::NodeContents;
 
 // {cite}`habeas:util`
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,6 +52,7 @@ pub(crate) struct ResolvedInput {
 pub(crate) struct ParsedSource {
     /// Canonical path.
     pub(crate) path: PathBuf,
+    pub(crate) snapshot: trust_but_verify::outline::OutlineContent,
     pub(crate) source: String,
     /// The source as models receive it and Habeas displays it, with the same
     /// lines as `source`.
@@ -75,16 +75,16 @@ mod ownership_tests {
         let cache = OutlineCache::default();
         let parsed = cache.parse(dir.path(), "a.md");
         let parsed = parsed.as_ref().as_ref().unwrap();
-        let ordinary = parsed.reference_owner_at_line(2);
+        let ordinary = parsed.reference_owner(2, 1);
         assert_eq!(parsed.outline.nodes[ordinary].kind, "paragraph");
-        let outer = parsed.reference_owner_at_line(5);
-        let inner = parsed.reference_owner_at_line(8);
+        let outer = parsed.reference_owner(5, 1);
+        let inner = parsed.reference_owner(8, 1);
         assert_eq!(parsed.outline.nodes[outer].kind, "block");
         assert_eq!(parsed.outline.nodes[inner].kind, "block");
         assert_eq!(parsed.outline.nodes[inner].parent, Some(outer));
         assert_eq!(parsed.outline.nodes[inner].line_start, 7);
         assert_eq!(
-            parsed.outline.nodes[parsed.outline.owner_at_line(8)].kind,
+            parsed.outline.nodes[parsed.outline.ownership.owner_at(8, 1)].kind,
             "paragraph"
         );
         let rust = "fn run() {}\n";
@@ -92,8 +92,8 @@ mod ownership_tests {
         let parsed = cache.parse(dir.path(), "a.rs");
         let parsed = parsed.as_ref().as_ref().unwrap();
         assert_eq!(
-            parsed.reference_owner_at_line(1),
-            parsed.outline.owner_at_line(1)
+            parsed.reference_owner(1, 1),
+            parsed.outline.ownership.owner_at(1, 1)
         );
     }
 }
@@ -217,7 +217,7 @@ impl OutlineCache {
         }
         .map_err(|error| format!("cannot read {file}: {error}"))?;
         if let Some(error) = &snapshot.outline().diagnostic {
-            let language = outline::profile_for_path(&path).name;
+            let language = snapshot.language();
             return Err(format!("{file}: cannot parse {language} source: {error}"));
         }
         Ok(snapshot)
@@ -233,34 +233,12 @@ impl OutlineCache {
         let parsed = Arc::new(self.snapshot(root, file).and_then(|snapshot| {
             let path = snapshot.id().path.clone();
             let source = snapshot.text().to_owned();
-            let redaction = Redaction::of_file_with_config(
-                &path,
-                &source,
-                crate::config::user_config_path().ok().as_deref(),
-            );
-            let profile = outline::profile_for_path(&path);
-            let items = crate::outline_items::OutlineItems::new(snapshot.outline(), &source);
-            // YAML's grammar can extend past its public span over trailing comments.
-            // An attached prefix can also hide the grammar start, used to break ties
-            // between siblings on one line. Preserve those coordinates until exposed.
             let public = snapshot.outline();
-            let needs_core = matches!(profile.name, "rust" | "python")
-                && public.items.iter().skip(1).any(|item| {
-                    item.header_span.is_none()
-                        && item
-                            .attachments
-                            .iter()
-                            .any(|attachment| attachment.span.start == item.span.start)
-                });
-            let yaml_comments = profile.name == "yaml" && !items.comments.is_empty();
-            let compatibility =
-                (redaction.has_configuration_regions || yaml_comments || needs_core)
-                    .then(|| outline::parse_redacted(profile, &source, &redaction))
-                    .transpose()
-                    .map_err(|e| format!("{file}: cannot parse {} source: {e}", profile.name))?;
-            let outline = EvidenceOutline::new(public, items, profile.name, compatibility.as_ref());
+            let items = crate::outline_items::OutlineItems::new(public, &source);
+            let outline = EvidenceOutline::new(public, items, snapshot.language(), &source);
             Ok(ParsedSource {
-                redacted: redaction.apply(&source).into_owned(),
+                redacted: snapshot.format(),
+                snapshot,
                 path: fs::canonicalize(&path).unwrap_or(path),
                 source,
                 outline,
@@ -294,23 +272,113 @@ mod tests {
             (node.line_start, node.declaration_line, node.line_end),
             (1, 3, 3)
         );
-        assert_eq!(node.byte_start, source.find("struct One").unwrap());
+        assert_eq!(parsed.reference_owner(3, 13), second);
         assert_eq!(parsed.nodes_for_range(3, 3, false), [first, second]);
-        assert_eq!(parsed.reference_owner_at_line(1), first);
+        assert_eq!(parsed.reference_owner(1, 1), first);
+    }
+
+    // {test}`requirements.references.outline_comments`
+    #[test]
+    fn references_in_sibling_comments_on_one_line_use_their_byte_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = "/// docs\r\nstruct Café; /* {impl}`one` */ struct Two; /* :::{cite} two\r\n * body\r\n * ::: */\r\n";
+        let file = dir.path().join("a.rs");
+        fs::write(&file, source).unwrap();
+        let cache = OutlineCache::default();
+        let references = crate::evidence::file_references(&cache.validation, &file, source, false);
+        let parsed = cache.parse(dir.path(), "a.rs");
+        let parsed = parsed.as_ref().as_ref().unwrap();
+        let line = source.lines().nth(1).unwrap();
+        assert_eq!(references.len(), 2);
+        for (reference, (marker, selector)) in
+            references.iter().zip([("{impl}", "Café"), (":::", "Two")])
+        {
+            assert_eq!(
+                (reference.line, reference.column),
+                (2, line.find(marker).unwrap() + 1)
+            );
+            let owner = parsed.reference_owner(reference.line, reference.column);
+            assert_eq!(
+                crate::outline_items::display_name(&parsed.outline.nodes[owner].selector)
+                    .as_deref(),
+                Some(selector)
+            );
+            assert!(reference.closed);
+        }
+    }
+
+    // {test}`requirements.ci.outline_inputs`
+    #[test]
+    fn an_empty_file_root_covers_line_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = "empty.yaml";
+        fs::write(dir.path().join(file), "").unwrap();
+        let parsed = OutlineCache::default().parse(dir.path(), file);
+        let parsed = parsed.as_ref().as_ref().unwrap();
+        let root = parsed.resolve(file, "").unwrap();
+        let (range, lines) = parsed.node_range(file, root);
+        assert_eq!((range.line_start, range.line_end), (1, 1));
+        assert!(lines.is_empty());
+    }
+
+    // {test}`requirements.ci.outline_inputs`
+    // {test}`requirements.references.outline_comments`
+    #[test]
+    fn yaml_evidence_ranges_follow_comment_ownership_between_sibling_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = "jobs.yml";
+        let source =
+            "jobs:\n  first:\n    run: a # inline\n  # for second\n  second: b\n# file note\n";
+        fs::write(dir.path().join(file), source).unwrap();
+        let parsed = OutlineCache::default().parse(dir.path(), file);
+        let parsed = parsed.as_ref().as_ref().unwrap();
+        let first = parsed.resolve(file, "pair[jobs]/pair[first]").unwrap();
+        let second = parsed.resolve(file, "pair[jobs]/pair[second]").unwrap();
+        let (range, lines) = parsed.node_range(file, first);
+        assert_eq!((range.line_start, range.line_end), (2, 3));
+        assert_eq!(lines, ["  first:", "    run: a # inline"]);
+        let (range, lines) = parsed.node_range(file, second);
+        assert_eq!((range.line_start, range.line_end), (4, 5));
+        assert_eq!(lines, ["  # for second", "  second: b"]);
+        assert_eq!(parsed.nodes_for_range(4, 4, false), [second]);
+        assert_eq!(parsed.reference_owner(4, 3), second);
+        assert_eq!(parsed.reference_owner(6, 1), 0);
+    }
+
+    // {test}`requirements.references.outline_comments`
+    // {test}`requirements.cli.fixme_issues`
+    #[test]
+    fn yaml_sequence_entry_reports_its_dash_as_the_declaration_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = "steps.yaml";
+        fs::write(
+            dir.path().join(file),
+            "steps:\n  # first note\n  # second note\n  - build\n",
+        )
+        .unwrap();
+        let parsed = OutlineCache::default().parse(dir.path(), file);
+        let parsed = parsed.as_ref().as_ref().unwrap();
+        let owner = parsed.reference_owner(2, 3);
+        let item = &parsed.outline.nodes[owner];
+        assert_eq!(item.kind, "item");
+        assert_eq!(
+            (item.line_start, item.declaration_line, item.line_end),
+            (2, 4, 4)
+        );
     }
 
     // {test}`requirements.authoring.credentials`
     // {test}`requirements.references.structural_hash`
     #[test]
-    fn changing_a_configured_credential_preserves_evidence_hashes() {
+    fn configuration_source_uses_sdk_redaction_for_text_and_hashes() {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir(dir.path().join("fixtures")).unwrap();
         let observations = |value: &str| {
             let source = format!("[authoring.configs.local]\napi_key = '{value}'\n");
-            fs::write(dir.path().join("fixtures/habeas.toml"), source).unwrap();
+            fs::write(dir.path().join("fixtures/habeas.toml"), &source).unwrap();
             let parsed = OutlineCache::default().parse(dir.path(), "fixtures/habeas.toml");
             let parsed = parsed.as_ref().as_ref().unwrap();
-            assert!(parsed.redacted.contains("[REDACTED:api_key]"));
+            assert_eq!(parsed.redacted, crate::redaction::redact_text(&source));
             parsed
                 .outline
                 .nodes
@@ -318,7 +386,12 @@ mod tests {
                 .map(|node| (node.selector.clone(), node.structural_hash.clone()))
                 .collect::<Vec<_>>()
         };
-        assert_eq!(observations("first"), observations("a longer value"));
+        assert_ne!(observations("first"), observations("a longer value"));
+        let token = crate::redaction::tests::github_token();
+        assert_eq!(
+            observations(&token),
+            observations(&token.replace("16C7", "43D9"))
+        );
     }
 
     // {test}`requirements.authoring.outline_tool`
@@ -388,8 +461,8 @@ impl ParsedSource {
     /// their paragraph outside directives. SDK line selection still exposes
     /// the innermost paragraph.
     // {impl}`requirements.references.outline_comments`
-    pub(crate) fn reference_owner_at_line(&self, line: usize) -> usize {
-        let owner = self.outline.owner_at_line(line);
+    pub(crate) fn reference_owner(&self, line: usize, column: usize) -> usize {
+        let owner = self.outline.ownership.owner_at(line, column);
         if self.outline.language != "markdown" {
             return owner;
         }

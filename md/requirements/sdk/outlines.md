@@ -266,7 +266,10 @@ impl OutlineContent {
     pub fn select(&self, selector: &str) -> Result<Self, OutlineError>;
     pub fn id(&self) -> &OutlineData;
     pub fn text(&self) -> &str;
+    pub fn source_span(&self, span: Span) -> Option<&str>;
+    pub fn source_span_redacted(&self, span: Span) -> Option<Cow<'_, str>>;
     pub fn outline(&self) -> &Outline;
+    pub fn language(&self) -> &str;
     pub fn structural_hash(&self) -> &str;
     pub fn fingerprint_scheme(&self) -> &str;
 }
@@ -414,6 +417,25 @@ An `OutlineContent` retains the source text, outline, and selected language's
 fingerprinting scheme describing that same snapshot. Its item spans, selected
 text, and structural hashes are derived from those bytes. A cached value keeps
 these parts together; later file edits do not change the loaded value.
+:::
+
+:::{req} source_spans
+`source_span` returns the original text at a file-relative `Span`, including when
+called on a selected item. `source_span_redacted` accepts the same coordinates
+and applies {cite}`requirements.sdk.sources.redaction` using the whole snapshot.
+A span containing the first byte of a recognized credential receives its marker.
+Each span preserves the line breaks in its portion of the credential. Joining
+adjacent redacted spans produces the redacted text of their union.
+
+Both methods return `None` for reversed bounds, out-of-file offsets, or offsets
+inside a UTF-8 character. An empty span at a valid boundary returns empty text.
+:::
+
+:::{req} language
+`OutlineContent::language()` returns the name of the `OutlineLang` that produced
+the snapshot. The root and each selected item report the same name. An explicit
+provider supplies its own name, including when the filename would select a
+different language by default.
 :::
 
 ## Inspect selectable items
@@ -709,6 +731,16 @@ The [language chapters](#language-specific-rules) define those mappings.
 A filename without a claimed extension uses the
 [plain-text outline](sources/plain-text.md): a file root with one child per
 nonblank line.
+:::
+
+:::{req} name_for_path
+`languages::name_for_path` returns the name that the SDK's filename-based
+constructors would select under {cite}`requirements.sdk.outlines.defaults`.
+The lookup uses only the path and works for files that do not exist.
+
+```rust,ignore
+pub fn name_for_path(path: &Path) -> &'static str;
+```
 :::
 
 :::{req} additional_languages

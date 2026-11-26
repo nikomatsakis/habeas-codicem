@@ -11,6 +11,12 @@ use std::{
     sync::Arc,
 };
 
+/// Redact recognized credentials in standalone text, preserving line breaks.
+// {impl}`requirements.sdk.sources.redact_text`
+pub fn redact_text(text: &str) -> std::borrow::Cow<'_, str> {
+    crate::redaction::Redaction::of_text(text).apply(text)
+}
+
 /// The name used to look up an outline language for source inspection.
 // {impl}`requirements.sdk.sources.language_id`
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]

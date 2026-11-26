@@ -852,7 +852,7 @@ fn reference_selector(
         .as_ref()
         .map_err(|error| io::Error::other(format!("cannot outline referenced source: {error}")))?;
     let item = if parsed.outline.language != "plain-text" {
-        let index = parsed.reference_owner_at_line(reference.line);
+        let index = parsed.reference_owner(reference.line, reference.column);
         parsed.outline.nodes[index].selector.clone()
     } else {
         String::new()

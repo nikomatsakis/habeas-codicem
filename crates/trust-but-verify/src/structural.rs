@@ -20,7 +20,7 @@ use crate::outline_engine::Profile;
 /// An outline profile with a grammar, as an ast-grep language.
 #[derive(Clone, Copy, Debug)]
 pub struct QueryLanguage {
-    pub profile: &'static Profile,
+    profile: &'static Profile,
     grammar: fn() -> tree_sitter::Language,
 }
 
@@ -48,6 +48,12 @@ impl QueryLanguage {
             .filter(|profile| profile.language.is_some())
             .map(|profile| profile.name)
             .collect()
+    }
+
+    // {impl}`requirements.references.distributed`
+    /// Extensions accepted by this rule's language.
+    pub fn extensions(&self) -> &[&str] {
+        self.profile.extensions
     }
 
     // {impl}`requirements.references.distributed`

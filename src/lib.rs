@@ -20,22 +20,11 @@ mod index;
 mod inputs;
 pub mod judgment;
 mod outline {
-    pub(crate) use trust_but_verify::outline_engine::LegacyOutline as Outline;
-    pub(crate) use trust_but_verify::outline_engine::parse_redacted;
-    pub(crate) use trust_but_verify::outline_engine::profile::profile_for_path;
-
     pub(crate) fn uses_language(
         path: &std::path::Path,
         language: impl trust_but_verify::outline::OutlineLang,
     ) -> bool {
-        path.extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| {
-                language
-                    .extensions()
-                    .iter()
-                    .any(|candidate| ext.eq_ignore_ascii_case(candidate))
-            })
+        trust_but_verify::outline::languages::name_for_path(path) == language.name()
     }
 
     pub(crate) fn is_markdown_path(path: &std::path::Path) -> bool {

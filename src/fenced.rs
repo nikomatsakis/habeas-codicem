@@ -13,6 +13,7 @@ use crate::{ReferenceKind, colon_fence, overlaps_protected, protected_ranges};
 pub(crate) struct FenceLine<'a> {
     pub(crate) text: &'a str,
     pub(crate) line: usize,
+    pub(crate) column: usize,
     /// Whether the line lies in Markdown code or raw HTML, where fences
     /// remain literal.
     pub(crate) protected: bool,
@@ -37,6 +38,7 @@ pub(crate) struct SourceFence {
     pub(crate) name: String,
     /// One-based line of the opening fence.
     pub(crate) line: usize,
+    pub(crate) column: usize,
     /// The body without comment delimiters, trimmed.
     pub(crate) body: String,
     pub(crate) closed: bool,
@@ -123,6 +125,7 @@ pub(crate) struct MarkdownFence {
     pub(crate) body: Range<usize>,
     pub(crate) closed: bool,
     pub(crate) line: usize,
+    pub(crate) column: usize,
 }
 
 /// Splits text into lines with their byte ranges, without line endings.
@@ -158,6 +161,7 @@ pub(crate) fn markdown_fences(content: &str, markdown: bool) -> Vec<MarkdownFenc
         .map(|(index, (start, end, text))| FenceLine {
             text,
             line: index + 1,
+            column: 1,
             protected: overlaps_protected(*start, (*end).max(start + 1), &protected),
         })
         .collect::<Vec<_>>();
@@ -177,6 +181,7 @@ pub(crate) fn markdown_fences(content: &str, markdown: bool) -> Vec<MarkdownFenc
                 body: body_start.min(body_end)..body_end,
                 closed: fence.close.is_some(),
                 line: fence.open + 1,
+                column: raw[fence.open].2.find(':').unwrap() + 1,
             }
         })
         .collect()
@@ -232,10 +237,16 @@ pub(crate) fn comment_fences(source: &str, outline: &OutlineItems, rust: bool) -
     }) {
         let mut lines = Vec::new();
         for comment in run {
-            for (offset, line) in source[comment.span.clone()].lines().enumerate() {
+            for (offset, (start, _, line)) in split_lines(&source[comment.span.clone()])
+                .into_iter()
+                .enumerate()
+            {
+                let text = strip_comment_delimiters(line);
+                let (_, column) = outline.position(comment.span.start + start);
                 lines.push(FenceLine {
-                    text: strip_comment_delimiters(line.strip_suffix('\r').unwrap_or(line)),
+                    text,
                     line: comment.lines.start() + offset,
+                    column: column + line.find(text).expect("stripped comment is a substring"),
                     protected: false,
                 });
             }
@@ -246,6 +257,7 @@ pub(crate) fn comment_fences(source: &str, outline: &OutlineItems, rust: bool) -
                 body: body(&lines, &fence),
                 kind: fence.kind,
                 line: lines[fence.open].line,
+                column: lines[fence.open].column + lines[fence.open].text.find(':').unwrap(),
                 name: fence.name,
                 closed: fence.close.is_some(),
                 owner: Some(owner),
@@ -264,6 +276,7 @@ pub(crate) fn text_fences(content: &str, markdown: bool) -> Vec<SourceFence> {
             kind: fence.kind,
             name: fence.name,
             line: fence.line,
+            column: fence.column,
             body: content[fence.body].trim().to_owned(),
             closed: fence.closed,
             owner: None,

@@ -161,6 +161,9 @@ documented TBV public API.
       - `id()`
       - `text()`
       - `outline()`
+      - `source_span()`
+      - `source_span_redacted()`
+      - `language()`
       - `structural_hash()`
       - `fingerprint_scheme()`
     - `struct OutlineError` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.OutlineError) · [Load outline contents](outlines.md#load-outline-contents)
@@ -198,6 +201,7 @@ documented TBV public API.
       - `end`
       - `new()`
     - `mod languages` — [Language-specific rules](outlines.md#language-specific-rules)
+      - `fn name_for_path` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.name_for_path)
       - `struct Css` — [Declaration](sources/css.md#habeas-req-requirements.sdk.sources.css.Css) · [CSS outlines](sources/css.md)
       - `struct Markdown` — [Declaration](sources/markdown.md#habeas-req-requirements.sdk.sources.markdown.Markdown) · [Markdown outlines](sources/markdown.md)
       - `struct PlainText` — [Declaration](sources/plain-text.md#habeas-req-requirements.sdk.sources.plain-text.PlainText) · [Plain-text outlines](sources/plain-text.md)
@@ -244,6 +248,7 @@ documented TBV public API.
     - `trait Context` — [Declaration](graph/agent-calls.md#habeas-req-requirements.sdk.graph.agent-calls.agent_context) · [Compose reusable context](graph/agent-calls.md#compose-reusable-context)
       - `contents()`
   - `mod sources` — [Select the project directory](sources.md#select-the-project-directory)
+    - `fn redact_text` — [Declaration](sources.md#habeas-req-requirements.sdk.sources.redact_text)
     - `struct SearchResults` — [Declaration](graph/search.md#habeas-req-requirements.sdk.graph.search.SearchResults) · [Search source text](graph/search.md#searching-source-text) · [Search source structure](graph/search.md#searching-source-structure)
       - `matches`
       - `complete`

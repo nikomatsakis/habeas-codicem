@@ -214,7 +214,7 @@ pub(crate) fn citation_items(
                                 && resolves(r)
                         });
                         eligible.then(|| {
-                            let owner = parsed.reference_owner_at_line(fence.line);
+                            let owner = parsed.reference_owner(fence.line, fence.column);
                             (
                                 fence.line,
                                 end,
@@ -236,7 +236,7 @@ pub(crate) fn citation_items(
         } else {
             let item = match parsed.as_ref() {
                 Ok(parsed) if parsed.outline.language != "plain-text" => {
-                    let index = parsed.reference_owner_at_line(reference.line);
+                    let index = parsed.reference_owner(reference.line, reference.column);
                     parsed.outline.nodes[index].selector.clone()
                 }
                 _ => String::new(),
