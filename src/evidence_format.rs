@@ -163,7 +163,7 @@ fn check_shape(value: &Value, subject: &HabeasNode) -> io::Result<()> {
             "references",
             "inputs",
         ],
-        HabeasNode::CitationReview(_) => &[
+        HabeasNode::Source(_) => &[
             "file",
             "item",
             "citations",

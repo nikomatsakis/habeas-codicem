@@ -4145,6 +4145,7 @@ mod tests {
     // {test}`requirements.references.citation_review`
     // {test}`requirements.authoring.citation_prompt`
     #[tokio::test]
+    // {test}`requirements.sdk.habeas.citation_criterion`
     async fn coverage_explanations_use_standard_citation_authoring_and_freshness() {
         let project = inputs::tests::project();
         let source = "// :::{cite} habeas:coverage\n// Defensive invariant abort, inaccessible through the API.\n// :::\nfn helper() {}\n";
@@ -4200,9 +4201,55 @@ mod tests {
                 .iter()
                 .all(|input| input.get("builtin").is_none())
         );
-        let path = subject.evidence_path(project.path());
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        use trust_but_verify::domain::{Domain, NodeContents};
+        use trust_but_verify::graph::Dependency;
+        let source_node = crate::sdk::HabeasNode::review_subject(&subject);
+        assert!(matches!(source_node, crate::sdk::HabeasNode::Source(_)));
+        assert_eq!(
+            source_node.review_criterion().segments(),
+            ["citation-review"]
+        );
+        let node = sources.domain.cache().intern_node(source_node.clone());
+        let fingerprint = sources.domain.node_content(&node).unwrap().fingerprint();
+        let expected = vec![Dependency::Node(source_node.clone(), fingerprint)];
+        assert_eq!(
+            crate::evidence_format::decode(&record, &source_node)
+                .unwrap()
+                .dependencies,
+            expected
+        );
+        // Previously the same observation was also credited to a citation-specific node.
+        let mut historical = record.clone();
+        let identity = &mut historical["dependencies"][0]["Node"][0];
+        *identity = json!({"CitationReview": identity["Source"].clone()});
+        assert_eq!(
+            crate::evidence_format::decode(&historical, &source_node)
+                .unwrap()
+                .dependencies,
+            expected
+        );
+        let criterion = source_node.review_criterion();
+        let decoded = crate::evidence_format::decode(&record, &source_node).unwrap();
+        sources
+            .domain
+            .store_evidence(&node, &criterion, &decoded)
+            .await
+            .unwrap();
+        let path = project
+            .path()
+            .join("evidence/citations/src/lib.rs/fn[helper].json");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&fs::read(&path).unwrap()).unwrap(),
+            record
+        );
+        let loaded = sources
+            .domain
+            .load_evidence(&node, &criterion)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.dependencies, expected);
+        assert_eq!(loaded.output, decoded.output);
         fs::write(
             project.path().join("src/lib.rs"),
             source.replace("inaccessible", "reachable"),

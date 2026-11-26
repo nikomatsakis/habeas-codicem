@@ -81,8 +81,8 @@ pub(crate) enum HabeasNode {
     ReferenceSet(RequirementId),
     RequirementSelection(String),
     Definition(String),
+    #[serde(alias = "CitationReview")]
     Source(OutlineId),
-    CitationReview(OutlineId),
     SiteReview {
         requirement: String,
         source: OutlineId,
@@ -129,9 +129,7 @@ impl HabeasNode {
             Self::Definition(name) => InputSelector::Definition {
                 definition: name.clone(),
             },
-            Self::Source(source)
-            | Self::CitationReview(source)
-            | Self::SiteReview { source, .. } => {
+            Self::Source(source) | Self::SiteReview { source, .. } => {
                 if source.resource.scheme != "repo" {
                     return Err(std::io::Error::other(format!(
                         "Habeas does not resolve resource scheme {:?}",
@@ -258,12 +256,6 @@ impl Domain for HabeasDomain {
                 id.resource.location.clone(),
                 id.selector.clone(),
             ],
-            HabeasNode::CitationReview(id) => vec![
-                "citation".into(),
-                id.resource.scheme.clone(),
-                id.resource.location.clone(),
-                id.selector.clone(),
-            ],
             HabeasNode::SiteReview {
                 requirement,
                 source,
@@ -349,7 +341,7 @@ impl Domain for HabeasDomain {
             .node_data(*node)
             .ok_or_else(|| std::io::Error::other("unassigned node handle"))?;
         let node = data.as_ref();
-        if criterion != &review_criterion() {
+        if criterion != &node.review_criterion() {
             return Ok(None);
         }
         let Some(path) = node.evidence_path(&self.root) else {
@@ -376,7 +368,7 @@ impl Domain for HabeasDomain {
             .node_data(*node)
             .ok_or_else(|| std::io::Error::other("unassigned node handle"))?;
         let node = data.as_ref();
-        if criterion != &review_criterion() {
+        if criterion != &node.review_criterion() {
             return Err(std::io::Error::other("unsupported Habeas review criterion"));
         }
         let path = node
@@ -579,7 +571,7 @@ impl HabeasNode {
         };
         match subject {
             AuthoringSubject::Definition(name) => Self::Requirement(RequirementId(name.clone())),
-            AuthoringSubject::Citation { file, item } => Self::CitationReview(source(file, item)),
+            AuthoringSubject::Citation { file, item } => Self::Source(source(file, item)),
             AuthoringSubject::Site {
                 requirement,
                 file,
@@ -591,14 +583,21 @@ impl HabeasNode {
         }
     }
 
+    // {impl}`requirements.sdk.habeas.citation_criterion`
+    pub(crate) fn review_criterion(&self) -> CriterionPath {
+        match self {
+            Self::Source(_) => CriterionPath::new(vec!["citation-review".into()]),
+            _ => review_criterion(),
+        }
+    }
+
     // {cite}`habeas:util`
     pub(crate) fn evidence_path(&self, root: &Path) -> Option<std::path::PathBuf> {
         match self {
             Self::Requirement(id) => Some(root.join("evidence").join(format!("{}.json", id.0))),
-            Self::CitationReview(id) => Some(root.join(crate::citations::review_path(
-                &id.resource.location,
-                &id.selector,
-            ))),
+            Self::Source(id) if id.resource.scheme == "repo" => Some(root.join(
+                crate::citations::review_path(&id.resource.location, &id.selector),
+            )),
             Self::SiteReview {
                 requirement,
                 source,
@@ -772,10 +771,6 @@ mod tests {
                 vec!["source", "generated", "opaque/../é", ""],
             ),
             (
-                HabeasNode::CitationReview(source.clone()),
-                vec!["citation", "generated", "opaque/../é", ""],
-            ),
-            (
                 HabeasNode::SiteReview {
                     requirement: "same".into(),
                     source: source.clone(),
@@ -910,7 +905,7 @@ mod tests {
                 }),
             ),
             (
-                HabeasNode::CitationReview(source.clone()),
+                HabeasNode::Source(source.clone()),
                 serde_json::json!({
                     "file":"src/lib.rs", "item":"fn[kept]", "citations":[], "inputs":[]
                 }),
@@ -931,7 +926,7 @@ mod tests {
                 domain
                     .load_evidence(
                         &domain.cache().intern_node(node.clone()),
-                        &crate::sdk::review_criterion()
+                        &node.review_criterion()
                     )
                     .await
                     .unwrap()
@@ -951,7 +946,7 @@ mod tests {
                 domain
                     .store_evidence(
                         &domain.cache().intern_node(node.clone()),
-                        &crate::sdk::review_criterion(),
+                        &node.review_criterion(),
                         &record,
                     )
                     .await
@@ -959,7 +954,7 @@ mod tests {
                 let loaded = domain
                     .load_evidence(
                         &domain.cache().intern_node(node.clone()),
-                        &crate::sdk::review_criterion(),
+                        &node.review_criterion(),
                     )
                     .await
                     .unwrap()
@@ -995,7 +990,7 @@ mod tests {
                     domain
                         .store_evidence(
                             &domain.cache().intern_node(node.clone()),
-                            &crate::sdk::review_criterion(),
+                            &node.review_criterion(),
                             &inconsistent
                         )
                         .await

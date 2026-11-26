@@ -82,6 +82,10 @@ The SDK supplies these operations for `OutlineContent` under
 {cite}`requirements.sdk.outlines.node_contents`. HC supplies them for its issue
 data and other application-defined values.
 
+:::{req} citation_criterion
+HC runs the `citation-review` criterion on the source node for the reviewed file and outline selector. Its evidence records the source node and its content fingerprint. HC loads and saves the result at the citation review’s existing evidence path.
+:::
+
 HC's criterion types specify the questions. Its `Context` implementations
 supply the review instructions and conventions. HC loads SDK agent
 configuration through its own [configuration policy](../configuration.md),

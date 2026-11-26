@@ -197,6 +197,10 @@ fn rationales_rewrite_exact_code_spans_and_list_other_mentions() {
         ("path", "src/old", "src/new"),
         ("node", "src/a.rs#fn[f]", "src/b.rs#fn[f]"),
     ]);
+    assert_eq!(
+        rewrite_rationale(&map, "`src/older/x.rs`").0,
+        "`src/older/x.rs`"
+    );
     let (rewritten, mentions) = rewrite_rationale(
         &map,
         "`rules.cli.check` holds; `src/old/x.rs` and `src/a.rs#fn[f]` do it. \

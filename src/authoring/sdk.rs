@@ -58,6 +58,7 @@ struct ReviewState<'a> {
 // {impl}`requirements.authoring.mandatory_inputs`
 struct Review<'a> {
     state: Arc<ReviewState<'a>>,
+    criterion: CriterionPath,
     node: NodeId<HabeasDomain>,
 }
 
@@ -69,7 +70,7 @@ impl Criterion<HabeasDomain> for Review<'_> {
     }
 
     fn criterion_path(&self) -> CriterionPath {
-        crate::sdk::review_criterion()
+        self.criterion.clone()
     }
 
     fn version(&self) -> CriterionVersion {
@@ -346,6 +347,7 @@ async fn run(
         },
     };
     let node = HabeasNode::review_subject(&subject);
+    let criterion = node.review_criterion();
     let graph = sources.domain.clone();
     let node = graph.cache().intern_node(node);
     let state = Arc::new(ReviewState {
@@ -361,6 +363,7 @@ async fn run(
     });
     let agent = ReviewAgent(provider, state.clone());
     let review = Review {
+        criterion,
         node,
         state: state.clone(),
     };
@@ -533,6 +536,7 @@ mod tests {
         let path = node.evidence_path(root.path()).unwrap();
         let node = graph.cache().intern_node(node);
         let review = || Review {
+            criterion: crate::sdk::review_criterion(),
             node,
             state: state.clone(),
         };
@@ -905,7 +909,7 @@ mod tests {
                 let loaded = graph
                     .load_evidence(
                         &graph.cache().intern_node(node.clone()),
-                        &crate::sdk::review_criterion(),
+                        &node.review_criterion(),
                     )
                     .await
                     .unwrap()
@@ -947,7 +951,7 @@ mod tests {
                     graph
                         .load_evidence(
                             &graph.cache().intern_node(node.clone()),
-                            &crate::sdk::review_criterion()
+                            &node.review_criterion()
                         )
                         .await
                         .is_err()
@@ -1031,7 +1035,7 @@ mod tests {
                     graph
                         .load_evidence(
                             &graph.cache().intern_node(node.clone()),
-                            &crate::sdk::review_criterion()
+                            &node.review_criterion()
                         )
                         .await
                         .unwrap()
@@ -1051,7 +1055,7 @@ mod tests {
                     graph
                         .load_evidence(
                             &graph.cache().intern_node(node.clone()),
-                            &crate::sdk::review_criterion()
+                            &node.review_criterion()
                         )
                         .await
                         .is_err()
@@ -1074,7 +1078,7 @@ mod tests {
                     graph
                         .load_evidence(
                             &graph.cache().intern_node(node.clone()),
-                            &crate::sdk::review_criterion()
+                            &node.review_criterion()
                         )
                         .await
                         .is_err()
@@ -1085,7 +1089,7 @@ mod tests {
                 graph
                     .load_evidence(
                         &graph.cache().intern_node(node.clone()),
-                        &crate::sdk::review_criterion()
+                        &node.review_criterion()
                     )
                     .await
                     .is_err()
@@ -1095,7 +1099,7 @@ mod tests {
             let loaded = graph
                 .load_evidence(
                     &graph.cache().intern_node(node.clone()),
-                    &crate::sdk::review_criterion(),
+                    &node.review_criterion(),
                 )
                 .await
                 .unwrap()

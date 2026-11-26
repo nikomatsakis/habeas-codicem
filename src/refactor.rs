@@ -133,7 +133,7 @@ impl Mappings {
         match &mut mapped {
             HabeasNode::Requirement(id) | HabeasNode::ReferenceSet(id) => name(&mut id.0),
             HabeasNode::RequirementSelection(value) | HabeasNode::Definition(value) => name(value),
-            HabeasNode::Source(value) | HabeasNode::CitationReview(value) => source(value),
+            HabeasNode::Source(value) => source(value),
             HabeasNode::SiteReview {
                 requirement,
                 source: value,
