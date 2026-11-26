@@ -20,6 +20,34 @@ pub(crate) mod tests {
     pub(crate) fn github_token() -> String {
         format!("gh{}_{}", "p", "16C7e42F292c6912E7710c838347Ae178B4a")
     }
+
+    #[test]
+    fn credential_fields_reports_nested_settings_in_source_order() {
+        let source = r#"
+[authoring.configs]
+unused = false
+[authoring.configs.local]
+api_key = "first"
+credentials = { profiles = [{ token = "second" }, { key = "third" }] }
+[[authoring.configs.cloud.credentials]]
+token = "fourth"
+"#;
+        assert_eq!(
+            super::credential_fields(source).unwrap(),
+            [
+                "authoring.configs.local.api_key",
+                "authoring.configs.local.credentials.profiles.token",
+                "authoring.configs.local.credentials.profiles.key",
+                "authoring.configs.cloud.credentials.token",
+            ]
+        );
+    }
+
+    #[test]
+    fn credential_fields_distinguishes_absent_settings_from_invalid_toml() {
+        assert_eq!(super::credential_fields("version = 1"), Some(Vec::new()));
+        assert_eq!(super::credential_fields("[authoring"), None);
+    }
 }
 
 /// The explicit credential fields of a Habeas configuration document: every
