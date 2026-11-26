@@ -9,14 +9,10 @@ use crate::outline::{OutlineContent, OutlineData, Span};
 impl<D: Domain> SourceProject<D> {
     // {impl}`requirements.sdk.sources.source_nodes`
     pub(crate) fn intern_source(&self, address: &OutlineData) -> Result<NodeId<D>, SourceError> {
-        let cache = self.domain.cache();
-        let node = cache.intern_node(self.domain.source_node(address)?);
-        cache
-            .source_addresses
-            .lock()
-            .expect("source address lock poisoned")
-            .insert(node, address.clone());
-        Ok(node)
+        Ok(self
+            .domain
+            .cache()
+            .intern_source(self.domain.source_node(address)?, address))
     }
 
     // {impl}`requirements.sdk.sources.source_nodes`

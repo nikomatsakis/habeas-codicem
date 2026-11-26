@@ -320,7 +320,7 @@ where
         item: &crate::outline::OutlineData,
     ) -> Result<D::NodeContent, D::Error> {
         let node = self.graph.source_node(item)?;
-        self.read(&self.graph.cache().intern_node(node))
+        self.read(&self.graph.cache().intern_source(node, item))
     }
 }
 

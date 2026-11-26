@@ -113,6 +113,20 @@ impl<D: Domain> ValidationCache<D> {
         }
     }
 
+    // {impl}`requirements.sdk.sources.source_nodes`
+    pub(crate) fn intern_source(
+        &self,
+        data: D::NodeData,
+        address: &crate::outline::OutlineData,
+    ) -> NodeId<D> {
+        let node = self.intern_node(data);
+        self.source_addresses
+            .lock()
+            .expect("source address lock poisoned")
+            .insert(node, address.clone());
+        node
+    }
+
     /// Resolve an assigned handle to its durable identity.
     // {impl}`requirements.sdk.validation-cache.node_data`
     pub fn node_data(&self, node: NodeId<D>) -> Option<Arc<D::NodeData>> {

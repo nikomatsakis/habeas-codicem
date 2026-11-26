@@ -287,7 +287,12 @@ impl OutlineLang for CustomLanguage {
                 String::new(),
                 Span::new(0, source.len()),
                 source.to_owned(),
-            ),
+            )
+            .with_own_hash(format!(
+                "{}{}",
+                source.get(..self.span.start).unwrap_or_default(),
+                source.get(self.span.end..).unwrap_or_default()
+            )),
             OutlineItem::new(
                 "part[selected]".into(),
                 "part".into(),
@@ -336,8 +341,9 @@ fn explicit_languages_share_configuration_and_retain_their_scheme() {
         assert_eq!(root.text(), "a hello z");
         assert_eq!(root.language(), "custom");
         assert_eq!(root.outline().items[0].span, Span::new(0, 9));
-        assert_eq!(root.fingerprint().value, "a hello z");
-        assert_eq!(root.fingerprint().scheme, "custom-v2");
+        assert_eq!(root.structural_hash(), "a hello z");
+        assert_eq!(root.fingerprint().value, "a  z");
+        assert_eq!(root.fingerprint().scheme, "custom-v2:own-v1");
     }
     drop(language);
     drop(cloned);
