@@ -118,163 +118,49 @@ impl SourceAccess {
     }
 }
 
-/// Project files considered by reference discovery and Rust item coverage.
 // {impl}`requirements.authoring.deterministic_validation`
-pub struct DiscoverySources {
-    root: PathBuf,
-    tracked: Option<BTreeSet<PathBuf>>,
+// {impl}`requirements.references.discovery`
+// {impl}`requirements.ci.errors`
+pub(super) fn discover_files(
+    root: &Path,
     policy: PathPolicy,
-}
-
-impl DiscoverySources {
-    /// Loads the Git index, then asks the consumer for discovery rules.
-    // {impl}`requirements.authoring.deterministic_validation`
-    pub fn load(root: &Path, policy: impl FnOnce() -> PathPolicy) -> io::Result<Self> {
-        Ok(Self {
-            root: root.to_owned(),
-            tracked: tracked_sources(root)?,
-            policy: policy(),
-        })
-    }
-
-    /// Every considered file, sorted. In a Git worktree these are the indexed
-    /// files; outside Git, every file under the project root. Symlinks are not
-    /// followed, so no source is counted twice through an alias.
-    // {impl}`requirements.ci.errors`
-    pub fn files(&self, errors: &mut Vec<String>) -> Vec<PathBuf> {
-        let mut files: Vec<PathBuf> = match &self.tracked {
-            Some(tracked) => tracked
-                .iter()
-                .filter(|path| {
-                    // An indexed file deleted from the worktree has no
-                    // content to scan; an uninspectable one is kept so that
-                    // reading it reports the failure.
-                    fs::symlink_metadata(path).map_or_else(
-                        |error| error.kind() != io::ErrorKind::NotFound,
-                        |metadata| metadata.is_file(),
-                    )
-                })
-                .filter(|path| self.considers(path, false))
-                .cloned()
-                .collect(),
-            None => self.walk(errors),
-        };
-        files.sort();
-        files
-    }
-
-    /// The files in the Git index, including staged and deleted ones; `None`
-    /// outside Git.
-    // {cite}`habeas:util`
-    pub fn indexed(&self) -> Option<&BTreeSet<PathBuf>> {
-        self.tracked.as_ref()
-    }
-
-    /// Untracked files a Git worktree's ignore rules do not exclude, with the
-    /// same exclusions as [`Self::files`]; empty outside Git.
-    // {cite}`habeas:util`
-    pub fn untracked(&self) -> io::Result<Vec<PathBuf>> {
-        if self.tracked.is_none() {
-            return Ok(Vec::new());
-        }
-        let output = Command::new("git")
-            .current_dir(&self.root)
-            .args([
-                "ls-files",
-                "--others",
-                "--exclude-standard",
-                "-z",
-                "--",
-                ".",
-            ])
-            .output()?;
-        if !output.status.success() {
-            return Err(io::Error::other(format!(
-                "cannot list untracked files: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
-        }
-        let mut files: Vec<PathBuf> = output
-            .stdout
-            .split(|byte| *byte == 0)
-            .filter(|path| !path.is_empty())
-            .filter_map(|path| std::str::from_utf8(path).ok())
-            .map(|path| self.root.join(path))
-            .filter(|path| fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file()))
-            .filter(|path| self.considers(path, false))
-            .collect();
-        files.sort();
-        Ok(files)
-    }
-
-    /// Whether a project file outside the fixed exclusions is permitted by the
-    /// workspace rules: not disallowed.
-    // {impl}`requirements.configuration.evidence_paths`
-    pub fn considers(&self, path: &Path, directory: bool) -> bool {
-        if excluded_from_discovery(&self.root, path, directory) {
-            return false;
-        }
-        let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
-        self.policy.check_disallow(path, &target).is_ok()
-    }
-
-    /// Lists every file outside Git, skipping excluded and disallowed
-    /// directories without descending into them.
-    // {impl}`requirements.ci.errors`
-    fn walk(&self, errors: &mut Vec<String>) -> Vec<PathBuf> {
-        let root = &self.root;
-        let label = |path: &Path| {
-            path.strip_prefix(root)
-                .unwrap_or(path)
-                .display()
-                .to_string()
-        };
-        let mut stack = vec![root.clone()];
-        let mut files = Vec::new();
-        while let Some(directory) = stack.pop() {
-            let entries = match fs::read_dir(&directory) {
-                Ok(entries) => entries,
-                Err(error) => {
-                    errors.push(format!(
-                        "{}: cannot scan references: {error}",
-                        label(&directory)
-                    ));
-                    continue;
+    errors: &mut Vec<String>,
+) -> Vec<PathBuf> {
+    let mut walk = ignore::WalkBuilder::new(root);
+    let project = root.to_owned();
+    walk.standard_filters(false)
+        .git_ignore(true)
+        .require_git(false)
+        .filter_entry(move |entry| {
+            entry.depth() == 0
+                || considers(
+                    &project,
+                    &policy,
+                    entry.path(),
+                    entry.file_type().is_some_and(|kind| kind.is_dir()),
+                )
+        });
+    let mut files = Vec::new();
+    for entry in walk.build() {
+        match entry {
+            Ok(entry) => {
+                if let Some(error) = entry.error() {
+                    errors.push(format!("cannot discover reference sources: {error}"));
                 }
-            };
-            for entry in entries {
-                let entry = match entry {
-                    Ok(entry) => entry,
-                    Err(error) => {
-                        errors.push(format!(
-                            "{}: cannot scan directory entry: {error}",
-                            label(&directory)
-                        ));
-                        continue;
-                    }
-                };
-                let path = entry.path();
-                let kind = match entry.file_type() {
-                    Ok(kind) => kind,
-                    Err(error) => {
-                        errors.push(format!(
-                            "{}: cannot inspect reference source: {error}",
-                            label(&path)
-                        ));
-                        continue;
-                    }
-                };
-                if kind.is_dir() {
-                    if self.considers(&path, true) {
-                        stack.push(path);
-                    }
-                } else if kind.is_file() && self.considers(&path, false) {
-                    files.push(path);
+                if entry.file_type().is_some_and(|kind| kind.is_file()) {
+                    files.push(entry.into_path());
                 }
             }
+            Err(error) => errors.push(format!("cannot discover reference sources: {error}")),
         }
-        files
     }
+    files.sort();
+    files
+}
+
+// {impl}`requirements.configuration.evidence_paths`
+pub(crate) fn considers(root: &Path, policy: &PathPolicy, path: &Path, directory: bool) -> bool {
+    !excluded_from_discovery(root, path, directory) && policy.check_disallow(path, path).is_ok()
 }
 
 /// Whether a file, or a directory when `directory` is set, lies in a `.git`
@@ -285,6 +171,9 @@ fn excluded_from_discovery(root: &Path, path: &Path, directory: bool) -> bool {
     let Ok(relative) = path.strip_prefix(root) else {
         return true;
     };
+    if relative.file_name().is_some_and(|name| name == ".git") {
+        return true;
+    }
     let directories = if directory {
         Some(relative)
     } else {
@@ -372,7 +261,7 @@ fn resolve(root: &Path, relative: &Path) -> io::Result<(PathBuf, PathBuf)> {
     Ok((requested, target))
 }
 
-fn tracked_sources(root: &Path) -> io::Result<Option<BTreeSet<PathBuf>>> {
+pub(crate) fn tracked_sources(root: &Path) -> io::Result<Option<BTreeSet<PathBuf>>> {
     let mut has_git_marker = false;
     for directory in root.ancestors() {
         match fs::symlink_metadata(directory.join(".git")) {

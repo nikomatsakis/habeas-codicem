@@ -100,12 +100,12 @@ Habeas MUST find the references of {cite}`requirements.references.roles`
 in project source files, where {cite}`requirements.references.reference_contexts`
 says they count, and MUST fail with the source file and line if a
 name has no matching `{req}` or `{example}` definition. In Markdown, escaped
-roles and roles in code examples MUST remain literal. Reference discovery MUST
-consider the following files: in a Git worktree, files present in
-the Git index, including staged new files; outside Git, all project files; in
-both cases excluding the project-root `book` and `evidence` directories, `.git`
-and `target` directories at any depth, and paths disallowed by
-{cite}`requirements.configuration.evidence_paths`. Evidence snapshots and
+roles and roles in code examples MUST remain literal. Reference discovery MUST scan current files under the project directory, including
+new files as soon as they are created. It MUST respect `.gitignore` files in the
+project, including nested rules and exceptions, in projects with or without Git.
+It MUST skip the project-root `book` and `evidence` directories, `.git` and `target`
+at any depth, and paths disallowed by {cite}`requirements.configuration.evidence_paths`.
+Evidence snapshots and
 generated build output MUST therefore not be counted as source references.
 :::
 

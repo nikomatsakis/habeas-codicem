@@ -22,7 +22,7 @@ has the directive and reference syntax.
 - [ ] 2. Draft. Write drafts from the request straight into the chapter as
       uncommitted, unstaged edits, with no draft marker; Git tracks what is in
       progress. For a new chapter, add it to `SUMMARY.md` and `git add -N` it so
-      reviewers and Habeas see it. Ask the user only what the request can't
+      reviewers see it in the diff. Ask the user only what the request can't
       answer; the review in step 3 finds the rest. Drafts may be high-level,
       compound, or incomplete. Cover each observable outcome and failure case
       of the change without committing to an implementation. Reuse existing

@@ -1627,8 +1627,7 @@ mod tests {
                 result.text
             );
         }
-        git2::Repository::init(root).unwrap();
-        fs::write(root.join(".git/index"), "corrupt Git index").unwrap();
+        fs::write(root.join(".gitignore"), "[z-a]").unwrap();
         let result = report(root);
         assert!(!result.passed);
         assert!(

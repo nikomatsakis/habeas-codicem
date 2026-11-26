@@ -7,6 +7,7 @@ use serde_json::{Map, Value};
 use toml_edit::DocumentMut;
 use trust_but_verify::outline::languages::name_for_path;
 
+pub(crate) use crate::authoring::access::discovery_files as discovered_files;
 use crate::inputs::{InputSelector, OutlineCache, ResolvedInput, ResolvedNode};
 use crate::judgment::Judgment;
 use crate::{
@@ -1900,33 +1901,24 @@ pub(crate) fn collect_references(root: &Path, errors: &mut Vec<String>) -> Vec<S
     collect_references_with_progress(&Default::default(), root, &files, errors, &mut |_| {})
 }
 
-/// The project files reference discovery considers under source-access
-/// policy, reporting a failure to read the Git index as a discovery error.
-// {impl}`requirements.ci.errors`
-pub(crate) fn discovered_files(root: &Path, errors: &mut Vec<String>) -> Vec<PathBuf> {
-    match crate::authoring::access::load_discovery_sources(root) {
-        Ok(sources) => sources.files(errors),
-        Err(error) => {
-            errors.push(format!("cannot discover reference sources: {error}"));
-            Vec::new()
-        }
-    }
-}
-
 /// Reports each workspace `habeas.toml` in the Git index that contains
 /// explicit credentials, naming its credential settings but never their
-/// values. Outside Git nothing is committed, so nothing is reported; a Git
-/// index that cannot be read is reported by discovery.
+/// values. An unreadable index is a configuration-check error.
 // {impl}`requirements.authoring.credentials`
 // {impl}`requirements.ci.errors`
 fn validate_committed_credentials(root: &Path, errors: &mut Vec<String>) {
-    let Ok(sources) = crate::authoring::access::load_discovery_sources(root) else {
-        return;
+    let indexed = match crate::authoring::access::tracked_sources(root) {
+        Ok(Some(files)) => files,
+        Ok(None) => return,
+        Err(error) => {
+            errors.push(format!(
+                "cannot check tracked workspace credentials: {error}"
+            ));
+            return;
+        }
     };
-    for file in sources
-        .indexed()
-        .into_iter()
-        .flatten()
+    for file in indexed
+        .iter()
         .filter(|file| file.file_name().is_some_and(|name| name == "habeas.toml"))
     {
         let Some(fields) = fs::read_to_string(file)
@@ -1946,27 +1938,6 @@ fn validate_committed_credentials(root: &Path, errors: &mut Vec<String>) {
             display_path(root, file)
         ));
     }
-}
-
-// {cite}`habeas:util`
-/// Untracked files in a Git worktree, outside the discovery exclusions, that
-/// contain references discovery would otherwise find; empty outside Git.
-pub(crate) fn untracked_reference_files(root: &Path) -> io::Result<Vec<PathBuf>> {
-    let root = fs::canonicalize(root)?;
-    let md_root = book_source_dir(&root, &mut Vec::new());
-    let untracked = crate::authoring::access::load_discovery_sources(&root)?.untracked()?;
-    let cache = crate::inputs::SourceCache::new();
-    Ok(untracked
-        .into_iter()
-        .filter(|file| {
-            fs::read_to_string(file).is_ok_and(|content| {
-                !content.contains('\0')
-                    && file_references(&cache, file, &content, file.starts_with(&md_root))
-                        .iter()
-                        .any(|reference| reference.kind != ReferenceKind::Term)
-            })
-        })
-        .collect())
 }
 
 // {impl}`requirements.ci.errors`
@@ -3282,7 +3253,7 @@ api_key = 'PRIVATE_REMOTE'
         )
         .unwrap();
         // A `.git` file naming a missing Git directory makes the Git index
-        // unreadable, so reference discovery fails.
+        // unreadable, so the tracked configuration check reports an error.
         fs::write(
             temp.path().join(".git"),
             format!("gitdir: {}\n", temp.path().join("missing").display()),
@@ -3290,11 +3261,11 @@ api_key = 'PRIVATE_REMOTE'
         .unwrap();
         fs::write(temp.path().join("evidence/ghost.json"), "{").unwrap();
         let errors = validate_repository(temp.path()).unwrap().errors;
-        let discovery = errors
+        let credential_errors = errors
             .iter()
-            .filter(|error| error.starts_with("cannot discover reference sources:"))
+            .filter(|error| error.starts_with("cannot check tracked workspace credentials:"))
             .count();
-        assert_eq!(discovery, 1, "{errors:#?}");
+        assert_eq!(credential_errors, 1, "{errors:#?}");
         let errors = errors.join("\n");
         for detail in [
             "evidence/rules.ready.json: missing for requirement",

@@ -10,29 +10,27 @@ description: Use when Habeas evidence needs creating or refreshing, or when `hab
 Run commands from the project root, the directory with `book.toml` and
 `Cargo.toml`.
 
-- [ ] 1. Use `git add` for new files whose references belong in the graph.
-      Authoring reads the working tree, including untracked files visible under `.gitignore`.
-- [ ] 2. `habeas status` lists what needs attention; `habeas info <name>` shows
+- [ ] 1. `habeas status` lists what needs attention; `habeas info <name>` shows
       one definition's judgment, rationale, and findings. Fix what the findings
       name (see "Fixing findings").
-- [ ] 3. `habeas author --all` assesses every definition whose evidence is
+- [ ] 2. `habeas author --all` assesses every definition whose evidence is
       missing, stale, or invalid and skips current ones; `-v` prints each false
       judgment's rationale. `habeas author <name>` does one.
-- [ ] 4. `habeas coverage`, then `habeas coverage-check`. While findings remain
-      that you can fix, return to step 2.
-- [ ] 5. Check the "Disagreements" section of `habeas status`. Validation
+- [ ] 3. `habeas coverage`, then `habeas coverage-check`. While findings remain
+      that you can fix, return to step 1.
+- [ ] 4. Check the "Disagreements" section of `habeas status`. Validation
       accepts a `true` or FIXME whose rationale records a disagreement, so only
       this shows it; see "Disagreeing assessments".
-- [ ] 6. Stop and report each finding that needs the user: a new or changed
+- [ ] 5. Stop and report each finding that needs the user: a new or changed
       requirement, a gap to defer, a blocker, missing information needed to
       decide test adequacy, or a missing record or false judgment whose rationale
       names only implementation that is still pending, which is expected.
       Don't keep iterating on those, and never write placeholder evidence.
-      Don't wait for answers before step 7.
-- [ ] 7. Commit every change under `evidence/` (new, updated, and deleted
+      Don't wait for answers before step 6.
+- [ ] 6. Commit every change under `evidence/` (new, updated, and deleted
       records) with the source and requirement changes they assess; CI
       validates only committed evidence.
-- [ ] 8. Next: for findings that need code or tests, or requirement text that
+- [ ] 7. Next: for findings that need code or tests, or requirement text that
       must change, return to the habeas-requirements skill.
 
 ## Testing and coverage findings
@@ -111,7 +109,6 @@ and their regression tests are implemented.
 | orphaned citation or site review | `habeas author --all` deletes it |
 | orphaned evidence for a renamed requirement or example | `habeas refactor --map <old>=<new>` (habeas-refactor), which keeps the evidence |
 | orphaned evidence for a removed requirement or example | `git rm` the file the finding names (removing an orphan is not editing evidence), then `habeas author --all` |
-| untracked file with references | `git add` it |
 
 A false rationale names one of the gaps listed in "What the review checks" in
 the habeas-requirements skill. Behavior with no requirement needs one agreed

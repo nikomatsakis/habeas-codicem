@@ -2279,7 +2279,7 @@ mod tests {
             .iter()
             .map(|site| site["file"].as_str().unwrap().to_owned())
             .collect();
-        assert_eq!(files, ["src/tracked.rs"]);
+        assert_eq!(files, ["src/tracked.rs", "src/untracked.rs"]);
     }
 
     // {test}`requirements.authoring.reference_index`

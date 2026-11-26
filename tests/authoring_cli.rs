@@ -3444,7 +3444,7 @@ fn the_habeas_skill_is_home_of_routing_inspection_syntax_and_shared_gotchas() {
     assert_text(
         "gotchas",
         &section(raw, "## Gotchas"),
-        &["reference discovery uses the Git index"],
+        &["Reference discovery scans the working directory"],
     );
     assert_text(
         "distributed requirements",

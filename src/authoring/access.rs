@@ -7,7 +7,7 @@ pub(crate) use policy::*;
 // {impl}`requirements.configuration.evidence_paths`
 // {impl}`requirements.configuration.workspace_location`
 // {impl}`requirements.configuration.loading`
-fn load_policy(root: &Path) -> io::Result<PathPolicy> {
+pub(crate) fn load_policy(root: &Path) -> io::Result<PathPolicy> {
     let Some(config) = crate::config::load_workspace_evidence(root)? else {
         return Ok(PathPolicy::default());
     };
@@ -28,8 +28,8 @@ fn load_policy(root: &Path) -> io::Result<PathPolicy> {
 }
 
 // {impl}`requirements.authoring.deterministic_validation`
-pub(crate) fn load_discovery_sources(root: &Path) -> io::Result<DiscoverySources> {
-    DiscoverySources::load(root, || load_policy(root).unwrap_or_default())
+pub(crate) fn discovery_files(root: &Path, errors: &mut Vec<String>) -> Vec<PathBuf> {
+    policy::discover_files(root, load_policy(root).unwrap_or_default(), errors)
 }
 
 // {impl}`requirements.ci.input_containment`
@@ -109,7 +109,7 @@ pub(crate) mod tests {
 
     // {test}`requirements.references.discovery`
     #[test]
-    fn discovery_considers_indexed_files_except_exclusions_including_credential_configuration() {
+    fn discovery_includes_unstaged_and_staged_files_and_skips_generated_files() {
         let root = tempfile::tempdir().unwrap();
         let root = fs::canonicalize(root.path()).unwrap();
         for file in [
@@ -134,10 +134,8 @@ pub(crate) mod tests {
         git(&root, &["add", "-f", "."]);
         git(&root, &["rm", "--cached", "--quiet", "src/untracked.rs"]);
         fs::remove_file(root.join("src/deleted.rs")).unwrap();
-        let sources = load_discovery_sources(&root).unwrap();
         let mut errors = Vec::new();
-        let files: Vec<_> = sources
-            .files(&mut errors)
+        let files: Vec<_> = discovery_files(&root, &mut errors)
             .into_iter()
             .map(|path| path.strip_prefix(&root).unwrap().to_owned())
             .collect();
@@ -149,11 +147,8 @@ pub(crate) mod tests {
                 Path::new("habeas.toml"),
                 Path::new("src/lib.rs"),
                 Path::new("src/staged.rs"),
+                Path::new("src/untracked.rs"),
             ]
-        );
-        assert_eq!(
-            sources.untracked().unwrap(),
-            [root.join("src/untracked.rs")]
         );
     }
 }

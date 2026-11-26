@@ -1158,12 +1158,6 @@ pub(crate) mod tests {
             ),
         )
         .unwrap();
-        // Discovery does not consider an untracked source, so its reference is
-        // not yet an input; staging it makes the source mandatory.
-        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-        let supplied = serde_json::to_string(sources.mandatory_inputs()).unwrap();
-        assert!(!supplied.contains("src/lib.rs"), "{supplied}");
-        git(root.path(), &["add", "src"]);
         let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
         let supplied = serde_json::to_string(sources.mandatory_inputs()).unwrap();
         assert!(supplied.contains("src/lib.rs"), "{supplied}");

@@ -699,43 +699,32 @@ fn git(root: &Path, args: &[&str]) {
 // {test}`requirements.references.rust_item_coverage`
 // {test}`requirements.cli.status`
 #[test]
-fn untracked_sources_are_not_validated_until_staged_and_status_lists_them() {
+fn working_directory_references_count_immediately_and_follow_nested_ignore_rules() {
     let temp = project();
     let root = temp.path();
-    let source = format!(
-        "// {}`rules.missing`\nfn referenced() {{}}\n\nfn uncited() {{}}\n",
-        role("impl")
-    );
+    let source = format!("// {}`rules.missing`\nfn referenced() {{}}\n", role("impl"));
+    fs::write(root.join("src/.gitignore"), "*.rs\n!extra.rs\n").unwrap();
     fs::write(root.join("src/extra.rs"), &source).unwrap();
-    // An untracked file without references needs no reminder.
-    fs::write(root.join("notes.txt"), "No references here.\n").unwrap();
+    fs::write(root.join("src/ignored.rs"), &source).unwrap();
+    let check = || {
+        let result = errors(root);
+        assert!(has(&result, "src/extra.rs:1"), "{result:#?}");
+        assert!(has(&result, "rules.missing"), "{result:#?}");
+        assert!(!has(&result, "src/ignored.rs"), "{result:#?}");
+        let status = habeas::status_markdown(root, false).unwrap();
+        assert!(status.contains("src/extra.rs:1"), "{status}");
+        assert!(
+            !status.contains("Untracked files with references"),
+            "{status}"
+        );
+    };
+    check();
     git(root, &["init", "--quiet"]);
-    git(root, &["add", "md", "book.toml", "Cargo.toml"]);
-
-    let untracked = errors(root);
-    assert!(!has(&untracked, "src/extra.rs"), "{untracked:#?}");
-    let status = habeas::status_markdown(root, false).unwrap();
-    let section = &status[status
-        .find("## Untracked files with references")
-        .unwrap_or_else(|| panic!("{status}"))..];
-    assert!(section.contains("git add"), "{status}");
-    assert!(section.contains("- `src/extra.rs`"), "{status}");
-    assert!(!section.contains("notes.txt"), "{status}");
-
-    // Staging the new file brings its references into validation.
+    git(root, &["add", "-f", "src/ignored.rs"]);
+    check();
     git(root, &["add", "src/extra.rs"]);
-    let errors = errors(root);
-    assert!(has(&errors, "src/extra.rs:1"), "{errors:#?}");
-    assert!(has(&errors, "rules.missing"), "{errors:#?}");
-    assert!(
-        !has(&errors, "function uncited has no recent coverage"),
-        "{errors:#?}"
-    );
-    let status = habeas::status_markdown(root, false).unwrap();
-    assert!(
-        !status.contains("Untracked files with references"),
-        "{status}"
-    );
+    fs::write(root.join("src/extra.rs"), "fn referenced() {}\n").unwrap();
+    assert!(!has(&errors(root), "rules.missing"));
 }
 
 // {test}`requirements.references.discovery`

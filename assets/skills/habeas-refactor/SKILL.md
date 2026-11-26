@@ -22,10 +22,7 @@ Run commands from the project root, the directory with `book.toml` and
       `{impl}`, `{test}`, `{cite}`, `{fixme}`, and `{term}` references to a
       moved definition, and `:impl:` and `:test:` anchors to a moved file,
       as they are; the command rewrites them.
-- [ ] 2. Record the move in the Git index: `git mv` for a moved file, or
-      `git add -A` on both the old and new paths. Reference discovery reads
-      only files in the Git index, so a stale old path still counts.
-- [ ] 3. `habeas refactor --dry-run` with one `--map <old>=<new>` for every
+- [ ] 2. `habeas refactor --dry-run` with one `--map <old>=<new>` for every
       moved file or directory, node, and definition name:
       - a file or directory: `--map src/config.rs=src/settings.rs`, which also
         covers every file under a directory;
@@ -37,22 +34,22 @@ Run commands from the project root, the directory with `book.toml` and
 
       To find a node's selector, `habeas info <name>` lists the inputs of a
       requirement that reads it.
-- [ ] 4. Review the report:
+- [ ] 3. Review the report:
       - "Would rewrite" lists the sources whose references or anchors change;
       - "Would change" lists the records it updates, with each code span in
         their rationales that still mentions an old path. The command leaves
         rationale prose alone; show these spans to the user, and if they ask
         for a record to be reassessed, run `habeas author --force <full-name>`
-        after step 7;
+        after step 6;
       - "Would leave ... unchanged" lists records a mapping affects that fail a
         check, with the reason. An unexpected one usually means the moved text
         changed, or a mapping is missing; fix that and run the dry run again.
-- [ ] 5. Run the same command without `--dry-run`.
-- [ ] 6. `habeas status`. Only the records the report left unchanged, and any
+- [ ] 4. Run the same command without `--dry-run`.
+- [ ] 5. `habeas status`. Only the records the report left unchanged, and any
       that were stale before, should need attention.
-- [ ] 7. Commit the move, the rewritten references, and the `evidence/` changes
+- [ ] 6. Commit the move, the rewritten references, and the `evidence/` changes
       together, before any change to behavior or text.
-- [ ] 8. Next, reassess what remains stale with `habeas author --all`,
+- [ ] 7. Next, reassess what remains stale with `habeas author --all`,
       following the habeas-evidence skill, and if assessments disagree, its
       "Disagreeing assessments"; then make any behavior or text changes as separate commits under
       the habeas-requirements skill.

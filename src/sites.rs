@@ -1016,10 +1016,12 @@ no_match: ["fn check() { let other = 1; }"]
             "{errors:?}"
         );
         let found = &sites["requirements.rule"];
-        assert_eq!(found.len(), 1, "{found:#?}");
-        assert_eq!(found[0].file, "src/lib.rs");
-        assert_eq!(found[0].item, "fn[check]");
-        assert_eq!(found[0].queries(), ["sentinels"]);
+        let files: Vec<_> = found.iter().map(|site| site.file.as_str()).collect();
+        assert_eq!(files, ["src/lib.rs", "src/untracked.rs"]);
+        for site in found {
+            assert_eq!(site.item, "fn[check]");
+            assert_eq!(site.queries(), ["sentinels"]);
+        }
     }
 
     // {test}`requirements.references.distributed`

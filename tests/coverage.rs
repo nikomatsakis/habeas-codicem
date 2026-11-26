@@ -133,11 +133,11 @@ fn obsolete_coverage_history_table_is_rejected_by_all_workspace_loaders() {
 // {test}`requirements.references.rust_item_coverage`
 // {test}`requirements.references.coverage.examples`
 #[test]
-fn untracked_examples_do_not_become_cargo_targets() {
+fn untracked_examples_are_checked_as_cargo_targets() {
     let temp = project();
     fs::create_dir_all(temp.path().join("examples")).unwrap();
     fs::write(temp.path().join("examples/loose.rs"), "fn main() {}\n").unwrap();
-    // Outside Git all files are discoverable, so this is an actual example target.
+    // This example is a Cargo target both before and after Git is initialized.
     let errors = habeas::validate_repository(temp.path()).unwrap().errors;
     assert!(
         errors
@@ -158,9 +158,9 @@ fn untracked_examples_do_not_become_cargo_targets() {
     }
     let errors = habeas::validate_repository(temp.path()).unwrap().errors;
     assert!(
-        !errors
+        errors
             .iter()
-            .any(|error| error.contains("examples/loose.rs")),
+            .any(|error| error.contains("examples/loose.rs: Cargo example does not {cite}")),
         "{errors:?}"
     );
 }

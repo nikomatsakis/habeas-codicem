@@ -181,9 +181,7 @@ lives in a nested chapter, read
 - A `{req}` whose body contains a nested colon directive, including a fenced
   reference, needs a longer outer fence such as `::::{req}`; otherwise the inner
   `:::` closes it.
-- In a Git worktree, reference discovery uses the Git index. Agent source reads follow `.gitignore`. `git add`
-  every new source file; for a new chapter that is still a draft, `git add -N`
-  records it without staging its content.
+- Reference discovery scans the working directory and follows `.gitignore`. References in new files count immediately.
 - A reference inside a string literal does not count, so test fixtures can hold
   role text.
 - Moving or renaming a requirement changes its full name, which evidence,

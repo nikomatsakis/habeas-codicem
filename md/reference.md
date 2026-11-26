@@ -578,7 +578,7 @@ the definition: a citing requirement or example receives the cited declaration
 as context. In the book, references and definitions become linked badges.
 {cite}`requirements.references.roles` {cite}`requirements.references.evidence_coverage` {cite}`requirements.references.authoring_inputs`
 
-Habeas builds its reference graph from project sources. In a Git worktree, these are the files in the Git index, including staged new files; outside Git, every project file. Either way, the project-root `book` and `evidence` directories, `.git` and `target` directories at any depth, and paths your `[evidence]` configuration disallows are skipped. References in an untracked file are not validated and do not count toward any definition until you stage the file with `git add`; `habeas status` lists untracked files that contain references as a reminder.
+Habeas builds its reference graph from the files currently in the project directory. A reference in a new file counts immediately. Discovery honors the project's `.gitignore` files, including nested rules and exceptions. It skips the project-root `book` and `evidence` directories, Git metadata, `target` directories at any depth, and paths your `[evidence]` configuration disallows.
 {cite}`requirements.references.discovery` {cite}`requirements.cli.status`
 
 ### Choosing references
