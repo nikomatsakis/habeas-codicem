@@ -112,8 +112,8 @@ impl Outline {
 
 /// A selectable item and its structural digest.
 ///
-/// `span` contains byte offsets into the retained source, including attached
-/// source. Its end is exclusive.
+/// `span` contains byte offsets into the retained source, including every
+/// attachment owned by the item. Its end is exclusive.
 // {impl}`requirements.sdk.outlines.items`
 #[derive(Clone, Debug)]
 #[non_exhaustive]
@@ -571,6 +571,7 @@ impl Outline {
     // {impl}`requirements.sdk.outlines.name_span`
     // {impl}`requirements.sdk.outlines.attachments.order`
     // {impl}`requirements.sdk.outlines.attachments.comments`
+    // {impl}`requirements.sdk.outlines.attachments.item_span`
     pub(crate) fn from_legacy(outline: LegacyOutline) -> Self {
         let mut items: Vec<_> = outline
             .nodes
@@ -604,6 +605,10 @@ impl Outline {
             });
         }
         for item in &mut items {
+            for attachment in &item.attachments {
+                item.span.start = item.span.start.min(attachment.span.start);
+                item.span.end = item.span.end.max(attachment.span.end);
+            }
             item.attachments
                 .sort_by_key(|attachment| attachment.span.start);
         }
@@ -615,6 +620,7 @@ impl Outline {
 }
 
 // {impl}`requirements.sdk.outlines.attachments.span`
+// {impl}`requirements.sdk.outlines.attachments.item_span`
 // {impl}`requirements.sdk.outlines.name_span`
 fn validate_outline(outline: &Outline, source: &str) -> Result<(), OutlineError> {
     if outline
@@ -630,11 +636,11 @@ fn validate_outline(outline: &Outline, source: &str) -> Result<(), OutlineError>
         if source.get(item.span.range()).is_none() {
             return Err(selection_error("outline item has an invalid source span"));
         }
-        if item
-            .attachments
-            .iter()
-            .any(|attachment| source.get(attachment.span.range()).is_none())
-        {
+        if item.attachments.iter().any(|attachment| {
+            attachment.span.start < item.span.start
+                || attachment.span.end > item.span.end
+                || source.get(attachment.span.range()).is_none()
+        }) {
             return Err(selection_error("attachment has an invalid source span"));
         }
         if !item

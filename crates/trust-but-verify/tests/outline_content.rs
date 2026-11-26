@@ -1300,8 +1300,9 @@ fn toml_preserves_written_dotted_literal_and_quoted_header_names() {
 
 // {test}`requirements.sdk.sources.yaml.items`
 // {test}`requirements.sdk.sources.yaml.Yaml`
+// {test}`requirements.sdk.outlines.attachments.item_span`
 #[test]
-fn yaml_selection_ends_before_trailing_comment_tokens() {
+fn yaml_selection_includes_comments_owned_by_the_entry() {
     let root = OutlineContent::from_source(
         &ValidationCache::new(),
         "config.yaml",
@@ -1309,11 +1310,18 @@ fn yaml_selection_ends_before_trailing_comment_tokens() {
     )
     .unwrap();
     let selected = root.select("pair[key]").unwrap();
-    assert_eq!(selected.text(), "key: value");
-    assert_eq!(root.outline().items[1].span, Span::new(0, 10));
+    assert_eq!(selected.text(), "key: value # trailing comment");
+    assert_eq!(
+        root.outline().items[1].span,
+        Span::new(0, selected.text().len())
+    );
     let nested = "a:\n  b: 1\n# before next\nd: 2\n";
     let root =
         OutlineContent::from_source(&ValidationCache::new(), "nested.yml", nested.into()).unwrap();
+    assert_eq!(
+        root.select("pair[d]").unwrap().text(),
+        "# before next\nd: 2"
+    );
     assert_eq!(root.select("pair[a]").unwrap().text(), "a:\n  b: 1");
     assert_eq!(
         root.select("pair[a]/pair[b]").unwrap().text().trim_start(),
@@ -1323,13 +1331,14 @@ fn yaml_selection_ends_before_trailing_comment_tokens() {
 
 // {test}`requirements.sdk.sources.python.items`
 // {test}`requirements.sdk.sources.python.Python`
+// {test}`requirements.sdk.outlines.attachments.item_span`
 #[test]
 fn python_selected_source_includes_its_decorators() {
     let source = "@cache\ndef checked():\n    pass\n";
     let root = OutlineContent::from_source(&ValidationCache::new(), "decorated.py", source.into())
         .unwrap();
     let selected = root.select("def[checked]").unwrap();
-    assert!(selected.text().starts_with("@cache\ndef checked():"));
+    assert_eq!(selected.text(), source.trim_end());
     assert_eq!(root.outline().items[1].span.start, 0);
     let classes = "@first\nclass Checked: pass\n@second\nclass Checked: pass\n";
     let root = OutlineContent::from_source(&ValidationCache::new(), "decorated.py", classes.into())
@@ -1631,6 +1640,7 @@ fn bundled_languages_classify_only_their_attachment_syntax() {
 // {test}`requirements.sdk.outlines.OutlineAttachment`
 // {test}`requirements.sdk.outlines.AttachmentKind`
 // {test}`requirements.sdk.outlines.attachments.span`
+// {test}`requirements.sdk.outlines.attachments.item_span`
 #[test]
 fn custom_attachment_spans_are_checked_against_the_original_snapshot() {
     use trust_but_verify::outline::{AttachmentKind, OutlineAttachment};
@@ -1650,14 +1660,21 @@ fn custom_attachment_spans_are_checked_against_the_original_snapshot() {
         }
         fn outline(&self, source: &str) -> Result<Outline, OutlineError> {
             let marker = OutlineAttachment::new(AttachmentKind::Other("marker".into()), self.span);
-            let item = OutlineItem::new(
+            let root = OutlineItem::new(
                 String::new(),
                 String::new(),
                 Span::new(0, source.len()),
                 "root".into(),
+            );
+            let item = OutlineItem::new(
+                "part[x]".into(),
+                "part".into(),
+                Span::new(1, 3),
+                "part".into(),
             )
+            .with_name_span(Span::new(1, 3))
             .with_attachments(vec![marker]);
-            Ok(Outline::new(vec![item]))
+            Ok(Outline::new(vec![root, item]))
         }
     }
     let load = |span| {
@@ -1668,14 +1685,16 @@ fn custom_attachment_spans_are_checked_against_the_original_snapshot() {
             &ValidationCache::new(),
             &language,
             "one.custom",
-            "é".into(),
+            "_é_".into(),
         )
     };
-    let snapshot = load(Span::new(0, 2)).unwrap();
-    let attachment = &snapshot.outline().items[0].attachments[0];
+    let snapshot = load(Span::new(1, 3)).unwrap();
+    let attachment = &snapshot.outline().items[1].attachments[0];
     assert_eq!(attachment.kind, AttachmentKind::Other("marker".into()));
     assert_eq!(&snapshot.text()[attachment.span], "é");
-    assert!(load(Span::new(1, 2)).is_err());
+    assert!(load(Span::new(1, 2)).is_err()); // splits é
+    assert!(load(Span::new(1, 5)).is_err()); // outside the snapshot
+    assert!(load(Span::new(1, 4)).is_err()); // extends past the item
     assert!(load(Span::new(0, 3)).is_err());
 }
 

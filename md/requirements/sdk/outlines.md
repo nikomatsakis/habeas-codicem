@@ -430,8 +430,7 @@ impl OutlineContent {
 }
 ```
 
-The item's span includes its attached source under the language's rules. The
-root has an empty selector and covers the entire source snapshot.
+The root has an empty selector and covers the entire source snapshot.
 :::
 
 :::{req} Span
@@ -588,6 +587,12 @@ Each attachment's `span` is a half-open byte range in the original file
 snapshot, even when the caller has selected a nested item. Slicing that
 snapshot at the span yields the complete source construct, including its
 delimiters. Repeated occurrences have their own spans.
+:::
+
+:::{req} attachments.item_span
+`OutlineItem::span` covers the item and every attachment it owns, including
+leading and trailing attachments. Selecting the item returns the contiguous
+source slice covered by that span.
 :::
 
 :::{req} attachments.comments

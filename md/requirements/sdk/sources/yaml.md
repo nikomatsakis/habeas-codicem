@@ -44,7 +44,8 @@ The YAML outline exposes the following items beneath its file root:
 | Block sequence entries | `item` | Anonymous |
 
 Nested entries appear beneath their nearest enclosing outline item.
-Selected source ends at the last non-comment token. Comment ownership follows
+The span covers the entry through its last non-comment token and extends
+to include its owned comments. Comment ownership follows
 {cite}`requirements.references.outline_comments`.
 
 Item selectors, percent encoding, anonymous identities, and duplicate-name

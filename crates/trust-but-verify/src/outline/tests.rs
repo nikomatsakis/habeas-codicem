@@ -508,6 +508,7 @@ fn reflowing_markdown_paragraphs_keeps_the_hash() {
 
 // {test}`requirements.references.structural_hash`
 // {test}`requirements.sdk.sources.rust.fingerprints`
+// {test}`requirements.sdk.outlines.attachments.fingerprint`
 #[test]
 fn reflowing_inner_and_block_doc_comments_keeps_the_hash() {
     let module = |source: &str| {

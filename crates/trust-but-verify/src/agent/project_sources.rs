@@ -839,6 +839,50 @@ mod tests {
         );
     }
 
+    // {test}`requirements.sdk.graph.search.enclosing_item`
+    // {test}`requirements.sdk.outlines.attachments.item_span`
+    #[tokio::test]
+    async fn search_in_leading_and_trailing_comments_selects_the_function() {
+        let root = tempfile::tempdir().unwrap();
+        let source = "// note before\npub fn check() {} // note after\nfn next() {}\n";
+        std::fs::write(root.path().join("example.rs"), source).unwrap();
+        let project = ProjectSources::new(project(source), Sources::new(root.path()));
+        let hits = project
+            .search_text(&TextQuery::new("note".into()))
+            .await
+            .unwrap();
+        let expected = project
+            .domain
+            .cache()
+            .intern_node("example.rs#fn[check]".into());
+        assert_eq!(hits.matches.len(), 2);
+        assert!(hits.matches.iter().all(|hit| hit.node == expected));
+
+        let select = |source: &str| {
+            crate::outline::OutlineContent::from_source(
+                project.domain.cache(),
+                "example.rs",
+                source.into(),
+            )
+            .unwrap()
+            .select("fn[check]")
+            .unwrap()
+        };
+        let selected = select(source);
+        assert_eq!(
+            selected.text().trim_end(),
+            "// note before\npub fn check() {} // note after"
+        );
+        assert_eq!(
+            &source[selected.item().header_span.unwrap()],
+            "pub fn check() {"
+        );
+        assert_eq!(
+            selected.structural_hash(),
+            select(&source.replace("note", "remark")).structural_hash()
+        );
+    }
+
     // {test}`requirements.sdk.graph.search.windows`
     // {test}`requirements.sdk.graph.search.omissions`
     // {test}`requirements.sdk.graph.search.enclosing_item`
