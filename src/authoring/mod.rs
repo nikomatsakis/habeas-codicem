@@ -1088,6 +1088,14 @@ fn verification_prompt_with_inputs(
         ("review_instructions", &instructions),
         ("site_step", if site { SITE_STEP } else { "" }),
         ("mandatory_inputs", &mandatory),
+        (
+            "verification_submission",
+            if matches!(sources.subject_kind, AssessmentKind::Citation(_)) {
+                "submit_result with your verification in result"
+            } else {
+                "submit_verification"
+            },
+        ),
     ]);
     Ok(Prompt::filled("verifier_prompt", &values))
 }
@@ -1413,6 +1421,12 @@ async fn converse_observed<T: Send>(
     sources: &mut AssessmentSources,
     usage: &mut UsageLog,
     prompt: Prompt,
+    opening_inputs: Vec<
+        trust_but_verify::request::PreparedInput<
+            trust_but_verify::domain::NodeId<crate::sdk::HabeasDomain>,
+        >,
+    >,
+    result_schema: Value,
     (submit, site): (&str, bool),
     parse: impl Fn(&Value) -> io::Result<T> + Send,
     observer: Option<&InputObserver<'_>>,
@@ -1434,6 +1448,8 @@ async fn converse_observed<T: Send>(
         provider,
         &mut adapter,
         prompt.request(),
+        opening_inputs,
+        result_schema,
         submit,
     )
     .await
@@ -1458,7 +1474,15 @@ impl<T: Send, F: Fn(&Value) -> io::Result<T> + Send> trust_but_verify::agent_run
     type Output = T;
 
     // {cite}`habeas:util`
-    fn tools(&self) -> io::Result<Vec<ToolDefinition>> {
+    fn tools(&self, submission: Option<ToolDefinition>) -> io::Result<Vec<ToolDefinition>> {
+        if let Some(submission) = submission {
+            let mut tools: Vec<ToolDefinition> = tools::definitions()
+                .into_iter()
+                .map(serde_json::from_value)
+                .collect::<Result<_, _>>()?;
+            tools.push(submission);
+            return Ok(tools);
+        }
         tool_definitions_with(self.submit, self.site)
     }
     fn submit(
@@ -1476,7 +1500,7 @@ impl<T: Send, F: Fn(&Value) -> io::Result<T> + Send> trust_but_verify::agent_run
                 outstanding.join(", ")
             )));
         }
-        if resubmitted.is_some() {
+        if submit == "submit_result" || resubmitted.is_some() {
             return Ok(Submission::Accepted(result));
         }
         match self
@@ -3697,6 +3721,13 @@ mod tests {
         )
     }
 
+    fn citation_judgment(determination: bool, rationale: &str) -> (&'static str, Value) {
+        (
+            "submit_result",
+            json!({"result":{"determination":determination,"rationale":rationale}}),
+        )
+    }
+
     // {cite}`habeas:util`
     fn verdict(real: bool, acknowledgments: &[&str], rationale: &str) -> (&'static str, Value) {
         (
@@ -3801,8 +3832,8 @@ mod tests {
         let state = tempfile::tempdir().unwrap();
         let mut usage = UsageLog::start(state.path(), project.path(), &subject.label()).unwrap();
         let provider = RecordingProvider::new(vec![
-            judgment(json!(true), "First citation review."),
-            judgment(json!(true), "Second citation review."),
+            citation_judgment(true, "First citation review at src/lib.rs:1."),
+            citation_judgment(true, "Second citation review."),
         ]);
         let (_, record) = assess_subject(
             &provider,
@@ -3816,7 +3847,10 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(record["item"], "fn[helper]");
-        assert_eq!(record["rationale"], "First citation review.");
+        assert_eq!(
+            record["rationale"],
+            "First citation review at src/lib.rs:1."
+        );
         let prompts = provider.prompts();
         assert_eq!(prompts.len(), 2);
         assert!(
@@ -3824,13 +3858,60 @@ mod tests {
                 .iter()
                 .all(|(text, _)| text.contains("Item under review: src/lib.rs fn[helper]"))
         );
-        assert!(!prompts[1].0.contains("First citation review."));
+        assert!(
+            !prompts[1]
+                .0
+                .contains("First citation review at src/lib.rs:1.")
+        );
         let logs: Vec<Value> = fs::read_dir(state.path().join("authoring/usage"))
             .unwrap()
             .map(|p| serde_json::from_slice(&fs::read(p.unwrap().path()).unwrap()).unwrap())
             .collect();
         assert_eq!(logs.len(), 2);
         assert_ne!(logs[0]["run_id"], logs[1]["run_id"]);
+    }
+
+    // {test}`requirements.authoring.verifier_prompt`
+    // {test}`requirements.authoring.citation_prompt`
+    #[tokio::test]
+    async fn citation_verification_accepts_a_line_reference_in_one_submission() {
+        let project = inputs::tests::project();
+        fs::write(
+            project.path().join("src/lib.rs"),
+            "// {cite}`requirements.ready`\nfn helper() {}\n",
+        )
+        .unwrap();
+        let subject = AuthoringSubject::parse("citations:src/lib.rs#fn[helper]");
+        let mut sources = subject.sources(project.path()).unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let mut log = UsageLog::start(state.path(), project.path(), &subject.label()).unwrap();
+        let rationale = "The implementation on line 2 supports the citation.";
+        let provider = RecordingProvider::new(vec![(
+            "submit_result",
+            json!({"result":{
+                "real":false,"acknowledged":false,"acknowledgments":[],"rationale":rationale
+            }}),
+        )]);
+        let answer = verify(
+            &provider,
+            &mut sources,
+            &mut log,
+            &Judgment::False,
+            "A claimed gap.",
+        )
+        .await
+        .unwrap();
+        assert_eq!(answer.rationale, rationale);
+        let requests = provider.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        let submit = requests[0]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "submit_result")
+            .unwrap();
+        let result = &submit["parameters"]["properties"]["result"]["properties"];
+        assert!(result.get("real").is_some() && result.get("applies").is_none());
     }
 
     // {test}`requirements.authoring.confirmation`
@@ -4216,8 +4297,8 @@ mod tests {
         assert!(prompt.contains("MUST NOT submit a FIXME"));
         let state = tempfile::tempdir().unwrap();
         let mut usage = UsageLog::start(state.path(), project.path(), &subject.label()).unwrap();
-        let provider = RecordingProvider::new(vec![judgment(
-            json!(true),
+        let provider = RecordingProvider::new(vec![citation_judgment(
+            true,
             "The supplied source and explanation support the citation.",
         )]);
         let (_, record) = assess(&provider, &mut sources, &mut usage).await.unwrap();
@@ -4364,8 +4445,10 @@ mod tests {
         );
         let state = tempfile::tempdir().unwrap();
         let mut usage = UsageLog::start(state.path(), project.path(), &subject.label()).unwrap();
-        let provider =
-            RecordingProvider::new(vec![judgment(json!(true), "The explanation is supported.")]);
+        let provider = RecordingProvider::new(vec![citation_judgment(
+            true,
+            "The explanation is supported.",
+        )]);
         let (_, record) = assess(&provider, &mut sources, &mut usage).await.unwrap();
         let prompt = provider.prompts()[0].0.clone();
         for text in [
@@ -4422,8 +4505,8 @@ mod tests {
             "{stale:?}"
         );
         let mut changed = subject.sources(project.path()).unwrap();
-        let provider = RecordingProvider::new(vec![judgment(
-            json!(false),
+        let provider = RecordingProvider::new(vec![citation_judgment(
+            false,
             "Seconds contradicts the cited unit description.",
         )]);
         let (determination, record) = assess(&provider, &mut changed, &mut usage).await.unwrap();
@@ -4503,21 +4586,17 @@ mod tests {
 
         let state = tempfile::tempdir().unwrap();
         let mut usage = UsageLog::start(state.path(), project.path(), &subject.label()).unwrap();
-        let provider = RecordingProvider::new(vec![judgment(json!(true), "Both are sensible.")]);
+        let provider = RecordingProvider::new(vec![citation_judgment(true, "Both are sensible.")]);
         let (_, record) = assess(&provider, &mut sources, &mut usage).await.unwrap();
         let prompts = provider.prompts();
-        let expected: Vec<_> = tool_definitions_with("submit_judgment", false)
-            .unwrap()
-            .into_iter()
-            .map(|tool| tool.name)
-            .collect();
-        assert_eq!(prompts[0].1, expected);
-        let duplicate = json!({"determination":true,"rationale":"Both are sensible."});
+        assert!(prompts[0].1.iter().any(|name| name == "submit_result"));
+        assert!(!prompts[0].1.iter().any(|name| name == "submit_judgment"));
+        let duplicate = citation_judgment(true, "Both are sensible.");
         let duplicate_provider = ScriptedProvider {
-            turns: vec![vec![
-                ("submit_judgment", duplicate.clone()),
-                ("submit_judgment", duplicate),
-            ]],
+            turns: vec![
+                vec![duplicate.clone(), duplicate.clone()],
+                vec![duplicate.clone(), duplicate],
+            ],
             requests: Mutex::default(),
         };
         let mut duplicate_sources = subject.sources(project.path()).unwrap();

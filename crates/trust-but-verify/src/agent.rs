@@ -117,7 +117,7 @@ pub trait Conversation: Send {
     type Output: Send;
 
     // {cite}`habeas:util`
-    fn tools(&self) -> io::Result<Vec<ToolDefinition>>;
+    fn tools(&self, submission: Option<ToolDefinition>) -> io::Result<Vec<ToolDefinition>>;
     // {cite}`habeas:util`
     fn submit(&mut self, name: &str, arguments: &Value) -> io::Result<Submission<Self::Output>>;
     // {cite}`habeas:util`
@@ -198,10 +198,15 @@ pub async fn converse<P: CompletionProvider, C: Conversation, D: crate::domain::
     provider: &P,
     session: &mut C,
     mut request: CompletionRequest,
+    opening_inputs: Vec<crate::request::PreparedInput<crate::domain::NodeId<D>>>,
+    result_schema: Value,
     submit: &str,
 ) -> io::Result<C::Output> {
-    request.tools = session.tools()?;
+    let standard_submission = submit == "submit_result";
+    let tool = standard_submission.then(|| tools::submission_tool(result_schema));
+    request.tools = session.tools(tool)?;
     let mut backoff = ProviderBackoff::default();
+    let mut opening_inputs = opening_inputs.into_iter();
     let mut retrying = false;
     let mut continued = false;
     let mut reminded = false;
@@ -245,6 +250,9 @@ pub async fn converse<P: CompletionProvider, C: Conversation, D: crate::domain::
         };
         retrying = false;
         backoff = ProviderBackoff::default();
+        for input in opening_inputs.by_ref() {
+            context.record_read(input.node, input.fingerprint);
+        }
         session.delivered()?;
         if matches!(response.finish_reason(), Some(FinishReason::Length)) {
             if response.raw.get("stopReason").and_then(Value::as_str)
@@ -281,7 +289,7 @@ pub async fn converse<P: CompletionProvider, C: Conversation, D: crate::domain::
             .filter(|call| call.function.name.as_str() == submit)
             .collect();
         // Habeas's authoring bridge retains its separate submission protocol.
-        if calls.is_empty() || (submit == "submit_result" && submissions.len() > 1) {
+        if calls.is_empty() || (standard_submission && submissions.len() > 1) {
             if reminded {
                 return Err(io::Error::other(format!(
                     "model must invoke {submit} exactly once, even after a reminder; {} submissions received",
@@ -302,7 +310,7 @@ pub async fn converse<P: CompletionProvider, C: Conversation, D: crate::domain::
                     .collect();
                 request.chat_history.push(Message::tool_results(results));
             }
-            let reminder = if submit == "submit_result" {
+            let reminder = if standard_submission {
                 format!("Reminder: you MUST invoke {submit} exactly once to submit your result.")
             } else {
                 format!("Reminder: you MUST submit your result with the {submit} tool.")
@@ -326,7 +334,12 @@ pub async fn converse<P: CompletionProvider, C: Conversation, D: crate::domain::
                 )));
             }
             let arguments = Value::Object(submissions[0].function.arguments.clone());
-            match session.submit(submit, &arguments) {
+            let submitted = if standard_submission {
+                tools::submitted_value(&arguments)
+            } else {
+                Ok(arguments)
+            };
+            match submitted.and_then(|value| session.submit(submit, &value)) {
                 Ok(Submission::Accepted(value)) => {
                     session.tool(submit, false);
                     return Ok(value);

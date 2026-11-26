@@ -313,11 +313,21 @@ fn serve(
         if prompt.contains("Site under review: ") {
             arguments["applies"] = json!(true);
         }
+        let submit = if request["tools"].as_array().is_some_and(|tools| {
+            tools
+                .iter()
+                .any(|tool| tool["function"]["name"] == "submit_result")
+        }) {
+            arguments = json!({"result": arguments});
+            "submit_result"
+        } else {
+            "submit_judgment"
+        };
         json!({
             "model":"fixture-model", "created_at":"2026-01-01T00:00:00Z",
             "message":{"role":"assistant", "content":"", "tool_calls":[{
                 "id":"judgment", "type":"function", "function":{
-                    "name":"submit_judgment", "arguments":arguments
+                    "name":submit, "arguments":arguments
                 }
             }]},
             "done":true, "done_reason":"stop", "prompt_eval_count":11, "eval_count":7

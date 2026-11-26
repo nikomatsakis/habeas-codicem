@@ -79,12 +79,11 @@ tuple_context!(A:0, B:1, C:2, D:3, E:4, F:5, G:6, H:7, I:8, J:9, K:10, L:11);
 pub struct PreparedInput<N> {
     pub node: N,
     pub text: String,
-    pub fingerprint: Fingerprint,
+    pub(crate) fingerprint: Fingerprint,
 }
 
 // {cite}`habeas:util`
-/// A harness acknowledges delivered snapshots through `inspection.observe_read`,
-/// including snapshots delivered before a later conversation error.
+/// The conversation loop records the prepared inputs on delivery of its opening prompt.
 #[doc(hidden)]
 pub struct AgentRequest<N> {
     pub current_node: N,

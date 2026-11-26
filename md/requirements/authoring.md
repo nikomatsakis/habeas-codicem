@@ -95,11 +95,12 @@ confirmed in the same way, with the review's target as the subject.
 :::{req} verifier_prompt
 The verifier under {cite}`requirements.authoring.confirmation` MUST receive the
 subject, the mandatory inputs, the less favorable assessment's rationale, the
-same source tools, and a `submit_verification` tool accepting exactly
+same source tools, and this prompt. The verification result has exactly the fields
 `{ real: Boolean, acknowledged: Boolean, acknowledgments: Array<String>,
-rationale: String }`, plus `applies: Boolean` for a site review, in place of
-`submit_judgment`, with this prompt, the first block as its system prompt and
-the second as its subject message under
+rationale: String }`, plus `applies: Boolean` for a site review. Citation verifiers
+submit this value through the SDK’s `submit_result({result})`. Other verifiers
+pass the fields to `submit_verification`. The first prompt block is the system
+prompt and the second is the subject message under
 {cite}`requirements.authoring.prompt_parts`. The harness MUST replace
 `{{subject_kind}}`
 with `requirement`, `example`, `citation review`, or `site review`;
@@ -111,6 +112,7 @@ message after its "# Subject" heading and before its "# Mandatory inputs"
 heading, which names the subject, its citations or matches, and what to judge
 against, followed by, for a site review, the filled `{{distributed_background}}`,
 and then the filled "Your task" section;
+`{{verification_submission}}` with `submit_result with your verification in result` for a citation review and `submit_verification` otherwise;
 `{{site_step}}` with nothing, or, for a site review, the line `4. Also set
 applies to whether the requirement governs the site, as the reviewer's step 1
 decides it; if it does not, set real to false.`; `{{habeas_background}}` and
@@ -158,7 +160,7 @@ applied.
 
 # Submitting
 
-You MUST end by calling submit_verification until one submission is accepted.
+You MUST end by calling {{verification_submission}} until one submission is accepted.
 A rejected submission does not complete the assessment. A verification
 written in your reply text is not accepted.
 ```
@@ -329,7 +331,7 @@ assessments judge by the same rules:
 
 :::{req} citation_prompt
 A citation review under {cite}`requirements.references.citation_review` MUST use
-the same tools and exactly-once submission rule as other assessments and this
+the source tools under this chapter and the SDK’s `submit_result({result})` protocol under {cite}`requirements.sdk.graph.agent-harness.submission`. The result contains a boolean determination and a nonempty rationale. Citation assessments and their verifications accept source line numbers in rationales. A citation assessment uses this
 prompt, replacing `{{item_file}}`, `{{item_selector}}` (with `<root>` for the
 root node), `{{review_kind}}` (`source_item` for ordinary source citations or
 `book_commentary` for a reviewed book passage), `{{citations}}` (the item's
@@ -391,8 +393,7 @@ assess a built-in's stated citation criteria.
 # Submitting
 
 Choose true when your task finds no gap, and false otherwise. A citation review
-MUST NOT submit a FIXME determination. You MUST end by calling submit_judgment
-with determination and rationale until one submission is accepted.
+MUST NOT submit a FIXME determination. Call submit_result with determination and rationale inside result.
 A rejected submission does not complete the assessment. A judgment written in your
 reply text is not accepted.
 ```
@@ -583,7 +584,7 @@ and the last failure's HTTP status and provider error code, when available.
 
 ## Model tools
 
-The model receives ten tools: `habeas`, `list_files`, `outline`, `ripgrep`, `ast_grep`, `github`, `references`, `next_page`, `finish_search`, and `submit_judgment`.
+For requirement, example, and site assessments the model receives ten tools: `habeas`, `list_files`, `outline`, `ripgrep`, `ast_grep`, `github`, `references`, `next_page`, `finish_search`, and `submit_judgment`.
 The following notation defines their arguments and results; names in uppercase
 are data types, and optional fields show their defaults.
 
@@ -976,7 +977,7 @@ nor outstanding searches, including when only some supplied tags are valid.
 :::
 
 :::{req} submission.searches
-An otherwise valid `submit_judgment` or `submit_verification` call MUST be
+An otherwise valid submission of a judgment or verification MUST be
 rejected while any search remains outstanding.
 :::
 
@@ -1150,7 +1151,7 @@ the model MUST be recorded under {cite}`requirements.authoring.delivered_inputs`
 :::
 
 :::{req} submission
-The harness MUST expose a `submit_judgment` tool accepting exactly these fields:
+For requirement, example, and site assessments the harness MUST expose a `submit_judgment` tool accepting exactly these fields:
 
 ```text
 submit_judgment({ determination: Judgment, rationale: String })
@@ -1194,7 +1195,7 @@ a number, or a parenthesized number range such as `(12–30)` or `(12-30)`.
 :::
 
 :::{req} line_numbers.rejection
-When the only submission in a response under
+For requirement, example, and site reviews and their verifications, when the only submission in a response under
 {cite}`requirements.authoring.submission`, or a `submit_verification` call under
 {cite}`requirements.authoring.verifier_prompt`, is otherwise valid but its
 rationale cites line numbers under

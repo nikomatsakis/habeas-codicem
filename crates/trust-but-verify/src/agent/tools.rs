@@ -223,39 +223,36 @@ impl<P: CompletionProvider, T> ToolAgent<P, T> {
             let submit = request.submission_name.clone();
             let tools = SessionTools::new(self.tools.session());
             let current = serde_json::to_string(&request.current_node)?;
-            let mut pending = Vec::new();
             let mut texts = Vec::new();
-            for input in request.inputs {
+            for input in &request.inputs {
                 let reference = serde_json::to_string(&input.node)?;
                 texts.push(format!("{}\nNode: {reference}", input.text));
-                pending.push(Dependency::Node(input.node, input.fingerprint));
             }
             let subject = format!(
                 "{}\n\nFinish by calling {submit} with {{\"result\": ...}}. Text alone is not a result. You may inspect nodes by domain ID with read_node and outgoing_edges.\nCurrent node: {current}",
                 texts.join("\n\n")
             );
-            let mut schema = request.result_schema;
-            let definitions = schema
-                .as_object_mut()
-                .and_then(|object| object.remove("$defs"));
-            let mut parameters = json!({"type":"object", "additionalProperties":false,
-                "required":["result"], "properties":{"result":schema}});
-            if let Some(definitions) = definitions {
-                parameters["$defs"] = definitions;
-            }
             let mut session = GraphSession {
                 inspection,
                 domain_tools,
                 tools,
-                pending,
-                parameters,
+                pending: Vec::new(),
             };
             // The exact reusable prefix is the provider's leading preamble.
             let mut opening = CompletionRequest::new(Message::user(subject));
             if !request.prefix.is_empty() {
                 opening = opening.preamble(request.prefix);
             }
-            converse(inspection, &self.provider, &mut session, opening, &submit).await
+            converse(
+                inspection,
+                &self.provider,
+                &mut session,
+                opening,
+                request.inputs,
+                request.result_schema,
+                &submit,
+            )
+            .await
         })
     }
 }
@@ -267,7 +264,6 @@ struct GraphSession<'a, 'd, D: Domain> {
     domain_tools: &'a [std::sync::Arc<dyn crate::agent::RegisteredTool<D>>],
     tools: SessionTools<'a, D>,
     pending: Vec<Dependency<NodeId<D>, D::EdgeLabel>>,
-    parameters: Value,
 }
 
 impl<D> Conversation for GraphSession<'_, '_, D>
@@ -288,7 +284,7 @@ where
     // {impl}`requirements.sdk.graph.agent-harness.submission.mcp`
     // {impl}`requirements.sdk.graph.agent-harness.submission.mcp.description`
     // {impl}`requirements.sdk.graph.agent-harness.fixed_tools`
-    fn tools(&self) -> io::Result<Vec<ToolDefinition>> {
+    fn tools(&self, submission: Option<ToolDefinition>) -> io::Result<Vec<ToolDefinition>> {
         let mut tools: Vec<ToolDefinition> = [
             json!({"name":"read_node","description":"Read a graph node by ID, source address, or node data. Returns text and, when more remains, a next UUID. A delivered page records its enclosing node.",
                 "parameters":node_parameters::<NodeId<D>,D::NodeData>(None)}),
@@ -296,9 +292,8 @@ where
                 "parameters":node_parameters::<NodeId<D>,D::NodeData>(Some(schemars::SchemaGenerator::subschema_for::<D::EdgeLabel>))}),
             json!({"name":"get_next_page","description":"Pass the UUID from next to read the next page in the same format. When next is absent, this is the last page.",
                 "parameters":{"type":"object","required":["uuid"],"properties":{"uuid":{"type":"string","format":"uuid"}}}}),
-            json!({"name":"submit_result","description":"Finish by submitting your structured result in result. Exactly one accepted submission ends this call.",
-                "parameters":self.parameters}),
         ].into_iter().map(|tool| serde_json::from_value(tool).map_err(io::Error::other)).collect::<io::Result<_>>()?;
+        tools.extend(submission);
         tools.extend(self.tools.extra.definitions()?);
         if self.domain_tools.is_empty() {
             return Ok(tools);
@@ -330,7 +325,7 @@ where
                 outstanding.join(", ")
             )));
         }
-        submitted_value(arguments).map(Submission::Accepted)
+        Ok(Submission::Accepted(arguments.clone()))
     }
     // {cite}`habeas:util`
     // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
@@ -410,8 +405,25 @@ where
     }
 }
 
+// {impl}`requirements.sdk.graph.agent-harness.submission.mcp.description`
+pub(super) fn submission_tool(mut schema: Value) -> ToolDefinition {
+    let definitions = schema
+        .as_object_mut()
+        .and_then(|object| object.remove("$defs"));
+    let mut parameters = json!({"type":"object", "additionalProperties":false,
+                "required":["result"], "properties":{"result":schema}});
+    if let Some(definitions) = definitions {
+        parameters["$defs"] = definitions;
+    }
+    ToolDefinition::new(
+        rig_core::message::ToolName::new("submit_result").expect("valid built-in tool name"),
+        "Finish by submitting your structured result in result. Exactly one accepted submission ends this call.",
+        parameters,
+    )
+}
+
 // {impl}`requirements.sdk.graph.agent-harness.submission.invalid`
-fn submitted_value(arguments: &Value) -> io::Result<Value> {
+pub(super) fn submitted_value(arguments: &Value) -> io::Result<Value> {
     let object = arguments
         .as_object()
         .filter(|object| object.len() == 1 && object.contains_key("result"))

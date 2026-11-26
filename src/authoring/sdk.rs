@@ -22,19 +22,25 @@ use trust_but_verify::request::ValidationContext;
 
 // {cite}`habeas:util`
 #[derive(serde::Deserialize, schemars::JsonSchema)]
-struct ReviewAnswer {
-    determination: Value,
+#[serde(deny_unknown_fields)]
+struct ReviewAnswer<T = Value> {
+    determination: T,
+    #[schemars(length(min = 1))]
     rationale: String,
+    #[schemars(skip)]
     applies: Option<bool>,
 }
 
 // {cite}`habeas:util`
 #[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct VerificationAnswer {
     real: bool,
     acknowledged: bool,
     acknowledgments: Vec<String>,
+    #[schemars(length(min = 1))]
     rationale: String,
+    #[schemars(skip)]
     applies: Option<bool>,
 }
 
@@ -98,31 +104,48 @@ impl Criterion<HabeasDomain> for Review<'_> {
         }
         match &graph.operation {
             Operation::Assess => {
-                let request = ctx
-                    .ask::<ReviewAnswer>()
-                    .context(&graph.system)
-                    .contents_of_current_node();
-                let answer = if matches!(data.as_ref(), HabeasNode::Requirement(_)) {
-                    request
-                        .contents_of_successors(HabeasEdgeLabel::Mandatory)
-                        .await?
-                } else {
-                    request.await?
-                };
-                let judgment =
-                    Judgment::from_value(&answer.determination).map_err(ValidationError::Agent)?;
+                let (judgment, rationale, applies) =
+                    if matches!(data.as_ref(), HabeasNode::Source(_)) {
+                        let answer = ctx
+                            .ask::<ReviewAnswer<bool>>()
+                            .context(&graph.system)
+                            .contents_of_current_node()
+                            .await?;
+                        (
+                            if answer.determination {
+                                Judgment::True
+                            } else {
+                                Judgment::False
+                            },
+                            answer.rationale,
+                            None,
+                        )
+                    } else {
+                        let request = ctx
+                            .ask::<ReviewAnswer>()
+                            .context(&graph.system)
+                            .contents_of_current_node();
+                        let answer = if matches!(data.as_ref(), HabeasNode::Requirement(_)) {
+                            request
+                                .contents_of_successors(HabeasEdgeLabel::Mandatory)
+                                .await?
+                        } else {
+                            request.await?
+                        };
+                        (
+                            Judgment::from_value(&answer.determination)
+                                .map_err(ValidationError::Agent)?,
+                            answer.rationale,
+                            answer.applies,
+                        )
+                    };
                 let mut conversation = graph.conversation.lock().expect("review lease lock");
                 let (sources, usage) = conversation
                     .as_mut()
                     .expect("conversation returned its lease");
                 usage.record.determination = Some(judgment.kind().into());
                 usage.save().map_err(ValidationError::Graph)?;
-                Ok(record(
-                    sources,
-                    &judgment,
-                    &answer.rationale,
-                    answer.applies,
-                ))
+                Ok(record(sources, &judgment, &rationale, applies))
             }
             Operation::Verify(..) => {
                 let request = ctx
@@ -214,19 +237,6 @@ where
                                 cache.intern_node(HabeasNode::from(&selector)),
                                 input_fingerprint(&input),
                             );
-                            for supplied in &request.inputs {
-                                if cache
-                                    .node_data(supplied.node)
-                                    .and_then(|data| data.selector().ok())
-                                    .as_ref()
-                                    == Some(&selector)
-                                {
-                                    inspection.observe_read(
-                                        supplied.node.clone(),
-                                        supplied.fingerprint.clone(),
-                                    );
-                                }
-                            }
                         }
                     }
                 };
@@ -249,9 +259,10 @@ where
                     }
                     Ok(arguments.clone())
                 };
-                let submit = match graph.operation {
-                    Operation::Assess => "submit_judgment",
-                    Operation::Verify(..) => "submit_verification",
+                let submit = match (&sources.subject_kind, &graph.operation) {
+                    (AssessmentKind::Citation(_), _) => "submit_result",
+                    (_, Operation::Assess) => "submit_judgment",
+                    (_, Operation::Verify(..)) => "submit_verification",
                 };
                 let value = converse_observed(
                     inspection,
@@ -259,6 +270,8 @@ where
                     sources,
                     usage,
                     prompt,
+                    request.inputs,
+                    request.result_schema,
                     (submit, site),
                     accepted,
                     Some(&observe),

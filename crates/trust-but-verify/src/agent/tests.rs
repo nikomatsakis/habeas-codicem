@@ -1897,17 +1897,17 @@ struct MinimalConversation {
 impl Conversation for MinimalConversation {
     type Output = bool;
     // {cite}`habeas:util`
-    fn tools(&self) -> io::Result<Vec<ToolDefinition>> {
-        serde_json::from_value(json!([
-            {"name":"lookup","description":"fixture lookup","parameters":{"type":"object"}},
-            {"name":"submit_result","description":"submit","parameters":{"type":"object"}}
-        ]))
-        .map_err(io::Error::other)
+    fn tools(&self, submission: Option<ToolDefinition>) -> io::Result<Vec<ToolDefinition>> {
+        let mut tools = vec![serde_json::from_value(
+            json!({"name":"lookup","description":"fixture lookup","parameters":{"type":"object"}}),
+        )?];
+        tools.extend(submission);
+        Ok(tools)
     }
     // {cite}`habeas:util`
     fn submit(&mut self, name: &str, arguments: &Value) -> io::Result<Submission<bool>> {
         assert_eq!(name, "submit_result");
-        Ok(Submission::Accepted(arguments["result"].as_bool().unwrap()))
+        Ok(Submission::Accepted(arguments.as_bool().unwrap()))
     }
     // {cite}`habeas:util`
     async fn dispatch(&mut self, name: &str, arguments: &Value) -> io::Result<String> {
@@ -1963,6 +1963,8 @@ async fn generic_conversations_can_use_default_telemetry_through_retry_and_conti
             &provider,
             &mut session,
             CompletionRequest::new("review"),
+            Vec::new(),
+            json!({"type":"boolean"}),
             "submit_result"
         )
         .await

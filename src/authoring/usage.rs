@@ -409,7 +409,7 @@ impl TokenCounts {
 fn tool_name(name: &str) -> &str {
     match name {
         "habeas" | "ripgrep" | "ast_grep" | "github" | "list_files" | "outline" | "references"
-        | "next_page" | "finish_search" | "submit_judgment" => name,
+        | "next_page" | "finish_search" | "submit_judgment" | "submit_result" => name,
         _ => "unknown",
     }
 }
