@@ -1,7 +1,7 @@
 {
   "requirement": "Configure the domain’s project files with {cite}`requirements.sdk.validation-cache.with_sources`. `Domain::project_sources` binds those files to the domain for Rust searches and agent inspection. Each hit identifies a node under {cite}`requirements.sdk.sources.source_nodes`.",
   "determination": true,
-  "rationale": "**Obligations derived from `requirements.sdk.sources.provider.attachment`**\n1. Project files configured with `ValidationCache::with_sources` are attached to the domain.\n2. `Domain::project_sources` binds those files to the domain for Rust searches and agent inspection.\n3. Each search hit identifies a node under `requirements.sdk.sources.source_nodes`.\n4. Implied negative case: a domain with no configured sources has no project sources.\n\n**Test mapping**\n- **Positive path:** `agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` builds a `TestDomain` with `ValidationCache::with_agent(..).with_sources(Sources::new(dir))`.\n  - `TestDomain` has no `project_sources` override. Only the `Domain` trait default exists, in `domain.rs#trait[Domain]/fn[project_sources]`, and it builds the `SourceProject` from the cache's sources. The test therefore exercises the real binding.\n  - A scripted local OpenAI transport drives `list_sources`, `read_node`, `search_text` and `finish_search`.\n  - The test asserts the tool list sent to the model includes the source tools.\n  - It asserts that listing returns integer node IDs and that an invalid node is rejected.\n  - It asserts that `read_node` on the mapped file returns the snapshot text. The test domain's `source_node` supplies that snapshot and the test asserts it.\n  - It asserts that `search_text` returns three hits, each with a `tag`, a `node` and an `excerpt`. The hit `node` values feed `read_node`.\n  - It asserts the answer's dependencies are exactly the mapped `TestNode` ids 7, 8, 9 and 10, with the expected fingerprints. This shows hits resolve to nodes produced by `Domain::source_node`.\n  - It asserts that `source_node` is called only for in-scope, non-ignored paths. This holds across two independent executions.\n- **Negative path:** `tests/contracts.rs#fn[domain_without_project_sources_leaves_source_tools_disabled]` asserts `Application::default().project_sources().is_none()`.\n- **Supporting test:** `agent/configured.rs#mod[tests]/fn[supplied_openai_backend_runs_independent_calls_against_a_local_transport]` is also marked. It covers the case with no sources attached, and the source tools are absent from its tool list.\n\n**Assessment**\n- Attachment, binding, hit-to-node identification and the absent-sources case each have a test with concrete assertions.\n- The `search_text` hit-to-node path, the `Domain::source_node` mapping and the listing/read path are asserted on observable outputs.\n- The cited requirements `with_sources` and `source_nodes` are applied in the subject's case, as the test configures through `with_sources` and uses the `source_node` mapping.\n- I found no obligation without a test, and no marking gaps.\n- There are no `{fixme}` acknowledgments.",
+  "rationale": "The tests adequately cover `requirements.sdk.sources.provider.attachment`.\n\n**Obligations derived from the text**\n1. Project files configured with `with_sources` are bound to the domain through `Domain::project_sources`.\n2. That binding makes the files available to searches and to agent inspection.\n3. Each hit identifies a graph node under `source_nodes`.\n4. Implicitly, a domain with no configured sources has no binding.\n\n**Implementation question, answered from source:** `Domain::project_sources` in `crates/trust-but-verify/src/domain.rs#trait[Domain]/fn[project_sources]` returns a `SourceProject` only when `cache().sources` is set. It returns `None` otherwise.\n\n**Test mapping**\n- `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` builds the cache with `.with_sources(Sources::new(selected.path()))`. It then runs the agent against a local transport and asserts the following:\n  - The tool list gains `list_sources`, `outline_source`, `search_text`, `search_structure` and `finish_search`. This shows the binding reaches the agent.\n  - The `list_sources` listing returns only project files. Each entry has an integer `node` and a `data.id`, so hits identify domain graph nodes.\n  - `read_node` on a node mapped from the selected source returns the domain's snapshot text. An unknown node is rejected.\n  - `search_text` hits carry `node` and `tag`, and their nodes are recorded as dependencies. Nodes 8, 9 and 10 are asserted with exact fingerprints. The hit-to-node mapping is therefore checked, not just executed.\n  - The domain's recorded source-node requests include `visible/selected.txt` with an empty selector. This shows the configured directory was the bound source and that `.gitignore` was respected.\n  - The assertions are repeated across two independent executions.\n- `crates/trust-but-verify/tests/contracts.rs#fn[domain_without_project_sources_leaves_source_tools_disabled]` asserts that `Application::default().project_sources()` is `None`. This covers the unconfigured case.\n- `supplied_openai_backend_runs_independent_calls_against_a_local_transport` has no sources configured. It asserts the tool list is only `read_node`, `outgoing_edges`, `get_next_page` and `submit_result`. This confirms that source tools are absent without attachment.\n\n**Gaps considered**\n- `search_structure` (the Rust structural search) is advertised in the tool list but never called in these tests. The attachment is the same `SourceProject` binding that `search_text` and `read_node` use, and the requirement states no behaviour specific to structural search. I do not count this as a gap.\n- Per-hit node mapping details belong to `source_nodes`, which is cited context and not reassessed here.\n\nNo unacknowledged gap remains.",
   "references": "6c8ce8157893ac62f7994d2ab6e8b2ce8aea5bbb38571d10c5ffa8d4eb885fad",
   "inputs": [
     {
@@ -40,7 +40,7 @@
       "text": [
         ":::{req} source_nodes",
         "",
-        "An application supporting tracked source inspection returns `Self::NodeData` for the requested path and selector. The SDK interns that data in the domain's cache to obtain `NodeId<Self>`. An unsupported or invalid address returns an error.",
+        "An application supporting tracked source inspection returns `Self::NodeData` for the requested path and selector. The SDK interns that data in the domain's cache to obtain `NodeId<Self>`. An unsupported or invalid address returns an error. The cache retains the address when the SDK maps a source item. For source identities the application can supply independently, implement `source_address` to recover the project-relative outline address from the domain identity. Other identities return `None`.",
         "",
         "```rust,ignore",
         "pub trait Domain: Clone + Send + Sync {",
@@ -49,6 +49,7 @@
         "        &self,",
         "        item: &OutlineData,",
         "    ) -> Result<Self::NodeData, SourceError> { ... }",
+        "    fn source_address(&self, _data: &Self::NodeData) -> Option<OutlineData> { ... }",
         "}",
         "```",
         ":::"
@@ -62,7 +63,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]",
-      "hash": "55063c7bdfb02a7b0e193d469c746430aa45c1340ebe1848a183956427f86264"
+      "hash": "86df255472eea22f9d40c9d987ebd319db936d04d5a0ef876576577d4be99c2d"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
@@ -75,9 +76,14 @@
       "hash": "7e2d7410f834a61a2accca905d01bbc4cc5f6f65783b431fbd84c1b8d3825eae"
     },
     {
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "impl[ConfiguredAgent/Agent<D>]/fn[run]",
+      "hash": "2fc67d1a15536d65fb146f074a3300fb536b2a70cc38b95412101bc10eb90263"
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[search_groups_exact_occurrences_and_records_the_selected_declaration]",
-      "hash": "4d9bebedef811759dd1cffd511f0ed16e7bea2333485fd9d7d8271307dbd9206"
+      "hash": "31b2ed3b415ba9a7cdf8e933ae5247c8b1bcd9430badda6ea6b37f9d178a619e"
     }
   ],
   "format_version": 1,
@@ -135,7 +141,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "8b161b9e29941045eb4a07b6fd5505397c8ddd5d228beb7531cdde1c38afcd9c"
+          "value": "8e6346502a38d35769ac9ca222239063ec8f7cd6ca436c2e180b3c8c3b81ac61"
         }
       ]
     },
@@ -169,7 +175,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "da2d1f53e4f8d6772fc96672ec9eb919e8e4cd46540f043050aceba0f79ed6ec"
+          "value": "34583fda418eba03368d18721f3e85387cfdfeba5c7f97b0225bac62686a952b"
         }
       ]
     },
@@ -213,6 +219,23 @@
           "Source": {
             "resource": {
               "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
+            },
+            "selector": "impl[ConfiguredAgent/Agent<D>]/fn[run]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "ace071a2c4ed186c16c7a609a88ceada430b832015c543c1b9ece5c6ce2781a2"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/project_sources.rs"
             },
             "selector": "mod[tests]/fn[search_groups_exact_occurrences_and_records_the_selected_declaration]"
@@ -220,7 +243,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "19992c03285f529c6f41532d4739a7bfee75a5851afdd907851f7bce13a82606"
+          "value": "3ac3699c00ae6a3e78f860f347b6e37ec413b7e2a73ea064daf7486f00123e4b"
         }
       ]
     }

@@ -1,7 +1,7 @@
 {
   "requirement": "The agent's `search_text` tool accepts a nonnegative `window_bytes`, defaulting to 128. For a hit with byte span `[start, end)`, retain the hit and up to `window_bytes` of source immediately before `start` and after `end`. Clip the window to the enclosing item's span. Move a context boundary that splits a UTF-8 character inward to the nearest character boundary. With `window_bytes: 0`, only the hit spans and the available header and trailer contribute source to the excerpt.\n\nCompute windows for all hits in the item from the same snapshot. Where windows touch or overlap, emit the contiguous source once. This preserves each hit and the text between nearby hits, including whitespace and newlines.",
   "determination": true,
-  "rationale": "I judge the tests adequate. I read only the supplied test sources and did not request implementation source. Each obligation in `requirements.sdk.graph.search.windows` maps to at least one marked test with exact-excerpt assertions.\n\nAll the tests below are in `crates/trust-but-verify/src/agent/project_sources.rs` under `mod[tests]`.\n\n- **Default of 128 and exact byte count on both sides.** `fn[default_windows_retain_128_bytes_on_each_side]` puts a 200-byte run of `a`, then `猫hit猫`, then 200 `z`. It expects `...` + 125 `a` + `猫hit猫` + 125 `z` + `...`. Each side is therefore exactly 128 bytes, with 猫 sitting on the boundary. An off-by-one window or a different default would fail.\n- **Explicit `window_bytes`.** The same test passes `window_bytes:1`. `fn[root_hits_clip_context_to_utf8_boundaries]` passes `window_bytes:2`. The separated-hits test passes 4 and 0.\n- **UTF-8 boundary moved inward.**\n  - With `window_bytes:1`, a 1-byte window splits the 3-byte 猫 on both sides of the hit. The expected excerpt is `...hit...`, so the boundary moved inward to nothing.\n  - In `fn[root_hits_clip_context_to_utf8_boundaries]`, `éhit猫` with window 2 keeps the whole 2-byte `é` and drops the split 猫. The expected excerpt is `éhit...`.\n- **Clipping to the enclosing item's span.**\n  - In `fn[search_groups_exact_occurrences_and_records_the_selected_declaration]`, default 128-byte windows around the hits in `const A` do not spill into the adjacent `const B`. The excerpt is exactly `const A: &str = \"éhit\";`.\n  - The `needle` and `éhit猫` cases with a large window return exactly the source text.\n  - In `fn[separated_hit_windows_preserve_the_function_declaration]`, the windows are clipped to the `fn run` item and do not take in the enclosing `impl`.\n- **`window_bytes: 0`.** In the separated-hits test, window 0 gives `fn run() {...hit...hit...hit...}`. Only the hit spans and the header and trailer contribute source.\n- **Merging of touching and overlapping windows.**\n  - `fn[touching_windows_keep_the_contiguous_source]` has two hits whose windows exactly touch. The excerpt must equal the whole item text, so whitespace between the hits is kept.\n  - In the separated-hits test with window 4, the adjacent hits merge into `hit(); hit();\\n` once.\n  - In the search-groups test, `hit hit` with a 128-byte window overlaps heavily and is emitted once as `\"hit hit\"`.\n  - Non-adjacent hits stay separated by `...`.\n- **Windows for all hits computed from one snapshot.** The multi-hit tests compute all hits in an item together. The separated-hits test also rewrites the file between iterations and still expects the original text.\n\nThe text does not state any behavior for a negative `window_bytes`, so I did not treat it as a gap. I found no requirement-violating behavior that these tests would accept.",
+  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.graph.search.windows`, and their expected values match the requirement text.\n\n- **Default of 128 and window size.** `default_windows_retain_128_bytes_on_each_side` uses a hit between multibyte `猫` characters with 200 filler bytes on each side. The default call must retain exactly 128 bytes each side, which is 3 bytes of `猫` plus 125 filler bytes. The test asserts that excerpt. The separated-hit test uses `window_bytes` 4, and the root test uses 2. These confirm that the parameter is honoured.\n- **Clipping to the enclosing item.**\n  - In `search_groups_exact_occurrences_and_records_the_selected_declaration`, `const A` and `const B` sit side by side in one file. With the default 128-byte window, each excerpt is exactly its own declaration, so the neighbouring item is not leaked.\n  - In `root_hits_clip_context_to_utf8_boundaries`, the `needle` case returns the whole source with no ellipsis.\n  - In `separated_hit_windows_preserve_the_function_declaration`, the trailer `}` is kept and nothing is taken beyond the item.\n- **UTF-8 boundaries moved inward.**\n  - `default_windows_retain_128_bytes_on_each_side` uses `window_bytes: 1`. That cuts into `猫` on both sides, and the result is `...hit...`.\n  - The root test uses `éhit猫` with `window_bytes` 2. The `é` is retained exactly at its boundary, and the 2 bytes into `猫` are dropped, giving `éhit...`.\n- **`window_bytes: 0`.** The separated-hit test asserts `fn run() {...hit...hit...hit...}`. Only the hit spans plus the header and trailer contribute source.\n- **Merging touching or overlapping windows, preserving whitespace and newlines.**\n  - `touching_windows_keep_the_contiguous_source` calls `excerpt` directly on `  hit    hit  ` with window 2. The two windows meet exactly at a boundary, and the output equals the full item text with the spaces intact.\n  - `const B: &str = \"hit hit\"` with the default window, and the first two hits in the separated test, exercise overlapping windows. The excerpt is emitted once with the text between hits preserved.\n  - The separated test's window-4 expectation `    hit(); hit();\\n...    hit();\\n...` also shows newlines preserved and a non-touching hit left separate.\n- **Same snapshot for all hits.** The separated-hit test rewrites the file on disk after the first iteration. The second iteration still yields the original excerpt and node text, so the hits are computed from the cached snapshot.\n\n**Negative `window_bytes`.** A test in `search_pages_return_every_original_match_in_order` rejects `window_bytes: -1`. It is not marked for this requirement. The text says only that the tool \"accepts a nonnegative\" value, so I did not treat rejection as a clear obligation. Even if it were one, the behaviour is tested, and at most this is a marking nuance, not a missing test.\n\nI found no plausible requirement-violating behaviour that these tests would accept.",
   "references": "8a33590143a228b702f3729d388dbc8135cf8aeccf5fba562b14f4457d3b26ea",
   "inputs": [
     {
@@ -20,12 +20,12 @@
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[search_groups_exact_occurrences_and_records_the_selected_declaration]",
-      "hash": "4d9bebedef811759dd1cffd511f0ed16e7bea2333485fd9d7d8271307dbd9206"
+      "hash": "31b2ed3b415ba9a7cdf8e933ae5247c8b1bcd9430badda6ea6b37f9d178a619e"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[root_hits_clip_context_to_utf8_boundaries]",
-      "hash": "ce8049493b6d1e85976b4a91d191480f63b6ec5161c09bb4b7db534c047bdd6e"
+      "hash": "a7d93a5020881837e00f5ccd0599571e628c7dc612a6b0c62c6db5c9d8073e9a"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
@@ -35,12 +35,22 @@
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[touching_windows_keep_the_contiguous_source]",
-      "hash": "f3d50f5bb9e89f682546f0ddc0644bb2fecb0370525e3548ace2c33067aab620"
+      "hash": "0681e8bde196367658edd6a9cd0a7758391ffc843f8e248124f85f87492d4c6b"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[separated_hit_windows_preserve_the_function_declaration]",
-      "hash": "7f121450469506c9fab03ebdcd6edd9502a7f8492818fcac3859e335fecd7c28"
+      "hash": "1a9702e2ef2e866be27e54566db11c5f797bdac533f8e3439359ef3297dc7969"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "mod[tests]/fn[search_pages_return_every_original_match_in_order]",
+      "hash": "baa98df68943cf5888e142f365e65831861bf813d34bd89d1a42d02ce39cecc7"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]",
+      "hash": "1e9891fdbb67df918e9440e24bb4ccae95bc15d9677193dee3cc2c09feb845b5"
     }
   ],
   "format_version": 1,
@@ -93,7 +103,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "19992c03285f529c6f41532d4739a7bfee75a5851afdd907851f7bce13a82606"
+          "value": "3ac3699c00ae6a3e78f860f347b6e37ec413b7e2a73ea064daf7486f00123e4b"
         }
       ]
     },
@@ -110,7 +120,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "bdcd58385aed9ef9e5d32e47d91f378cdd4a5c80be1f5696b13a682f3d8b720a"
+          "value": "eee8cfc6890ac2abe80defa07deda1c2262f24f39304c6c357a45dde8998867a"
         }
       ]
     },
@@ -144,7 +154,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "92bca61cd399f236231b297b8e9599d34076709e75912d70dafc27ff47dfe024"
+          "value": "47c8cacdbfb85164816d85521ac590f007464b0d06a651c180817e6c0f3d2c00"
         }
       ]
     },
@@ -161,7 +171,41 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "499331b025c397436bd6c46e3565a40c0bde17317a1f45cbc1feb83a456bb7c2"
+          "value": "2e26b160a175e50d2d99d90fc21f3ab92f0b4e1de6ef99c09639b64d07546969"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "mod[tests]/fn[search_pages_return_every_original_match_in_order]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "9ebfd99f82e1c08953f18f7c57202d706d310621453e36d16d5babb1b5043e3c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "5a9657532ff38717d6edc972de4796214707d7418e21000c346f1c37f9e5be0e"
         }
       ]
     }

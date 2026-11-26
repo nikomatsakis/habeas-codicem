@@ -1,7 +1,7 @@
 {
   "requirement": "Deliver one entry per enclosing item in a text search, even when the item has several hits. Group before pagination so an item's excerpt stays together. Each entry carries a node reference under {cite}`requirements.sdk.graph.validation-context.node_reference`, one excerpt, and the page-local tag used by `finish_search`. The tag accounts for use of the excerpt. The node reference lets the agent read the full item.",
   "determination": true,
-  "rationale": "The two {test} items cover every obligation in `requirements.sdk.graph.search.group_hits`.\n\n**One entry per enclosing item, even with several hits.**\n- `search_groups_exact_occurrences_and_records_the_selected_declaration` searches `const A ... \"éhit\"; const B ... \"hit hit\";`.\n- `const B` contains two hits. The raw `search_text` results show three hits, two of them in `code.rs#const[B]`.\n- The dispatched `search_text` page asserts exactly two entries: `tag` \"1\" for A and `tag` \"2\" for B. B has a single entry.\n- `search_pages_return_every_original_match_in_order` writes 350 lines of `hit {i} hit`, so each line has two hits. It asserts one entry per node, in order, with `count == lines.len()`.\n\n**Group before pagination, so an item's excerpt stays together.**\n- The 350-line test asserts `pages > 1`, so it spans several pages. Every entry on every page equals `{\"node\":nodes[count], \"excerpt\":lines[count], \"tag\":...}`.\n- If grouping happened after pagination, a two-hit item could be split across a page boundary. That would give a duplicate or partial entry and break the `nodes[count]` and `count` assertions.\n- I read `dispatch` in `project_sources.rs` and the `chunks` function in `pages.rs`. Grouping runs in `dispatch` before `pages.search`, and pages are chunked from the grouped entries.\n- The exact page boundary depends on the page size and entry sizes, so the test would catch a split only if a boundary fell inside a two-hit item. This is a weaker point, but the test does span many pages with multi-hit items.\n\n**Each entry carries a node reference, one excerpt, and a page-local tag.**\n- Entries are compared as whole JSON objects containing `node`, `excerpt`, and `tag`.\n- Tags restart at `(index+1)` on every page, which checks that they are page-local.\n- The excerpt for B is the whole declaration `const B: &str = \"hit hit\";`, so it covers both hits.\n- The node value equals the interned node ID of the raw hit.\n\n**The tag accounts for use of the excerpt.**\n- `finish_search` with `used: []` yields no dependencies.\n- `finish_search` with `used: [\"2\"]` yields `Dependency::Node(code.rs#const[B], fingerprint)`.\n\n**Node reference lets the agent read the full item.**\n- `session.read_node` on the page's second match yields a `Dependency::Node` for B's node.\n- The format of the node reference is the cited `requirements.sdk.graph.validation-context.node_reference`. I did not reassess it, as the task directs.\n\nI found no unacknowledged gap. There were no {fixme} acknowledgments.",
+  "rationale": "The reviewed tests adequately check `requirements.sdk.graph.search.group_hits`. I did not read the implementation. I judged the tests against the requirement text alone.\n\n**Obligations and how the tests cover them**\n\n1. **One entry per enclosing item, even with several hits.**\n   - `search_groups_exact_occurrences_and_records_the_selected_declaration` searches `code.rs` for `hit`. `const[B]` contains two hits.\n   - The test first asserts that the raw hits are three, with `const[B]` appearing twice. It then asserts that the `search_text` page has exactly two entries, tags `1` and `2`. This shows the two `const[B]` hits collapse into one entry.\n   - `search_pages_return_every_original_match_in_order` uses 350 lines of `hit {i} hit`, so each line item has two hits. Every page entry is asserted to equal exactly one line's entry, and the total `count` equals `lines.len()`. The count is 350, not 700, so grouping holds across pages.\n\n2. **Group before pagination so an item's excerpt stays together.**\n   - The 350-line test asserts `pages > 1` and walks every page through `get_next_page`.\n   - It asserts that each entry matches `nodes[count]` and `lines[count]` in order, and that `count == lines.len()`.\n   - If grouping happened after pagination, an item's hits could split across a page boundary. That would show up as a duplicate or missing entry, and the exact-sequence assertions would fail.\n\n3. **Each entry carries a node reference, one excerpt, and a page-local tag.**\n   - Both tests assert the full entry object: `node`, `file`, `selector`, `excerpt` and `tag`.\n   - In the paged test, the tag is `(index+1)` on every page, which checks that tags are page-local and restart on each page.\n   - The excerpt is a single string per item. For `const[B]` it is the whole declaration, not one string per hit.\n\n4. **The tag accounts for use of the excerpt.**\n   - The grouping test calls `finish_search` with `used: []` and asserts no dependencies.\n   - It then calls `finish_search` with `used: [\"2\"]` and asserts exactly one `Dependency::Node` for `code.rs#const[B]`. It checks this against the item's fingerprint.\n   - This shows the tag maps to the right item.\n\n5. **The node reference lets the agent read the full item.**\n   - The grouping test passes `page[\"matches\"][1]` to `session.read_node` and asserts the resulting node dependency.\n   - It uses the same `node` value that the entry delivered, which exercises the `node_reference` citation.\n   - The `node_reference` requirement is cited context, and its own tests are not reassessed here.\n\n**Gaps**\n\nI found no gaps and no unacknowledged obligations. There are no `{fixme}` acknowledgments. Both tests carry `{test}` references to the subject.",
   "references": "887dad45f325382c7f516b12144a4b9ad9db0f42909fffb9c97b7707f82f21aa",
   "inputs": [
     {
@@ -22,31 +22,29 @@
       ],
       "text": [
         ":::{req} node_reference",
-        "The agent harness uses the unsigned integer representation of `NodeId<D>` for the current node, supplied inputs, and nodes in tool results. Built-in tools accepting a node ID resolve that integer in the domain's cache. A malformed value or an unassigned integer produces a tool error before any graph read.",
+        "The harness represents a `NodeId<D>` as an unsigned integer. Each built-in tool that accepts a node accepts the same top-level address fields, alongside its own arguments (such as an edge `label`). `NodeAddress` in tool signatures denotes these alternatives:",
         "",
-        "For example, if a search hit contains `\"node\": 7`, the agent can call `read_node({\"node\": 7})` to read the enclosing node.",
+        "| Address fields | Resolution |",
+        "| --- | --- |",
+        "| `node` | Look up the assigned ID in the domain's cache. |",
+        "| `path`, optional `location` | Resolve the project-relative file within the domain's visible sources. `location` is its outline selector and defaults to the empty selector for the file root. Resolve the item, map its `OutlineData` through `Domain::source_node`, and intern the resulting identity. |",
+        "| `data` | Deserialize the JSON value as `D::NodeData` and intern it in the domain's cache. |",
+        "",
+        "For domains using the agent harness, the tool schema describes `data` using the domain’s JSON schema for `D::NodeData`. The harness uses the same JSON representation when returning and accepting an identity.",
+        "",
+        "Resolving an address is discovery. The requested operation determines which observations enter evidence. Invalid addresses, unavailable files, and unknown selectors produce tool errors before the requested operation runs.",
         ":::"
       ]
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[search_pages_return_every_original_match_in_order]",
-      "hash": "7c7f7258f711c557e69010ea16fad1d7d4815bd22af7bc6ef82686ea92db3872"
+      "hash": "baa98df68943cf5888e142f365e65831861bf813d34bd89d1a42d02ce39cecc7"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[search_groups_exact_occurrences_and_records_the_selected_declaration]",
-      "hash": "4d9bebedef811759dd1cffd511f0ed16e7bea2333485fd9d7d8271307dbd9206"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
-      "item": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]",
-      "hash": "2b5e546cc5d3d8cb2ce3133d379e3c9beaf4de138cae7b6e6ce39036c58da7c0"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/pages.rs",
-      "item": "fn[chunks]",
-      "hash": "9c68375bd25402c0d5dc570e4468e9f15f6be7f383e13d38284cd9b9d6f9258a"
+      "hash": "31b2ed3b415ba9a7cdf8e933ae5247c8b1bcd9430badda6ea6b37f9d178a619e"
     }
   ],
   "format_version": 1,
@@ -93,7 +91,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1430580f5cd20d4d44b571e0e083e7647f8232070211c9e723833e7f6fff2d73"
+          "value": "c620d2dfecfa08991060b45c3970a5375bf7d3f87bd288f41705003578ec3546"
         }
       ]
     },
@@ -110,7 +108,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "d65faf36f9b7f25e424c58d95ad95ecac736e0ce1591aac0f327489e1be9ef5d"
+          "value": "9ebfd99f82e1c08953f18f7c57202d706d310621453e36d16d5babb1b5043e3c"
         }
       ]
     },
@@ -127,41 +125,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "19992c03285f529c6f41532d4739a7bfee75a5851afdd907851f7bce13a82606"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
-            },
-            "selector": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "f33c7020546a3d211614215af843e365421f07d5d27f8c24b3f223f87ade14f0"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/pages.rs"
-            },
-            "selector": "fn[chunks]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "ed20ac5bc7696893cec8dc3a70d7b56c4fad36613babe2e8dde0a1acaff37460"
+          "value": "3ac3699c00ae6a3e78f860f347b6e37ec413b7e2a73ea064daf7486f00123e4b"
         }
       ]
     }

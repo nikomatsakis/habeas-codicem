@@ -1,7 +1,7 @@
 {
   "requirement": "Each page has the same result fields as the originating tool. Text reads return\nsuccessive portions of text. Listings, outlines, and searches return successive\narrays of whole entries in their original order. Only a page with a successor\nincludes `next`.\n\nReusing a UUID returns the same page from the original snapshot, including the\nsame successor UUID if more remains. A malformed UUID, an unknown UUID, or a UUID\nfrom another conversation returns a tool error under\n{cite}`requirements.sdk.graph.agent-harness.tool_agent.isolation`.",
   "determination": true,
-  "rationale": "The reviewed tests adequately check `requirements.sdk.graph.validation-context.pages.behavior`. Each obligation maps to at least one test with assertions that enforce it.\n\nI read `pages.rs` only to see how pages are retained and how page size is set. All tools share one `Pages` store, one `get` path and one page size (`PAGE_SIZE` is 8192). So the 300–2000-entry fixtures produce several pages for every tool.\n\n**Obligations and the tests that cover them**\n\n- **Same result fields as the originating tool.**\n  - Search pages: `search_pages_return_every_original_match_in_order` asserts `complete`, `search_id`, `instructions` on the first page only, and each entry as exactly `{node, excerpt, tag}`.\n  - Outline pages: `outline_continuations_keep_the_file_and_complete_ordered_items` asserts `node` on every page and the `items` fields.\n  - Source read pages: `source_read_pages_retain_text_and_dependencies_without_another_read` asserts `node.selector` on continuation pages.\n  - Listing pages: `listing_continuations_return_complete_paths_from_the_original_listing` asserts the `files` entries.\n\n- **Text reads return successive portions.**\n  - `graph_read_pages_retain_the_prepared_snapshot_after_contents_change` uses multibyte `é` text longer than one page. It concatenates the pages and asserts the result equals the original.\n  - `source_read_pages_retain_text_and_dependencies_without_another_read` rejoins the paged lines and compares them to the original.\n\n- **Listings, outlines and searches return whole entries in original order.**\n  - The listing test pages through 2000 files and asserts the concatenated list equals the expected ordered list, even though a file was added mid-paging.\n  - The outline test checks 401 items against their expected node and kind in order.\n  - The search test checks each entry against its expected node, excerpt and tag, and checks the total count.\n\n- **Only a page with a successor includes `next`.**\n  - The loops in these tests stop when `next` is absent. Every page they fetch is delivered successfully, so no final page can carry a dangling `next`.\n  - `graph_read_pages_retain_the_prepared_snapshot_after_contents_change` asserts `next` is present exactly on the first of two pages.\n  - `search_pages_return_every_original_match_in_order` asserts there is more than one page and that the total entry count matches.\n\n- **Reuse of a UUID returns the same page from the original snapshot, with the same successor.**\n  - `search_obligations_follow_delivery_and_keep_the_original_snapshot` rewrites the file after the search. It then fetches the `next` page and, after other calls, fetches it again. It asserts the two texts are identical. The 300 hits span several 8 KiB pages, so the successor UUID is covered too.\n  - The search, outline, read and listing tests also change the file after the first page and still get the original content.\n  - Reuse for read and listing pages goes through the same shared `Pages::get`, which has no per-kind branch. I did not treat this as a gap.\n\n- **Malformed, unknown or foreign UUIDs return a tool error.**\n  - The outline test asserts errors for `\"invalid\"` and for the all-zero UUID.\n  - `search_obligations_follow_delivery_and_keep_the_original_snapshot` asserts a peer session cannot use the other session's `next`.\n  - `graph_page_ids_from_a_populated_peer_conversation_are_rejected` asserts that a UUID from another populated conversation yields an `is_error` result containing \"unknown page\".\n\n**Delegated:** the isolation obligation in `requirements.sdk.graph.agent-harness.tool_agent.isolation` is a cited context. Its own tests cover it, and the foreign-page test above exercises it here.\n\nNo gaps found. No {fixme} acknowledgments apply.",
+  "rationale": "**Verdict:** the reviewed tests adequately check `requirements.sdk.graph.validation-context.pages.behavior`. I found no gap.\n\nI read `pages.rs` (`Pages::prepare`, `retain`, `get`) only to see whether paging is shared across tool kinds. It is: every kind goes through `retain` and `get`. The expected behavior below comes from the requirement text, not from that source.\n\n**Obligations and the tests that cover them**\n\n1. **Each page has the same result fields as the originating tool.**\n   - `search_pages_return_every_original_match_in_order` asserts `complete`, a UUID `search_id`, `instructions` on the first page only, and the exact entry shape (`node`, `file`, `selector`, `excerpt`, `tag`).\n   - `outline_continuations_keep_the_file_and_complete_ordered_items` asserts the `node` field on every page.\n   - `source_read_pages_retain_text_and_dependencies_without_another_read` asserts `page[\"node\"][\"selector\"]` on each page.\n   - `listing_continuations_return_complete_paths_from_the_original_listing` checks each file entry's `node` and `data`.\n\n2. **Text reads return successive portions of text.**\n   - `graph_read_pages_retain_the_prepared_snapshot_after_contents_change` uses a multibyte `é` string and asserts that the concatenated pages equal the original.\n   - `source_read_pages_retain_text_and_dependencies_without_another_read` rejoins the pages and compares them with the original.\n\n3. **Listings, outlines and searches return successive arrays of whole entries in original order.**\n   - Listing: 2000 files, with a file added after the first page. The collected nodes must equal the original ordered list.\n   - Outline: 400 items. The test checks per-item `node`, `file`, `selector` and `kind` in order, and that the read children match the outline items.\n   - Search: 350 matches. Each entry is compared with the exact expected JSON in order, and the total count must equal the line count.\n   - Each test asserts more than one page, and the outline and search tests assert non-empty pages.\n\n4. **Only a page with a successor includes `next`.**\n   - All loops end when `next` is absent and then check the total is complete.\n   - Non-empty-page assertions rule out a trailing page that is empty.\n   - `graph_read_pages_retain_the_prepared_snapshot_after_contents_change` asserts `next` is present exactly on the first of two pages.\n\n5. **Reusing a UUID returns the same page from the original snapshot, with the same successor UUID.**\n   - `search_obligations_follow_delivery_and_keep_the_original_snapshot` changes the file, fetches `next`, and later asserts that a second `get_next_page` returns identical `text`. About 300 hits span several pages, so the successor UUID is included in that comparison.\n   - Snapshot retention after the source changes is also asserted for outline, listing and both read kinds.\n   - Replay is only tested for search. `Pages::get` and `retain` are shared by all kinds, and `retain` builds the pages backwards so the same successor is always returned. A per-kind replay test would add little.\n\n6. **Malformed UUID, unknown UUID, or a UUID from another conversation returns a tool error.**\n   - Malformed (`\"invalid\"`) and unknown (all-zero UUID): `outline_continuations_keep_the_file_and_complete_ordered_items` asserts `is_err`.\n   - Another conversation: the search test asserts the peer session's `get_next_page` fails. `graph_page_ids_from_a_populated_peer_conversation_are_rejected` asserts an error result containing \"unknown page\" for a populated peer's UUID.\n\n**Conclusion:** each clause has a test that exercises it and asserts the outcome. The cited `requirements.sdk.graph.agent-harness.tool_agent.isolation` is applied in the cross-conversation tests. No acknowledgments are needed or present.",
   "references": "1ac80069e6c37d2808f2a07935fa541926528e3931df8b3a2c423e0fed2a9800",
   "inputs": [
     {
@@ -45,17 +45,17 @@
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[search_pages_return_every_original_match_in_order]",
-      "hash": "7c7f7258f711c557e69010ea16fad1d7d4815bd22af7bc6ef82686ea92db3872"
+      "hash": "baa98df68943cf5888e142f365e65831861bf813d34bd89d1a42d02ce39cecc7"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[outline_continuations_keep_the_file_and_complete_ordered_items]",
-      "hash": "ea440ddbbb6d5e17544b69d1231c18fb8224be299d6fd0bd783411ed4f21ad18"
+      "hash": "4262a00a4ed996d847b5653066c4ef288121bdb4f3152f708dbb5ab03753e1a2"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[listing_continuations_return_complete_paths_from_the_original_listing]",
-      "hash": "4af0e6f591c19ba78eced49be45e3ee04571756d4b04207ba8d2c325d2cdf1a9"
+      "hash": "3a77a5f68bc3616b12a38c7d1c1195743369a01f0af6cc1c643b4dc28ef1f63f"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -88,9 +88,9 @@
       "hash": "b10318478a19e688ab3a17fbbe5e2139828bc4feac583992d1bd1a0c5b5f202e"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/tools.rs",
-      "item": "impl[SessionTools<'a,%20D>]/fn[read_node]",
-      "hash": "d6a42a69c98a550b96af78bf49b38c11b8d6f4d8888f857fa2912e6a96f5a7d4"
+      "file": "crates/trust-but-verify/src/agent/pages.rs",
+      "item": "",
+      "hash": "2d561c83a9ff2e00da108a8f61efd9f172ebc5ea1acf667348067a9b8e7794f2"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tools.rs",
@@ -99,78 +99,13 @@
     },
     {
       "file": "crates/trust-but-verify/src/agent/pages.rs",
-      "item": "",
-      "hash": "db48c4cfc7dc1265ae23292b4de81dfef3fac9435649e7d7470c4110e060b5a0"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/pages.rs",
-      "item": "use@b57deb342af1",
-      "hash": "b57deb342af1dba4f6f73425fee2e69723f01e2e05ed2fdd6cf5bd25f9a14aa2"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/pages.rs",
-      "item": "use@0317b0404c02",
-      "hash": "0317b0404c02036bec5f555e7e45b028e426e242001f40800cb974b40bbb6987"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/pages.rs",
-      "item": "use@6e42e0801700",
-      "hash": "6e42e08017009abb18f33fa65d11a99391be1f47814478d1337e25ea5a0189ec"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/pages.rs",
-      "item": "use@420a7d4fdb66",
-      "hash": "420a7d4fdb66ad6ef4f2302fe5c60bcb538bedd7fd51aa6eb30152598c194ccb"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/pages.rs",
-      "item": "use@3ec2e054377f",
-      "hash": "3ec2e054377f3587495ede67f770e4b944a00b61e6d85d0c53f5df2dd8287d30"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/pages.rs",
-      "item": "use@4f9995e72260",
-      "hash": "4f9995e7226031dc18fae25e4e7fc72189c4eab1a08d8e59efc4da55a110022e"
+      "item": "impl[Pages<N,%20L>]/fn[get]",
+      "hash": "6693f86eede197c3335a3944df5f0cbdd6d30f727ac3236543b0b1f6a677e7a2"
     },
     {
       "file": "crates/trust-but-verify/src/agent/pages.rs",
       "item": "const[PAGE_SIZE]",
       "hash": "54115a25ac77772c8879c5d5752f5459e65fcb1f91ccfa735cc3c56c3abfb0d7"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/pages.rs",
-      "item": "const[INSTRUCTIONS]",
-      "hash": "9e5525d531393b083423254070943e22b463d5ff6c4c39b4d2510de9fed29237"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/pages.rs",
-      "item": "type[SearchEntry]",
-      "hash": "b7e646eb1774d85adc50f304ef140e403045d569a25c17da455a41dfddf09f47"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/pages.rs",
-      "item": "struct[SearchPage]",
-      "hash": "faf647342204f6b374b67fb4386531c59ccb94a5aed9102076967551af560cd5"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/pages.rs",
-      "item": "struct[Pages]",
-      "hash": "8fdecc5c585da2dda97f254ea4dc4f9f6d5fb8fe7e6a1865e626e6a206203746"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/pages.rs",
-      "item": "impl[Pages<N,%20L>]",
-      "hash": "628f6fb282a230bc68f0cd899d0d7bd4554e9b8999c00e0255338703bc8ecf87"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/pages.rs",
-      "item": "fn[text_pages]",
-      "hash": "3c81fcb28be702ca28b0d6ca1c0363ced610fc55a16aef6e0f649c81cc8429ad"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/pages.rs",
-      "item": "fn[entry_pages]",
-      "hash": "a0b838e515c347c9e2793349a674acdcba4c4026863135c0771d18bbdc906d2a"
     },
     {
       "file": "crates/trust-but-verify/src/agent/pages.rs",
@@ -256,7 +191,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "d65faf36f9b7f25e424c58d95ad95ecac736e0ce1591aac0f327489e1be9ef5d"
+          "value": "9ebfd99f82e1c08953f18f7c57202d706d310621453e36d16d5babb1b5043e3c"
         }
       ]
     },
@@ -273,7 +208,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f4bbd95de4713ea1de2c93a83309e2b1bc61f4d8f39319587bd4f89761b6f89c"
+          "value": "92357226b875ac8179f1810da6e8ade3de411f593a969f33d4b1afa5f6ef11fd"
         }
       ]
     },
@@ -290,7 +225,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "b8b41ef82f6e4f747e52058200cf224686962f7e219446c19b6afb31af8b8d48"
+          "value": "6ba912f3e980edec0ba8b7d5bdf9e7fa1023d6d56293aa1b738f4dedb272320a"
         }
       ]
     },
@@ -402,14 +337,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tools.rs"
+              "location": "crates/trust-but-verify/src/agent/pages.rs"
             },
-            "selector": "impl[SessionTools<'a,%20D>]/fn[read_node]"
+            "selector": ""
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "8fd0ea2aac9486964aacbb8795cc936691c4e07755df0afd341e080d0be344b8"
+          "value": "87264734cf2d09853941ea8d91a93196a13ac8af142d1f30004112bd26129f60"
         }
       ]
     },
@@ -438,114 +373,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/pages.rs"
             },
-            "selector": ""
+            "selector": "impl[Pages<N,%20L>]/fn[get]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "d8420b3898d4d4e37d1b84ee8afc4e020b4b16fbf1efaf216fe4086f919f2e21"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/pages.rs"
-            },
-            "selector": "use@b57deb342af1"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "8c154fac974a6822c015de0fd2b1de263fac8f8ac3ac552b65ffd54bad33a9c9"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/pages.rs"
-            },
-            "selector": "use@0317b0404c02"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "fc10a2104023684c8ba77ecb58c4e6f037cded570cc1eed6e14cffd6fb15f55d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/pages.rs"
-            },
-            "selector": "use@6e42e0801700"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "4451418cc421dfa889439e28adfcc5738fc7e397e881975c75fa5cd9e7eee3cb"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/pages.rs"
-            },
-            "selector": "use@420a7d4fdb66"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "63a963e1fe1ab966fafdaf5022e450361381e61ef755c4c56b3711245debab80"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/pages.rs"
-            },
-            "selector": "use@3ec2e054377f"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "37ccf4dfd9d397d641ddc1a5b851dcf2e1b1a778b7beb2b0205068c33910669d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/pages.rs"
-            },
-            "selector": "use@4f9995e72260"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "b30bc205d6118467ab7ab8af3a83f1891dfbc26570c4c9f234f67cf856bb07bc"
+          "value": "f65ab4b4e79fd101ff5e0f4ef687607a44828cf1794e5619fe6b66af46cb63f1"
         }
       ]
     },
@@ -563,125 +396,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "ae419ae00fa49bc8ffc28856c0279c34d8fc55e07e8907180323ef433b6f9c5c"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/pages.rs"
-            },
-            "selector": "const[INSTRUCTIONS]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "eb74b525a2878f0564a32e3afdf1cc0fdf6588dbbfddf06226df9f8e48fad7d4"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/pages.rs"
-            },
-            "selector": "type[SearchEntry]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "3acc7f4c05eb822343f592988cd737a85159e6da4c8f1cce336b9c0169ff8187"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/pages.rs"
-            },
-            "selector": "struct[SearchPage]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "68f5ad19a534a4810aa0446afa888a3e86c7a51c2ddb0444d388e018c060910f"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/pages.rs"
-            },
-            "selector": "struct[Pages]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "77e2e2fe778645b64a6e5a471379afa2ca956741f24fb37238fa77ae38acf570"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/pages.rs"
-            },
-            "selector": "impl[Pages<N,%20L>]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "a88fdaf4619c116f5c70cb9969e6338ebb48bfd6b67bc30d70a6c9e6d36d79aa"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/pages.rs"
-            },
-            "selector": "fn[text_pages]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "2636e5f5568eaccced1dd6bc64e6593763eb9da1959bbc4febc6fd4857745d4b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/pages.rs"
-            },
-            "selector": "fn[entry_pages]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "cbeedc827dcd4524810e78a6b91b7af8d25b983d929860f6dd1417cd834ebc70"
         }
       ]
     },

@@ -1,7 +1,7 @@
 {
-  "requirement": "List visible file-root node references under {cite}`requirements.sdk.graph.validation-context.node_reference`.\n\n```text\nlist_sources({}) -> {files: NodeId[], next?: UUID}\n```",
+  "requirement": "List visible file-root node references under {cite}`requirements.sdk.graph.validation-context.node_reference`.\n\n```text\nlist_sources({}) -> {files: {node: NodeId, data: NodeData}[], next?: UUID}\n```",
   "determination": true,
-  "rationale": "The tests adequately check `requirements.sdk.graph.validation-context.list_sources.mcp`. I did not request any implementation source.\n\nThe requirement has three testable parts:\n- `list_sources({})` returns an object with `files`, a list of file-root node references.\n- Those references use the `node_reference` form, which is the unsigned integer representation of `NodeId`.\n- An optional `next` UUID continues the listing.\n\nEach part maps to a marked test:\n- **Integer node IDs.** `agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` calls `list_sources` with `{}` through the real agent loop. It parses the tool output as JSON and asserts every `files` entry satisfies `is_u64()`. It then feeds one listed integer back into `read_node` and checks that it resolves to the source snapshot. This confirms the IDs are file-root nodes in the domain cache, and that they work as node references.\n- **File-root nodes.** The same test checks that the listing contains the integer ID of `visible/selected.txt`, and that reading it returns the source snapshot text rather than the disk contents.\n- **Visibility.** The same test sets up a `.gitignore`d file and an empty `visible-old` scope. Visibility is also covered by `list_sources.behavior`, which this test is marked for.\n- **Shape and continuation.** `agent/project_sources.rs#mod[tests]/fn[listing_continuations_return_complete_paths_from_the_original_listing]` dispatches `list_sources` with `{}` on 2000 files. It asserts `next` is a string and deserializes `files` as `Vec<NodeId<Project>>`. It follows `next` through `get_next_page` until the key is absent. It asserts the concatenated IDs equal the nodes interned for each `<file>#` root in order. Empty directories are not listed, and a file added after the first page is not included.\n- **Absent `next`.** The loop in that test ends only when `next` is absent, so the final page is shown to omit it.\n\nNo obligation in this requirement lacks a test, and I found no assertion that contradicts it. The rest of `node_reference`, the error handling for malformed or unassigned IDs, is assessed under that requirement and not here. The configured test also exercises it by sending `read_node` with `\"unknown\"` and asserting an \"invalid node ID\" error.",
+  "rationale": "The reviewed tests adequately check `requirements.sdk.graph.validation-context.list_sources.mcp`.\n\n**What the requirement obliges.** The `list_sources` tool takes `{}`. It returns `{files: {node, data}[], next?}`. Each entry is a file-root node reference as defined by `node_reference`, and only visible files are listed. A `NodeId` is an unsigned integer, and `data` is the JSON form of `NodeData`.\n\n**How the tests cover each obligation:**\n- **Entry shape, node IDs as unsigned integers:** `agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` calls `list_sources` with `{}` through a real tool loop. It parses the tool output and asserts that every entry in `files` has `node.is_u64()` and `data.id.is_u64()`. It does this for both independent executions.\n- **Entries usable as node addresses:** The same test feeds a listed entry (`node` and `data`) back into `read_node`. It asserts that the mapped text is `a source snapshot` and that the disk contents are not exposed. This confirms the entries are valid addresses under `node_reference`.\n- **Visibility, file roots only:** The same test creates a `.gitignore`d file and a sibling directory. It then asserts that only `visible/selected.txt` was resolved as an empty-selector file root under `visible`. That is consistent with ignored files being excluded and every entry being a file root.\n- **`data` matches the node's data, file-root identity:** `agent/project_sources.rs#mod[tests]/fn[listing_continuations_return_complete_paths_from_the_original_listing]` asserts that each entry's `data` equals `cache().node_data(node)`. It also asserts that the collected nodes equal the interned `\"{file}#\"` nodes, which are the empty-selector file roots. A created empty directory does not appear in the listing.\n- **`next` as an optional UUID:** The same test lists 2000 files and asserts that the first response has `next` as a string. It follows `next` through `get_next_page` until `next` is absent. A file added after the first call does not appear, and the pages together equal the expected list.\n- **No evidence from listing:** The paging test also asserts that `dependencies` is empty for the list and page deliveries. This matches the `node_reference` rule that resolving an address is discovery.\n\n**Remaining points.** Page-continuation semantics and listing behavior and inputs belong to the `pages.*` and `list_sources.behavior` and `list_sources.inputs` requirements. The same tests carry `{test}` references to those, so they need no separate test here. The `{test}` references on both tests are present.\n\nI found no plausible requirement-violating behavior that these tests would accept.",
   "references": "fb1f3d5434a2f3a43a7b4921aea1f9bc735013ee175b4e39362ba3cd970d0147",
   "inputs": [
     {
@@ -14,7 +14,7 @@
         "List visible file-root node references under {cite}`requirements.sdk.graph.validation-context.node_reference`.",
         "",
         "```text",
-        "list_sources({}) -> {files: NodeId[], next?: UUID}",
+        "list_sources({}) -> {files: {node: NodeId, data: NodeData}[], next?: UUID}",
         "```",
         ":::"
       ]
@@ -26,21 +26,92 @@
       ],
       "text": [
         ":::{req} node_reference",
-        "The agent harness uses the unsigned integer representation of `NodeId<D>` for the current node, supplied inputs, and nodes in tool results. Built-in tools accepting a node ID resolve that integer in the domain's cache. A malformed value or an unassigned integer produces a tool error before any graph read.",
+        "The harness represents a `NodeId<D>` as an unsigned integer. Each built-in tool that accepts a node accepts the same top-level address fields, alongside its own arguments (such as an edge `label`). `NodeAddress` in tool signatures denotes these alternatives:",
         "",
-        "For example, if a search hit contains `\"node\": 7`, the agent can call `read_node({\"node\": 7})` to read the enclosing node.",
+        "| Address fields | Resolution |",
+        "| --- | --- |",
+        "| `node` | Look up the assigned ID in the domain's cache. |",
+        "| `path`, optional `location` | Resolve the project-relative file within the domain's visible sources. `location` is its outline selector and defaults to the empty selector for the file root. Resolve the item, map its `OutlineData` through `Domain::source_node`, and intern the resulting identity. |",
+        "| `data` | Deserialize the JSON value as `D::NodeData` and intern it in the domain's cache. |",
+        "",
+        "For domains using the agent harness, the tool schema describes `data` using the domain’s JSON schema for `D::NodeData`. The harness uses the same JSON representation when returning and accepting an identity.",
+        "",
+        "Resolving an address is discovery. The requested operation determines which observations enter evidence. Invalid addresses, unavailable files, and unknown selectors produce tool errors before the requested operation runs.",
         ":::"
       ]
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]",
-      "hash": "55063c7bdfb02a7b0e193d469c746430aa45c1340ebe1848a183956427f86264"
+      "hash": "86df255472eea22f9d40c9d987ebd319db936d04d5a0ef876576577d4be99c2d"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[listing_continuations_return_complete_paths_from_the_original_listing]",
-      "hash": "4af0e6f591c19ba78eced49be45e3ee04571756d4b04207ba8d2c325d2cdf1a9"
+      "hash": "3a77a5f68bc3616b12a38c7d1c1195743369a01f0af6cc1c643b4dc28ef1f63f"
+    },
+    {
+      "requirements": "requirements.sdk.graph.validation-context.list_sources.*",
+      "matches": [
+        "requirements.sdk.graph.validation-context.list_sources.behavior",
+        "requirements.sdk.graph.validation-context.list_sources.fn",
+        "requirements.sdk.graph.validation-context.list_sources.inputs",
+        "requirements.sdk.graph.validation-context.list_sources.mcp",
+        "requirements.sdk.graph.validation-context.list_sources.mcp.description"
+      ],
+      "text": [
+        ":::{req} list_sources.behavior",
+        "Each file entry pairs its assigned root ID with the domain identity serialized as a JSON value. The whole entry is a valid node argument under {cite}`requirements.sdk.graph.validation-context.node_reference.consistency`. Follow `next` to retrieve further pages.",
+        ":::",
+        "",
+        ":::{req} list_sources.fn",
+        "```rust,ignore",
+        "impl Sources {",
+        "    // ...",
+        "",
+        "    /// List file identities within this scope.",
+        "    pub async fn list(&self, scope: &SourceScope) -> Result<Vec<PathBuf>, SourceError>;",
+        "",
+        "    // ...",
+        "}",
+        "```",
+        ":::",
+        "",
+        ":::{req} list_sources.inputs",
+        "The SDK's `list_sources` result is discovery and",
+        "records neither the returned identity set nor the files' contents as",
+        "evidence inputs. Adding or removing a listed file therefore does not by",
+        "itself invalidate the evidence. Subsequent tracked reads record their own",
+        "dependencies.",
+        ":::",
+        "",
+        ":::{req} list_sources.mcp",
+        "List visible file-root node references under {cite}`requirements.sdk.graph.validation-context.node_reference`.",
+        "",
+        "```text",
+        "list_sources({}) -> {files: {node: NodeId, data: NodeData}[], next?: UUID}",
+        "```",
+        ":::",
+        "",
+        ":::{req} list_sources.mcp.description",
+        "> `List available project file nodes.`",
+        ":::"
+      ]
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "mod[tests]/fn[outline_tool_rejects_excluded_and_unreadable_sources_without_domain_reads]",
+      "hash": "64a45cdca6df0cfd835de35e79392a78b1ba805f1f8ec3c1bc064168d6150943"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]",
+      "hash": "1e9891fdbb67df918e9440e24bb4ccae95bc15d9677193dee3cc2c09feb845b5"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "impl[Session<'_,%20D>/ToolSession<D>]/fn[definitions]",
+      "hash": "9131a7099adbb55c0318dee4345dc21311d7e174b75ac07a32feb297a610d35c"
     }
   ],
   "format_version": 1,
@@ -76,7 +147,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "274c0fee5a6837c0d669cf1589a6548e6fb2ca273cc11f9ab845c06e9c5c3c72"
+          "value": "198608841f7aad4f051fcf73e420c089cc69118454c3fe1cc76ae5e0581347fb"
         }
       ]
     },
@@ -87,7 +158,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1430580f5cd20d4d44b571e0e083e7647f8232070211c9e723833e7f6fff2d73"
+          "value": "c620d2dfecfa08991060b45c3970a5375bf7d3f87bd288f41705003578ec3546"
         }
       ]
     },
@@ -104,7 +175,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "da2d1f53e4f8d6772fc96672ec9eb919e8e4cd46540f043050aceba0f79ed6ec"
+          "value": "34583fda418eba03368d18721f3e85387cfdfeba5c7f97b0225bac62686a952b"
         }
       ]
     },
@@ -121,7 +192,69 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "b8b41ef82f6e4f747e52058200cf224686962f7e219446c19b6afb31af8b8d48"
+          "value": "6ba912f3e980edec0ba8b7d5bdf9e7fa1023d6d56293aa1b738f4dedb272320a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "RequirementSelection": "requirements.sdk.graph.validation-context.list_sources.*"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "21baf168faa37248d7676d2ccdd7822c1650ae6f45a8ec05f97a0adea14c11b4"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "mod[tests]/fn[outline_tool_rejects_excluded_and_unreadable_sources_without_domain_reads]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "ea1e9d8cff55635403facdd85448b9cea644805a68654414a7cb307be0a08bb1"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "5a9657532ff38717d6edc972de4796214707d7418e21000c346f1c37f9e5be0e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "impl[Session<'_,%20D>/ToolSession<D>]/fn[definitions]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "33e9d4a283e91a78b1bbd2494e2900f87f8dfd69ebc49425440a599b5b1a8981"
         }
       ]
     }

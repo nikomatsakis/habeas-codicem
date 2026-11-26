@@ -1,8 +1,8 @@
 {
-  "requirement": "The agent harness uses the unsigned integer representation of `NodeId<D>` for the current node, supplied inputs, and nodes in tool results. Built-in tools accepting a node ID resolve that integer in the domain's cache. A malformed value or an unassigned integer produces a tool error before any graph read.\n\nFor example, if a search hit contains `\"node\": 7`, the agent can call `read_node({\"node\": 7})` to read the enclosing node.",
+  "requirement": "The harness represents a `NodeId<D>` as an unsigned integer. Each built-in tool that accepts a node accepts the same top-level address fields, alongside its own arguments (such as an edge `label`). `NodeAddress` in tool signatures denotes these alternatives:\n\n| Address fields | Resolution |\n| --- | --- |\n| `node` | Look up the assigned ID in the domain's cache. |\n| `path`, optional `location` | Resolve the project-relative file within the domain's visible sources. `location` is its outline selector and defaults to the empty selector for the file root. Resolve the item, map its `OutlineData` through `Domain::source_node`, and intern the resulting identity. |\n| `data` | Deserialize the JSON value as `D::NodeData` and intern it in the domain's cache. |\n\nFor domains using the agent harness, the tool schema describes `data` using the domain’s JSON schema for `D::NodeData`. The harness uses the same JSON representation when returning and accepting an identity.\n\nResolving an address is discovery. The requested operation determines which observations enter evidence. Invalid addresses, unavailable files, and unknown selectors produce tool errors before the requested operation runs.",
   "determination": true,
-  "rationale": "The reviewed tests adequately check `requirements.sdk.graph.validation-context.node_reference`.\n\n**Obligations**\n1. The harness uses the unsigned integer form of `NodeId<D>` for the current node, supplied inputs, and nodes in tool results.\n2. Built-in tools that take a node ID resolve that integer in the domain's cache.\n3. A malformed value or an unassigned integer gives a tool error before any graph read.\n\n**Coverage**\n- **Current node and supplied inputs as integers:** `supplied_openai_backend_runs_independent_calls_against_a_local_transport` in `configured.rs` inspects every request sent to the local transport. It asserts the prompt contains `Current node: 0` and `Node: 0`. The prompt is built in `run_with_domain_tools`, which serializes each input node reference.\n- **Nodes in tool results as integers:**\n  - `agent_edge_tools_record_selections_without_validating_targets` asserts `outgoing_edges` returns `{\"targets\":[3,2,3]}`.\n  - `configured_agent_uses_domain_source_tools_in_independent_executions` asserts every `list_sources` file entry satisfies `is_u64`.\n  - The same test asserts the declared `node` parameter of `read_node`, `outline_source` and `outgoing_edges` has type integer.\n  - It also feeds a search hit's `node` and a listing entry straight back into `read_node`. This is the requirement's round-trip example.\n- **Resolving the integer in the domain cache:** `read_node_accepts_a_domain_id_first_supplied_by_the_agent` calls `read_node` with `2`, an ID the agent never saw in a result. It asserts the graph read is exactly `[2]` and the dependency is node 2. The `graph_tools_record_delivered_snapshots_...` test reads node 2 by integer too.\n- **Unassigned integer:** `read_node_accepts_a_domain_id_first_supplied_by_the_agent` calls `read_node` with `999`. It asserts a tool error `unassigned node ID` and that `graph.reads` contains only `[2]`, so no graph read happened for 999.\n- **Malformed value, before any graph read:**\n  - `agent_edge_tools_record_selections_without_validating_targets` calls `outgoing_edges` with `\"node\":\"unknown\"`. It asserts an `is_error` result with `invalid node ID: ...`, that `lookups == 0`, and that `ctx.dependencies()` is empty.\n  - `configured_agent_uses_domain_source_tools_in_independent_executions` calls `read_node` with `\"unknown\"` and asserts the result contains `invalid node ID`.\n\n**Tools not tested individually**\n- `outline_source` has no test of its own for a malformed or unassigned ID.\n- `outgoing_edges` has no test for an unassigned integer.\n- `read_node`, `outgoing_edges` and `outline_source` all go through the single helper `node_argument` in `tools.rs`. That helper first deserializes the ID, giving `invalid node ID`. It then looks the ID up with `cache().node_data`, giving `unassigned node ID`. The requirement does not distinguish between tools, so these are implementation branches the text does not separate. The helper is exercised through both the `read_node` and `outgoing_edges` dispatch paths.\n\nI found no gaps and no acknowledgments are needed.",
-  "references": "3c7e87a0485748029acc443133b7e92cff7aed4a573241cb0e2a092ba7262de6",
+  "rationale": "The reviewed tests adequately cover `requirements.sdk.graph.validation-context.node_reference`.\n\nI read `node_argument` and `resolve_outline` only to see whether address resolution is shared across the tools. It is: all three tools go through `node_argument` and `SourceProject::resolve_outline`. Expected behaviour is derived from the requirement text, not from that code.\n\n**Obligations and the tests that cover them**\n- **`NodeId` as an unsigned integer.**\n  - The configured-agent tests assert that the `read_node`, `outgoing_edges` and `outline_source` schemas give `node` the type `integer`. They are `edge_and_outline_tools_accept_source_addresses_and_domain_data` and `configured_agent_uses_domain_source_tools_in_independent_executions`.\n  - `list_sources` entries are asserted to have `node` as `u64`.\n  - Negative `-1` and string `\"unknown\"` node IDs are rejected. `agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads` covers `-1`. `agent_edge_tools_record_selections_without_validating_targets` covers `\"unknown\"`, with the exact error `invalid node ID…`.\n- **`node` address (cache lookup).**\n  - `read_node_accepts_a_domain_id_first_supplied_by_the_agent` checks that an unassigned ID (999) produces the error `unassigned node ID`. It also checks that an ID assigned earlier (2) is accepted.\n  - `agent_edge_tools_record_selections_without_validating_targets` and `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` use `node` with `outgoing_edges` and `read_node`.\n  - `outline_tool_rejects_excluded_and_unreadable_sources_without_domain_reads` uses `node` with `outline_source`.\n- **`path` with optional `location` (default empty selector).**\n  - `agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads` reads `{\"path\":\"parser.rs\"}` and checks the dependencies equal those for the file root. It also reads a non-empty selector (`impl[Parser]/fn[parse]`), and the dependencies match the same node read by ID and by `data`.\n  - `edge_and_outline_tools_accept_source_addresses_and_domain_data` checks `outline_source` and `outgoing_edges` with `path` plus `location:\"\"`, and asserts the interned node equals the source node.\n- **`data` address.**\n  - The `read_node` test passes `data` for a source node and for an entry's `data`.\n  - The configured test passes `{\"data\":{\"id\":8}}` to `outline_source` and `outgoing_edges` and gets the same node.\n  - The schema assertions check that `data` is described through the domain's `NodeData` schema (`$ref` to a definition with an integer `id`).\n  - Round trip: `list_sources` entries' `node` and `data` are fed back into the tools and give identical results.\n- **Resolving is discovery.**\n  - `outline_source` yields empty dependencies and zero domain reads.\n  - `outgoing_edges` by `path` or `data` records only the `OutgoingEdges` dependency.\n  - The `read_node` tests assert only the node actually read as a dependency.\n- **Errors before the operation runs.**\n  - Invalid `read_node` addresses include a missing address, a conflicting `node` and `data`, a bad `data` type, `location` without `path`, an unknown selector `fn[absent]`, and a missing file. After all of them, the domain read counter is unchanged.\n  - `outline_source` rejects ignored files, `../` paths, `.git/config`, a missing file and a non-string path, with zero domain reads.\n  - A malformed node ID passed to `outgoing_edges` produces a tool error with zero edge lookups and no dependencies.\n\n**Possible gaps**\nNo `outgoing_edges` test exercises a bad `path` or unknown selector, and no `outline_source` test exercises an unknown selector. These cases go through the same `node_argument` and `resolve_outline` code that the `read_node` and `outline_source` error cases already cover. They would not expose different required behaviour, so I do not count them as gaps. All the tests carry `{test}` references to the subject.\n\nThere are no acknowledgments, and none are needed.",
+  "references": "a83d7360ab54ccf93b438ff8379f2db81703732fd15c6d79fdec4c005e1dec3a",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.validation-context.node_reference",
@@ -11,11 +11,24 @@
       ],
       "text": [
         ":::{req} node_reference",
-        "The agent harness uses the unsigned integer representation of `NodeId<D>` for the current node, supplied inputs, and nodes in tool results. Built-in tools accepting a node ID resolve that integer in the domain's cache. A malformed value or an unassigned integer produces a tool error before any graph read.",
+        "The harness represents a `NodeId<D>` as an unsigned integer. Each built-in tool that accepts a node accepts the same top-level address fields, alongside its own arguments (such as an edge `label`). `NodeAddress` in tool signatures denotes these alternatives:",
         "",
-        "For example, if a search hit contains `\"node\": 7`, the agent can call `read_node({\"node\": 7})` to read the enclosing node.",
+        "| Address fields | Resolution |",
+        "| --- | --- |",
+        "| `node` | Look up the assigned ID in the domain's cache. |",
+        "| `path`, optional `location` | Resolve the project-relative file within the domain's visible sources. `location` is its outline selector and defaults to the empty selector for the file root. Resolve the item, map its `OutlineData` through `Domain::source_node`, and intern the resulting identity. |",
+        "| `data` | Deserialize the JSON value as `D::NodeData` and intern it in the domain's cache. |",
+        "",
+        "For domains using the agent harness, the tool schema describes `data` using the domain’s JSON schema for `D::NodeData`. The harness uses the same JSON representation when returning and accepting an identity.",
+        "",
+        "Resolving an address is discovery. The requested operation determines which observations enter evidence. Invalid addresses, unavailable files, and unknown selectors produce tool errors before the requested operation runs.",
         ":::"
       ]
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/fn[edge_and_outline_tools_accept_source_addresses_and_domain_data]",
+      "hash": "9643956f2bd859adc317d6a725b882b8a0727e6d3699f6b1e41a8be50e4b5fef"
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
@@ -25,7 +38,17 @@
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]",
-      "hash": "55063c7bdfb02a7b0e193d469c746430aa45c1340ebe1848a183956427f86264"
+      "hash": "86df255472eea22f9d40c9d987ebd319db936d04d5a0ef876576577d4be99c2d"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "mod[tests]/fn[agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads]",
+      "hash": "9d18f2d489fdf5801a8642841a95d735a4f41709f1e98c85c00b216941898d64"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "mod[tests]/fn[outline_tool_rejects_excluded_and_unreadable_sources_without_domain_reads]",
+      "hash": "64a45cdca6df0cfd835de35e79392a78b1ba805f1f8ec3c1bc064168d6150943"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -50,27 +73,12 @@
     {
       "file": "crates/trust-but-verify/src/agent/tools.rs",
       "item": "fn[node_argument]",
-      "hash": "e850f86c1806517a52e743a834c3d5722158e2abbc3225af25fd763cb4e9793e"
+      "hash": "9e749a146afa0791ef09b116fe3e5f47637c81aa3227c15b84e6dc5717162e44"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
-      "item": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]",
-      "hash": "2b5e546cc5d3d8cb2ce3133d379e3c9beaf4de138cae7b6e6ce39036c58da7c0"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tools.rs",
-      "item": "impl[SessionTools<'a,%20D>]/fn[read_node]",
-      "hash": "d6a42a69c98a550b96af78bf49b38c11b8d6f4d8888f857fa2912e6a96f5a7d4"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tools.rs",
-      "item": "impl[ToolAgent<P,%20T>]#2/fn[run_with_domain_tools]",
-      "hash": "b64d6910bff9f554e241eef38fcfdedd23eecf6b9ccdad0f69820c75de5f6584"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tools.rs",
-      "item": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[dispatch]",
-      "hash": "127e08180a4cf4231f7fd5d501c60d0cd0b28168aad0b1b328504da6ad3bc6dc"
+      "file": "crates/trust-but-verify/src/sources/hits.rs",
+      "item": "impl[SourceProject<D>]/fn[resolve_outline]",
+      "hash": "2d5841edbdb7b1db6f969d6bdb7d3e0e918a740df4a255cfee3939781a6d92c4"
     }
   ],
   "format_version": 1,
@@ -83,7 +91,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "3c7e87a0485748029acc443133b7e92cff7aed4a573241cb0e2a092ba7262de6"
+          "value": "a83d7360ab54ccf93b438ff8379f2db81703732fd15c6d79fdec4c005e1dec3a"
         }
       ]
     },
@@ -95,7 +103,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "998c616cf263126d9a01aef166181e7a7bef972f54af68ebe77671fefe902b89"
+          "value": "c02b000b459c7f9968bf6c994a8eafeb3df3cf740e2bb392b9af7ca1a23e7c4d"
         }
       ]
     },
@@ -106,7 +114,24 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1430580f5cd20d4d44b571e0e083e7647f8232070211c9e723833e7f6fff2d73"
+          "value": "c620d2dfecfa08991060b45c3970a5375bf7d3f87bd288f41705003578ec3546"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
+            },
+            "selector": "mod[tests]/fn[edge_and_outline_tools_accept_source_addresses_and_domain_data]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "8e4cc594dd3fb84d1f772e01b2a545897efd5f11935927e68ff0cf5ad3cd2459"
         }
       ]
     },
@@ -140,7 +165,41 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "da2d1f53e4f8d6772fc96672ec9eb919e8e4cd46540f043050aceba0f79ed6ec"
+          "value": "34583fda418eba03368d18721f3e85387cfdfeba5c7f97b0225bac62686a952b"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "mod[tests]/fn[agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "8e9eeb1ed83cb91f400f10e4ada9d2108a34ca065c8c59348c6b44a25aecfb8b"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "mod[tests]/fn[outline_tool_rejects_excluded_and_unreadable_sources_without_domain_reads]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "ea1e9d8cff55635403facdd85448b9cea644805a68654414a7cb307be0a08bb1"
         }
       ]
     },
@@ -225,7 +284,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "09f542524d08d34efa1e33ee5e4fdb42ca75a82d047b2bc4e9351956d87a01f9"
+          "value": "704940781a04fe35109c50eac55c8d1cdc729ae4e6704d792b59b6724a07a0de"
         }
       ]
     },
@@ -235,65 +294,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+              "location": "crates/trust-but-verify/src/sources/hits.rs"
             },
-            "selector": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]"
+            "selector": "impl[SourceProject<D>]/fn[resolve_outline]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f33c7020546a3d211614215af843e365421f07d5d27f8c24b3f223f87ade14f0"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tools.rs"
-            },
-            "selector": "impl[SessionTools<'a,%20D>]/fn[read_node]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "8fd0ea2aac9486964aacbb8795cc936691c4e07755df0afd341e080d0be344b8"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tools.rs"
-            },
-            "selector": "impl[ToolAgent<P,%20T>]#2/fn[run_with_domain_tools]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "529014a8de24e3ec5d5bef4f1548201de4c29c38d9eb24073c3296b3a076095b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tools.rs"
-            },
-            "selector": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[dispatch]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "80344bfb37eaf5eeae4280ded444d4983b8930570519d1dfece275ae64eb1c4f"
+          "value": "91652d9ce7eccb07334d48860fab9e8122fe69b7866b2276211acc18e844863b"
         }
       ]
     }

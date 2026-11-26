@@ -1,7 +1,7 @@
 {
   "requirement": "The harness groups matching occurrences under {cite}`requirements.sdk.graph.search.group_hits` and renders each excerpt under {cite}`requirements.sdk.graph.search.windows`. Each entry's `node` is a reference under {cite}`requirements.sdk.graph.validation-context.node_reference`. `complete` reports whether the search exhausted its scope.",
   "determination": true,
-  "rationale": "`requirements.sdk.graph.search.search_text.behavior` has one obligation of its own: `complete` reports whether the search exhausted its scope. The rest of the text delegates to cited requirements (`group_hits`, `windows`, `node_reference`). Those have their own tests and need no reassessment here. I still checked that the subject's tests apply them in the subject's case.\n\n**`complete`**\n- `search_obligations_follow_delivery_and_keep_the_original_snapshot` in `project_sources.rs` runs an uncapped search and asserts `complete == true`. It then runs the same search with `limit: 1` and asserts exactly one match and `complete == false`. A truncated result that reported true would fail this.\n- `scoped_text_results_keep_line_numbers_context_and_completeness` in `source_defaults.rs` covers the provider level.\n  - A search with `limit(2)` over 3 hits asserts `!complete`.\n  - A scoped search with `limit(2)` that returns exactly 2 hits asserts `complete`. This is the boundary where the limit is not exceeded.\n  - A scoped search with `limit(1)` over 2 hits asserts `!complete`.\n- `search_groups_exact_occurrences_and_records_the_selected_declaration` asserts `page[\"complete\"] == true` on the agent-tool JSON.\n- `source_reads_track_optional_dependencies_and_empty_searches_remain_discovery` asserts the delivered JSON `{\"complete\":true,\"matches\":[]}` for an empty search.\n- `source_tools_forward_arguments_and_present_discovery_and_read_results` checks that `complete` is forwarded in the delivered JSON, as true and as false.\n- `gitignore_is_shared_by_all_operations_with_or_without_a_git_repository` asserts `complete` for full and excluded scopes.\n\n**Grouping (`group_hits`)**\n- `search_groups_exact_occurrences_and_records_the_selected_declaration` has `const B` with two hits (\"hit hit\"). It asserts one entry for each enclosing item, with a single excerpt `const B: &str = \"hit hit\";`.\n- The same test covers a multi-byte character (`é`) before a hit.\n- It asserts page-local tags \"1\" and \"2\".\n- It asserts that `finish_search` with `used:[\"2\"]` records the dependency on `code.rs#const[B]`, and that `used:[]` records none.\n- `search_obligations_follow_delivery_and_keep_the_original_snapshot` asserts tag uniqueness across entries and pagination over many items.\n\n**Windows**\n- The excerpts are checked with the default window. They are clipped to the item and the hits are retained.\n- Non-default `window_bytes` is not exercised in the reviewed tests. That belongs to the `windows` requirement's own tests, which the `search_groups_exact_occurrences_and_records_the_selected_declaration` test also references.\n\n**Node reference**\n- `search_groups_exact_occurrences_and_records_the_selected_declaration` asserts each entry's `node` equals the interned node of the enclosing item, serialized in the JSON page.\n- The same test uses `read_node` with the match entry. It asserts the resulting dependency is on `results.matches[1].node`.\n\nAll the reviewed tests carry `{test}` references to the subject. I found no unaddressed obligation and no missing assertion.",
+  "rationale": "The tests adequately check `requirements.sdk.graph.search.search_text.behavior`. This requirement has three parts. It says hits are grouped and excerpts rendered under the cited requirements. It says each entry's `node` is a node reference. It says `complete` reports whether the search exhausted its scope. Each part has a marked test with assertions.\n\n**Grouping (`group_hits`) applied to `search_text`.** `search_groups_exact_occurrences_and_records_the_selected_declaration` in `project_sources.rs` writes a source with 3 hits in 2 items: one in `const[A]` and two in `const[B]`.\n- The provider-level result keeps 3 exact occurrences with their spans.\n- The dispatched `search_text` page asserts exactly 2 entries, one per enclosing item. Both hits in `const[B]` collapse into one entry with a single excerpt, and the tags are `\"1\"` and `\"2\"`.\n- `search_obligations_follow_delivery_and_keep_the_original_snapshot` covers grouping before pagination. It searches a 300-line file, asserts more than one entry per page, asserts the tags are unique, and checks that `next` pages work against the original snapshot.\n\n**Excerpt rendering (`windows`) applied to `search_text`.**\n- The first test above asserts the default-window excerpt, which is the whole item, clipped to the item and including a multibyte `é`.\n- The window mechanics are tested in tests marked for `requirements.sdk.graph.search.windows`: `default_windows_retain_128_bytes_on_each_side`, `root_hits_clip_context_to_utf8_boundaries`, `touching_windows_keep_the_contiguous_source` and `separated_hit_windows_preserve_the_function_declaration`.\n- The subject only cites `windows`, so I did not reassess those tests.\n\n**Node reference (`node_reference`).**\n- Each entry's `node` is asserted equal to `results.matches[i].node`, which is the interned `code.rs#const[...]` node.\n- The entry also carries `file` and `selector`.\n- The same test passes the entry to `session.read_node`, and the resulting dependency is recorded for that node. So the `node` field works as an address.\n- `finish_search` with `used:[\"2\"]` records a dependency on `const[B]`, and `used:[]` records none.\n\n**`complete`.**\n- `complete` is asserted `true` for an unrestricted search in `search_groups_exact_occurrences…` and in `search_obligations_follow_delivery…`. It is also `true` for the empty result in `source_reads_track_optional_dependencies…`.\n- It is asserted `false` when `limit:1` truncates the results, in `search_obligations_follow_delivery…`.\n- At the provider level, `scoped_text_results_keep_line_numbers_context_and_completeness` asserts `complete` is true when unlimited and false when the limit cuts the results. `gitignore_is_shared_by_all_operations…` asserts it for scoped searches.\n\nThe other marked tests in `tests.rs` check that the tool wiring passes through the `search_text` result shape, including `complete` and matches, and that discovery registers no reads.\n\nI found no plausible violation that these tests would accept. Examples are one entry per hit instead of per item, a wrong or missing node reference, or `complete` stuck at `true`. No acknowledgments are needed.",
   "references": "35ddb619ad708105c6eb417f9b9df471c1716e799ab15e704a79978c6771527d",
   "inputs": [
     {
@@ -46,9 +46,17 @@
       ],
       "text": [
         ":::{req} node_reference",
-        "The agent harness uses the unsigned integer representation of `NodeId<D>` for the current node, supplied inputs, and nodes in tool results. Built-in tools accepting a node ID resolve that integer in the domain's cache. A malformed value or an unassigned integer produces a tool error before any graph read.",
+        "The harness represents a `NodeId<D>` as an unsigned integer. Each built-in tool that accepts a node accepts the same top-level address fields, alongside its own arguments (such as an edge `label`). `NodeAddress` in tool signatures denotes these alternatives:",
         "",
-        "For example, if a search hit contains `\"node\": 7`, the agent can call `read_node({\"node\": 7})` to read the enclosing node.",
+        "| Address fields | Resolution |",
+        "| --- | --- |",
+        "| `node` | Look up the assigned ID in the domain's cache. |",
+        "| `path`, optional `location` | Resolve the project-relative file within the domain's visible sources. `location` is its outline selector and defaults to the empty selector for the file root. Resolve the item, map its `OutlineData` through `Domain::source_node`, and intern the resulting identity. |",
+        "| `data` | Deserialize the JSON value as `D::NodeData` and intern it in the domain's cache. |",
+        "",
+        "For domains using the agent harness, the tool schema describes `data` using the domain’s JSON schema for `D::NodeData`. The harness uses the same JSON representation when returning and accepting an identity.",
+        "",
+        "Resolving an address is discovery. The requested operation determines which observations enter evidence. Invalid addresses, unavailable files, and unknown selectors produce tool errors before the requested operation runs.",
         ":::"
       ]
     },
@@ -60,7 +68,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[search_groups_exact_occurrences_and_records_the_selected_declaration]",
-      "hash": "4d9bebedef811759dd1cffd511f0ed16e7bea2333485fd9d7d8271307dbd9206"
+      "hash": "31b2ed3b415ba9a7cdf8e933ae5247c8b1bcd9430badda6ea6b37f9d178a619e"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -159,7 +167,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1430580f5cd20d4d44b571e0e083e7647f8232070211c9e723833e7f6fff2d73"
+          "value": "c620d2dfecfa08991060b45c3970a5375bf7d3f87bd288f41705003578ec3546"
         }
       ]
     },
@@ -193,7 +201,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "19992c03285f529c6f41532d4739a7bfee75a5851afdd907851f7bce13a82606"
+          "value": "3ac3699c00ae6a3e78f860f347b6e37ec413b7e2a73ea064daf7486f00123e4b"
         }
       ]
     },

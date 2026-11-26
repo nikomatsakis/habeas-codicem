@@ -1,7 +1,7 @@
 {
   "requirement": "For each match the agent receives an excerpt and a reference to the enclosing node under {cite}`requirements.sdk.graph.validation-context.node_reference`. The agent can pass the reference to `read_node` to inspect that item. The `complete` flag has the same meaning as in text search.",
   "determination": true,
-  "rationale": "The reviewed tests adequately cover the subject's three obligations. I did not request implementation source.\n\n**1. Each match carries an excerpt and a node reference to the enclosing node.**\n- `crates/trust-but-verify/src/agent/project_sources.rs#mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]` runs `search_structure` on `fn one(){call();} fn two(){call();}`.\n  - It asserts that the hits are `(node for code.rs#fn[one], 9..15, \"call()\")` and `(node for code.rs#fn[two], 27..33, \"call()\")`. Each match therefore maps to the enclosing function, not the file or the whole match range.\n  - It then dispatches the tool through the session and asserts that each JSON entry's `excerpt` equals `hit.text`.\n  - It locates the entry with `m[\"node\"] == json!(hits.matches[1].node)`, so the tool output carries the node reference.\n- `crates/trust-but-verify/src/agent/tests.rs#fn[source_tools_forward_arguments_and_present_discovery_and_read_results]` asserts the exact delivered JSON shape, `{\"complete\":…, \"matches\":[{\"node\":…, \"excerpt\":\"structural excerpt\"}]}`. It does so with and without a prefix, limit and scope.\n- This test uses the `SourceTools` factory, whose node is a path-and-selector object rather than an integer id. It supports the excerpt and shape checks but not the integer representation.\n- `crates/trust-but-verify/tests/source_defaults.rs#fn[built_in_languages_and_structural_search_use_the_project_scope]` asserts the provider-level node path, selector (`fn[visible]`) and excerpt (`call()`).\n\n**2. The agent can pass the reference to `read_node`.**\n- In `fn[structural_tags_select_only_the_original_enclosing_item]`, `session.read_node(&context, &matches[1])` is called on the tool's own JSON entry.\n- It asserts that the resulting dependency is `Dependency::Node(hits.matches[1].node, …)`. That shows the emitted reference resolves to the right enclosing node.\n- The integer-representation and malformed-or-unassigned-id error rules belong to the cited `node_reference` requirement. They need no test here.\n\n**3. The `complete` flag has the same meaning as in text search.**\n- With `limit: 1` against two matches, the tool output has `complete == false` (`fn[structural_tags_select_only_the_original_enclosing_item]`).\n- The unlimited tool result has `complete` equal to the provider's `hits.complete`.\n- `fn[empty_structural_search_results_remain_discovery]` asserts `{\"complete\":true,\"matches\":[]}` for a search with no matches.\n- `fn[built_in_languages_and_structural_search_use_the_project_scope]` covers the boundaries. Limit 0 gives `complete == false`. Limit 1 with one match gives `complete == true`. Limit 1 with two matches gives `complete == false`. An unlimited search gives `complete == true`.\n- `fn[source_tools_forward_arguments_and_present_discovery_and_read_results]` shows that the limit is forwarded and that the tool's `complete` follows the provider's value.\n\nTogether these exercise the required behavior and assert the outcomes. I found no unacknowledged gap.",
+  "rationale": "The tests adequately check `requirements.sdk.graph.search.search_structure.behavior`. I judged the three obligations below. I read `search_text.behavior` only to learn what `complete` means: it \"reports whether the search exhausted its scope\".\n\n**1. Each match carries an excerpt and a node reference to the enclosing node.**\n- `crates/trust-but-verify/src/agent/project_sources.rs#mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]` searches `fn one(){call();} fn two(){call();}` with the pattern `call()`.\n  - It asserts that each hit's node is the interned `code.rs#fn[one]` or `code.rs#fn[two]`, so the enclosing item is chosen per match.\n  - It asserts that each hit's text is `call()` with the exact span.\n  - It asserts that the JSON delivered to the agent has an `excerpt` equal to each hit's text, and that its `node` equals the hit's node ID.\n- `crates/trust-but-verify/tests/source_defaults.rs#fn[built_in_languages_and_structural_search_use_the_project_scope]` asserts the node path and selector (`visible.rs`, `fn[visible]`) and the excerpt `call()` at the provider level.\n- `crates/trust-but-verify/src/agent/tests.rs#fn[source_tools_forward_arguments_and_present_discovery_and_read_results]` asserts the exact delivered JSON shape for the source-tools variant: a `node` with path and selector, plus an `excerpt`.\n\n**2. The agent can pass the reference to `read_node`.**\n- In `structural_tags_select_only_the_original_enclosing_item`, `session.read_node(&context, &matches[1])` is called directly on the delivered match entry.\n- The test then asserts the resulting dependency is a `Dependency::Node` for `hits.matches[1].node` with a content fingerprint, so the reference resolves to the right item.\n- The test also checks the `tag`/`finish_search` flow, and that the file is read exactly once.\n\n**3. `complete` has the same meaning as in text search.**\n- In `structural_tags_select_only_the_original_enclosing_item`, `limit: 1` against two matches gives `complete == false` with one match and no `next`. The unlimited run's `complete` is compared with the delivered page.\n- In `built_in_languages_and_structural_search_use_the_project_scope`:\n  - limit 0 gives not complete.\n  - limit 1 with a single match gives complete.\n  - limit 1 with two matches gives not complete.\n  - unlimited gives complete.\n  - ignored or scoped-out paths give complete with no matches.\n- In `fn[source_tools_forward_arguments_and_present_discovery_and_read_results]`, `complete` is asserted both with and without a limit.\n- In `fn[empty_structural_search_results_remain_discovery]`, an empty result gives `{\"complete\":true,\"matches\":[]}`.\n\nThese tests cover both the truncated and the exhausted outcomes. The search is also checked as discovery, with no dependencies and no observation callback invoked.\n\nNo obligation in the subject is left without a test and an assertion, so I found no adequacy gap.",
   "references": "0409c57e9027959b77ce8bd1271f123326265a4da9b683eff7192f5b5a840b78",
   "inputs": [
     {
@@ -22,16 +22,24 @@
       ],
       "text": [
         ":::{req} node_reference",
-        "The agent harness uses the unsigned integer representation of `NodeId<D>` for the current node, supplied inputs, and nodes in tool results. Built-in tools accepting a node ID resolve that integer in the domain's cache. A malformed value or an unassigned integer produces a tool error before any graph read.",
+        "The harness represents a `NodeId<D>` as an unsigned integer. Each built-in tool that accepts a node accepts the same top-level address fields, alongside its own arguments (such as an edge `label`). `NodeAddress` in tool signatures denotes these alternatives:",
         "",
-        "For example, if a search hit contains `\"node\": 7`, the agent can call `read_node({\"node\": 7})` to read the enclosing node.",
+        "| Address fields | Resolution |",
+        "| --- | --- |",
+        "| `node` | Look up the assigned ID in the domain's cache. |",
+        "| `path`, optional `location` | Resolve the project-relative file within the domain's visible sources. `location` is its outline selector and defaults to the empty selector for the file root. Resolve the item, map its `OutlineData` through `Domain::source_node`, and intern the resulting identity. |",
+        "| `data` | Deserialize the JSON value as `D::NodeData` and intern it in the domain's cache. |",
+        "",
+        "For domains using the agent harness, the tool schema describes `data` using the domain’s JSON schema for `D::NodeData`. The harness uses the same JSON representation when returning and accepting an identity.",
+        "",
+        "Resolving an address is discovery. The requested operation determines which observations enter evidence. Invalid addresses, unavailable files, and unknown selectors produce tool errors before the requested operation runs.",
         ":::"
       ]
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]",
-      "hash": "f3f9a863d3c4b7b6b7752a82af53da069d449619bceb6ade87520aa831629cf8"
+      "hash": "51da68bc4a12b4ba257787791938819f709b3fe5b32fd8652f22127f9dce1f60"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -52,6 +60,17 @@
       "file": "crates/trust-but-verify/tests/source_defaults.rs",
       "item": "fn[built_in_languages_and_structural_search_use_the_project_scope]",
       "hash": "dd3a494d5e6273b333b185acd1a7638593485f94894f7eea37faffdc625a1fa5"
+    },
+    {
+      "requirements": "requirements.sdk.graph.search.search_text.behavior",
+      "matches": [
+        "requirements.sdk.graph.search.search_text.behavior"
+      ],
+      "text": [
+        ":::{req} search_text.behavior",
+        "The harness groups matching occurrences under {cite}`requirements.sdk.graph.search.group_hits` and renders each excerpt under {cite}`requirements.sdk.graph.search.windows`. Each entry's `node` is a reference under {cite}`requirements.sdk.graph.validation-context.node_reference`. `complete` reports whether the search exhausted its scope.",
+        ":::"
+      ]
     }
   ],
   "format_version": 1,
@@ -98,7 +117,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1430580f5cd20d4d44b571e0e083e7647f8232070211c9e723833e7f6fff2d73"
+          "value": "c620d2dfecfa08991060b45c3970a5375bf7d3f87bd288f41705003578ec3546"
         }
       ]
     },
@@ -115,7 +134,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "71b445d7f00f97b35f3231eb202e0f56816527d11a613256945f5d728635ec7f"
+          "value": "05190f59159372f4926674163dc2533d7ab63d57c8af4c2c2fc987b28df5d3b3"
         }
       ]
     },
@@ -184,6 +203,17 @@
         {
           "scheme": "habeas-input-v1",
           "value": "c64ed2b4c2ccb9decfa97a796ae153f1fd66a3cd4720ae9ea3140aa467221040"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.sdk.graph.search.search_text.behavior"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "860eb2e9841efb3459690a25b9f83f2ddde8c02b91568104087d374405bf9a76"
         }
       ]
     }

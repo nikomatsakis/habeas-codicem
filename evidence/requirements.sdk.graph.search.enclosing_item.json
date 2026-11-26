@@ -1,7 +1,7 @@
 {
   "requirement": "For each {term}`requirements.sdk.graph.search.hit` in a text or structural search, locate the start of the match in the outline of the **same snapshot**. Select the innermost item containing that position. The item's project-relative file path and selector form its `OutlineData`. When no smaller item contains the position, use the file root (empty selector).",
   "determination": true,
-  "rationale": "The tests adequately check `requirements.sdk.graph.search.enclosing_item`.\n\n**How the requirement is implemented.** Text and structural searches both go through `SourceProject::find_hits` in `crates/trust-but-verify/src/sources/hits.rs`. That function calls `file.at_offset(span.start)` and builds the `OutlineData` from the file path and the selected item's selector. I read it only to confirm the two search kinds share one path, so each test scenario below applies to both kinds.\n\n**Obligations and the tests that cover them**\n- **Structural search selects the enclosing item.** `structural_tags_select_only_the_original_enclosing_item` searches `fn one(){call();} fn two(){call();}` with a structural rule. It asserts the hit nodes are `code.rs#fn[one]` and `code.rs#fn[two]`, with spans 9..15 and 27..33. It also checks the spans against `StructuralRule::matches`.\n- **Same snapshot.** The same test replaces the file on disk, then runs the session search. The test asserts the session search still returns the original two matches. Later reads and `finish_search` dependency fingerprints are checked against the original `fn[two]` outline, even after another rewrite of the file.\n- **Text search selects the enclosing item, including comments.** `search_in_leading_and_trailing_comments_selects_the_function` finds \"note\" in a leading comment and a trailing comment. It asserts that both hits resolve to `example.rs#fn[check]`.\n- **Start of the match decides the item.** `matches_crossing_item_boundaries_belong_to_the_item_at_the_start` uses `fn a() {}   fn b() {}` and three patterns:\n  - A match starting in the gap whitespace and ending inside `b` resolves to the root `pair.rs#`.\n  - A match starting at `}` of `a` and crossing into `b` resolves to `fn[a]`.\n  - A match starting at `fn b` resolves to `fn[b]`.\n- **Innermost item.** `separated_hit_windows_preserve_the_function_declaration` has hits inside `impl Runner { fn run() {...} }`. It asserts the node is `runner.rs#impl[Runner]/fn[run]`, not the outer `impl` or the root.\n- **File root when no smaller item contains the position.** `root_hits_clip_context_to_utf8_boundaries` uses the sources `needle` and `éhit猫`. It asserts the hit node is `fragment.rs#` (empty selector) and that reading the node requests `fragment.rs#`. The second source also exercises a multi-byte start offset.\n\n**Assessment.** Each clause of the requirement has at least one test that asserts the outcome: the same snapshot, the innermost item, the start-position rule, the path plus selector form, and the root fallback. There is no root-fallback test with a structural search. That is not a gap, because both search kinds use the shared `find_hits` code. The tests only use top-level file paths, but the path is passed through unchanged, so that is not a gap either. All tests carry `{test}` references to the requirement, so there is no marking gap, and there are no acknowledgments to consider.",
+  "rationale": "**Obligations derived from `requirements.sdk.graph.search.enclosing_item`**\n1. Locate the start of each hit's match in the outline of the same snapshot, for both text and structural search.\n2. Select the innermost item containing that position.\n3. Form the `OutlineData` from the project-relative file path and the selector.\n4. When no smaller item contains the position, use the file root (empty selector).\n\n**Implementation shape.** I read `crates/trust-but-verify/src/sources/hits.rs#impl[SourceProject<D>]/fn[find_hits]` only to see how the two search kinds are wired. Text and structural search both go through it. It reads the source once through `search_text_snapshot`, then calls `OutlineContent::from_path` and `at_offset(span.start)`. Those two calls share one cache entry. Expected behavior comes from the requirement text, not from this code.\n\n**Mapping obligations to tests** (all in `crates/trust-but-verify/src/agent/project_sources.rs`, module `tests`)\n- **Start-of-match position:** `matches_crossing_item_boundaries_belong_to_the_item_at_the_start` searches `fn a() {}   fn b() {}`. It checks three matches that span the boundary. A match starting in the gap gets the root `pair.rs#`. A match starting at `}` gets `fn[a]`. A match starting at `fn b` gets `fn[b]`. A wrong rule, such as using the end of the match or the first or last item touched, would fail here.\n- **Innermost item:** `separated_hit_windows_preserve_the_function_declaration` has hits inside `impl Runner { fn run }`. It asserts the node and selector `impl[Runner]/fn[run]`, not the enclosing `impl[Runner]`, and checks the file field. `structural_tags_select_only_the_original_enclosing_item` asserts the exact span starts (9 and 27) and that each hit maps to its own sibling item (`code.rs#fn[one]` and `code.rs#fn[two]`) through structural search.\n- **File and selector form the `OutlineData`:** the tests assert the `file`, `selector` and `node` values, including `intern_node(\"runner.rs#impl[Runner]/fn[run]\")`.\n- **Root fallback:** `root_hits_clip_context_to_utf8_boundaries` asserts that a hit in a file with no items gets node `fragment.rs#` with `selector: \"\"`. It covers ASCII and multibyte sources. The gap case in the crossing test also lands on the root.\n- **Comment and trailing-comment hits:** `search_in_leading_and_trailing_comments_selects_the_function` asserts that both comment hits resolve to `example.rs#fn[check]`.\n- **Same snapshot:** the structural test and the separated-hit test both overwrite the file after the first search. Later searches still return the original items. For example, the limited search still returns a match, and the second loop iteration in the separated-hit test still reports `impl[Runner]/fn[run]`. This shows the outline comes from the retained snapshot rather than a fresh read.\n\n**Possible gaps considered.** The structural-search test covers only top-level sibling items, not nested items or the root fallback. Both of those paths go through the same `find_hits` and `at_offset`, and the text-search tests above check them. I do not treat the missing structural variants as a gap. A race between the snapshot read and the outline parse, within one search, would need concurrent file mutation. The shared cache entry is the mechanism that prevents it, and I count the post-search overwrite checks as sufficient evidence.\n\nThere are no acknowledgments or `{fixme}` references in play, and I found no unmet obligation.",
   "references": "5b3e576035c1bf8da263b8f334183331084b318c181d92c3fc1ebc94976e5c8f",
   "inputs": [
     {
@@ -18,7 +18,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]",
-      "hash": "f3f9a863d3c4b7b6b7752a82af53da069d449619bceb6ade87520aa831629cf8"
+      "hash": "51da68bc4a12b4ba257787791938819f709b3fe5b32fd8652f22127f9dce1f60"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
@@ -28,7 +28,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[root_hits_clip_context_to_utf8_boundaries]",
-      "hash": "ce8049493b6d1e85976b4a91d191480f63b6ec5161c09bb4b7db534c047bdd6e"
+      "hash": "a7d93a5020881837e00f5ccd0599571e628c7dc612a6b0c62c6db5c9d8073e9a"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
@@ -38,7 +38,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[separated_hit_windows_preserve_the_function_declaration]",
-      "hash": "7f121450469506c9fab03ebdcd6edd9502a7f8492818fcac3859e335fecd7c28"
+      "hash": "1a9702e2ef2e866be27e54566db11c5f797bdac533f8e3439359ef3297dc7969"
     },
     {
       "definition": "requirements.sdk.graph.search.hit",
@@ -52,13 +52,23 @@
     },
     {
       "file": "crates/trust-but-verify/src/sources/hits.rs",
-      "item": "impl[SourceProject<D>]",
-      "hash": "4ca92c2ada309406908d5e0e892d495b12d0a434f969126837da86c0bc84ef6e"
+      "item": "impl[SourceProject<D>]/fn[find_hits]",
+      "hash": "0ef6d3270fabef7a085f15432de661be81ce916274bd92ab79b9ea2bed2e4ea7"
     },
     {
-      "file": "crates/trust-but-verify/src/sources/hits.rs",
-      "item": "impl[SourceProject<D>]/fn[find_hits]",
-      "hash": "7a9567768eff2cf9d31dfee813690d15508747587a94da9a34e6eee899a98f16"
+      "file": "crates/trust-but-verify/src/outline/contents.rs",
+      "item": "impl[OutlineContent]/fn[from_path]",
+      "hash": "e4cc09032539d0b207e66f9da071a2563f7d438566d5055b78bebef6f75c5dc6"
+    },
+    {
+      "file": "crates/trust-but-verify/src/outline/contents.rs",
+      "item": "impl[OutlineContent]/fn[search_text_snapshot]",
+      "hash": "52b8d6d5a4f44b7e474ab4d0e00ad9bc56dae95b552868e321cb6b56614c892d"
+    },
+    {
+      "file": "crates/trust-but-verify/src/outline/contents.rs",
+      "item": "impl[OutlineContent]/fn[at_offset]",
+      "hash": "0bf3a6334189629c3b040914d8f6cf1b4ae3d46f293a76e256c6f3276b2cd853"
     }
   ],
   "format_version": 1,
@@ -111,7 +121,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "71b445d7f00f97b35f3231eb202e0f56816527d11a613256945f5d728635ec7f"
+          "value": "05190f59159372f4926674163dc2533d7ab63d57c8af4c2c2fc987b28df5d3b3"
         }
       ]
     },
@@ -145,7 +155,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "bdcd58385aed9ef9e5d32e47d91f378cdd4a5c80be1f5696b13a682f3d8b720a"
+          "value": "eee8cfc6890ac2abe80defa07deda1c2262f24f39304c6c357a45dde8998867a"
         }
       ]
     },
@@ -179,7 +189,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "499331b025c397436bd6c46e3565a40c0bde17317a1f45cbc1feb83a456bb7c2"
+          "value": "2e26b160a175e50d2d99d90fc21f3ab92f0b4e1de6ef99c09639b64d07546969"
         }
       ]
     },
@@ -202,12 +212,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/sources/hits.rs"
             },
-            "selector": "impl[SourceProject<D>]"
+            "selector": "impl[SourceProject<D>]/fn[find_hits]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "26a3b75b18f93c3bf195294803e302c48b34b2e5744a340bc6e2055de5932143"
+          "value": "9c77e2d20f704366d295d4558f020c572a4168f5c83f3f0b692258307ed603c4"
         }
       ]
     },
@@ -217,14 +227,48 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/sources/hits.rs"
+              "location": "crates/trust-but-verify/src/outline/contents.rs"
             },
-            "selector": "impl[SourceProject<D>]/fn[find_hits]"
+            "selector": "impl[OutlineContent]/fn[from_path]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "01b3dd93faf10e6a4f4e0cf7e0de2db10dd1bd480faa0c8bbb0e74b7be8473c5"
+          "value": "45031aae77cd98569adb33ae5d3a512e901d263d5211cd171a5ab8891c7ae41d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/outline/contents.rs"
+            },
+            "selector": "impl[OutlineContent]/fn[search_text_snapshot]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "ad1fbb076440f0ef4aad39af0d8aa91d36d5e45232916d6db5ab5040369a4270"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/outline/contents.rs"
+            },
+            "selector": "impl[OutlineContent]/fn[at_offset]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "0bbde32bec214297bf4c09256aefef93e320a1c56e121c2fc28a5f13c0bcccf9"
         }
       ]
     }

@@ -1,7 +1,7 @@
 {
   "requirement": "TBV automatically redacts recognized credentials in source excerpts delivered\nby its inspection tools and in node text supplied to its agent requests.\nThe built-in rules replace recognized secret regions with redaction markers\nwhile preserving line breaks. SDK-supplied outline languages use the same redacted\nregions, so changing only a recognized credential does not change its\nstructural fingerprint.\n\nLoaded source snapshots retain the original text for selection and spans;\nredaction applies when preparing model-visible text and structural hashes.\nFilesystem evidence storage preserves the supplied record. Applications supply\ntheir own answer values and remain responsible for what those answers contain.",
   "determination": true,
-  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.sources.redaction`. I found no adequacy gap.\n\n**Obligations and the tests that cover them**\n\n1. **Redaction in source excerpts from inspection tools.**\n   - `agent/project_sources.rs#mod[tests]/fn[search_excerpts_redact_credentials_before_serialization_and_paging]` runs both `search_text` and `search_structure` over a file holding a GitHub token and a multi-line RSA private key.\n   - It asserts the exact excerpt: both markers appear, surrounding code is unchanged, and the line count matches the original.\n   - It asserts the raw token and every key-body line are absent from the serialized output.\n   - It asserts the dependency fingerprint is the unredacted snapshot's.\n   - It asserts the file on disk is unchanged.\n   - The other inspection tools (`list_sources`, `outline_source`) return identities, selectors and kinds, not source text.\n   - `read_node` is the tool that delivers node text, and it is covered under item 2.\n\n2. **Redaction of node text in agent requests.**\n   - `agent/tests.rs#fn[queued_contents_and_graph_read_tools_redact_credentials_before_delivery]` drives both the queued `contents_of_current_node` path and the `read_node` tool.\n   - It checks that every request's serialized chat history lacks the secret and contains the marker.\n   - It checks that the recorded dependency fingerprint and the graph contents stay the original text.\n\n3. **Markers replace secret regions while line breaks are preserved.**\n   - `redaction/tests.rs#fn[private_keys_are_redacted_from_header_through_body_keeping_lines]` checks the exact output and line counts, for both a bare key and a key inside Rust code.\n   - `redaction/tests.rs#fn[regions_extend_both_ways_keep_crlf_and_scan_past_a_mebibyte]` checks CRLF preservation, region extension over adjacent entropy-like tokens, and a scan past 1 MiB.\n   - `redaction/tests.rs#fn[tokens_in_code_are_redacted_without_adjacent_code]` checks that adjacent code is untouched.\n   - `redaction/tests.rs#fn[slices_concatenate_to_the_redacted_whole]` checks that redacted slices concatenate to the redacted whole.\n   - `redaction/tests.rs#fn[heuristic_findings_alone_are_not_redacted]` checks the negative case: heuristic-only findings are not redacted.\n   - `redaction/tests.rs#fn[configuration_keys_do_not_add_sdk_specific_secret_rules]` checks that built-in rules only, with no SDK-specific key rules, are applied.\n\n4. **Outline languages use the same redacted regions, so changing only a credential does not change the structural fingerprint.**\n   - `outline/redaction_tests.rs#fn[hashes_do_not_depend_on_credential_values]` covers Rust, Markdown and plain text. It also asserts that a change outside the redacted region does change the hash.\n   - `outline/redaction_tests.rs#fn[redaction_never_changes_an_outline]` covers YAML, Rust, TOML, Markdown and text, including the YAML case where parsing the redacted text would change the outline.\n   - `tests/outline_content.rs#fn[formatted_contents_redact_credentials_while_retaining_raw_text_and_spans]` shows that replacing only the token leaves `OutlineContent::fingerprint` equal.\n\n5. **Snapshots retain the original text for selection and spans, and redaction applies only to model-visible text and hashes.** The same `tests/outline_content.rs` test asserts `text()` equals the original and that `format()` is redacted. The selected sub-node's `text()` still contains the token while its `format()` does not.\n\n6. **Filesystem evidence storage preserves the supplied record.** `tests/storage.rs#fn[storage_preserves_completed_answers_containing_credential_shaped_text]` round-trips an answer containing a token-shaped string. It asserts equality on load and that the stored bytes contain the token.\n\n7. **Applications supply their own answers and remain responsible for their contents.** This states a responsibility and imposes no behavior to test, apart from the storage preservation in item 6.\n\n**Provider-based `SourceSession` tools**\n\nI looked at the provider-based `SourceSession` tools in `agent/sources.rs`. The `ToolFactory` for them is only reachable through a `#[cfg(test)]` wrapper in `agent.rs`, and no redaction test targets them. They are not the project inspection path, which is the one `{impl}`-marked for this requirement. I did not count them as an obligation in scope.\n\nNo unresolved ambiguities remain, and no {fixme} acknowledgments apply.",
+  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.sources.redaction`. I found no test-adequacy gap.\n\n**1. Redaction in source excerpts from inspection tools**\n- `search_excerpts_redact_credentials_before_serialization_and_paging` in `project_sources.rs` drives the production tool dispatcher, `Session::dispatch`, for `search_text` and `search_structure`.\n- The source contains a GitHub token and a multi-line RSA private key. The test asserts the exact redacted excerpt, with surrounding code preserved.\n- It asserts the line count is unchanged, the token and key body lines are absent from the serialized output, and the match is not split across pages.\n- It checks that the dependency recorded by `finish_search` carries the fingerprint of the original snapshot.\n- It checks that the file on disk is unchanged.\n- The other source-delivery path, `SourceTools` in `agent/sources.rs`, is `#[cfg(test)]`-only (confirmed through its wrapper in `agent.rs`). It is not a production inspection surface, so it needs no redaction test.\n\n**2. Redaction in node text supplied to agent requests**\n- `queued_contents_and_graph_read_tools_redact_credentials_before_delivery` in `agent/tests.rs` covers both the queued `contents_of_current_node` path and the `read_node` tool.\n- For every request, it asserts the serialized chat history does not contain the credential and does contain the redaction marker.\n- It also asserts the recorded dependency fingerprint and the stored graph contents equal the original text.\n\n**3. Built-in rules, markers and line breaks**\n- `private_keys_are_redacted_from_header_through_body_keeping_lines` checks the private-key region and exact marker output. It checks line-count preservation in plain text and in Rust.\n- `tokens_in_code_are_redacted_without_adjacent_code` checks that adjacent code is untouched.\n- `regions_extend_both_ways_keep_crlf_and_scan_past_a_mebibyte` covers CRLF preservation, region extension and chaining, and a scan past 1 MiB.\n- `slices_concatenate_to_the_redacted_whole` checks that slices of adjacent ranges concatenate to the whole redacted text at every split point.\n- `heuristic_findings_alone_are_not_redacted` and `configuration_keys_do_not_add_sdk_specific_secret_rules` check that only recognized credentials are redacted. Plain config keys and high-entropy values alone are not.\n\n**4. Outline languages share the redacted regions**\n- `hashes_do_not_depend_on_credential_values` shows structural hashes are equal when only the credential changes. It covers Rust, Markdown and plain text. It also asserts that a change outside the redacted region still changes the hash.\n- `redaction_never_changes_an_outline` shows the outline structure is identical with and without redaction. It covers YAML, Rust, TOML, Markdown and text. It also shows that parsing the redacted YAML text itself would change the structure, which is why the original is parsed.\n\n**5. Snapshots retain the original text**\n- `formatted_contents_redact_credentials_while_retaining_raw_text_and_spans` asserts `text()` equals the original and `format()` is redacted.\n- It asserts that changing only the token leaves the fingerprint unchanged.\n- It asserts that a selected node's `text()` keeps the token while its `format()` redacts it.\n\n**6. Filesystem storage preserves the supplied record**\n- `storage_preserves_completed_answers_containing_credential_shaped_text` stores and loads an answer containing a token-shaped value. It asserts the loaded output is equal and the raw stored file contains the token.\n\n**7. Applications supply their own answers**\n- This clause is a statement of responsibility and states no testable behavior.\n\nNo {fixme} acknowledgments apply.",
   "references": "bd6b2738ddefb950bba56fda9c12fc5c2ff07ea9457dd6ccdaff4a64d36d0017",
   "inputs": [
     {
@@ -78,7 +78,7 @@
     {
       "file": "crates/trust-but-verify/tests/outline_content.rs",
       "item": "fn[formatted_contents_redact_credentials_while_retaining_raw_text_and_spans]",
-      "hash": "b4e139d63c834cd8dc1d4d4a121440f53094f3981604fe88e61292de118fa8ef"
+      "hash": "164af09c9e68a582349fc36c1b0a454c248fa916f38bcc02775522628ec75cb1"
     },
     {
       "file": "crates/trust-but-verify/tests/storage.rs",
@@ -86,14 +86,19 @@
       "hash": "65b2cc456b455361beee9f63dcbd4f95ea69fbe2e005bff6f199f5c01ac6ee27"
     },
     {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]",
+      "hash": "1e9891fdbb67df918e9440e24bb4ccae95bc15d9677193dee3cc2c09feb845b5"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tools.rs",
+      "item": "impl[SessionTools<'a,%20D>]/fn[read_node]",
+      "hash": "d4d245cc0a170f10cce89f9fb8951e2c85a2407ca05e2053f5ed5acbe9b350e1"
+    },
+    {
       "file": "crates/trust-but-verify/src/procedure.rs",
       "item": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]",
       "hash": "dc84753a7d295f0fcaec241a9061dd1d159d1ea38abfb89d988403dd9fb1d788"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
-      "item": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]",
-      "hash": "2b5e546cc5d3d8cb2ce3133d379e3c9beaf4de138cae7b6e6ce39036c58da7c0"
     },
     {
       "file": "crates/trust-but-verify/src/agent/sources.rs",
@@ -101,19 +106,9 @@
       "hash": "d126fa277e48d439983ed557408fa43ea7d31c3f0719ce42a6fe45fb446e6d06"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/tools.rs",
-      "item": "impl[SessionTools<'a,%20D>]/fn[read_node]",
-      "hash": "d6a42a69c98a550b96af78bf49b38c11b8d6f4d8888f857fa2912e6a96f5a7d4"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent.rs",
-      "item": "struct[SourceTools]",
-      "hash": "70e1c54fd13a0a9128ae2067f750829eee5f6341668d89b6200eb671d57c9542"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent.rs",
-      "item": "impl[SourceTools<F>]",
-      "hash": "25bec5fad0fd5fdb5811538ee3cb3b48070ea89b28ecbb2f89be1954e89fc790"
+      "file": "crates/trust-but-verify/src/agent/sources.rs",
+      "item": "impl[SourceSession<'_,%20P,%20F>/ToolSession<D>]",
+      "hash": "ba164640c3c306ae658a4edf3bea10752e17a22091c875c6a5436886b198aff1"
     },
     {
       "file": "crates/trust-but-verify/src/outline/mod.rs",
@@ -121,14 +116,24 @@
       "hash": "e0168e8178b6695ff133199d4a80e6b9f5762c0d264750af334b92139479d1db"
     },
     {
-      "file": "crates/trust-but-verify/src/outline/mod.rs",
-      "item": "fn[parse_provider]",
-      "hash": "3940c8fe7591f9eaafb5117249ebdecf2153e997d2d019c9506269ef5b097e0b"
+      "file": "crates/trust-but-verify/src/agent.rs",
+      "item": "struct[SourceTools]",
+      "hash": "70e1c54fd13a0a9128ae2067f750829eee5f6341668d89b6200eb671d57c9542"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/sources.rs",
-      "item": "struct[SourceTools]",
-      "hash": "2b427eaa4c60fc9a420b4c73075d91e071580386c7acf96ee46c5edf99fadd44"
+      "file": "crates/trust-but-verify/src/outline/contents.rs",
+      "item": "impl[OutlineContent]/fn[source_span_redacted]",
+      "hash": "9667512ed3dddab4bf580ce50ff5bae2201312102fdc15e81dbddce13ed9892e"
+    },
+    {
+      "file": "crates/trust-but-verify/src/outline/contents.rs",
+      "item": "impl[OutlineContent/NodeContents]/fn[format]",
+      "hash": "3853674b967c268b4590d36841e635d5ace3a52a0fa54a4732073cc8425905d5"
+    },
+    {
+      "file": "md/requirements/sdk/sources.md",
+      "item": "section[Sources%20and%20inspection]/section[Inspection%20runs%20through%20the%20tracked%20context]/block@65f7a5afdf02",
+      "hash": "31d34bccbac851682fb0c0e933441a83103a6135578921d28a789301ee07887c"
     }
   ],
   "format_version": 1,
@@ -351,7 +356,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1172b7f3d9bf479d642f37c462093dcdf72c9bf994a8efb3a5a88b4d5d58b2fd"
+          "value": "1116bb1a937bf6ceab6251ae0714a76a2cba336928611bb250385764e8db59f5"
         }
       ]
     },
@@ -378,14 +383,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
             },
-            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]"
+            "selector": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "dc6d63c5bc1c9b8a38f8c38129fc31a547b1c506b355305dc0e7f0092b7d5938"
+          "value": "5a9657532ff38717d6edc972de4796214707d7418e21000c346f1c37f9e5be0e"
         }
       ]
     },
@@ -395,14 +400,31 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+              "location": "crates/trust-but-verify/src/agent/tools.rs"
             },
-            "selector": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]"
+            "selector": "impl[SessionTools<'a,%20D>]/fn[read_node]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f33c7020546a3d211614215af843e365421f07d5d27f8c24b3f223f87ade14f0"
+          "value": "e86b526c9fe300ec2629d7f8ba1242abdb19d9c756da98112e7d4b723fb2eb21"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "dc6d63c5bc1c9b8a38f8c38129fc31a547b1c506b355305dc0e7f0092b7d5938"
         }
       ]
     },
@@ -429,48 +451,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tools.rs"
+              "location": "crates/trust-but-verify/src/agent/sources.rs"
             },
-            "selector": "impl[SessionTools<'a,%20D>]/fn[read_node]"
+            "selector": "impl[SourceSession<'_,%20P,%20F>/ToolSession<D>]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "8fd0ea2aac9486964aacbb8795cc936691c4e07755df0afd341e080d0be344b8"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent.rs"
-            },
-            "selector": "struct[SourceTools]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "b8294f045568ca4ff752f67a69c97afa860c689c33e1b0a440859e6b38279134"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent.rs"
-            },
-            "selector": "impl[SourceTools<F>]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "50a07e2ed4e7eccb2ad96c461be9a758e64ca23fbdb4f8b04e07d231a0130816"
+          "value": "17829a4fc6dbacbaf61e3248c60154724524d87474196d36b7224f93695b09b5"
         }
       ]
     },
@@ -497,14 +485,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/outline/mod.rs"
+              "location": "crates/trust-but-verify/src/agent.rs"
             },
-            "selector": "fn[parse_provider]"
+            "selector": "struct[SourceTools]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "210bcaef968addf1652a0251bc4c512b3593c2558cd8dd8a3a8c1249bab8b7a3"
+          "value": "b8294f045568ca4ff752f67a69c97afa860c689c33e1b0a440859e6b38279134"
         }
       ]
     },
@@ -514,14 +502,48 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/sources.rs"
+              "location": "crates/trust-but-verify/src/outline/contents.rs"
             },
-            "selector": "struct[SourceTools]"
+            "selector": "impl[OutlineContent]/fn[source_span_redacted]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "134a2021b8d097af365e50b7403412edd10a72b0a8077cfe6cbd0aa6ccca8bd7"
+          "value": "3ea7b1cad07dc569af1acb2a5e927e27c82d8b9ce635d2baa86745c75497293e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/outline/contents.rs"
+            },
+            "selector": "impl[OutlineContent/NodeContents]/fn[format]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "d7aa02ecdee4674cb0215f2d23905849b2d405d9e4211776db493ebf1424e407"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "md/requirements/sdk/sources.md"
+            },
+            "selector": "section[Sources%20and%20inspection]/section[Inspection%20runs%20through%20the%20tracked%20context]/block@65f7a5afdf02"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "0ffd47525a12712cb269c4af62a368cbeaf6a5a8c687f0a849b54f0d70f087d7"
         }
       ]
     }

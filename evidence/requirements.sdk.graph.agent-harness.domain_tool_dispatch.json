@@ -1,7 +1,7 @@
 {
   "requirement": "The harness advertises the argument schema derived from `A`. It deserializes\narguments as `A`, calls `execute` once for a valid call, and serializes `R` as\nthe JSON tool result. If deserialization fails, the model receives a tool\nerror and the tool body does not run. Node IDs in either direction follow\n{cite}`requirements.sdk.graph.validation-context.node_reference`.",
   "determination": true,
-  "rationale": "The one marked test is `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[registered_tools_use_the_current_context_and_ordinary_node_ids]`. It covers each obligation in `domain_tool_dispatch`:\n\n- **Advertised schema from `A`:** The test reads the request's `tools` array and finds `lookup_requirements`. It asserts that `parameters.properties.pattern.type` is `\"string\"` and that the description matches. The implementation in `domain_tools.rs` builds the schema with `schema_for!(A)`.\n- **Deserialize as `A`, call `execute` once, serialize `R` as the JSON tool result:**\n  - A valid `lookup_requirements({\"pattern\":\"requirements.sdk.*\"})` call returns output that parses as `[1,2]`, so `Vec<NodeId>` is serialized as JSON.\n  - The domain's `lookup_calls` equals exactly `[\"requirements.sdk.*\"]`, so `execute` ran once and with the deserialized `Pattern`.\n  - A valid `inspect({\"node\":2})` call returns the JSON string for the node content, so `String` is serialized.\n- **Deserialization failure:** The call `lookup_requirements({\"pattern\":false})` sends a bool where a `String` is required. The model-visible function output contains `\"invalid type\"`, so the model received an error message. `lookup_calls` still holds only the single valid pattern, so the tool body did not run for the bad call. The `Lookup::execute` helper is the only code that records calls, and it records them before doing anything else.\n- **Node IDs in both directions, following the cited `node_reference`:**\n  - The result IDs `[1,2]` come out as plain unsigned integers.\n  - `inspect` takes `{\"node\":2}` as `NodeId<D>`, and the tool reads that node. The returned text is the outline requirement's content, so the integer was resolved correctly.\n  - The malformed and unassigned-ID error cases in `node_reference` are about built-in tools. `tests.rs` covers them with `read_node_accepts_a_domain_id_first_supplied_by_the_agent`, which asserts \"unassigned node ID\". They are not obligations of this subject.\n\nThe test also checks that the domain tools come after the built-in tools in the advertised list. It checks that a second domain with a different tool set does not see these tools.\n\nI found no unacknowledged gap.",
+  "rationale": "The one marked test, `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[registered_tools_use_the_current_context_and_ordinary_node_ids]`, covers every obligation in `domain_tool_dispatch`. It drives a real agent loop against a local backend with two registered tools, `Lookup` (argument type `Pattern`, result `Vec<NodeId>`) and `Inspect` (argument type `InspectArgs`, result `String`). I did not read the implementation; I derived the expectations from the requirement text.\n\n- **Schema advertised from `A`:** The test checks the advertised `lookup_requirements` tool. Its `parameters.properties.pattern.type` is `\"string\"`, which matches the `Pattern` argument type. Its description is also checked, and the tool list order and names are checked on every request.\n- **Deserialize as `A` and call `execute` once for a valid call:** The call `{\"pattern\":\"requirements.sdk.*\"}` is made once. `domain.lookup_calls` is asserted to equal exactly `[\"requirements.sdk.*\"]`, so the body ran once and received the deserialized argument.\n- **Serialize `R` as the JSON tool result:** The `lookup_requirements` output is parsed as JSON and asserted equal to `[1, 2]`. The `inspect` output is parsed as a JSON string and asserted equal to the expected content text.\n- **Deserialization failure gives a tool error and the body does not run:** The call `{\"pattern\":false}` goes to the model as a function-call output containing \"invalid type\". The same `lookup_calls == [\"requirements.sdk.*\"]` assertion shows the body ran only for the valid call, not for the bad one. The test only checks that the error text reaches the model, not any separate error flag. The requirement doesn't ask for more than that.\n- **Node IDs in both directions (`node_reference`, cited):** The result side is `Lookup` returning `NodeId`s as the plain integers `[1,2]`. The argument side is `Inspect` receiving `{\"node\":2}` as an ordinary unsigned integer. It resolves to the right node, which the dependency assertions and the returned text show. This covers the obligation as it applies to domain tools. The `path` and `data` address alternatives belong to the built-in tools, not to this subject.\n\nI found no plausible violating behavior that these assertions would accept. A harness that skipped schema derivation, called `execute` twice, ran the body on bad arguments, mis-serialized `R`, or mishandled node IDs would fail at least one assertion.",
   "references": "ae428d722e5127929a79e6ed00b23b057b621e6deec365af0e3db8b192d9c053",
   "inputs": [
     {
@@ -26,9 +26,17 @@
       ],
       "text": [
         ":::{req} node_reference",
-        "The agent harness uses the unsigned integer representation of `NodeId<D>` for the current node, supplied inputs, and nodes in tool results. Built-in tools accepting a node ID resolve that integer in the domain's cache. A malformed value or an unassigned integer produces a tool error before any graph read.",
+        "The harness represents a `NodeId<D>` as an unsigned integer. Each built-in tool that accepts a node accepts the same top-level address fields, alongside its own arguments (such as an edge `label`). `NodeAddress` in tool signatures denotes these alternatives:",
         "",
-        "For example, if a search hit contains `\"node\": 7`, the agent can call `read_node({\"node\": 7})` to read the enclosing node.",
+        "| Address fields | Resolution |",
+        "| --- | --- |",
+        "| `node` | Look up the assigned ID in the domain's cache. |",
+        "| `path`, optional `location` | Resolve the project-relative file within the domain's visible sources. `location` is its outline selector and defaults to the empty selector for the file root. Resolve the item, map its `OutlineData` through `Domain::source_node`, and intern the resulting identity. |",
+        "| `data` | Deserialize the JSON value as `D::NodeData` and intern it in the domain's cache. |",
+        "",
+        "For domains using the agent harness, the tool schema describes `data` using the domain’s JSON schema for `D::NodeData`. The harness uses the same JSON representation when returning and accepting an identity.",
+        "",
+        "Resolving an address is discovery. The requested operation determines which observations enter evidence. Invalid addresses, unavailable files, and unknown selectors produce tool errors before the requested operation runs.",
         ":::"
       ]
     },
@@ -39,18 +47,18 @@
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/impl[Lookup/crate::agent::Tool<LookupDomain<'d>,%20Pattern,%20Vec<NodeId<LookupDomain<'d>>>>]/fn[execute]",
+      "hash": "b8f03932e62dada8714d4388a57bb680cbede7373d8e4d6b7ed16e3422552dd1"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/impl[Inspect/crate::agent::Tool<LookupDomain<'static>,%20InspectArgs,%20String>]/fn[execute]",
+      "hash": "d3275ab0e0ad9300069eda313a11bc716771680c92e752cdbca5268b83a52b85"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/struct[InspectArgs]",
       "hash": "5be3efca5b17e0e972da30605667e461beeaf2f498ed6b7118e9f9f332c6b46c"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/configured.rs",
-      "item": "mod[tests]/impl[Inspect/crate::agent::Tool<LookupDomain<'static>,%20InspectArgs,%20String>]",
-      "hash": "0c7fe5251a99fe3864bd310374fe18b8e9bd6a567f1ab2ffb820861b7ed9b07a"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/configured.rs",
-      "item": "mod[tests]/impl[Lookup/crate::agent::Tool<LookupDomain<'d>,%20Pattern,%20Vec<NodeId<LookupDomain<'d>>>>]",
-      "hash": "d4dd06d060985c9ad8d66ee12958c9ee78efa8b694e23d9a2b353f607c9bd592"
     },
     {
       "file": "crates/trust-but-verify/src/agent/domain_tools.rs",
@@ -58,19 +66,9 @@
       "hash": "001db222b49be4eef93ed8cebe941f9e6c21925250c297592cd1d1d2d5261c5b"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/tools.rs",
-      "item": "fn[node_argument]",
-      "hash": "e850f86c1806517a52e743a834c3d5722158e2abbc3225af25fd763cb4e9793e"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "fn[agent_edge_tools_record_selections_without_validating_targets]",
-      "hash": "26a9315f3b502bade193bcf6eb305da74f2273b900122a29c939344eaf35046e"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "fn[read_node_accepts_a_domain_id_first_supplied_by_the_agent]",
-      "hash": "000d7dca3d7b85b4e4810985f85d4d54109927d9d5603591ba6fe2ea25ac680e"
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/impl[Inspect/crate::agent::Tool<LookupDomain<'static>,%20InspectArgs,%20String>]",
+      "hash": "0c7fe5251a99fe3864bd310374fe18b8e9bd6a567f1ab2ffb820861b7ed9b07a"
     }
   ],
   "format_version": 1,
@@ -117,7 +115,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1430580f5cd20d4d44b571e0e083e7647f8232070211c9e723833e7f6fff2d73"
+          "value": "c620d2dfecfa08991060b45c3970a5375bf7d3f87bd288f41705003578ec3546"
         }
       ]
     },
@@ -146,46 +144,46 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/configured.rs"
             },
+            "selector": "mod[tests]/impl[Lookup/crate::agent::Tool<LookupDomain<'d>,%20Pattern,%20Vec<NodeId<LookupDomain<'d>>>>]/fn[execute]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "8044273bc4cce0760abbbcc0c3226116d03d20f173bd7945113691e57cca2a8d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
+            },
+            "selector": "mod[tests]/impl[Inspect/crate::agent::Tool<LookupDomain<'static>,%20InspectArgs,%20String>]/fn[execute]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "07d956542c85787a71ca71f396f363a77c585163772ae06db25a24ffc740681d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
+            },
             "selector": "mod[tests]/struct[InspectArgs]"
           }
         },
         {
           "scheme": "habeas-input-v1",
           "value": "2432415801493f59ff3779d185bceb021a4f3aaa628f42ba680b8a43828f6c36"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/configured.rs"
-            },
-            "selector": "mod[tests]/impl[Inspect/crate::agent::Tool<LookupDomain<'static>,%20InspectArgs,%20String>]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "1ae0d94a89c47817592d5ab70730395c8ddc2ccb30664736bcfabe520090e733"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/configured.rs"
-            },
-            "selector": "mod[tests]/impl[Lookup/crate::agent::Tool<LookupDomain<'d>,%20Pattern,%20Vec<NodeId<LookupDomain<'d>>>>]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "3deb9000fce6bebd36e3a5c6b567bbb2ca449605220e815ecac440728296d1cc"
         }
       ]
     },
@@ -212,48 +210,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tools.rs"
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
             },
-            "selector": "fn[node_argument]"
+            "selector": "mod[tests]/impl[Inspect/crate::agent::Tool<LookupDomain<'static>,%20InspectArgs,%20String>]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "09f542524d08d34efa1e33ee5e4fdb42ca75a82d047b2bc4e9351956d87a01f9"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "fn[agent_edge_tools_record_selections_without_validating_targets]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "c2adedefda8714618783a82bfd00e73946a1817a41cfd60da9a48aac5e591375"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "fn[read_node_accepts_a_domain_id_first_supplied_by_the_agent]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "7c36d600a97334590a56180ea5aa948f770ac27c5189dc083a9d1b87d7afb58e"
+          "value": "1ae0d94a89c47817592d5ab70730395c8ddc2ccb30664736bcfabe520090e733"
         }
       ]
     }

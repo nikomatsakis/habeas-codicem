@@ -1,8 +1,8 @@
 {
-  "requirement": "Give `search_structure` the language, an ast-grep rule, and an optional match limit. Each match carries a node reference for `read_node` and a tag for `finish_search`.\nFor the `instructions` field, see {cite}`requirements.sdk.graph.search.first_search.instructions`.\n\n```text\nsearch_structure({language: string, rule: object, limit?: integer})\n  -> {search_id: UUID, instructions?: string, next?: UUID, complete: boolean, matches: {tag: string, node: NodeId, excerpt: string}[]}\n```",
+  "requirement": "Give `search_structure` the language, an ast-grep rule, and an optional match limit. Each match carries a node reference for `read_node` and a tag for `finish_search`.\nFor the `instructions` field, see {cite}`requirements.sdk.graph.search.first_search.instructions`.\n\n```text\nsearch_structure({language: string, rule: object, path?: string, limit?: integer})\n  -> {search_id: UUID, instructions?: string, next?: UUID, complete: boolean, matches: {tag: string, node: NodeId, file: string, selector: string, excerpt: string}[]}\n```",
   "determination": true,
-  "rationale": "The structural check finds no gap. I judged only the structure the requirement states: the input signature and the shape of the result. I did not assess runtime behavior.\n\n**Input signature.** `project_sources.rs#impl[Session<'_, D>/ToolSession<D>]/fn[definitions]` declares the `search_structure` tool.\n- `language` is a string and `rule` is an object. Both are required.\n- `limit` is an optional integer with a minimum of 0.\n\n`project_sources.rs#impl[Session<'_, D>/ToolSession<D>]/fn[dispatch]` handles `SEARCH_STRUCTURE` and reads the arguments to match.\n- `rule` must be an object.\n- `language` must be a string.\n- `limit` is read through `optional_number` into `query.limit`.\n\n**Result shape.** In `dispatch`, each hit becomes an entry `{node, excerpt}`.\n- `node` is the serialized `hit.node`, a `NodeId`.\n- `excerpt` is the redacted source span.\n- The entry is paired with a `Dependency::Node` observation.\n\n`pages.rs#impl[Pages<N, L>]/fn[search]` then builds each page as `{search_id, complete, matches}`.\n- `search_id` is a fresh `Uuid::new_v4()`.\n- `complete` comes from the search results.\n- Each match gets a `tag`. Tags are numbered per page, and each tag is mapped to its observation in a `SearchPage`, which `finish_search` uses.\n- `next` is set to the following page's UUID when pages are chained, which gives the optional `next?: UUID`.\n- `instructions` is added only when the conversation has no earlier search and the page is the first one. This matches the optional `instructions?` field. The requirement delegates the field's content and rule to `requirements.sdk.graph.search.first_search.instructions`, which is cited context, not a subject here.\n\n**Other points.**\n- `fn[definitions]` and `fn[dispatch]` both carry `{impl}` references for this requirement, as does `fn[search]`.\n- A second implementation in `agent/sources.rs` adds a `prefix` parameter. It is not among the supplied roots, and I did not judge it.\n- I found no test marked `{test}` for `search_structure.mcp` itself. Tests mark the sibling `.inputs` and `.behavior` requirements, and none of them are structural subjects here. I treated that as outside this structural assessment.\n- There is no `{fixme}` acknowledgment.",
-  "references": "204dce9f4641383b47bc8843fef8eb7b13f4765bbd0037ce9278d1b81f8ce49b",
+  "rationale": "The reviewed tests adequately check `requirements.sdk.graph.search.search_structure.mcp`. The `instructions` field is delegated to the cited `first_search.instructions` requirement and needs no test here.\n\n**Inputs (`language`, `rule`, optional `path`, optional `limit`)**\n- In `structural_tags_select_only_the_original_enclosing_item`, the `search_structure` tool definition's `parameters` are compared exactly. `language` and `rule` are required, `path` is a string, and `limit` is an integer with a minimum of 0.\n- The same test dispatches invalid argument types and expects errors. The cases are a non-string `language`, a non-object `rule`, a non-string `path`, and a negative `limit`.\n- It also runs a search with `limit` set to 1. It asserts `complete == false`, exactly one match, and no `next`.\n- `scoped_search_accounts_for_visible_descendant_text` passes `path: \"src\"` with a second matching file, `other.rs`, outside that path. It asserts exactly one match, in `src/code.rs`, so the `path` scoping is exercised.\n\n**Output shape (`search_id`, `complete`, and `matches` with `tag`, `node`, `file`, `selector`, `excerpt`)**\n- `structural_tags_select_only_the_original_enclosing_item` asserts that `complete` matches the result of the underlying search. It asserts two matches. It asserts each `excerpt` equals the hit text.\n- `scoped_search_accounts_for_visible_descendant_text` asserts the `file` and `selector` fields of the match.\n- `search_excerpts_redact_credentials_before_serialization_and_paging` asserts exact `excerpt` text, `complete == true`, and no `next`.\n\n**The `node` reference works with `read_node`, and the `tag` works with `finish_search`**\n- `structural_tags_select_only_the_original_enclosing_item` passes the serialized match to `read_node`. It asserts the dependency is the expected node for `fn[two]`.\n- It finishes the search with the match's tag and asserts the dependency is the `fn[two]` node with the original fingerprint. It does this twice, and an empty `used` list gives no dependencies.\n- `search_id` is used for `finish_search` in all three tests.\n- The other two tests also assert the finished dependency for the tagged match.\n\n**Optional `next` and `instructions`**\n- The tests assert `next` is absent when the result is complete and when `limit` truncates it. The redaction test confirms `instructions` is absent from a later structural search. These are optional fields and are covered by other requirements.\n\nI found no obligation of the requirement that goes untested, and no plausible violating behavior that the tests would accept.",
+  "references": "a2c0587e0f8568c5627abae501576c09d4f3c4cedff8660845e10a6e43bf7a4e",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.search.search_structure.mcp",
@@ -15,8 +15,8 @@
         "For the `instructions` field, see {cite}`requirements.sdk.graph.search.first_search.instructions`.",
         "",
         "```text",
-        "search_structure({language: string, rule: object, limit?: integer})",
-        "  -> {search_id: UUID, instructions?: string, next?: UUID, complete: boolean, matches: {tag: string, node: NodeId, excerpt: string}[]}",
+        "search_structure({language: string, rule: object, path?: string, limit?: integer})",
+        "  -> {search_id: UUID, instructions?: string, next?: UUID, complete: boolean, matches: {tag: string, node: NodeId, file: string, selector: string, excerpt: string}[]}",
         "```",
         ":::"
       ]
@@ -38,19 +38,39 @@
       ]
     },
     {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "mod[tests]/fn[scoped_search_accounts_for_visible_descendant_text]",
+      "hash": "1840c4b290d64bcf9e532ae1ed6a5e25c8035cef6ae4c66f4bbbdceffeab6b42"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]",
+      "hash": "51da68bc4a12b4ba257787791938819f709b3fe5b32fd8652f22127f9dce1f60"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "mod[tests]/fn[search_excerpts_redact_credentials_before_serialization_and_paging]",
+      "hash": "dd158703652d9c80cccbeb3f830b23c9fe8d2c0265b2f1967f34af5834eff80e"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]",
+      "hash": "1e9891fdbb67df918e9440e24bb4ccae95bc15d9677193dee3cc2c09feb845b5"
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/pages.rs",
       "item": "impl[Pages<N,%20L>]/fn[search]",
       "hash": "ef3c5aecf85a83c1cc34648f93dffdc20cba33654edbcd986cce1633a7f56eea"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
-      "item": "impl[Session<'_,%20D>/ToolSession<D>]/fn[definitions]",
-      "hash": "d28ed31c6e08998f29ef05a53f1013e904c04b444e68e54b75376c79633cc4d4"
+      "item": "mod[tests]/fn[search_pages_return_every_original_match_in_order]",
+      "hash": "baa98df68943cf5888e142f365e65831861bf813d34bd89d1a42d02ce39cecc7"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
-      "item": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]",
-      "hash": "2b5e546cc5d3d8cb2ce3133d379e3c9beaf4de138cae7b6e6ce39036c58da7c0"
+      "item": "mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]",
+      "hash": "e34f5942ea959094aac1cffff1d5fe1a49ade0b9864a61b67b262ef630f2fd73"
     }
   ],
   "format_version": 1,
@@ -63,7 +83,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "204dce9f4641383b47bc8843fef8eb7b13f4765bbd0037ce9278d1b81f8ce49b"
+          "value": "a2c0587e0f8568c5627abae501576c09d4f3c4cedff8660845e10a6e43bf7a4e"
         }
       ]
     },
@@ -75,7 +95,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "cfd6a1edfa4e58c230fd170c3e7bfd0ecb85fa903be6cb09a6d36476f59fc671"
+          "value": "de1c4b356afc1ea5f9ba3c4e51db6c4f8b2121c658221445773833db890b7147"
         }
       ]
     },
@@ -86,7 +106,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "dc9d6eefebf0111f4173a6456421e47338c134d5d1b98aab356a55b8aaffdd88"
+          "value": "ea3f97bd0ef483431baf6caae2cda78970119892d4a6bbdca0421aeb888083aa"
         }
       ]
     },
@@ -98,6 +118,74 @@
         {
           "scheme": "habeas-input-v1",
           "value": "40971f34cd2dcdefdcfeabde305b715f1c63f5347708a29881052562d64b89c6"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "mod[tests]/fn[scoped_search_accounts_for_visible_descendant_text]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "bf6db5e197e86d9cf4188ca4f02c80cb39081909d2755aa303bba23a3d453bc3"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "05190f59159372f4926674163dc2533d7ab63d57c8af4c2c2fc987b28df5d3b3"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "mod[tests]/fn[search_excerpts_redact_credentials_before_serialization_and_paging]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "fa9205aba5af562d80e2b704234f01c20576d925733f78f832d278cf3edc11f9"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "5a9657532ff38717d6edc972de4796214707d7418e21000c346f1c37f9e5be0e"
         }
       ]
     },
@@ -126,12 +214,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/project_sources.rs"
             },
-            "selector": "impl[Session<'_,%20D>/ToolSession<D>]/fn[definitions]"
+            "selector": "mod[tests]/fn[search_pages_return_every_original_match_in_order]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "e7cebfaeaee95236d3033d895f97202d82e090e9e62bd96903c87d560655ca3d"
+          "value": "9ebfd99f82e1c08953f18f7c57202d706d310621453e36d16d5babb1b5043e3c"
         }
       ]
     },
@@ -143,12 +231,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/project_sources.rs"
             },
-            "selector": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]"
+            "selector": "mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f33c7020546a3d211614215af843e365421f07d5d27f8c24b3f223f87ade14f0"
+          "value": "40f4d553f745b1f5517caa626ba2e3215a561732152f5c604a11d603aef50923"
         }
       ]
     }

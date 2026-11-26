@@ -1,7 +1,7 @@
 {
   "requirement": "`OutlineLang` defines the language interface. Each implementation supplies its\nname, claimed extensions, and outlining operation. Cloning a language shares\nits prepared configuration instead of rebuilding it or copying it in proportion\nto its size. Its result uses the public items, spans, and hashes under\n{cite}`requirements.sdk.outlines.items`. Filename extensions omit the leading dot.\n\n```rust,ignore\npub trait OutlineLang:\n    Clone\n    + Send\n    + Sync {\n    fn name(&self) -> &str;\n    fn extensions(&self) -> &[&str];\n    fn outline(&self, source: &str) -> Result<Outline, OutlineError>;\n    fn fingerprint_scheme(&self) -> &str;\n\n    fn search_structure(\n        &self,\n        _source: &str,\n        _rule: &Map<String, Value>,\n    ) -> Result<Vec<Span>, OutlineError> { ... }\n}\n```",
   "determination": true,
-  "rationale": "The tests adequately check `requirements.sdk.outlines.language_provider`.\n\n**What the requirement obliges**\n- `OutlineLang` has `name`, `extensions`, `outline`, `fingerprint_scheme` and a defaulted `search_structure`, and requires `Clone + Send + Sync`.\n- Cloning shares prepared configuration instead of rebuilding or copying it.\n- Results use the public items, spans and hashes from `requirements.sdk.outlines.items`.\n- Extensions omit the leading dot.\n- The defaulted `search_structure` behaviour is covered by the separate sub-requirement `requirements.sdk.outlines.language_provider.structural_search`, so I did not assess it here.\n\n**Obligations and the tests that cover them**\n- **Name, extensions, outline and scheme on bundled languages.**\n  - `tests/outline_content.rs#fn[bundled_languages_claim_extensions_and_supply_the_same_public_outline]` runs `check` for Rust, Python, TypeScript, Tsx, Markdown, Css, Toml and Yaml.\n  - It asserts a non-empty `name()` and the exact `extensions()` slice (for example `[\"py\",\"pyi\"]` and `[\"yml\",\"yaml\"]`). None has a leading dot.\n  - It asserts the exact `fingerprint_scheme()`.\n  - It calls `language.outline(source)` directly and compares its item selectors and diagnostic with the explicit and inferred `OutlineContent` results.\n  - It checks the root span covers `0..source.len()` and the root selector is empty, and that every item span lies within the source.\n  - It also covers uppercase extension matching.\n  - `PlainText` gets name and empty-extension assertions. It comes from the same `language!` macro in `outline/languages/mod.rs` as the other bundled languages, so the rest of its interface is covered by the other cases.\n- **Clone shares configuration, with no rebuild or size-proportional copy.**\n  - `check` asserts `size_of::<L>() == 0` for every bundled language, so a clone owns no allocation. It also asserts the clone returns the same extensions.\n  - `tests/outline_content.rs#fn[explicit_languages_share_configuration_and_retain_their_scheme]` clones a `CustomLanguage` whose configuration is an `Arc` and asserts `Arc::ptr_eq`.\n  - It then drops the original, the clone and the scheme `Arc`. The content still reports scheme `custom-v2`, so the clone's configuration stays alive.\n  - This test mostly exercises a derived `Clone` on a test type. The bundled zero-size check is what covers the library's own implementations.\n- **Public items, spans and hashes.**\n  - The custom-language test asserts the root selector is `\"\"`, the root span is `Span::new(0, 9)` over the whole text, and the selected item's text and `structural_hash` are `selected-digest`.\n  - It checks the fingerprint scheme changes the fingerprint (v2 against v3) while the structural hash stays the same.\n- **Provider contract with a custom provider.** `outline/tests.rs#fn[custom_provider_handles_generated_content_and_structural_search]` and `sources/tests.rs#fn[registered_grammars_match_their_profiles_and_parse_the_selected_language]` check that profile names, extensions and grammars line up with what each language claims, and that each registered language parses its sample source.\n- **`Clone + Send + Sync` bounds.** These are compile-time trait bounds. The custom-language test and the test impls cannot compile without meeting them.\n\n**Delegated or not needed**\n- The default `search_structure` is the subject of the sub-requirement `...language_provider.structural_search`. `check` also calls `search_structure` on every bundled language and asserts the ranges are non-empty and in bounds.\n- The public export inventory test is marked only for the public-API requirements and adds nothing here.\n\nI found no plausible requirement-violating behaviour that these tests would accept.",
+  "rationale": "I found no test-adequacy gap for `requirements.sdk.outlines.language_provider`. The only soft spot is the trait bounds, which no test pins at compile time. I treat that as exempt because a bound has no conditional and no transformation.\n\n**Obligations and the tests that cover them**\n\n- **Each implementation supplies a name, claimed extensions and an outlining operation.**\n  - `bundled_languages_claim_extensions_and_supply_the_same_public_outline` runs a generic `check` over Rust, Python, TypeScript, Tsx, Markdown, Css, Toml and Yaml. `check` asserts a non-empty `name()` and exact `extensions()`. It also asserts `language.outline(source)` succeeds, and `fingerprint_scheme()` is checked as well. The same test checks `PlainText` for name `plain-text` and empty extensions.\n  - `explicit_languages_share_configuration_and_retain_their_scheme` checks a custom language: name `custom`, extensions `[\"custom\"]`, and an outline produced through `from_source_with` and `from_path_with`.\n  - `custom_provider_handles_generated_content_and_structural_search` checks a custom registry provider. It claims extension `app`, resolves `generated.app` (and `generated.APP`), and rejects `other.rs`.\n- **Extensions omit the leading dot.** The expected extension lists are `rs`, `py`, `pyi`, `ts`, `mts`, `cts`, `tsx`, `md`, `markdown`, `css`, `toml`, `yml`, `yaml`, `custom` and `app`, none with a dot. The bundled test builds `not-present.<EXT>` filenames from those entries and confirms each selects the same language and outline. `registered_grammars_match_their_profiles_and_parse_the_selected_language` checks `sample.{extension}` lookup against the profile name for all eight registered grammars.\n- **Cloning shares prepared configuration instead of rebuilding or copying it.**\n  - The custom-language test asserts `Arc::ptr_eq` between a language and its clone. It then drops the original, the clone and the scheme handle, and the retained content still reports scheme `custom-v2`. The clone is also used for `from_path_with`.\n  - The bundled test asserts `size_of::<L>() == 0` for every bundled language, so a clone has no owned allocation.\n  - `Arc::ptr_eq` on a test-defined type mainly shows what an implementer should do, but the zero-size check covers the shipped languages.\n- **The result uses the public items, spans and hashes.**\n  - The bundled test compares the raw `language.outline(source)` selectors and diagnostic with the `OutlineContent` outline. It requires the root span to be `Span::new(0, source.len())` and all item spans to be valid ranges of the source.\n  - The custom-language test checks the root span `Span::new(0, 9)`, `structural_hash`, and the selected item's span, text and hash.\n- **The `search_structure` default and `fingerprint_scheme`.** These have their own refining requirements (`...structural_search` and `...fingerprint_scheme`) and tests. The bundled test also exercises `search_structure` on every bundled language, and `custom_provider_handles_generated_content_and_structural_search` exercises it through a compiled structural rule on a custom provider. The text does not state what the default `search_structure` returns, so I invented no obligation for it.\n\n**Trait bounds**\n\n`Clone + Send + Sync` are compile-time declarations, and no test asserts them on the trait itself. Every language the tests pass in is already `Send + Sync` and `Clone`. I treat this as exempt: a trait bound has no conditional and no transformation.\n\n**Other points**\n\n- The text names no error cases for `outline`, so I required none.\n- `public_exports_match_the_appendix` and `registered_grammars_match_their_profiles_and_parse_the_selected_language` carry the `{test}` reference. They supplement the main tests rather than carry them.\n- There are no `{fixme}` acknowledgments and no marking gaps.",
   "references": "5b98b9a54e8375ce1f50f43fc9ccb281e6a456157481d2b587452f5e45125e45",
   "inputs": [
     {
@@ -73,7 +73,7 @@
     {
       "file": "crates/trust-but-verify/tests/outline_content.rs",
       "item": "fn[explicit_languages_share_configuration_and_retain_their_scheme]",
-      "hash": "990d0ba8f83384e899b58a4eb14065364007e440389f90d273171f83703a0aee"
+      "hash": "b4d217f3849454ecb528cf860851500af60f692fc6c269d9683f85fc2378dcb4"
     },
     {
       "file": "crates/trust-but-verify/tests/outline_content.rs",
@@ -87,18 +87,8 @@
     },
     {
       "file": "crates/trust-but-verify/tests/outline_content.rs",
-      "item": "struct[CustomLanguage]",
-      "hash": "e1ac50e251a123424fe417d677f11e5944a9f1dc9452e09f5463202202d81d07"
-    },
-    {
-      "file": "crates/trust-but-verify/src/outline/languages/mod.rs",
-      "item": "",
-      "hash": "d5dfd9a900357b3bde589805d1ac9978bd6d4da982888117959ade183f68e46c"
-    },
-    {
-      "file": "crates/trust-but-verify/src/outline/languages/mod.rs",
-      "item": "macro[language]",
-      "hash": "137336d84dde17ca1b20fde122fc670f0f2d1130d37b909db01fd9dd3aa87b44"
+      "item": "impl[CustomLanguage/OutlineLang]",
+      "hash": "c0957bf4c20d8ced5a327ec1c206273f6f865f97a41872fe7f3ae7c5270da677"
     }
   ],
   "format_version": 1,
@@ -196,7 +186,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "fb5ca5ce234154fc92e73b65836b02a69dec71fe95615484cd98027bb4b045be"
+          "value": "4e3744b07b02a750a0b364cc7c45c9b581ba5188278c5349cbeca227f619ed5e"
         }
       ]
     },
@@ -242,46 +232,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/tests/outline_content.rs"
             },
-            "selector": "struct[CustomLanguage]"
+            "selector": "impl[CustomLanguage/OutlineLang]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "056477d864936618ea09aa4b239f2646dc15f151b7d50d454c2b560410f898b8"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/outline/languages/mod.rs"
-            },
-            "selector": ""
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "5d84ced510136debb852147cbf6751a2b10999eba5cf123f8f0c21c9b783b9b2"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/outline/languages/mod.rs"
-            },
-            "selector": "macro[language]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "80e3b26503acb72e5c2a4dac92c6601a3920084b7540ea2711d4813ebb72105e"
+          "value": "d66291c2a31f54261f77c8670b0af1fd978974a1ed8f4079d21eb5f34cfb1a5a"
         }
       ]
     }
