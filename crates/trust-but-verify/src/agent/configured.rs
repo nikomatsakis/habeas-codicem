@@ -756,6 +756,74 @@ mod tests {
         assert_eq!(output(4), "[]");
     }
 
+    // {test}`requirements.sdk.graph.validation-context.node_reference`
+    // {test}`requirements.sdk.graph.validation-context.outgoing_edges.mcp`
+    // {test}`requirements.sdk.graph.validation-context.outline_source.mcp`
+    #[tokio::test]
+    async fn edge_and_outline_tools_accept_source_addresses_and_domain_data() {
+        use serde_json::json;
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("alpha.txt"), "").unwrap();
+        let (backend, server) = local_backend(vec![
+            ("outline_source", json!({"path":"alpha.txt", "location":""})),
+            ("outline_source", json!({"data":{"id":8}})),
+            (
+                "outgoing_edges",
+                json!({"path":"alpha.txt", "location":"", "label":"related"}),
+            ),
+            (
+                "outgoing_edges",
+                json!({"data":{"id":8}, "label":"related"}),
+            ),
+            ("submit_result", json!({"result":true})),
+        ]);
+        let domain = TestDomain(
+            Default::default(),
+            Default::default(),
+            crate::domain::ValidationCache::with_agent(backend)
+                .with_sources(crate::sources::Sources::new(root.path())),
+        );
+        let source = domain.cache().intern_node(TestNode { id: 8 });
+        let cx = ValidationContext::new(&domain, source);
+        assert!(cx.ask::<bool>().await.unwrap());
+        let requests = server.join().unwrap();
+        for index in 1..=4 {
+            let msg = requests[index]["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|msg| msg["type"] == "function_call_output")
+                .unwrap();
+            let response: Value = serde_json::from_str(msg["output"].as_str().unwrap()).unwrap();
+            if index <= 2 {
+                assert_eq!(
+                    response,
+                    json!({"node":source,"items":[{"node":source,"file":"alpha.txt","selector":"","kind":""}]})
+                );
+            } else {
+                assert_eq!(response, json!({"targets":[]}));
+            }
+        }
+        assert!(
+            matches!(cx.dependencies().as_slice(), [validation::Dependency::OutgoingEdges(node, label, _)] if *node == source && label == "related")
+        );
+        for name in ["read_node", "outgoing_edges", "outline_source"] {
+            let tools = requests[0]["tools"].as_array().unwrap();
+            let schema = &tools.iter().find(|tool| tool["name"] == name).unwrap()["parameters"];
+            let def = schema["properties"]["data"]["$ref"]
+                .as_str()
+                .unwrap()
+                .strip_prefix('#')
+                .unwrap();
+            assert_eq!(
+                schema.pointer(def).unwrap()["properties"]["id"]["type"],
+                "integer"
+            );
+            assert_eq!(schema["properties"]["node"]["type"], "integer");
+        }
+    }
+
     // {test}`requirements.sdk.graph.agent-harness.fixed_tools`
     // {test}`requirements.sdk.graph.validation-context.read_node.mcp`
     #[tokio::test]

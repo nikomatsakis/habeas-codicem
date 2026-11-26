@@ -315,6 +315,7 @@ impl OutlineLang for CustomLanguage {
 // {test}`requirements.sdk.outlines.selection`
 // {test}`requirements.sdk.outlines.snapshot`
 #[test]
+// {test}`requirements.sdk.outlines.OutlineItem`
 fn explicit_languages_share_configuration_and_retain_their_scheme() {
     let scheme = Arc::new("custom-v2".to_owned());
     let language = CustomLanguage {
