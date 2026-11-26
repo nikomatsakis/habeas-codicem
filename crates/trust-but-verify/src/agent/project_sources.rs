@@ -274,7 +274,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(
             root.path().join("parser.rs"),
-            "impl Parser { fn parse() {} }",
+            "impl Parser { fn parse(&self) -> bool { true } }",
         )
         .unwrap();
         let domain = project("");
@@ -304,13 +304,26 @@ mod tests {
             .unwrap();
         assert_eq!(parent.dependencies, [expected("impl[Parser]")]);
         let parent: Value = serde_json::from_str(&parent.text).unwrap();
-        assert_eq!(parent["file"], "parser.rs");
-        assert_eq!(parent["text"], "impl Parser { … }");
-        assert_eq!(parent["children"].as_array().unwrap().len(), 1);
-        assert_eq!(parent["selector"], "impl[Parser]");
+        let method = tools
+            .domain
+            .cache()
+            .intern_node("parser.rs#impl[Parser]/fn[parse]".into());
+        assert_eq!(
+            parent,
+            json!({
+                "file":"parser.rs", "selector":"impl[Parser]", "text":"impl Parser { … }",
+                "children":[{"node":method,"file":"parser.rs","selector":"impl[Parser]/fn[parse]",
+                             "header":"fn parse(&self) -> bool {"}]
+            })
+        );
+        let by_path = session
+            .read_node(&cx, &json!({"path":"parser.rs","location":"impl[Parser]"}))
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&by_path.text).unwrap(),
+            parent
+        );
         let child = &parent["children"][0];
-        assert_eq!(child["file"], "parser.rs");
-        assert_eq!(child["selector"], "impl[Parser]/fn[parse]");
         let read = session
             .read_node(
                 &cx,
@@ -320,10 +333,9 @@ mod tests {
         let by_id = session.read_node(&cx, child).unwrap();
         assert_eq!(read.dependencies, [expected("impl[Parser]/fn[parse]")]);
         assert_eq!(read.dependencies, by_id.dependencies);
-        assert_eq!(
-            serde_json::from_str::<Value>(&read.text).unwrap()["children"],
-            json!([])
-        );
+        let method_page: Value = serde_json::from_str(&by_id.text).unwrap();
+        assert_eq!(method_page["children"], json!([]));
+        assert_eq!(method_page["text"], "fn parse(&self) -> bool { true }");
         let listed = session.dispatch("list_sources", &json!({})).await.unwrap();
         assert!(listed.dependencies.is_empty());
         let entry = &serde_json::from_str::<Value>(&listed.text).unwrap()["files"][0];
@@ -331,7 +343,7 @@ mod tests {
         let root_page: Value = serde_json::from_str(&from_entry.text).unwrap();
         assert_eq!(
             root_page["children"],
-            json!([{"node":tools.domain.cache().intern_node("parser.rs#impl[Parser]".into()),"file":"parser.rs","selector":"impl[Parser]"}])
+            json!([{"node":tools.domain.cache().intern_node("parser.rs#impl[Parser]".into()),"file":"parser.rs","selector":"impl[Parser]","header":"impl Parser {"}])
         );
         for address in [
             json!({"node":entry["node"]}),
@@ -360,6 +372,36 @@ mod tests {
             assert!(session.read_node(&cx, &invalid).is_err(), "{invalid}");
         }
         assert_eq!(tools.domain.0.lock().unwrap().reads, reads);
+    }
+
+    // {test}`requirements.sdk.graph.validation-context.read_node.source_children`
+    // {test}`requirements.sdk.sources.redaction`
+    #[test]
+    fn child_headers_use_redacted_source_when_the_language_supplies_a_header() {
+        let root = tempfile::tempdir().unwrap();
+        let token = format!("gh{}_{}", "p", "16C7e42F292c6912E7710c838347Ae178B4a");
+        std::fs::write(
+            root.path().join("items.rs"),
+            format!("fn run(/* {token} */) {{}}\nstruct Marker;"),
+        )
+        .unwrap();
+        let domain = project("");
+        domain.0.lock().unwrap().outline_root = Some(root.path().to_owned());
+        let tools = ProjectSources::new(domain, Sources::new(root.path()));
+        let mut session = SessionTools::new(tools.session());
+        let graph = tools.domain.as_ref();
+        let cx = ValidationContext::new(graph, graph.cache().intern_node("criterion".into()));
+        let read = session.read_node(&cx, &json!({"path":"items.rs"})).unwrap();
+        let page: Value = serde_json::from_str(&read.text).unwrap();
+        let children = page["children"].as_array().unwrap();
+        assert_eq!(children.len(), 2);
+        assert_eq!(
+            children[0]["header"],
+            "fn run(/* [REDACTED:GitHub Token] */) {"
+        );
+        assert_eq!(children[1]["selector"], "struct[Marker]");
+        assert!(children[1].get("header").is_none());
+        assert!(!read.text.contains(&token));
     }
 
     // {test}`requirements.sdk.graph.search.search_structure.mcp`
@@ -855,6 +897,7 @@ mod tests {
     #[tokio::test]
     // {test}`requirements.sdk.graph.agent-harness.fixed_tools`
     // {test}`requirements.sdk.graph.validation-context.read_node.source_children`
+    // {test}`requirements.sdk.graph.validation-context.read_node.mcp`
     async fn outline_continuations_keep_the_file_and_complete_ordered_items() {
         let root = tempfile::tempdir().unwrap();
         let names: Vec<_> = (0..400).map(|i| format!("item_{i}")).collect();
@@ -936,12 +979,19 @@ mod tests {
             tools.domain.as_ref(),
             tools.domain.as_ref().cache().intern_node(String::new()),
         );
+        let root_text = "//! Project documentation.\n".repeat(800);
+        tools.domain.0.lock().unwrap().text = root_text.clone();
         let mut root_read = session
             .read_node(&context, &json!({"path":"code.rs"}))
             .unwrap();
+        tools.domain.0.lock().unwrap().text = "fn item_4() {}".into();
+        let mut received = String::new();
         let mut children = Vec::new();
         loop {
             let page: Value = serde_json::from_str(&root_read.text).unwrap();
+            assert_eq!(page["file"], "code.rs");
+            assert_eq!(page["selector"], "");
+            received.push_str(page["text"].as_str().unwrap());
             assert_eq!(root_read.dependencies.len(), 1);
             children.extend(
                 page["children"]
@@ -956,6 +1006,7 @@ mod tests {
                 .await
                 .unwrap();
         }
+        assert_eq!(received, root_text);
         assert_eq!(
             children,
             items[1..]

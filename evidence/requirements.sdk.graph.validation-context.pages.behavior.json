@@ -1,7 +1,7 @@
 {
   "requirement": "Each page has the same result fields as the originating tool. Text reads return\nsuccessive portions of text. Listings, outlines, and searches return successive\narrays of whole entries in their original order. Only a page with a successor\nincludes `next`.\n\nReusing a UUID returns the same page from the original snapshot, including the\nsame successor UUID if more remains. A malformed UUID, an unknown UUID, or a UUID\nfrom another conversation returns a tool error under\n{cite}`requirements.sdk.graph.agent-harness.tool_agent.isolation`.",
   "determination": true,
-  "rationale": "**Verdict:** the reviewed tests adequately check `requirements.sdk.graph.validation-context.pages.behavior`. I found no gap.\n\nI read `pages.rs` (`Pages::prepare`, `retain`, `get`) only to see whether paging is shared across tool kinds. It is: every kind goes through `retain` and `get`. The expected behavior below comes from the requirement text, not from that source.\n\n**Obligations and the tests that cover them**\n\n1. **Each page has the same result fields as the originating tool.**\n   - `search_pages_return_every_original_match_in_order` asserts `complete`, a UUID `search_id`, `instructions` on the first page only, and the exact entry shape (`node`, `file`, `selector`, `excerpt`, `tag`).\n   - `outline_continuations_keep_the_file_and_complete_ordered_items` asserts the `node` field on every page.\n   - `source_read_pages_retain_text_and_dependencies_without_another_read` asserts `page[\"node\"][\"selector\"]` on each page.\n   - `listing_continuations_return_complete_paths_from_the_original_listing` checks each file entry's `node` and `data`.\n\n2. **Text reads return successive portions of text.**\n   - `graph_read_pages_retain_the_prepared_snapshot_after_contents_change` uses a multibyte `é` string and asserts that the concatenated pages equal the original.\n   - `source_read_pages_retain_text_and_dependencies_without_another_read` rejoins the pages and compares them with the original.\n\n3. **Listings, outlines and searches return successive arrays of whole entries in original order.**\n   - Listing: 2000 files, with a file added after the first page. The collected nodes must equal the original ordered list.\n   - Outline: 400 items. The test checks per-item `node`, `file`, `selector` and `kind` in order, and that the read children match the outline items.\n   - Search: 350 matches. Each entry is compared with the exact expected JSON in order, and the total count must equal the line count.\n   - Each test asserts more than one page, and the outline and search tests assert non-empty pages.\n\n4. **Only a page with a successor includes `next`.**\n   - All loops end when `next` is absent and then check the total is complete.\n   - Non-empty-page assertions rule out a trailing page that is empty.\n   - `graph_read_pages_retain_the_prepared_snapshot_after_contents_change` asserts `next` is present exactly on the first of two pages.\n\n5. **Reusing a UUID returns the same page from the original snapshot, with the same successor UUID.**\n   - `search_obligations_follow_delivery_and_keep_the_original_snapshot` changes the file, fetches `next`, and later asserts that a second `get_next_page` returns identical `text`. About 300 hits span several pages, so the successor UUID is included in that comparison.\n   - Snapshot retention after the source changes is also asserted for outline, listing and both read kinds.\n   - Replay is only tested for search. `Pages::get` and `retain` are shared by all kinds, and `retain` builds the pages backwards so the same successor is always returned. A per-kind replay test would add little.\n\n6. **Malformed UUID, unknown UUID, or a UUID from another conversation returns a tool error.**\n   - Malformed (`\"invalid\"`) and unknown (all-zero UUID): `outline_continuations_keep_the_file_and_complete_ordered_items` asserts `is_err`.\n   - Another conversation: the search test asserts the peer session's `get_next_page` fails. `graph_page_ids_from_a_populated_peer_conversation_are_rejected` asserts an error result containing \"unknown page\" for a populated peer's UUID.\n\n**Conclusion:** each clause has a test that exercises it and asserts the outcome. The cited `requirements.sdk.graph.agent-harness.tool_agent.isolation` is applied in the cross-conversation tests. No acknowledgments are needed or present.",
+  "rationale": "The reviewed tests adequately cover `requirements.sdk.graph.validation-context.pages.behavior`.\n\n**Obligations and the tests that cover them**\n\n1. **Pages carry the originating tool's result fields.**\n   - `search_pages_return_every_original_match_in_order` checks `complete`, a UUID `search_id`, `instructions` on the first page only, and each match entry exactly (`node`, `file`, `selector`, `excerpt`, `tag`).\n   - `outline_continuations_keep_the_file_and_complete_ordered_items` checks `node` on every outline page and `file`/`selector` on every read page.\n   - `listing_continuations_return_complete_paths_from_the_original_listing` checks each `files` entry's `node` and `data`.\n   - `source_read_pages_retain_text_and_dependencies_without_another_read` checks `node.selector` on each page.\n\n2. **Text reads return successive portions of text.**\n   - `graph_read_pages_retain_the_prepared_snapshot_after_contents_change` uses multibyte text (`é` repeated 8192 times, then a suffix). It concatenates the page texts and asserts they equal the original.\n   - The root read in `outline_continuations_keep_the_file_and_complete_ordered_items` does the same over three or more pages (800 repeated lines of about 27 bytes each).\n   - `source_read_pages_retain_text_and_dependencies_without_another_read` rejoins the pages and compares them with the original.\n\n3. **Listings, outlines and searches return successive arrays of whole entries in original order.**\n   - Searches: 350 hits over several pages. Entries are compared in order with the expected values and the total count is asserted.\n   - Outlines: 401 items over several pages. Node, file, selector and kind are checked per item, in order.\n   - Listings: 2000 files over several pages. They are compared in order with the expected list, even though a file is added during paging.\n\n4. **Only a page with a successor includes `next`.**\n   - `graph_read_pages_retain_the_prepared_snapshot_after_contents_change` asserts `next` is present exactly on the first of two pages.\n   - The other paging loops stop only when `next` is absent. Together with the `pages > 1` assertions and exact item counts, this ties `next` to the existence of a successor.\n\n5. **Reusing a UUID returns the same page from the original snapshot, with the same successor UUID.**\n   - `search_obligations_follow_delivery_and_keep_the_original_snapshot` rewrites the file after the first search. It fetches the second page, then fetches it again and asserts the text is identical.\n   - The 300 entries span several 8 KiB pages, so the second page has a successor. The identical text therefore includes the same `next`.\n   - The page-reuse code (`Pages::get` and `Pages::retain`) is shared by all tool kinds, so a separate reuse test per kind is not needed.\n   - The other tests also confirm snapshot retention: files are changed after the first page, and later pages still match the original.\n\n6. **Malformed, unknown and cross-conversation UUIDs return a tool error.**\n   - Malformed (`\"invalid\"`) and unknown (an all-zero UUID) are asserted to error in `outline_continuations_keep_the_file_and_complete_ordered_items`.\n   - Another conversation: in `search_obligations_follow_delivery_and_keep_the_original_snapshot`, a peer session's `get_next_page` with the first session's `next` errors.\n   - `graph_page_ids_from_a_populated_peer_conversation_are_rejected` has a populated peer conversation present a foreign page UUID. It asserts an error result containing \"unknown page\".\n   - The `tool_agent.isolation` citation needs no separate coverage.\n\n**Gaps**\n\nNo gaps found. Reuse is asserted only through search pages, but all page kinds share the same retention and lookup code, so this does not leave a distinct scenario untested.",
   "references": "1ac80069e6c37d2808f2a07935fa541926528e3931df8b3a2c423e0fed2a9800",
   "inputs": [
     {
@@ -50,7 +50,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[outline_continuations_keep_the_file_and_complete_ordered_items]",
-      "hash": "4262a00a4ed996d847b5653066c4ef288121bdb4f3152f708dbb5ab03753e1a2"
+      "hash": "2bfd26b489fbc7df4d807d09d6d4f95915b8d8defe17f50370820a2c7acbb484"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
@@ -93,9 +93,14 @@
       "hash": "2d561c83a9ff2e00da108a8f61efd9f172ebc5ea1acf667348067a9b8e7794f2"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/tools.rs",
-      "item": "impl[SessionTools<'a,%20D>]/fn[dispatch]",
-      "hash": "8a7a903044c119af90d26b2c3279b6d9bb77b7deb39610c3e677d1a23cc9b327"
+      "file": "crates/trust-but-verify/src/agent/pages.rs",
+      "item": "impl[Pages<N,%20L>]/fn[prepare]",
+      "hash": "0e02a6079cbd11fd3402276f6375169ed2fc672a058523a9c92120d0227a994a"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/pages.rs",
+      "item": "impl[Pages<N,%20L>]/fn[retain]",
+      "hash": "5f12f3ad8dc268cfd69a34be990c876f5f41afd4465fe487a71a241368f8c4fd"
     },
     {
       "file": "crates/trust-but-verify/src/agent/pages.rs",
@@ -103,14 +108,14 @@
       "hash": "6693f86eede197c3335a3944df5f0cbdd6d30f727ac3236543b0b1f6a677e7a2"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/pages.rs",
-      "item": "const[PAGE_SIZE]",
-      "hash": "54115a25ac77772c8879c5d5752f5459e65fcb1f91ccfa735cc3c56c3abfb0d7"
+      "file": "crates/trust-but-verify/src/agent/tools.rs",
+      "item": "impl[SessionTools<'a,%20D>]/fn[dispatch]",
+      "hash": "8a7a903044c119af90d26b2c3279b6d9bb77b7deb39610c3e677d1a23cc9b327"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/pages.rs",
-      "item": "fn[chunks]",
-      "hash": "9c68375bd25402c0d5dc570e4468e9f15f6be7f383e13d38284cd9b9d6f9258a"
+      "file": "crates/trust-but-verify/src/agent/sources.rs",
+      "item": "impl[SourceSession<'_,%20P,%20F>/ToolSession<D>]/fn[dispatch]",
+      "hash": "d126fa277e48d439983ed557408fa43ea7d31c3f0719ce42a6fe45fb446e6d06"
     }
   ],
   "format_version": 1,
@@ -208,7 +213,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "92357226b875ac8179f1810da6e8ade3de411f593a969f33d4b1afa5f6ef11fd"
+          "value": "d9b239bf58e8ef763dbee045335f380d55b982bbf07c0df86939afd9162cd700"
         }
       ]
     },
@@ -354,14 +359,31 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tools.rs"
+              "location": "crates/trust-but-verify/src/agent/pages.rs"
             },
-            "selector": "impl[SessionTools<'a,%20D>]/fn[dispatch]"
+            "selector": "impl[Pages<N,%20L>]/fn[prepare]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ee4f2f935cd74128c8ec48f73a16002118078b956704fc6258a7bb8a80e82f6d"
+          "value": "949de3f3355817c67c076e7b78647def3b489b3ed5df9959d574d595ed414a6c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/pages.rs"
+            },
+            "selector": "impl[Pages<N,%20L>]/fn[retain]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "cbd2f725a28a2f650e2aeecc8a4c284292ecf7c357135e9b21905093fd7e1fed"
         }
       ]
     },
@@ -388,14 +410,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/pages.rs"
+              "location": "crates/trust-but-verify/src/agent/tools.rs"
             },
-            "selector": "const[PAGE_SIZE]"
+            "selector": "impl[SessionTools<'a,%20D>]/fn[dispatch]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ae419ae00fa49bc8ffc28856c0279c34d8fc55e07e8907180323ef433b6f9c5c"
+          "value": "ee4f2f935cd74128c8ec48f73a16002118078b956704fc6258a7bb8a80e82f6d"
         }
       ]
     },
@@ -405,14 +427,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/pages.rs"
+              "location": "crates/trust-but-verify/src/agent/sources.rs"
             },
-            "selector": "fn[chunks]"
+            "selector": "impl[SourceSession<'_,%20P,%20F>/ToolSession<D>]/fn[dispatch]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ed20ac5bc7696893cec8dc3a70d7b56c4fad36613babe2e8dde0a1acaff37460"
+          "value": "b677b726e62311e8f42897d03988cde0dd646f01ff1c082f7b6e4017a75d04de"
         }
       ]
     }

@@ -214,7 +214,7 @@ text remains, pass `next` to `get_next_page`.
 ```text
 read_node(NodeAddress) -> {text: string, next?: UUID}
 // For a source node the result has these additional fields:
-{file: string, selector: string, children: {node: NodeId, file: string, selector: string}[]}
+{file: string, selector: string, children: {node: NodeId, file: string, selector: string, header?: string}[]}
 ```
 :::
 
@@ -250,21 +250,35 @@ again at this point would record a fingerprint for code the model never saw.
 :::
 
 :::{req} read_node.source_children
-For a source node, `read_node` includes the project-relative `file`, its `selector`, and `children` in the result. Each child entry contains `{node, file, selector}` for one immediate outline child in source order. A leaf has an empty child list. Render the selected item's own source under {cite}`requirements.sdk.outlines.node_contents`. Listing a child records no dependency on its contents or on the set of children. Reading that child records its own fingerprint.
+For a source node, `read_node` includes the project-relative `file`, its `selector`, and `children` in the result. Each child entry contains `{node, file, selector}` for one immediate outline child in source order. When the language defines a declaration header for the child, its entry also includes `header`, the text of that span under {cite}`requirements.sdk.outlines.source_spans` with credential redaction. A leaf has an empty child list. Render the selected item's own source under {cite}`requirements.sdk.outlines.node_contents`. Listing a child records no dependency on its contents or on the set of children. Reading that child records its own fingerprint.
 :::
 
 :::{example} reading_an_outline_parent
 {cite}`requirements.sdk.graph.validation-context.read_node.source_children`
 
-Suppose `src/parser.rs` defines `impl Parser` with one method. The agent's first call can be `read_node({"path":"src/parser.rs","location":"impl[Parser]"})`. One possible response is:
+The file `parser.rs` contains:
 
-```json
-{"file":"src/parser.rs","selector":"impl[Parser]","text":"impl Parser { … }","children":[
-  {"node":9,"file":"src/parser.rs","selector":"impl[Parser]/fn[parse]"}
-]}
+```rust,ignore
+impl Parser { fn parse(&self) -> bool { true } }
 ```
 
-Editing the method body alone preserves the impl read's fingerprint. If the agent also calls `read_node({"node":9})`, its evidence depends on the method body.
+The agent calls `read_node({"path":"parser.rs","location":"impl[Parser]"})`. With node ID `2` assigned to `parse`, the tool returns:
+
+```json
+{
+  "file": "parser.rs",
+  "selector": "impl[Parser]",
+  "text": "impl Parser { … }",
+  "children": [{
+    "node": 2,
+    "file": "parser.rs",
+    "selector": "impl[Parser]/fn[parse]",
+    "header": "fn parse(&self) -> bool {"
+  }]
+}
+```
+
+Changing `true` to `false` preserves the fingerprint recorded for the impl. The agent can call `read_node({"node":2})` to see the method body and record the method's fingerprint.
 :::
 
 ## Selecting a node's outgoing edges

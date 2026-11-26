@@ -74,8 +74,15 @@ impl<'a, D: Domain> SessionTools<'a, D> {
                 let id = crate::outline::OutlineData::new(&address.path, child.selector.clone())
                     .map_err(io::Error::other)?;
                 let child_node = project.intern_source(&id)?;
-                children
-                    .push(json!({"node":child_node,"file":address.path,"selector":child.selector}));
+                let mut entry =
+                    json!({"node":child_node,"file":address.path,"selector":child.selector});
+                if let Some(header) = child
+                    .header_span
+                    .and_then(|span| item.source_span_redacted(span))
+                {
+                    entry["header"] = json!(header);
+                }
+                children.push(entry);
             }
             source = Some((
                 json!({"file":address.path,"selector":item.id().selector}),
