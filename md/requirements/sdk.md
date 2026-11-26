@@ -217,7 +217,7 @@ The chapters introduce each interface and the tools used with it:
 | [Graph nodes](sdk/graph.md) | Node identities, stable paths, contents, and fingerprints. | [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html), [`NodeContents`](../rustdocs/trust_but_verify/domain/trait.NodeContents.html) |
 | [Graph edges](sdk/graph-edges.md) | Relationship labels and successor lookup. | [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html) |
 | [Criteria](sdk/graph/criteria.md) | Criterion types, completed answers, identity, review rules, and execution. | [`Criterion`](../rustdocs/trust_but_verify/graph/trait.Criterion.html) |
-| [Running criteria](sdk/graph/running-criteria.md) | Execute criteria and check or reuse saved evidence. | `verify`, `refresh_evidence` |
+| [Running criteria](sdk/graph/running-criteria.md) | Execute criteria and check or reuse saved evidence. | `Validator`, `UsageStats` |
 | [Validation context](sdk/graph/validation-context.md) | Tools for evaluating a criterion and recording its inputs. | [`ValidationContext`](../rustdocs/trust_but_verify/request/struct.ValidationContext.html) |
 | [Agent calls](sdk/graph/agent-calls.md) | Prompt construction and typed answers. | [`Context`](../rustdocs/trust_but_verify/request/trait.Context.html), [`Ask`](../rustdocs/trust_but_verify/request/struct.Ask.html) |
 | [Agent harness](sdk/graph/agent-harness.md) | Agent configuration, fixed inspection tools, and structured submissions. | [`AgentConfig`](../rustdocs/trust_but_verify/agent/enum.AgentConfig.html) |

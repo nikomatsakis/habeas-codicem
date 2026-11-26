@@ -4,6 +4,7 @@ use crate::graph::CriterionPath;
 use crate::graph::Fingerprint;
 use crate::graph::NodePath;
 use crate::graph::Record;
+use crate::graph::UsageStats;
 use std::future::Future;
 use std::hash::Hash;
 
@@ -51,6 +52,7 @@ impl<D: Domain> std::hash::Hash for NodeId<D> {
 /// Shared node identities, source snapshots, and agent configuration for a domain.
 // {impl}`requirements.sdk.validation-cache.ValidationCache`
 pub struct ValidationCache<D: Domain> {
+    pub(crate) usage: Arc<Mutex<crate::graph::UsageStats>>,
     nodes: Arc<Mutex<indexmap::IndexSet<Arc<D::NodeData>>>>,
     pub(crate) source_addresses: Arc<Mutex<HashMap<NodeId<D>, crate::outline::OutlineData>>>,
     pub(crate) outlines: Arc<Mutex<HashMap<PathBuf, CachedFile>>>,
@@ -72,6 +74,7 @@ pub(crate) struct CachedFile {
 impl<D: Domain> Clone for ValidationCache<D> {
     fn clone(&self) -> Self {
         Self {
+            usage: self.usage.clone(),
             nodes: self.nodes.clone(),
             source_addresses: self.source_addresses.clone(),
             outlines: self.outlines.clone(),
@@ -84,6 +87,7 @@ impl<D: Domain> Clone for ValidationCache<D> {
 impl<D: Domain> Default for ValidationCache<D> {
     fn default() -> Self {
         Self {
+            usage: Default::default(),
             nodes: Default::default(),
             source_addresses: Default::default(),
             outlines: Default::default(),
@@ -97,6 +101,12 @@ impl<D: Domain> ValidationCache<D> {
     // {impl}`requirements.sdk.validation-cache.new`
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Snapshot provider usage across all clones of this cache.
+    // {impl}`requirements.sdk.validation-cache.usage`
+    pub fn usage(&self) -> UsageStats {
+        *self.usage.lock().expect("usage lock poisoned")
     }
 
     /// Return the handle for this durable identity in this cache.

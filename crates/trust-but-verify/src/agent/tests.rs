@@ -492,6 +492,8 @@ impl Criterion<Memory> for Question {
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
 // {test}`requirements.sdk.graph.agent-harness.tool_agent`
 // {test}`requirements.sdk.graph.agent-harness.with_agent`
+// {test}`requirements.sdk.graph.running-criteria.Validator`
+// {test}`requirements.sdk.validation-cache.usage`
 #[tokio::test]
 async fn agent_executions_isolate_conversations_and_dependency_traces() {
     let mut graph = Memory::new("source".into());
@@ -506,22 +508,37 @@ async fn agent_executions_isolate_conversations_and_dependency_traces() {
         name: name.into(),
         successors,
     };
+    let mut alpha_validator = validation::Validator::new(&graph);
+    let mut beta_validator = validation::Validator::new(&graph);
+    let cache = graph.cache().clone();
+    let initial = cache.usage();
     let (alpha, beta) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         futures::join!(
             crate::agent_runtime::verify_with_agent(
-                &graph,
+                &mut alpha_validator,
                 agent.as_ref(),
                 question("alpha", false)
             ),
-            crate::agent_runtime::verify_with_agent(&graph, agent.as_ref(), question("beta", true)),
+            crate::agent_runtime::verify_with_agent(
+                &mut beta_validator,
+                agent.as_ref(),
+                question("beta", true)
+            ),
         )
     })
     .await
     .unwrap();
     let (alpha, beta) = (alpha.unwrap(), beta.unwrap());
+    assert_eq!(alpha_validator.usage().attempts, 3);
+    assert_eq!(beta_validator.usage().attempts, 3);
+    assert_eq!(cache.usage().attempts, 6);
+    assert_eq!(initial.attempts, 0);
     assert_eq!(alpha.output(), "alpha");
     assert_eq!(beta.output(), "beta");
-    validation::store_evidence(&graph, &alpha).await.unwrap();
+    validation::Validator::new(&graph)
+        .store_evidence(&alpha)
+        .await
+        .unwrap();
     {
         let calls = agent.provider.calls.lock().unwrap();
         assert_eq!(calls["alpha"], 3);
@@ -535,7 +552,10 @@ async fn agent_executions_isolate_conversations_and_dependency_traces() {
         .await
         .unwrap()
         .unwrap();
-    validation::store_evidence(&graph, &beta).await.unwrap();
+    validation::Validator::new(&graph)
+        .store_evidence(&beta)
+        .await
+        .unwrap();
     let beta_record = graph
         .load_evidence(
             &graph.cache().intern_node(Node(1)),
@@ -572,7 +592,8 @@ async fn agent_executions_isolate_conversations_and_dependency_traces() {
             ]
     );
     assert_eq!(
-        validation::load_evidence(&graph, &question("alpha", false))
+        validation::Validator::new(&graph)
+            .load_evidence(&question("alpha", false))
             .await
             .unwrap()
             .unwrap()
@@ -714,21 +735,26 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
     ]));
     let agent = Arc::new(agent);
     assert!(
-        validation::load_evidence(&graph, &EdgeReview(graph.cache().intern_node(1)))
+        validation::Validator::new(&graph)
+            .load_evidence(&EdgeReview(graph.cache().intern_node(1)))
             .await
             .unwrap()
             .is_none()
     );
     let result = crate::agent_runtime::verify_with_agent(
-        &graph,
+        &mut validation::Validator::new(&graph),
         agent.as_ref(),
         EdgeReview(graph.cache().intern_node(1)),
     )
     .await
     .unwrap();
     assert!(result.output().result);
-    validation::store_evidence(&graph, &result).await.unwrap();
-    let saved = validation::load_evidence(&graph, &EdgeReview(graph.cache().intern_node(1)))
+    validation::Validator::new(&graph)
+        .store_evidence(&result)
+        .await
+        .unwrap();
+    let saved = validation::Validator::new(&graph)
+        .load_evidence(&EdgeReview(graph.cache().intern_node(1)))
         .await
         .unwrap()
         .unwrap();
@@ -1169,10 +1195,12 @@ async fn deterministic_validation_uses_required_storage_without_an_agent() {
             .await,
         Err(ValidationError::NoAgentConfigured)
     ));
-    let result = validation::verify(&graph, Review(graph.cache().intern_node(Node(1))))
+    let mut validator = validation::Validator::new(&graph);
+    let result = validator
+        .verify(Review(graph.cache().intern_node(Node(1))))
         .await
         .unwrap();
-    validation::store_evidence(&graph, &result).await.unwrap();
+    validator.store_evidence(&result).await.unwrap();
     let saved = graph
         .load_evidence(
             &graph.cache().intern_node(Node(1)),
@@ -1556,6 +1584,205 @@ fn throttled() -> io::Error {
     )
 }
 
+// {test}`requirements.sdk.graph.running-criteria.Validator.usage`
+// {test}`requirements.sdk.graph.running-criteria.UsageStats`
+// {test}`requirements.sdk.graph.running-criteria.TokenCount`
+// {test}`requirements.sdk.graph.running-criteria.Validator`
+// {test}`requirements.sdk.graph.running-criteria.Validator.new`
+// {test}`requirements.sdk.graph.running-criteria.usage_after_failure`
+// {test}`requirements.sdk.validation-cache.usage`
+#[tokio::test(start_paused = true)]
+async fn validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse() {
+    let graph = Memory::new("source".into());
+    let question = || Question {
+        subject: graph.cache().intern_node(Node(1)),
+        name: "check".into(),
+        successors: false,
+    };
+    let mut answer = tool_turn(
+        FinishReason::ToolCalls,
+        vec![("submit_result", json!({"result":"ok"}))],
+    );
+    answer.usage = Usage::new()
+        .input_tokens(120)
+        .output_tokens(15)
+        .cached_input_tokens(20)
+        .reasoning_tokens(0);
+    let agent = ToolAgent::new(Scenario::new(vec![
+        Err(throttled()),
+        Ok(answer),
+        Err(io::Error::other("terminal")),
+    ]));
+    let mut validator = Validator::new(&graph);
+    let evidence = verify_with_agent(&mut validator, &agent, question())
+        .await
+        .unwrap();
+    validator.store_evidence(&evidence).await.unwrap();
+    validator.refresh_evidence(question()).await.unwrap();
+    let before_failure = graph.cache().usage();
+    assert_eq!(before_failure.attempts, 2);
+    assert!(
+        verify_with_agent(&mut validator, &agent, question())
+            .await
+            .is_err()
+    );
+    for stats in [*validator.usage(), graph.cache().usage()] {
+        assert_eq!(
+            (stats.attempts, stats.retries, stats.failed_attempts),
+            (3, 1, 2)
+        );
+        assert_eq!(
+            (
+                stats.input_tokens.reported,
+                stats.input_tokens.missing_attempts
+            ),
+            (120, 2)
+        );
+        assert_eq!(
+            (
+                stats.output_tokens.reported,
+                stats.output_tokens.missing_attempts
+            ),
+            (15, 2)
+        );
+        assert_eq!(stats.cached_input_tokens.reported, 20);
+        assert_eq!(stats.cache_creation_input_tokens.missing_attempts, 3);
+        assert_eq!(
+            (
+                stats.reasoning_tokens.reported,
+                stats.reasoning_tokens.missing_attempts
+            ),
+            (0, 2)
+        );
+    }
+    let fresh = Validator::new(&graph);
+    let zero = fresh.usage();
+    assert_eq!(
+        (zero.attempts, zero.retries, zero.failed_attempts),
+        (0, 0, 0)
+    );
+    for count in [
+        zero.input_tokens,
+        zero.output_tokens,
+        zero.cached_input_tokens,
+        zero.cache_creation_input_tokens,
+        zero.reasoning_tokens,
+    ] {
+        assert_eq!((count.reported, count.missing_attempts), (0, 0));
+    }
+    assert_eq!(before_failure.failed_attempts, 1);
+}
+
+// {test}`requirements.sdk.validation-cache.cache`
+// {test}`requirements.sdk.validation-cache.shared_usage`
+// {test}`requirements.sdk.validation-cache.usage`
+// {test}`requirements.sdk.graph.running-criteria.UsageStats`
+// {test}`requirements.sdk.graph.running-criteria.TokenCount`
+#[tokio::test(start_paused = true)]
+async fn cache_retains_usage_across_validators_and_sums_each_token_category() {
+    let graph = Memory::new("source".into());
+    let peer = graph.clone();
+    let cache = peer.cache().clone();
+    let question = || Question {
+        subject: graph.cache().intern_node(Node(1)),
+        name: "check".into(),
+        successors: false,
+    };
+    let answer = |usage| {
+        let mut response = tool_turn(
+            FinishReason::ToolCalls,
+            vec![("submit_result", json!({"result":"ok"}))],
+        );
+        response.usage = usage;
+        Ok(response)
+    };
+    let agent = ToolAgent::new(Scenario::new(vec![
+        Err(throttled()),
+        answer(
+            Usage::new()
+                .input_tokens(12)
+                .output_tokens(9)
+                .cached_input_tokens(3)
+                .cache_creation_input_tokens(2)
+                .reasoning_tokens(5),
+        ),
+        answer(
+            Usage::new()
+                .input_tokens(7)
+                .output_tokens(4)
+                .cached_input_tokens(2)
+                .cache_creation_input_tokens(1)
+                .reasoning_tokens(3),
+        ),
+    ]));
+    {
+        let mut first = Validator::new(&graph);
+        let mut second = Validator::new(&peer);
+        verify_with_agent(&mut first, &agent, question())
+            .await
+            .unwrap();
+        verify_with_agent(&mut second, &agent, question())
+            .await
+            .unwrap();
+        assert_eq!(first.usage().attempts, 2);
+        assert_eq!(second.usage().attempts, 1);
+    }
+    let total = cache.usage();
+    assert_eq!(graph.cache().usage().attempts, 3);
+    assert_eq!(peer.cache().usage().attempts, 3);
+    assert_eq!(
+        (total.attempts, total.retries, total.failed_attempts),
+        (3, 1, 1)
+    );
+    for (count, sum) in [
+        (total.input_tokens, 19),
+        (total.output_tokens, 13),
+        (total.cached_input_tokens, 5),
+        (total.cache_creation_input_tokens, 3),
+        (total.reasoning_tokens, 8),
+    ] {
+        assert_eq!((count.reported, count.missing_attempts), (sum, 1));
+    }
+}
+
+// {test}`requirements.sdk.validation-cache.usage`
+// {test}`requirements.sdk.graph.running-criteria.Validator.usage`
+#[tokio::test(start_paused = true)]
+async fn dropping_an_inflight_request_preserves_its_attempt() {
+    struct WaitingProvider;
+    impl CompletionProvider for WaitingProvider {
+        async fn complete(&self, _: CompletionRequest) -> io::Result<CompletionResponse> {
+            std::future::pending().await
+        }
+    }
+    let graph = Memory::new("source".into());
+    let mut validator = Validator::new(&graph);
+    let agent = ToolAgent::new(WaitingProvider);
+    let question = Question {
+        subject: graph.cache().intern_node(Node(1)),
+        name: "check".into(),
+        successors: false,
+    };
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            verify_with_agent(&mut validator, &agent, question)
+        )
+        .await
+        .is_err()
+    );
+    for stats in [*validator.usage(), graph.cache().usage()] {
+        assert_eq!(
+            (
+                stats.attempts,
+                stats.failed_attempts,
+                stats.input_tokens.missing_attempts
+            ),
+            (1, 0, 1)
+        );
+    }
+}
+
 // {test}`requirements.sdk.graph.agent-calls.judge.submission`
 // {test}`requirements.sdk.graph.validation-context.tracked_inspection`
 #[tokio::test]
@@ -1703,6 +1930,7 @@ impl Conversation for MinimalConversation {
 // {test}`requirements.authoring.provider_backoff`
 // {test}`requirements.authoring.output_limit`
 // {test}`requirements.authoring.submission_count`
+// {test}`requirements.sdk.graph.running-criteria.UsageStats`
 #[tokio::test(start_paused = true)]
 async fn generic_conversations_can_use_default_telemetry_through_retry_and_continuation() {
     let provider = Scenario::new(vec![
@@ -1726,9 +1954,12 @@ async fn generic_conversations_can_use_default_telemetry_through_retry_and_conti
             ],
         )),
     ]);
+    let domain = Memory::new(String::new());
+    let ctx = ValidationContext::new(&domain, domain.cache().intern_node(Node(0)));
     let mut session = MinimalConversation::default();
     assert!(
         converse(
+            &ctx,
             &provider,
             &mut session,
             CompletionRequest::new("review"),
@@ -1736,6 +1967,12 @@ async fn generic_conversations_can_use_default_telemetry_through_retry_and_conti
         )
         .await
         .unwrap()
+    );
+    // The successful retry dispatches a tool. The next turn and continuation are fresh requests.
+    let usage = domain.cache().usage();
+    assert_eq!(
+        (usage.attempts, usage.retries, usage.failed_attempts),
+        (4, 1, 1)
     );
     assert_eq!(session.dispatched, 1);
     let requests = provider.requests.lock().unwrap();
@@ -1854,8 +2091,9 @@ async fn behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprin
         json!({"result":expected}),
     )])]);
     let agent = Arc::new(ToolAgent::new(provider));
+    let mut validator = validation::Validator::new(&domain);
     let inputs = crate::agent_runtime::verify_with_agent(
-        &domain,
+        &mut validator,
         agent.as_ref(),
         BehavioralAdequacy {
             requirement: domain.cache().intern_node(Node(1)),
@@ -1864,7 +2102,7 @@ async fn behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprin
     )
     .await
     .unwrap();
-    validation::store_evidence(&domain, &inputs).await.unwrap();
+    validator.store_evidence(&inputs).await.unwrap();
     assert_eq!(inputs.output(), &expected);
     assert_eq!(inputs.criterion_path().segments(), ["behavior"]);
     assert_eq!(*domain.reads.lock().unwrap(), [1, 2]);
@@ -1879,31 +2117,27 @@ async fn behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprin
     assert!(inputs.dependencies().iter().any(|dep| matches!(dep,
         Dependency::OutgoingEdges(observed, Label, fp) if *observed == domain.cache().intern_node(Node(1)) && *fp == edge_fingerprint(&domain, &[domain.cache().intern_node(Node(2))]))));
     assert_eq!(domain.records.lock().unwrap().len(), 1);
-    assert!(validation::check_inputs(&domain, &inputs).unwrap());
-    let restored = validation::load_evidence(
-        &domain,
-        &BehavioralAdequacy {
+    assert!(validator.check_inputs(&inputs).unwrap());
+    let restored = validator
+        .load_evidence(&BehavioralAdequacy {
             requirement: domain.cache().intern_node(Node(1)),
             review_policy: "Review test adequacy.".into(),
-        },
-    )
-    .await
-    .unwrap()
-    .unwrap();
+        })
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(restored.output(), &expected);
     assert!(restored.source_node_id() == inputs.source_node_id());
     assert_eq!(restored.criterion_path(), inputs.criterion_path());
     assert_eq!(restored.version(), inputs.version());
     assert!(restored.dependencies() == inputs.dependencies());
-    let reused = validation::refresh_evidence(
-        &domain,
-        BehavioralAdequacy {
+    let reused = validator
+        .refresh_evidence(BehavioralAdequacy {
             requirement: domain.cache().intern_node(Node(1)),
             review_policy: "Review test adequacy.".into(),
-        },
-    )
-    .await
-    .unwrap();
+        })
+        .await
+        .unwrap();
     assert_eq!(reused.output(), &expected);
     assert!(reused.dependencies() == inputs.dependencies());
     assert_eq!(domain.records.lock().unwrap().len(), 1);
@@ -1912,7 +2146,7 @@ async fn behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprin
         .lock()
         .unwrap()
         .insert(2, "Only earlier times are tested.".into());
-    assert!(!validation::check_inputs(&domain, &inputs).unwrap());
+    assert!(!validator.check_inputs(&inputs).unwrap());
     let requests = agent.provider.requests.lock().unwrap();
     assert_eq!(requests.len(), 1);
     assert_eq!(

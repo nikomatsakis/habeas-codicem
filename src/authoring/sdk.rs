@@ -254,6 +254,7 @@ where
                     Operation::Verify(..) => "submit_verification",
                 };
                 let value = converse_observed(
+                    inspection,
                     &*self.0,
                     sources,
                     usage,
@@ -326,6 +327,19 @@ pub(super) async fn verify(
     Ok(output)
 }
 
+/// Publish this assessment's counters even if its future is dropped during a request or backoff.
+struct AssessmentUsage<'d, 'log> {
+    validator: trust_but_verify::graph::Validator<'d, HabeasDomain>,
+    log: &'log mut UsageLog,
+}
+
+impl Drop for AssessmentUsage<'_, '_> {
+    // {impl}`requirements.authoring.usage_requests`
+    fn drop(&mut self) {
+        self.log.record.provider_usage = *self.validator.usage();
+    }
+}
+
 async fn run(
     provider: &impl CompletionProvider,
     sources: &mut AssessmentSources,
@@ -350,6 +364,10 @@ async fn run(
     let criterion = node.review_criterion();
     let graph = sources.domain.clone();
     let node = graph.cache().intern_node(node);
+    let mut assessment = AssessmentUsage {
+        validator: trust_but_verify::graph::Validator::new(&graph),
+        log: usage,
+    };
     let state = Arc::new(ReviewState {
         system: match &operation {
             Operation::Assess => initial_prompt(sources)?.system,
@@ -358,7 +376,7 @@ async fn run(
             }
         },
         operation,
-        conversation: Mutex::new(Some((sources, usage))),
+        conversation: Mutex::new(Some((sources, &mut *assessment.log))),
         agent_failure: Mutex::new(None),
     });
     let agent = ReviewAgent(provider, state.clone());
@@ -367,23 +385,32 @@ async fn run(
         node,
         state: state.clone(),
     };
-    let verified =
-        match trust_but_verify::agent_runtime::verify_with_agent(&graph, &agent, review).await {
-            Ok(result) => result,
-            Err(ValidationError::Graph(error)) => return Err(error),
-            Err(ValidationError::Agent(message)) => {
-                return Err(state
-                    .agent_failure
-                    .lock()
-                    .expect("review error lock")
-                    .take()
-                    .unwrap_or_else(|| io::Error::other(message)));
-            }
-            Err(ValidationError::NoAgentConfigured) => {
-                return Err(io::Error::other("no agent is configured"));
-            }
-            Err(ValidationError::Output(error)) => return Err(io::Error::other(error)),
-        };
+    let result = trust_but_verify::agent_runtime::verify_with_agent(
+        &mut assessment.validator,
+        &agent,
+        review,
+    )
+    .await;
+    let agent_failure = state
+        .agent_failure
+        .lock()
+        .expect("review error lock")
+        .take();
+    drop(agent);
+    drop(state);
+    drop(assessment);
+    usage.save()?;
+    let verified = match result {
+        Ok(result) => result,
+        Err(ValidationError::Graph(error)) => return Err(error),
+        Err(ValidationError::Agent(message)) => {
+            return Err(agent_failure.unwrap_or_else(|| io::Error::other(message)));
+        }
+        Err(ValidationError::NoAgentConfigured) => {
+            return Err(io::Error::other("no agent is configured"));
+        }
+        Err(ValidationError::Output(error)) => return Err(io::Error::other(error)),
+    };
     Ok(trust_but_verify::graph::Record::new(
         verified.version().cloned(),
         verified
@@ -543,28 +570,25 @@ mod tests {
         assert_eq!(review().source_node_id(), node);
         assert_eq!(review().criterion_path().segments(), ["review"]);
         assert_eq!(review().version().as_str(), crate::sdk::REVIEW_VERSION);
-        assert!(
-            validation::load_evidence(&graph, &review())
-                .await
-                .unwrap()
-                .is_none()
-        );
+        let mut validator = validation::Validator::new(&graph);
+        assert!(validator.load_evidence(&review()).await.unwrap().is_none());
         assert!(!path.exists());
         assert!(provider.requests.lock().unwrap().is_empty());
 
-        let fingerprinted =
-            trust_but_verify::agent_runtime::verify_with_agent(&graph, agent.as_ref(), review())
-                .await
-                .unwrap();
+        let fingerprinted = trust_but_verify::agent_runtime::verify_with_agent(
+            &mut validator,
+            agent.as_ref(),
+            review(),
+        )
+        .await
+        .unwrap();
         let answer = fingerprinted.output();
         assert_eq!(answer["determination"], false);
         assert_eq!(answer["rationale"], "The readiness case is missing.");
         assert!(answer.get("result").is_none());
         assert!(answer.get("metadata").is_none());
         assert!(!path.exists());
-        validation::store_evidence(&graph, &fingerprinted)
-            .await
-            .unwrap();
+        validator.store_evidence(&fingerprinted).await.unwrap();
         let saved = fs::read(&path).unwrap();
         let record = graph
             .load_evidence(&node, &review().criterion_path())
@@ -577,12 +601,9 @@ mod tests {
         );
         assert_eq!(record.output, *answer);
         assert!(!record.dependencies.is_empty());
-        let cached = validation::load_evidence(&graph, &review())
-            .await
-            .unwrap()
-            .unwrap();
+        let cached = validator.load_evidence(&review()).await.unwrap().unwrap();
         assert!(review().version().is_compatible_with(cached.version()));
-        assert!(validation::check_inputs(&graph, &cached).unwrap());
+        assert!(validator.check_inputs(&cached).unwrap());
         assert_eq!(cached.output(), answer);
         assert_eq!(provider.requests.lock().unwrap().len(), 1);
         assert_eq!(fs::read(&path).unwrap(), saved);

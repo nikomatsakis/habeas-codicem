@@ -564,7 +564,7 @@ minimum delay even when longer than the window. A successful response MUST reset
 backoff for the next completion request, and interruption MUST cancel both the
 wait and further retries.
 
-Each attempt MUST be recorded under {cite}`requirements.authoring.usage_requests`.
+Each attempt MUST count toward the assessment totals under {cite}`requirements.authoring.usage_requests`.
 Hidden SDK retries MUST remain disabled so the harness can account for attempts.
 Transient retries MUST NOT be reported as finished judgments or terminal
 assessment errors while recovery is still in progress. Pending inputs MUST be
@@ -2231,19 +2231,11 @@ listings as evidence or source inputs.
 :::
 
 :::{req} usage_requests.failures
-Usage MUST record, for each failed provider request, its HTTP status and
-provider error code when the provider reports them, and whether the harness
-retried it. It MUST NOT record the failure's message text.
+Each assessment’s usage record MUST include its total failed provider attempts and retries, including failures recovered by a successful retry. A terminal failure MUST retain the accumulated counts.
 :::
 
 :::{req} usage_requests
-Usage MUST record each provider request's outcome and available input/output
-token counts, including retries, with cached or reasoning-token counts when
-provided, and for a failed request the failure under
-{cite}`requirements.authoring.usage_requests.failures`. Missing measurements MUST be recorded as unavailable, not zero.
-Run totals MUST include request and tool-call counts by tool, elapsed time, and
-available token usage, identifying incomplete totals without double counting
-provider counters that overlap.
+HC MUST use one {term}`requirements.sdk.graph.running-criteria.validator` per assessment. Its usage record MUST report that validator’s attempt and token totals under {cite}`requirements.sdk.graph.running-criteria.Validator.usage` and its failure and retry counts under {cite}`requirements.authoring.usage_requests.failures`. The record MUST distinguish partial or unavailable token measurements from complete totals and preserve the available cache and reasoning breakdowns. The assessment MUST also report elapsed time and tool-call counts by tool.
 :::
 
 ### CI without inference

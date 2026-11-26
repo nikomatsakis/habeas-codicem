@@ -1,7 +1,7 @@
 {
-  "requirement": "When a provider reports a transient failure, the harness MUST wait and retry\nthe same completion request. Transient failures are throttling, reported\nthrough HTTP 429 or a Bedrock `ThrottlingException`; temporary unavailability,\nreported through HTTP 500, 502, 503, or 504 or a Bedrock\n`ServiceUnavailableException`, `InternalServerException`, or\n`ModelNotReadyException`; and a request with no response after ten minutes,\nwhich the harness MUST abandon. The retry MUST retain its prompt, history,\ntools, and pending inputs. It MUST NOT\nrestart the assessment or repeat already completed tool calls. A permanent\ninput/context-length error, authentication failure, or invalid request MUST\nremain an error; mentioning tokens in an error message alone MUST NOT trigger\nretries.\n\nThe backoff window MUST start at one second and double after each consecutive\ntransient failure, up to sixty seconds. Each delay MUST be randomly selected\nbetween half and all of that window to spread parallel retries. An available\nprovider `Retry-After` value, in seconds or HTTP-date form, MUST be honored as a\nminimum delay even when longer than the window. A successful response MUST reset\nbackoff for the next completion request, and interruption MUST cancel both the\nwait and further retries.\n\nEach attempt MUST be recorded under {cite}`requirements.authoring.usage_requests`.\nHidden SDK retries MUST remain disabled so the harness can account for attempts.\nTransient retries MUST NOT be reported as finished judgments or terminal\nassessment errors while recovery is still in progress. Pending inputs MUST be\nrecorded as evidence only after the request succeeds.\n{cite}`requirements.authoring.provider` {cite}`requirements.authoring.delivered_inputs`",
+  "requirement": "When a provider reports a transient failure, the harness MUST wait and retry\nthe same completion request. Transient failures are throttling, reported\nthrough HTTP 429 or a Bedrock `ThrottlingException`; temporary unavailability,\nreported through HTTP 500, 502, 503, or 504 or a Bedrock\n`ServiceUnavailableException`, `InternalServerException`, or\n`ModelNotReadyException`; and a request with no response after ten minutes,\nwhich the harness MUST abandon. The retry MUST retain its prompt, history,\ntools, and pending inputs. It MUST NOT\nrestart the assessment or repeat already completed tool calls. A permanent\ninput/context-length error, authentication failure, or invalid request MUST\nremain an error; mentioning tokens in an error message alone MUST NOT trigger\nretries.\n\nThe backoff window MUST start at one second and double after each consecutive\ntransient failure, up to sixty seconds. Each delay MUST be randomly selected\nbetween half and all of that window to spread parallel retries. An available\nprovider `Retry-After` value, in seconds or HTTP-date form, MUST be honored as a\nminimum delay even when longer than the window. A successful response MUST reset\nbackoff for the next completion request, and interruption MUST cancel both the\nwait and further retries.\n\nEach attempt MUST count toward the assessment totals under {cite}`requirements.authoring.usage_requests`.\nHidden SDK retries MUST remain disabled so the harness can account for attempts.\nTransient retries MUST NOT be reported as finished judgments or terminal\nassessment errors while recovery is still in progress. Pending inputs MUST be\nrecorded as evidence only after the request succeeds.\n{cite}`requirements.authoring.provider` {cite}`requirements.authoring.delivered_inputs`",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation in `requirements.authoring.provider_backoff`. I found no gap.\n\n**Transient classification**\n- `retries_throttling_unavailability_and_timeouts_but_not_permanent_errors` in `crates/trust-but-verify/src/agent/providers.rs` checks every listed class for a retry delay:\n  - HTTP 429, 500, 502, 503 and 504.\n  - Bedrock `ThrottlingException`, `ServiceUnavailableException`, `InternalServerException` and `ModelNotReadyException`.\n  - An `io::ErrorKind::TimedOut` error.\n- `transient_bedrock_codes_retry_whatever_their_http_status` checks that the Bedrock codes retry under non-transient statuses.\n- `unanswered_requests_are_abandoned_and_retried` in `src/authoring/mod.rs` uses a hanging provider. It asserts that about 600 seconds elapse, a second request is made, the first request is logged as failed and the second as completed.\n- `rig_failures_keep_their_provider_report_for_backoff` checks that wrapped Rig failures still classify correctly.\n\n**Permanent errors stay errors**\n- Statuses 400, 403 and 501 and an unclassified error all give no delay in `retries_throttling_unavailability_and_timeouts_but_not_permanent_errors`.\n- The same test checks that the message \"Too many tokens; HTTP 429\" does not trigger a retry, which covers the rule that mentioning tokens alone must not.\n- `permanent_provider_failure_returns_without_waiting_or_retrying` returns the error after exactly one request with zero elapsed time. It also checks that the failure is logged as `retried: false`.\n\n**Retry keeps the request intact**\n- `throttled_requests_retry_unchanged_and_record_every_attempt` makes five throttled failures and then a success. It asserts that all six requests are identical.\n- `success_resets_backoff_and_retries_keep_history_without_repeating_tools` asserts that retry requests equal the failed ones, that the tool ran once, and that the input was recorded only after the retried request succeeded.\n- The `ToolAgent` tests in `crates/trust-but-verify/src/agent/tests.rs` compare the retried request to the original and check that the history is preserved.\n- `cancelling_during_backoff_prevents_another_request` asserts that no inputs are recorded after a failed request.\n\n**Backoff window and jitter**\n- `jittered_backoff_grows_to_a_ceiling` runs 100 consecutive failures. It asserts that each delay lies in [window/2, window], where the window starts at 1s, doubles and is capped at 60s.\n- The tests check only that delays fall in range. They cannot show the choice is random. The implementation (`ProviderBackoff::next_delay` in `crates/trust-but-verify/src/agent/backoff.rs`) does use `fastrand`, and injecting a random source would be needed to test this properly. I treated the range assertion as adequate.\n\n**Retry-After**\n- `retry_after_accepts_seconds_and_dates_without_shortening_provider_delay` covers the seconds form, a future HTTP-date, a past date (zero) and an invalid value (none).\n- It asserts that a 90s `Retry-After` gives exactly 90s on the first failure, even though that exceeds the 1s window.\n- It also asserts that smaller minimums of 0, 5 and 45 never shorten a window of 30s or more.\n\n**Reset, interruption and accounting**\n- The success test shows a delay of at most one second after a successful tool turn that followed a doubled window, so success resets the backoff.\n- `cancelling_during_backoff_prevents_another_request` cancels during the wait, advances time by 120s, and asserts that no further request is made.\n- `bedrock_sdk_retries_are_disabled` asserts `max_attempts() == 1`.\n- The usage log records each attempt: a request count of 6, failed outcomes with `retried: true`, and a completed final request.\n- Retried inputs have `sent_in_request` 5 and `submitted_in_request` 0.\n\n**Not shown by a dedicated assertion**\n- The clause that retries must not be reported as finished judgments or terminal errors is covered only by the observable result. `assess` returns once, after recovery, in the retry tests.",
+  "rationale": "The reviewed tests cover each obligation of `requirements.authoring.provider_backoff`. They also assert the expected outcomes.\n\n**Classification of transient and permanent failures**\n- `providers.rs#mod[tests]/fn[retries_throttling_unavailability_and_timeouts_but_not_permanent_errors]` covers these cases:\n  - Retried: 429, 500, 502, 503 and 504. Also retried: `ThrottlingException`, `ServiceUnavailableException`, `InternalServerException` and `ModelNotReadyException`. A `TimedOut` error is also retried.\n  - Not retried: 400 `ValidationException`, 403 `AccessDeniedException`, 501, and an error with no status or code.\n  - A message that only mentions tokens and 429 (\"Too many tokens; HTTP 429\") is not retried.\n- `transient_bedrock_codes_retry_whatever_their_http_status` checks that a transient Bedrock code wins over a non-transient status. It also checks that a transient status wins over a permanent code.\n- `rig_failures_keep_their_provider_report_for_backoff` and `sdk.rs#mod[tests]/fn[sdk_string_errors_preserve_habeas_provider_reports_and_error_kinds]` check that provider reports survive Rig and SDK error wrapping. A permanent 403 stays an error and keeps its kind.\n- `authoring/mod.rs#mod[tests]/fn[permanent_provider_failure_returns_without_waiting_or_retrying]` checks the end-to-end permanent case. A 400 whose message contains \"Too many tokens\" returns the error. It makes one request and waits zero time. The usage log records `retried: false`.\n\n**Ten-minute timeout**\n- `unanswered_requests_are_abandoned_and_retried` runs under paused time. It asserts that elapsed time is 600–601 seconds. It then asserts a second request, an outcome of failed then completed, and a `request_count` of 2.\n\n**Retry keeps the same request, with no restart and no repeated tools**\n- `throttled_requests_retry_unchanged_and_record_every_attempt` makes six identical requests after five failures. It asserts that the inputs and reference set are intact.\n- `success_resets_backoff_and_retries_keep_history_without_repeating_tools` asserts identical requests across each retry. It asserts that the tool ran once. It asserts that the input was recorded after the successful retry.\n- The agent tests `retries_and_cut_off_tools_preserve_inputs_and_submission_skips_other_reads` and `generic_conversations_can_use_default_telemetry_through_retry_and_continuation` also assert identical serialized requests across a retry.\n\n**Backoff schedule**\n- `jittered_backoff_grows_to_a_ceiling` runs 100 consecutive failures. Each delay must lie in `[window/2, window]`, where the window doubles from 1s and caps at 60s. It asserts that the capped draws vary, which shows the delay is random.\n- `retry_after_accepts_seconds_and_dates_without_shortening_provider_delay` covers `Retry-After`. It checks seconds, a future HTTP-date, a past date (zero), and an invalid value (none). A 90s value is honored through `next_delay`, even though it is longer than the window. It also checks minimums of 0, 5 and 45 against the capped window.\n- Success reset is asserted in `success_resets_backoff_and_retries_keep_history_without_repeating_tools`. The retry after the tool turn waits only 0.5–1s.\n\n**Interruption**\n- `cancelling_during_backoff_prevents_another_request` drops the assessment future during the wait. It then advances time by 120s. Only one request was made. No inputs were recorded, and the log shows the request as failed.\n- The production interruption paths (`ctrl_c` and the batch cancel signal in `authoring/mod.rs`) drop the assessment future in a `select!`. This test exercises that drop.\n\n**Accounting, SDK retries, and input timing**\n- `throttled_requests_retry_unchanged_and_record_every_attempt` asserts the following:\n  - Six attempts, five retries and five failed attempts.\n  - Per-category missing counts.\n  - Each failure logged as `retried: true`.\n  - Recorded inputs show `submitted_in_request` 0 and `sent_in_request` 5.\n- `bedrock_sdk_retries_are_disabled` asserts that `max_attempts` is 1.\n- Recording pending inputs only after success is shown by the success-reset test (recorded after the retry). It is also shown by the cancellation test (`recorded_inputs()` empty after the failed attempt).\n- Not reporting a transient failure as a terminal error while recovering is shown by `assess` returning `Ok` after five or more failures. The failed attempts are logged as retried.\n\nI found no clause with a missing test or a weak assertion. The cited requirements (`provider`, `delivered_inputs`, `usage_requests`) are context only and were not reassessed.",
   "references": "4807ba486ec0a165a1469f4324a5d1e9d880173c5abf9810cf0568d1d4aa5912",
   "inputs": [
     {
@@ -32,7 +32,7 @@
         "backoff for the next completion request, and interruption MUST cancel both the",
         "wait and further retries.",
         "",
-        "Each attempt MUST be recorded under {cite}`requirements.authoring.usage_requests`.",
+        "Each attempt MUST count toward the assessment totals under {cite}`requirements.authoring.usage_requests`.",
         "Hidden SDK retries MUST remain disabled so the harness can account for attempts.",
         "Transient retries MUST NOT be reported as finished judgments or terminal",
         "assessment errors while recovery is still in progress. Pending inputs MUST be",
@@ -48,13 +48,7 @@
       ],
       "text": [
         ":::{req} usage_requests",
-        "Usage MUST record each provider request's outcome and available input/output",
-        "token counts, including retries, with cached or reasoning-token counts when",
-        "provided, and for a failed request the failure under",
-        "{cite}`requirements.authoring.usage_requests.failures`. Missing measurements MUST be recorded as unavailable, not zero.",
-        "Run totals MUST include request and tool-call counts by tool, elapsed time, and",
-        "available token usage, identifying incomplete totals without double counting",
-        "provider counters that overlap.",
+        "HC MUST use one {term}`requirements.sdk.graph.running-criteria.validator` per assessment. Its usage record MUST report that validator’s attempt and token totals under {cite}`requirements.sdk.graph.running-criteria.Validator.usage` and its failure and retry counts under {cite}`requirements.authoring.usage_requests.failures`. The record MUST distinguish partial or unavailable token measurements from complete totals and preserve the available cache and reasoning breakdowns. The assessment MUST also report elapsed time and tool-call counts by tool.",
         ":::"
       ]
     },
@@ -101,7 +95,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/providers.rs",
       "item": "mod[tests]/fn[jittered_backoff_grows_to_a_ceiling]",
-      "hash": "b6ddc7864bffdd2c828cc983de2bd55154c224b274efd763482bd09616cfaf4e"
+      "hash": "0c01b3fb62a5a63396d125010240775ef0d1c8c70ff61fdb38651370258055f7"
     },
     {
       "file": "crates/trust-but-verify/src/agent/providers.rs",
@@ -126,22 +120,22 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[generic_conversations_can_use_default_telemetry_through_retry_and_continuation]",
-      "hash": "ab4bf35d290902df50652e3dfc850baf437f549235d834c7b4c843e233509692"
+      "hash": "3af47fcec2b9263596075fa6d3828fe3cf7e5adcd4f616210f77df0b20c796a8"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]",
-      "hash": "b1d2bf893c3a81aaf83b09c35f22ebd3a36c7670081f4f904e3da4075c24e0ad"
+      "hash": "fc067cfdb4e0024051fa07ab52d182903c5f055bb761bb431b2ba1a7e9f0b9eb"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "mod[tests]/fn[permanent_provider_failure_returns_without_waiting_or_retrying]",
-      "hash": "0a70b9ad3464bef1556db5c54c1946b0c8d0baeef29a5f6c6c1d6cc4a2d943f7"
+      "hash": "784268b1023c4407878033008298f02d5c1f5780b9ca80e6c6327da37bae1fe5"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "mod[tests]/fn[cancelling_during_backoff_prevents_another_request]",
-      "hash": "ee2a11fd5a98801d7981dbfb4df83a5c1c32f7bf1385e0627cb8d87a99faad44"
+      "hash": "21da7eaec693a2603c92cb16aba9df7e7d7c820baafefae7611f6fc7fcf20124"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -159,14 +153,14 @@
       "hash": "f31defb8a13c5666c48e0a88b8a49a1db43c50ca46f135cd3fbe25c7169e71a9"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/backoff.rs",
-      "item": "impl[ProviderBackoff]/fn[next_delay]",
-      "hash": "3218c1e56636b0c1edc6b39b2fdb743fe10df5aec559979332c915a0e4ea1e72"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent.rs",
-      "item": "fn[converse]",
-      "hash": "75e462b4b2442c23025ee51e786f3befc47db80211d03e434f97f67f77754567"
+      "definition": "requirements.sdk.graph.running-criteria.validator",
+      "text": [
+        ":::{definition} validator",
+        ":phrase: validator",
+        "",
+        "A *validator* runs criteria against one borrowed domain and accumulates agent usage for the caller's operation. The caller chooses the operation's scope by creating a validator and using it for one or more criteria.",
+        ":::"
+      ]
     },
     {
       "file": "src/authoring/mod.rs",
@@ -177,6 +171,11 @@
       "file": "src/authoring/mod.rs",
       "item": "fn[prepare_assessment]",
       "hash": "68acc29ef6fc83280cf083508972aa1203d40cdfd97780e4feba7ad35cbd374e"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent.rs",
+      "item": "fn[converse]",
+      "hash": "868df51f2ba7ccd3699486e607923d5fdc90d4e1b7e0542892b0561c1f3771f6"
     }
   ],
   "format_version": 1,
@@ -201,7 +200,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "438849def4d14e23aaefcd00eb13d9574b5c39556a919a2f8bcd0edd5866594a"
+          "value": "0d28e1ea6c8b7ae6aa57a4b44bab8940bec9a3a6271b3836e47fb3b975691e22"
         }
       ]
     },
@@ -212,7 +211,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "3d3e5a9287548ea0dcdad8558946ab6be3bdeaaa28e9694b9520faf30c3ea2c7"
+          "value": "094a1c1082cd15150a46703d3d023eebf82dbd16058264f9b17254777e7c21b0"
         }
       ]
     },
@@ -223,7 +222,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "4a582070c276eb4236d52b176b5964a40baef728333720b68c05527ef458b2ed"
+          "value": "9b7f21227d6b8cf8704ecdae31a8e58bcdec3843e20a549b817adb97c9ac8e0a"
         }
       ]
     },
@@ -296,7 +295,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "72ad7246303f54d45d8af3b4f4bf46b43616b8f0868b591230504d7e0eb2f1f5"
+          "value": "f42440309f4fb624479c836ee8ab69fac034346bb736ec9827511d842dc0bb96"
         }
       ]
     },
@@ -381,7 +380,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "e038164f3fa552bee12e748672c01a96401d1256c1233654d55f9c445e44cd1b"
+          "value": "ceb9ae8267bbb63f3274a18c1c42b8e420f281ac24ed8f645a6bbb7b4cbcb224"
         }
       ]
     },
@@ -398,7 +397,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ba0231c64afb42b91077c96994a63a5b91ec4d53e78c3e02e452b93b16f47f8c"
+          "value": "111ce681b9a80a1328c5ec665737d456942a3f48e5a3c8dc237640d521c6318d"
         }
       ]
     },
@@ -415,7 +414,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f6785bd7dbcebada1b242135d75438de774f7bf04a9992b34c8cf8adb899b467"
+          "value": "78b06a579d07df2b2526804375e47fe6e9e6f89e36b5649a5a366fe8f947c759"
         }
       ]
     },
@@ -432,7 +431,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "b5fec7a310f149f7ca09f6688205e1cd3aa73194e1d36b07f0cce20ef0d3d070"
+          "value": "b6eacfeb4d4c4bbc22f264867d856df8ac3694ab42d455e12cfa870cac0cff79"
         }
       ]
     },
@@ -490,34 +489,11 @@
     {
       "Node": [
         {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/backoff.rs"
-            },
-            "selector": "impl[ProviderBackoff]/fn[next_delay]"
-          }
+          "Definition": "requirements.sdk.graph.running-criteria.validator"
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "50ee86ab70797c694f8d21b73d3a10ea876da6d28e10d6b0290973eadb01c990"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent.rs"
-            },
-            "selector": "fn[converse]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "c53d34568baee1fb59d682964b7784559e61ffb18dbcf32a880e7d38b636db7f"
+          "value": "fccf7e4f4b7ad677067e7080c8396e547eb9e4b73d0a9455f6c5df4648d200a6"
         }
       ]
     },
@@ -552,6 +528,23 @@
         {
           "scheme": "habeas-input-v1",
           "value": "0679fb438e37600e57b1764b8ce3e2e2ce11c76699b7a184723bb3143a94fa90"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent.rs"
+            },
+            "selector": "fn[converse]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "0ff67787e41043346e61a512d5519c96b7399274595d949fc37a41e537bbfa13"
         }
       ]
     }

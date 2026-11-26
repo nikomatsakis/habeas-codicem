@@ -254,12 +254,10 @@ mod tests {
             crate::domain::ValidationCache::with_agent(backend),
         );
         domain.cache().intern_node(TestNode { id: 7 });
-        let answer = validation::verify(
-            &domain,
-            ReadThenAsk(domain.cache().intern_node(TestNode { id: 1 })),
-        )
-        .await
-        .unwrap();
+        let answer = validation::Validator::new(&domain)
+            .verify(ReadThenAsk(domain.cache().intern_node(TestNode { id: 1 })))
+            .await
+            .unwrap();
         assert_eq!(
             answer.dependencies(),
             &[
@@ -292,19 +290,22 @@ mod tests {
             Default::default(),
             crate::domain::ValidationCache::with_agent(config),
         );
-        let deterministic = validation::refresh_evidence(
-            &domain,
-            Question(false, domain.cache().intern_node(TestNode { id: 1 })),
-        )
-        .await
-        .unwrap();
+        let mut validator = validation::Validator::new(&domain);
+        let deterministic = validator
+            .refresh_evidence(Question(
+                false,
+                domain.cache().intern_node(TestNode { id: 1 }),
+            ))
+            .await
+            .unwrap();
         assert!(!deterministic.output());
         assert_eq!(deterministic.dependencies().len(), 1);
-        let error = match validation::verify(
-            &domain,
-            Question(true, domain.cache().intern_node(TestNode { id: 1 })),
-        )
-        .await
+        let error = match validator
+            .verify(Question(
+                true,
+                domain.cache().intern_node(TestNode { id: 1 }),
+            ))
+            .await
         {
             Ok(_) => panic!("missing credentials must fail the awaited ask"),
             Err(error) => error,
@@ -339,12 +340,13 @@ mod tests {
             domain.cache().agent.as_ref().unwrap(),
             peer.cache().agent.as_ref().unwrap()
         ));
-        let verified = validation::refresh_evidence(
-            &domain,
-            Question(false, domain.cache().intern_node(TestNode { id: 1 })),
-        )
-        .await
-        .unwrap();
+        let verified = validation::Validator::new(&domain)
+            .refresh_evidence(Question(
+                false,
+                domain.cache().intern_node(TestNode { id: 1 }),
+            ))
+            .await
+            .unwrap();
         assert!(!verified.output());
         let saved = serde_json::to_value(domain.0.lock().unwrap().as_ref().unwrap()).unwrap();
         assert!(saved.get("backend").is_none());
@@ -1022,15 +1024,19 @@ mod tests {
             ["1"]
         );
         for _ in 0..2 {
-            let answer = validation::verify(
-                &domain,
-                Question(true, domain.cache().intern_node(TestNode { id: 1 })),
-            )
-            .await
-            .unwrap();
+            let answer = validation::Validator::new(&domain)
+                .verify(Question(
+                    true,
+                    domain.cache().intern_node(TestNode { id: 1 }),
+                ))
+                .await
+                .unwrap();
             assert!(*answer.output());
             assert_eq!(answer.dependencies().len(), 1);
-            validation::store_evidence(&domain, &answer).await.unwrap();
+            validation::Validator::new(&domain)
+                .store_evidence(&answer)
+                .await
+                .unwrap();
             let saved = serde_json::to_string(domain.0.lock().unwrap().as_ref().unwrap()).unwrap();
             for private in ["local-transport-key", "local-test", "backend", "api_key"] {
                 assert!(!saved.contains(private), "{saved}");
@@ -1194,12 +1200,13 @@ mod tests {
             Default::default(),
             crate::domain::ValidationCache::with_agent(config),
         );
-        let answer = validation::verify(
-            &domain,
-            Question(true, domain.cache().intern_node(TestNode { id: 1 })),
-        )
-        .await
-        .unwrap();
+        let answer = validation::Validator::new(&domain)
+            .verify(Question(
+                true,
+                domain.cache().intern_node(TestNode { id: 1 }),
+            ))
+            .await
+            .unwrap();
         assert!(*answer.output());
         assert_eq!(answer.dependencies().len(), 1);
         let requests = server.join().unwrap();
@@ -1465,12 +1472,13 @@ mod tests {
         );
         for _ in 0..2 {
             domain.1.lock().unwrap().clear();
-            let answer = validation::verify(
-                &domain,
-                Question(true, domain.cache().intern_node(TestNode { id: 1 })),
-            )
-            .await
-            .unwrap();
+            let answer = validation::Validator::new(&domain)
+                .verify(Question(
+                    true,
+                    domain.cache().intern_node(TestNode { id: 1 }),
+                ))
+                .await
+                .unwrap();
             assert!(*answer.output());
             assert_eq!(
                 answer.dependencies(),

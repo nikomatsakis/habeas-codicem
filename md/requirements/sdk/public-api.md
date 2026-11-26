@@ -91,6 +91,7 @@ documented TBV public API.
       - `format()`
     - `struct ValidationCache` — [Declaration](validation-cache.md#habeas-req-requirements.sdk.validation-cache.ValidationCache)
       - `new()` — [Declaration](validation-cache.md#habeas-req-requirements.sdk.validation-cache.new)
+      - `usage()` — [Declaration](validation-cache.md#habeas-req-requirements.sdk.validation-cache.usage)
       - `with_sources()` — [Declaration](validation-cache.md#habeas-req-requirements.sdk.validation-cache.with_sources)
       - `intern_node()` — [Declaration](validation-cache.md#habeas-req-requirements.sdk.validation-cache.intern_node)
       - `node_data()` — [Declaration](validation-cache.md#habeas-req-requirements.sdk.validation-cache.node_data)
@@ -137,11 +138,26 @@ documented TBV public API.
     - `enum Dependency` — [Declaration](graph/evidence.md#habeas-req-requirements.sdk.graph.evidence.dependencies) · [Record input dependencies](graph/evidence.md#remember-what-a-procedure-actually-reads)
     - `enum ValidationError` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.ValidationError) · [Execute a criterion](graph/running-criteria.md#execute-a-criterion)
     - `fn edge_fingerprint` — [Declaration](graph/validation-context.md#habeas-req-requirements.sdk.graph.validation-context.snapshot) · [Target-set fingerprint rules](graph/validation-context.md#selecting-a-nodes-outgoing-edges)
-    - `fn refresh_evidence` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.refresh_evidence)
-    - `fn load_evidence` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.load_evidence)
-    - `fn check_inputs` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.check_inputs)
-    - `fn verify` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.verify)
-    - `fn store_evidence` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.store_evidence)
+    - `struct Validator` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.Validator)
+      - `new()` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.Validator.new)
+      - `usage()` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.Validator.usage)
+      - `refresh_evidence()` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.refresh_evidence)
+      - `verify()` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.verify)
+      - `store_evidence()` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.store_evidence)
+      - `load_evidence()` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.load_evidence)
+      - `check_inputs()` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.check_inputs)
+    - `struct UsageStats` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.UsageStats)
+      - `attempts`
+      - `retries`
+      - `failed_attempts`
+      - `input_tokens`
+      - `output_tokens`
+      - `cached_input_tokens`
+      - `cache_creation_input_tokens`
+      - `reasoning_tokens`
+    - `struct TokenCount` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.TokenCount)
+      - `reported`
+      - `missing_attempts`
   - `mod outline` — [Source outlines](outlines.md)
     - `enum AttachmentKind` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.AttachmentKind) · [Inspect attachments](outlines.md#inspect-attachments)
     - `struct Outline` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.Outline) · [Inspect selectable items](outlines.md#inspect-selectable-items)

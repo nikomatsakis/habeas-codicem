@@ -1408,6 +1408,7 @@ type InputObserver<'a> = dyn Fn(&[Value]) + Send + Sync + 'a;
 // {impl}`requirements.authoring.submission.searches.line_numbers`
 // {impl}`requirements.authoring.submission.searches.accompanying_calls`
 async fn converse_observed<T: Send>(
+    inspection: &trust_but_verify::request::ValidationContext<'_, crate::sdk::HabeasDomain>,
     provider: &impl CompletionProvider,
     sources: &mut AssessmentSources,
     usage: &mut UsageLog,
@@ -1428,8 +1429,14 @@ async fn converse_observed<T: Send>(
         pages: pages::ResultPages::default(),
         rejection: line_numbers::Rejection::default(),
     };
-    trust_but_verify::agent_runtime::converse(provider, &mut adapter, prompt.request(), submit)
-        .await
+    trust_but_verify::agent_runtime::converse(
+        inspection,
+        provider,
+        &mut adapter,
+        prompt.request(),
+        submit,
+    )
+    .await
 }
 
 // {cite}`habeas:util`
@@ -1789,7 +1796,13 @@ mod tests {
                         .with_provider_code(Some(self.code.into())),
                 ));
             }
-            JudgmentProvider(json!(true)).complete(request).await
+            let mut response = JudgmentProvider(json!(true)).complete(request).await?;
+            response.usage = Usage::new()
+                .input_tokens(100)
+                .output_tokens(15)
+                .cached_input_tokens(20)
+                .reasoning_tokens(0);
+            Ok(response)
         }
     }
 
@@ -2198,6 +2211,7 @@ mod tests {
     // {test}`requirements.authoring.usage_requests.failures`
     // {test}`requirements.authoring.usage_inputs`
     // {test}`requirements.ci.reference_set`
+    // {test}`requirements.sdk.graph.running-criteria.UsageStats`
     #[tokio::test(start_paused = true)]
     async fn throttled_requests_retry_unchanged_and_record_every_attempt() {
         let (_project, _state, mut sources, mut usage) = retry_fixture();
@@ -2217,6 +2231,21 @@ mod tests {
         assert_eq!(record["references"], json!(sources.reference_set));
 
         let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();
+        for (category, measured, missing) in [
+            ("input_tokens", 100, 5),
+            ("output_tokens", 15, 5),
+            ("cached_input_tokens", 20, 5),
+            ("cache_creation_input_tokens", 0, 6),
+            ("reasoning_tokens", 0, 5),
+        ] {
+            assert_eq!(
+                log["provider_usage"][category],
+                json!({"reported": measured, "missing_attempts": missing})
+            );
+        }
+        assert_eq!(log["provider_usage"]["attempts"], 6);
+        assert_eq!(log["provider_usage"]["retries"], 5);
+        assert_eq!(log["provider_usage"]["failed_attempts"], 5);
         assert_eq!(log["request_count"], 6);
         for attempt in 0..5 {
             assert_eq!(log["requests"][attempt]["outcome"], "failed");
@@ -2255,6 +2284,9 @@ mod tests {
         assert_eq!(provider.requests.lock().unwrap().len(), 1);
         // The failure is recorded as not retried.
         let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();
+        assert_eq!(log["provider_usage"]["attempts"], 1);
+        assert_eq!(log["provider_usage"]["failed_attempts"], 1);
+        assert_eq!(log["provider_usage"]["retries"], 0);
         assert_eq!(
             log["requests"][0]["failure"],
             json!({"http_status": 400, "error_code": "ValidationException", "retried": false})
@@ -2262,6 +2294,7 @@ mod tests {
     }
 
     // {test}`requirements.authoring.provider_backoff.limit`
+    // {test}`requirements.authoring.usage_requests.failures`
     #[tokio::test(start_paused = true)]
     async fn a_request_failing_for_a_minute_fails_the_assessment() {
         let (_project, _state, mut sources, mut usage) = retry_fixture();
@@ -2290,6 +2323,9 @@ mod tests {
             "{error}"
         );
         let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();
+        assert_eq!(log["provider_usage"]["attempts"], attempts);
+        assert_eq!(log["provider_usage"]["failed_attempts"], attempts);
+        assert_eq!(log["provider_usage"]["retries"], attempts - 1);
         assert_eq!(log["requests"][attempts - 1]["failure"]["retried"], false);
     }
 
@@ -2311,6 +2347,9 @@ mod tests {
             .await
             .is_err()
         );
+        assert_eq!(usage.record.provider_usage.attempts, 1);
+        assert_eq!(usage.record.provider_usage.retries, 0);
+        assert_eq!(usage.record.provider_usage.failed_attempts, 1);
         tokio::time::advance(Duration::from_secs(120)).await;
         assert_eq!(provider.requests.lock().unwrap().len(), 1);
         assert!(sources.recorded_inputs().is_empty());

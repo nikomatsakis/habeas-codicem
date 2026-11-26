@@ -465,14 +465,16 @@ async fn malformed_records_are_storage_errors_and_bad_outputs_are_output_errors(
     let graph = StoredGraph(FileEvidenceStorage::new(temp.path()), Default::default());
     assert!(graph.project_sources().is_none());
     let executions = AtomicUsize::new(0);
-    let value = validation::verify(
-        &graph,
-        StoredReview(&executions, graph.cache().intern_node("opaque/é".into())),
-    )
-    .await
-    .unwrap();
+    let mut validator = validation::Validator::new(&graph);
+    let value = validator
+        .verify(StoredReview(
+            &executions,
+            graph.cache().intern_node("opaque/é".into()),
+        ))
+        .await
+        .unwrap();
     assert_eq!(value.output(), "completed answer");
-    validation::store_evidence(&graph, &value).await.unwrap();
+    validator.store_evidence(&value).await.unwrap();
     let source =
         StoredReview(&executions, graph.cache().intern_node("opaque/é".into())).source_node_id();
     let criterion =
@@ -485,11 +487,12 @@ async fn malformed_records_are_storage_errors_and_bad_outputs_are_output_errors(
         .unwrap();
     std::fs::write(&path, "not JSON").unwrap();
     assert!(matches!(
-        validation::load_evidence(
-            &graph,
-            &StoredReview(&executions, graph.cache().intern_node("opaque/é".into()))
-        )
-        .await,
+        validator
+            .load_evidence(&StoredReview(
+                &executions,
+                graph.cache().intern_node("opaque/é".into())
+            ))
+            .await,
         Err(ValidationError::Graph(FileStorageError::Json(_)))
     ));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "not JSON");
@@ -502,20 +505,22 @@ async fn malformed_records_are_storage_errors_and_bad_outputs_are_output_errors(
         .unwrap();
     let before = std::fs::read(&path).unwrap();
     assert!(matches!(
-        validation::load_evidence(
-            &graph,
-            &StoredReview(&executions, graph.cache().intern_node("opaque/é".into()))
-        )
-        .await,
+        validator
+            .load_evidence(&StoredReview(
+                &executions,
+                graph.cache().intern_node("opaque/é".into())
+            ))
+            .await,
         Err(ValidationError::Output(_))
     ));
     assert_eq!(std::fs::read(&path).unwrap(), before);
-    let value = validation::verify(
-        &graph,
-        StoredReview(&executions, graph.cache().intern_node("opaque/é".into())),
-    )
-    .await
-    .unwrap();
+    let value = validator
+        .verify(StoredReview(
+            &executions,
+            graph.cache().intern_node("opaque/é".into()),
+        ))
+        .await
+        .unwrap();
     assert_eq!(value.output(), "completed answer");
     assert_eq!(executions.load(Ordering::SeqCst), 2);
     assert_eq!(std::fs::read(&path).unwrap(), before);

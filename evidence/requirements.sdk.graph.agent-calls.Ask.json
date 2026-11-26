@@ -1,7 +1,7 @@
 {
   "requirement": "Builds a typed agent request. `context` is available in the context phase. Adding graph contents enters the node phase. Awaiting a request returns the decoded answer or a validation error.\n\n```rust,ignore\npub struct Ask<'a, 'd, D: Domain, R, P> { /* private fields */ }\n\nimpl<'a, 'd, D: Domain, R> Ask<'a, 'd, D, R, ContextPhase> {\n    pub fn context(self, value: impl Context) -> Self;\n}\n\nimpl<'a, 'd, D: Domain, R, P> Ask<'a, 'd, D, R, P> {\n    pub fn contents_of_current_node(self) -> Ask<'a, 'd, D, R, NodePhase>;\n    pub fn contents_of_successors(\n        self,\n        label: D::EdgeLabel,\n    ) -> Ask<'a, 'd, D, R, NodePhase>\n    where\n        D::EdgeLabel: PartialEq;\n}\n```\n\nTrait implementations\n\n```rust,ignore\nimpl<'a, 'd, D: Domain, R> IntoFuture for Ask<'a, 'd, D, R, ContextPhase> where R: DeserializeOwned + JsonSchema + Send + 'a, D::Error: Display, D::EdgeLabel: DeserializeOwned + JsonSchema + PartialEq, 'd: 'a {\n    type Output = Result<R, ValidationError<<D as Domain>::Error>>;\n    type IntoFuture = Pin<Box<dyn Future<Output = <Ask<'a, 'd, D, R, ContextPhase> as IntoFuture>::Output> + Send + 'a>>;\n}\nimpl<'a, 'd, D: Domain, R> IntoFuture for Ask<'a, 'd, D, R, NodePhase> where R: DeserializeOwned + JsonSchema + Send + 'a, D::Error: Display, D::EdgeLabel: DeserializeOwned + JsonSchema + PartialEq, 'd: 'a {\n    type Output = Result<R, ValidationError<<D as Domain>::Error>>;\n    type IntoFuture = Pin<Box<dyn Future<Output = <Ask<'a, 'd, D, R, NodePhase> as IntoFuture>::Output> + Send + 'a>>;\n}\n```",
   "determination": true,
-  "rationale": "The reviewed tests adequately cover `requirements.sdk.graph.agent-calls.Ask`. I judged this from the supplied test source alone and did not request any implementation source.\n\nThe requirement's obligations map to tests as follows:\n\n- **Building a typed request with `context`.**\n  - `validation_tests.rs#fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]` calls `ctx.ask::<Answer>().context(String::from(\"question\"))`. It asserts that the agent receives `\"question\"` as the context.\n  - The same test asserts that the JSON schema derived from the response type is sent (`properties.n.type == \"integer\"`).\n  - It also checks that the future is `Send`.\n- **Adding graph contents moves to the node phase.**\n  - The same test chains `contents_of_current_node()`, `contents_of_successors(7)` and `contents_of_current_node()` again.\n  - It asserts that the agent receives the contents in order, with repetition and filtering by label: `[1, 3, 2, 3, 1]`. The edge to node 99 under label 8 is excluded.\n  - It also asserts the recorded dependencies.\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` covers `contents_of_successors` when there are no matching edges. In that case no node is read and an `OutgoingEdges` dependency is still recorded.\n  - That test also checks that merely building the request makes no agent call, because dropping `contents_of_current_node()` leaves `agent.requests` empty.\n- **Awaiting a request returns the decoded answer.**\n  - The explicit-insertions test awaits a node-phase `Ask` and asserts `answer.n == 7`.\n  - `runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls` awaits a context-phase ask. That ask goes through the second agent request, `\"Check intermediate result 7\"`, which has empty contents. The test asserts the decoded result drives the final output.\n- **Awaiting returns a validation error.**\n  - `invalid_typed_submission_is_an_agent_error` awaits a context-phase `ask::<Answer>()` against an agent that returns an invalid payload. It asserts `ValidationError::Agent(_)`.\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` covers `Graph(\"read\")`, `Graph(\"edges\")` and `Graph(\"render\")` failures on node-phase asks. It asserts that no agent request is made after those failures.\n  - The runner test covers `NoAgentConfigured`.\n\nThe phase-restriction clause, that `context` exists only in the context phase, is enforced by the type system. The tests use the permitted call order, and the requirement does not call for a compile-fail test. `tests/public_api.rs#fn[public_exports_match_the_appendix]` checks that the public exports match the specification.\n\nI found no plausible violation of the requirement text that these tests would accept.",
+  "rationale": "The reviewed tests cover each obligation in `requirements.sdk.graph.agent-calls.Ask`.\n\n- **Context phase and `context`:**\n  - `explicit_insertions_preserve_order_repetition_and_selection_snapshots` calls `.context(String)` and asserts the prompt text is `\"question\"`.\n  - In `runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls`, the callback in `Memory::run_review` awaits a context-only `ask().context(...)`. The test asserts the prompt `\"Check intermediate result 7\"`, empty contents, and a decoded second answer.\n- **Entering the node phase:**\n  - `explicit_insertions_preserve_order_repetition_and_selection_snapshots` chains `contents_of_current_node`, `contents_of_successors(7)` and `contents_of_current_node`. It asserts the rendered contents order `[1, 3, 2, 3, 1]`, the recorded reads and the dependencies. It also asserts the typed schema is passed (`properties.n.type == integer`).\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` covers the empty and no-matching-label successor cases. It also shows that merely queueing contents without awaiting makes no agent call.\n- **Awaiting returns the decoded answer:**\n  - `explicit_insertions_preserve_order_repetition_and_selection_snapshots` awaits through `IntoFuture` on the node phase and asserts `answer.n == 7`. It also asserts that the future is `Send`.\n  - The callback in `Memory::run_review` awaits `ask().contents_of_current_node()` in the node phase and then a context-only ask in the context phase. `runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls` runs both and asserts the answers.\n- **Awaiting returns a validation error:**\n  - `invalid_typed_submission_is_an_agent_error` awaits a context-phase ask and asserts `Err(ValidationError::Agent(_))`. It repeats the check through the runner.\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` asserts `Graph(\"read\")`, `Graph(\"edges\")` and `Graph(\"render\")` errors from node-phase awaits. It also asserts that no agent call is made after those failures.\n  - `runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls` asserts the `NoAgentConfigured` error.\n\nThe phase restriction on `context` is a compile-time type property. The `public_api` test and the type signatures cover it adequately.\n\nI found no gap.",
   "references": "307c1f3ff47f793dfa1640c4fb493a9b9651a76270ee8a5a31435d06d7b9965a",
   "inputs": [
     {
@@ -50,7 +50,7 @@
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]",
-      "hash": "21c1fb6cb24691cbd5b76b20089afea52c46285271af1f6f3cb5eaa6c0f917f9"
+      "hash": "81cef7e9131056e0404e9859aa8dbca51cafdbce27b95006e6c60a1fcef02077"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
@@ -60,7 +60,7 @@
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[invalid_typed_submission_is_an_agent_error]",
-      "hash": "d98abe83d4c7bd5967540c7f342c53de2224ee3ee141fa4b509c624b1fe97e74"
+      "hash": "dfe09ec614ae6db4a104ecbd6c1cccee9aa6a1cb4ba5c81da100da70ce713312"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
@@ -71,6 +71,21 @@
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[public_exports_match_the_appendix]",
       "hash": "4d6ce6161754fb9e88ad84ef64f9bb131b308298104915179b2c5d573ed2b087"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "impl[Memory]/fn[run_review]",
+      "hash": "859d5fd94a3e4eb0419394e295c11c60dd02b8d06b3a701a32196cc3ccae25cb"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "struct[MockAgent]",
+      "hash": "a2b03d553c5723ab44f987ef287218fde7ba2d2d485fbd72fdbcd8a9dd358e36"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "impl[MockAgent/Agent<Memory>]/fn[run]",
+      "hash": "c35526ca8d4dc90dd7ce460df5856b38ef95f28118cde8dd8726e792eed866d8"
     }
   ],
   "format_version": 1,
@@ -123,7 +138,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "2f55ea84ecfdbcfe81ea069bc4aaf94cc28390e4bef15e8bbe51302e6f98730e"
+          "value": "41615fc38aa79231c844e6098108479142c6c8c63a9fb195c1b477f8c15488d2"
         }
       ]
     },
@@ -157,7 +172,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "92b139c340e46f17b4bb333d3413e0303e9b5991bc28498abbb11323751911a2"
+          "value": "b0f8cfb12c173f647ab56159d525c02faef4241524e2e6af4f9d9f70216bdcb3"
         }
       ]
     },
@@ -192,6 +207,57 @@
         {
           "scheme": "habeas-input-v1",
           "value": "ae4819b6e5ac9cd22992cc4254e7868f438e101dbd53f1bd7d443a33ee96f61d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+            },
+            "selector": "impl[Memory]/fn[run_review]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "b5b7ce473d18bd566a58382dc80422c424c7818d45d4d81b4bac9d35ecf71ea6"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+            },
+            "selector": "struct[MockAgent]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "fb844e8a4b7f834a17fbcc1d0eba9b119116702afff27d3623340ea7b622fa9e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+            },
+            "selector": "impl[MockAgent/Agent<Memory>]/fn[run]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "5271582b0f15c415e09cbd8bb0dd9ffeec1b19bfd1a886669308f40ce082a36f"
         }
       ]
     }

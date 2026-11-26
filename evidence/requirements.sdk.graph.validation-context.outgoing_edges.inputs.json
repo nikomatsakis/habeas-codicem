@@ -1,7 +1,7 @@
 {
   "requirement": "A successful edge selection records the source identity, the requested label,\nand the fingerprint of the returned target identity set. Adding or removing an\nidentity from that set changes it, including adding the first identity to an\nempty set. Reordering targets or repeating a target does not change it.\nChanges to a target's contents do not affect this dependency: reading those\ncontents records a separate node dependency. These observations follow\n{cite}`requirements.sdk.graph.evidence.inputs` and\n{cite}`requirements.sdk.graph.evidence.checking_records`.\n\n`ValidationContext::outgoing_edges` records the selection when returning it.\nThe SDK agent records the prepared selection when delivered. A failed selection\nrecords no successful observation.",
   "determination": true,
-  "rationale": "The two {test} items together cover every obligation in `outgoing_edges.inputs`.\n\n**Recording the selection** (source identity, label, target-set fingerprint)\n- `labeled_selections_track_only_target_membership_without_reading_contents` in `graph/validation_tests.rs` asserts the exact `Dependency::OutgoingEdges(source, label, fingerprint)` values. It does this for a non-context node, for an empty result, and for a populated result.\n- `agent_edge_tools_record_selections_without_validating_targets` in `agent/tests.rs` asserts the same dependency shape in the stored record. It also covers two different labels and two different source nodes.\n\n**Adding or removing an identity changes the fingerprint, including the first identity in an empty set**\n- The record finished from an empty selection stays current after an edge with a different label is added.\n- It stops being current once label 7 gains targets. This is the empty-to-first-identity case.\n- The snapshot fingerprint for `{3,5}` is asserted `assert_ne!` against `{3}` (removal) and `{3,5,9}` (addition).\n- A later record built from `{3,5}` becomes not current when the set changes to `{3,6}`.\n\n**Reordering or repeating a target does not change the fingerprint**\n- The returned content `[5,3,5]` has a fingerprint equal to `edge_fingerprint` of `[3,5]`.\n- The record built from `{3,5}` stays current when the domain returns `[(7,3),(7,5),(8,99)]`, so changes to unrelated labels and reordering don't matter.\n- In the agent test, the edges `[3,2,3]` are recorded as the fingerprint of `[2,3]`.\n- `edge_fingerprint` is the production function, so it serves as an oracle here. Its behaviour is also checked against independently constructed sets.\n\n**Target contents do not affect the dependency**\n- The context test asserts `graph.state...reads.is_empty()`, so no contents are read.\n- The recorded dependencies are only `OutgoingEdges`.\n- The agent test's `node_content` panics if it is called.\n- A fingerprint that depended on contents would therefore fail these tests.\n\n**When the selection is recorded**\n- `ValidationContext::outgoing_edges` and `successors` record on return, as asserted in the context test.\n- For the agent, the dependency appears only after successful delivery. A scripted delivery failure leaves `ctx.dependencies()` empty even though the lookup happened (`lookups == 1`).\n\n**Failed selections record nothing**\n- A failing edge lookup (`fail_edges`) returns `Err(\"edges\")` and leaves `dependencies()` unchanged.\n- A malformed node ID is rejected by the agent tool with an error result, and `dependencies()` stays empty with zero lookups.\n\n**Citations**\n- The cited `evidence.inputs` and `evidence.checking_records` requirements are exercised through `store_evidence`, `load_evidence`, `is_current`, and the `saved.dependencies() == result.dependencies()` comparison.\n\nI found no untested obligation and no counterexample the tests would accept.",
+  "rationale": "The two marked tests adequately cover `requirements.sdk.graph.validation-context.outgoing_edges.inputs`.\n\n**Recorded observation (source, label, fingerprint)**\n- `crates/trust-but-verify/src/graph/validation_tests.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]` asserts the exact `Dependency::OutgoingEdges(source, label, fingerprint)` in `ctx.dependencies()`.\n  - It checks source 9 with label 7 and an empty set.\n  - It checks the finished record for source 1 with label 7 and the fingerprint of {3,5}.\n- `crates/trust-but-verify/src/agent/tests.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` asserts the stored record's dependency `(1, 7, fingerprint of [2,3])`.\n  - It also asserts the label-8 selection for source 1 and the label-7 selection for source 3, which shows the label and source are recorded distinctly.\n  - It asserts that a saved record reloads with identical dependencies.\n\n**Fingerprint changes when identities are added or removed**\n- The validation test asserts `snapshot.fingerprint` differs from the fingerprints of {3} (removal) and {3,5,9} (addition).\n- A record taken with an empty set stays current while only other labels change.\n- It becomes not current once the first label-7 targets appear, which covers adding the first identity to an empty set.\n- A record for {3,5} is not current after the set becomes {3,6}.\n\n**Reordering and repeating do not change the fingerprint**\n- The selection returns the targets as `[5,3,5]`. The test asserts its fingerprint equals `edge_fingerprint` of `[3,5]`.\n- The recorded dependency uses the same value.\n- A record taken from `[5,3,5]` stays current when the graph returns `[3,5]` and unrelated labels change.\n- The agent test returns `[3,2,3]`, records the fingerprint of `[2,3]`, and delivers the raw `[3,2,3]` to the agent.\n- `edge_fingerprint` sorts and dedups node paths, but production code calls the same function. These assertions therefore check the real behavior and are not circular.\n\n**Target contents do not affect the dependency**\n- The validation test asserts that the graph's `reads` list is empty after selection and after `is_current` checks, so contents are never read.\n- The agent test's `node_content` panics if called.\n- Together these show that content changes cannot enter the edge dependency.\n- The clause that reading contents records a separate node dependency is covered by other tests, such as `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery`. It is a remark rather than an obligation of this requirement.\n\n**Where the selection is recorded**\n- `ValidationContext::outgoing_edges` records on return. The validation test checks `ctx.dependencies()` immediately after the call.\n- The SDK agent records on delivery. The agent test checks the dependency after a successful tool result.\n- A prepared selection is not recorded when delivery fails. The lookup count is 1 and `ctx.dependencies()` is empty when the provider turn fails.\n\n**Failed selections record nothing**\n- A malformed node ID gives an error tool result and no dependencies, and the graph is never queried.\n- A graph error (`fail_edges`) returns `Err(\"edges\")` and leaves `dependencies()` unchanged.\n- `is_current` with an edge error returns `Err(\"edges\")`.\n\nEvery clause has a test with assertions that enforce it, and I found no gap. The citations of `requirements.sdk.graph.evidence.inputs` and `requirements.sdk.graph.evidence.checking_records` are context only and need no extra tests here.",
   "references": "6153330648d92f2fc2a2b9f09516405490513a9e931e5e9d7ef8dc191e11408a",
   "inputs": [
     {
@@ -62,22 +62,15 @@
       ],
       "text": [
         ":::{req} checking_records",
-        "```rust,ignore",
-        "/// Compare each recorded input with the current domain state.",
-        "/// Return true when every fingerprint still matches, including an empty trace.",
-        "pub fn check_inputs<D: Domain, O>(",
-        "    domain: &D,",
-        "    inputs: &Fingerprinted<D, O>,",
-        ") -> Result<bool, D::Error>;",
-        "```",
+        "The method is declared under {cite}`requirements.sdk.graph.running-criteria.check_inputs`.",
         "",
-        "The function resolves the recorded dependencies through graph operations and",
+        "The method resolves the recorded dependencies through graph operations and",
         "fingerprinting, comparing each with its saved observation. A fingerprint",
         "mismatch returns `Ok(false)` and permits an early return; it need not resolve",
         "later dependencies. An encountered dependency-resolution failure returns an",
         "error.",
         "",
-        "The function observes the current state that the caller intends to inspect.",
+        "The method observes the current state that the caller intends to inspect.",
         "Freshness checking has a separate observation scope from criterion execution.",
         "Checked observations enter the new trace when execution explicitly reads",
         "or delivers them.",
@@ -88,7 +81,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[agent_edge_tools_record_selections_without_validating_targets]",
-      "hash": "26a9315f3b502bade193bcf6eb305da74f2273b900122a29c939344eaf35046e"
+      "hash": "6a6bd3af3286f4b548affea9dc304e83307c85c71496bd76aaa4e955e8fb5577"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
@@ -99,6 +92,21 @@
       "file": "crates/trust-but-verify/src/graph.rs",
       "item": "fn[edge_fingerprint]",
       "hash": "fa540d8077eea21345607a2b0d423bb65db6787d9171e34f5acb0a845bc00202"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tools.rs",
+      "item": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[dispatch]",
+      "hash": "404959fc7cfa5a0c44b7c02ae9bf53603021c37ea5704d5e052dea0598ef2087"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tools.rs",
+      "item": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[delivered]",
+      "hash": "c5fc2757743fbf411ad3c510ec80c2bbb1e1a1dc1fde6f2ccfaa234fd476a8ef"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#2/fn[observe_edges_by]",
+      "hash": "79c486c66b5897677f4f145e4dca1b0b429772162a33c02be8ae5de0601ba704"
     }
   ],
   "format_version": 1,
@@ -156,7 +164,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "4df07bc74435e1e7cbebf92a865d5d82f7a0aa85c5f62eab7c291812df381b0a"
+          "value": "0a77f4260213558db8817a69ca2aa3ffc409ed823e4c689bb9e894919e267f36"
         }
       ]
     },
@@ -173,7 +181,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c2adedefda8714618783a82bfd00e73946a1817a41cfd60da9a48aac5e591375"
+          "value": "334491ad721d43076eef1db4692d0f635df245ff55e675eb45ef1a45a1dd7f43"
         }
       ]
     },
@@ -208,6 +216,57 @@
         {
           "scheme": "habeas-input-v1",
           "value": "2714cb68f75a734d6450aa84bd251b6dc470a9d5bf432b26a2bf64753606ed09"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tools.rs"
+            },
+            "selector": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[dispatch]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "bbf5a386edbc7cee69637624fe7f96ca4064d7c2e75ceb2f2ed71a6696afb302"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tools.rs"
+            },
+            "selector": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[delivered]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "e00b41a7cc3cdd5814748017129c708affd2eee04dcb4a0a7a00ca31931ce82e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[observe_edges_by]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "5b0ba9208865255a1d5384408162d9a8bbac91852e01d54465e15284f4956ec9"
         }
       ]
     }

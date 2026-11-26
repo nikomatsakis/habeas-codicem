@@ -1,7 +1,7 @@
 {
   "requirement": "The tracked source-read operation resolves the selected `OutlineData` through\nthe application's source-node mapping and reads that node through `Domain`.\nSuccessful reads delivered to the caller record that node's identity and the\nfingerprint of its supplied contents.\n\nThe graph's recording and freshness contracts apply under\n{cite}`requirements.sdk.graph.evidence.node_inputs` and\n{cite}`requirements.sdk.graph.evidence.checking_records`.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation in `requirements.sdk.sources.provider_observations`. I did not request implementation source.\n\n**Mapping and domain read.** In `crates/trust-but-verify/src/agent/project_sources.rs#mod[tests]/fn[direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns]`:\n- Two unmappable `OutlineData` addresses are tried: an unknown path and an unknown selector. Both return an \"unsupported source item\" error. The test asserts the domain was never read: `reads == 0` and `read_nodes` is empty.\n- A mappable `OutlineData` (`source.txt`) is then read. The test asserts `read_nodes == [\"source-node\",\"source-node\"]`, which shows it resolved to the mapped node and was read through the domain. The two entries come from the failed attempt and the successful one.\n\n**Recording successful deliveries.**\n- The same test asserts `inspection.dependencies()` equals exactly one `Dependency::Node(intern(\"source-node\"), returned.fingerprint())`. That is the node identity plus the fingerprint of the contents supplied.\n- It then finishes the record, checks it is current, mutates the domain text, and checks it is no longer current. This shows the recorded fingerprint reflects the delivered contents.\n- `configured_agent_uses_domain_source_tools_in_independent_executions` in `crates/trust-but-verify/src/agent/configured.rs` asserts the exact dependency list of a full agent run. The list holds `Node` entries whose fingerprints equal `OutlineContent::from_source(...).at_offset(0).fingerprint()` for `alpha.txt` and `beta.txt`. Reads that were only discovered (the unused search hit, the rejected unknown node) do not appear in it. The domain's read log is also asserted, and the run is repeated in two independent executions.\n- `cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input` in `crates/trust-but-verify/src/agent/tests.rs` asserts that after a successful `read_source` and a failed one (`fn[missing]`), the only dependency is the exact selected content with the expected scheme. Failed reads therefore add no observation.\n- `source_tools_keep_search_discovery_separate_from_delivered_source_reads` in `crates/trust-but-verify/src/agent/tests.rs` asserts a delivered `read_source` records exactly one observation with the provided fingerprint value. Search alone does not record one.\n- `source_discovery_and_its_pages_do_not_register_reads` in `crates/trust-but-verify/src/agent/tests.rs` asserts that listing, searching, outlining and paging deliver no dependencies and never invoke the observation callback.\n\n**Cited requirements.** `node_inputs` and `checking_records` are context only. The record's `is_current` check for the freshness contract is exercised in the direct-read test.\n\nI found no behaviour that violates the requirement and would pass these tests, and no marking gaps.",
+  "rationale": "I judged this from the supplied test sources only. I did not request implementation source.\n\n**Obligations derived from `requirements.sdk.sources.provider_observations`:**\n1. The tracked read resolves the selected `OutlineData` through the application's source-node mapping.\n2. The tracked read reads that mapped node through `Domain`.\n3. A successful read delivered to the caller records the mapped node's identity and the fingerprint of the supplied contents.\n4. Reads that are not successful deliveries record nothing. This follows from \"successful reads delivered to the caller\". The cited `node_inputs` text also says a failed read invents no observation.\n\nThe cited `requirements.sdk.graph.evidence.node_inputs` and `requirements.sdk.graph.evidence.checking_records` supply context only. I did not reassess their implementations or tests.\n\n**Coverage:**\n- `crates/trust-but-verify/src/agent/project_sources.rs#mod[tests]/fn[direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns]` covers obligations 1–4.\n  - **Mapping:** unmapped addresses (an unknown path, and an unknown selector) return an \"unsupported source item\" error. They leave `dependencies()` empty and the domain's `reads` at 0, so no `Domain` read was made for them.\n  - **Domain read failure:** a failing `Domain` read returns the error and records nothing.\n  - **Success:** the successful read returns \"prepared contents\". `dependencies()` is exactly `Dependency::Node(<source-node interned from the mapping>, returned.fingerprint())`. The domain's `read_nodes` is `[\"source-node\",\"source-node\"]`, which shows the read went through the mapped node.\n  - **Freshness:** the resulting record is current, then becomes stale after the domain text changes. That shows the observation is tied to the supplied contents.\n- `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` is an end-to-end check, run twice.\n  - **Recorded dependencies:** the exact dependency list contains the mapped `TestNode` ids 8 and 9. Their fingerprints are computed independently as `OutlineContent::from_source(...).at_offset(0).fingerprint()` of the supplied snapshot contents. A read of an unused node found through search is recorded too, in the same list as ids 8 and 9.\n  - **Supplied contents:** the tool output carries \"a source snapshot\", not the \"selected disk contents\". The domain's read log shows the selected file was read through the domain.\n  - **Search discovery:** search results alone record nothing. Only the node actually read, through `finish_search` or `read_node` of the unused node, adds dependencies.\n- `crates/trust-but-verify/src/agent/tests.rs#fn[source_tools_keep_search_discovery_separate_from_delivered_source_reads]` shows that after a `search_text` call followed by a `read_source`, the only observation is the one for the delivered read. Its fingerprint value equals the delivered text.\n- `crates/trust-but-verify/src/agent/tests.rs#fn[source_discovery_and_its_pages_do_not_register_reads]` shows that listing, search, outline and paging produce no dependencies and make no observation calls.\n- `crates/trust-but-verify/src/agent/tests.rs#fn[cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input]` covers a selector-specific read that records exactly the delivered content, and a failed read (`fn[missing]`) that adds no input. The final dependency list has a single entry.\n\n**Gaps:** none found. Success, mapping failure, read failure, exact identity, exact fingerprint, and non-delivery (discovery) are each asserted. The tests are marked `{test}` for the subject.",
   "references": "9e95a92eaf3e1dc37560a9fc47756dfd3b1cbfafc4381cbf0b946b628a4e7f3d",
   "inputs": [
     {
@@ -46,22 +46,15 @@
       ],
       "text": [
         ":::{req} checking_records",
-        "```rust,ignore",
-        "/// Compare each recorded input with the current domain state.",
-        "/// Return true when every fingerprint still matches, including an empty trace.",
-        "pub fn check_inputs<D: Domain, O>(",
-        "    domain: &D,",
-        "    inputs: &Fingerprinted<D, O>,",
-        ") -> Result<bool, D::Error>;",
-        "```",
+        "The method is declared under {cite}`requirements.sdk.graph.running-criteria.check_inputs`.",
         "",
-        "The function resolves the recorded dependencies through graph operations and",
+        "The method resolves the recorded dependencies through graph operations and",
         "fingerprinting, comparing each with its saved observation. A fingerprint",
         "mismatch returns `Ok(false)` and permits an early return; it need not resolve",
         "later dependencies. An encountered dependency-resolution failure returns an",
         "error.",
         "",
-        "The function observes the current state that the caller intends to inspect.",
+        "The method observes the current state that the caller intends to inspect.",
         "Freshness checking has a separate observation scope from criterion execution.",
         "Checked observations enter the new trace when execution explicitly reads",
         "or delivers them.",
@@ -72,7 +65,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]",
-      "hash": "86df255472eea22f9d40c9d987ebd319db936d04d5a0ef876576577d4be99c2d"
+      "hash": "427b782e325cca833c6c1329448fab75c0cfe769ecf50f8d17ec16d0be0e75c0"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
@@ -93,6 +86,16 @@
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input]",
       "hash": "71a7f1deb43f63a69839e99242ab5dc5644e3eff6ac2f4b7ce3ced2210249c1d"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]",
+      "hash": "1e9891fdbb67df918e9440e24bb4ccae95bc15d9677193dee3cc2c09feb845b5"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'_,%20D>]/fn[read_source]",
+      "hash": "629b640874f77578a312dd7f8f8b643adfda5c1595bb1d46cf3c8edcf1f39ae5"
     }
   ],
   "format_version": 1,
@@ -150,7 +153,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "4df07bc74435e1e7cbebf92a865d5d82f7a0aa85c5f62eab7c291812df381b0a"
+          "value": "0a77f4260213558db8817a69ca2aa3ffc409ed823e4c689bb9e894919e267f36"
         }
       ]
     },
@@ -167,7 +170,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "34583fda418eba03368d18721f3e85387cfdfeba5c7f97b0225bac62686a952b"
+          "value": "5195752f5d50c69eae3f26174a9baf255de6fe3e1c31d0611dad8b7a10e945b5"
         }
       ]
     },
@@ -236,6 +239,40 @@
         {
           "scheme": "habeas-input-v1",
           "value": "a612b1918e435ee8032000ba8f6500620d5bfb333b810a0382c5c61458a16d1e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "5a9657532ff38717d6edc972de4796214707d7418e21000c346f1c37f9e5be0e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'_,%20D>]/fn[read_source]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "0b8dfe551b5ffd1cb7f22e4524297e05ab3d68faf11eca7c5bf8c408646af48b"
         }
       ]
     }

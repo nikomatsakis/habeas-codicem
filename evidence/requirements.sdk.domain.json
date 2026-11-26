@@ -1,7 +1,7 @@
 {
   "requirement": "Every {term}`requirements.sdk.application_domain` implements\n`trust_but_verify::domain::Domain`. A domain is cloneable and safe to share between\nexecutions. The following chapters introduce its members one capability at a\ntime.\n\n```rust,ignore\npub trait Domain: Clone + Send + Sync {\n    type Error: Send;\n    type NodeData: Clone + Eq + Hash + Send + Sync;\n    type NodeContent: NodeContents;\n    type EdgeLabel: Clone + Send + Sync;\n\n    fn cache(&self) -> &ValidationCache<Self>;\n    fn node_path(&self, node: &NodeId<Self>) -> NodePath;\n    fn node_content(\n        &self,\n        node: &NodeId<Self>,\n    ) -> Result<Self::NodeContent, Self::Error>;\n    fn outgoing_edges(\n        &self,\n        node: &NodeId<Self>,\n        label: Self::EdgeLabel,\n    ) -> Result<Vec<NodeId<Self>>, Self::Error>;\n    fn load_evidence(\n        &self,\n        node: &NodeId<Self>,\n        criterion: &CriterionPath,\n    ) -> impl Future<Output = Result<Option<Record<Self::NodeData, Self::EdgeLabel>>, Self::Error>> + Send;\n    fn store_evidence(\n        &self,\n        node: &NodeId<Self>,\n        criterion: &CriterionPath,\n        record: &Record<Self::NodeData, Self::EdgeLabel>,\n    ) -> impl Future<Output = Result<(), Self::Error>> + Send;\n\n    fn project_sources(&self) -> Option<SourceProject<Self>> { ... }\n    fn source_node(\n        &self,\n        item: &OutlineData,\n    ) -> Result<Self::NodeData, SourceError> { ... }\n    fn source_address(&self, _data: &Self::NodeData) -> Option<OutlineData> { ... }\n}\n```",
   "determination": true,
-  "rationale": "I judge the tests adequate for `requirements.sdk.domain`. The requirement says every application domain implements `Domain`. It says a domain is `Clone + Send + Sync`, and it fixes the trait's associated types, bounds, and method signatures. The three default members are the exception: `project_sources`, `source_node` and `source_address` have only signatures here, and the text gives no behaviour for them.\n\n**Main test.** `crates/trust-but-verify/tests/contracts.rs#fn[domain_relationships_accept_opaque_types_and_send_only_errors]` covers most of the contract.\n- It implements `Domain` for a fixture type, `Relationships`. The fixture uses opaque `NodeData` and `EdgeLabel` types. Its `Error` is `Send` only: it wraps a `Cell` and is not `Sync`, `Debug`, `Clone` or `std::error::Error`. A stricter bound on `Error` would fail to compile there.\n- The generic `check_bounds<G: Domain>` helper asserts these compile-time bounds:\n  - `G: Clone + Send + Sync`\n  - `NodeData: Clone + Eq + Send + Sync`\n  - `EdgeLabel: Clone + Send + Sync`\n  - `Error: Send`\n  - `NodeContent: NodeContents`\n  \n  Because the helper is generic, loosening any of these bounds in the trait would break compilation.\n- It checks that the futures returned by `load_evidence` and `store_evidence` are `Send`, through the `send(...)` helper. The fixture error is not `Sync`, so this matters.\n- It calls `node_content`, `node_path`, `outgoing_edges`, `load_evidence` and `store_evidence` with the declared signatures. It asserts their results, including an error from `outgoing_edges`.\n- It asserts that the default `project_sources` returns `None` and that the default `source_node` returns `SourceError::Invalid`.\n\n**Sharing between executions.** Several tests show a domain being shared and used in concurrent executions:\n- `concurrent_single_node_validations_keep_separate_traces`\n- `concurrent_same_criterion_executions_keep_complete_independent_records`\n- `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads`\n- `shared_context_allows_independent_concurrent_agent_calls`\n\n**Other tests.** `criteria_keep_typed_answers_and_persist_only_when_requested`, `deterministic_validation_uses_required_storage_without_an_agent`, `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer`, `later_lighter_agent_calls_preserve_the_contexts_existing_trace` and `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` use domain implementations through the trait. `src/sdk.rs#mod[tests]/fn[domain_formats_supplied_contents_without_resolving_a_replacement]` does the same for the habeas domain.\n\n**Minor observations.**\n- `check_bounds` does not name `Hash` on `NodeData`. Its `identity` helper checks `Clone + Eq + Send + Sync` only. The fixture's `Identity` does derive `Hash`.\n- I do not count this as a gap. The library's own `ValidationCache` interns `NodeData` in an `IndexSet`, so removing `Hash` from the trait would stop the crate compiling, and every test would fail.\n- The default `source_address` returning `None` is not asserted in `contracts.rs`. The habeas domain test in `src/sdk.rs` asserts `None` for non-source nodes, but through its own override. The default's behaviour is specified by the sources requirements (`requirements.sdk.sources.source_nodes`), not here, so it is outside this subject.\n\nNo `{fixme}` acknowledgments apply.",
+  "rationale": "The tests adequately check `requirements.sdk.domain`.\n\n**Obligations.** The text requires four things:\n- Every application domain implements `Domain`.\n- A domain is cloneable and safe to share between executions (`Clone + Send + Sync`).\n- The trait declares the associated types with their bounds: `Error: Send`, `NodeData: Clone + Eq + Hash + Send + Sync`, `NodeContent: NodeContents`, and `EdgeLabel: Clone + Send + Sync`.\n- The trait declares the listed method signatures. `load_evidence` and `store_evidence` return `Send` futures. `project_sources`, `source_node` and `source_address` are defaulted.\n\n**Main test.** `crates/trust-but-verify/tests/contracts.rs#fn[domain_relationships_accept_opaque_types_and_send_only_errors]` covers the type-level contract.\n- It implements `Domain` for a fixture whose `NodeData` and `EdgeLabel` are opaque types and whose `Error` is `Send` but not `Sync` (it wraps a `Cell`). A stricter bound on `Error` would therefore fail to compile.\n- The generic `check_bounds<G: Domain>` helper compiles checks for `G: Clone + Send + Sync`, for `NodeData: Clone + Eq + Hash + Send + Sync`, for `EdgeLabel: Clone + Send + Sync`, and for `Error: Send`. It also checks `NodeContent: NodeContents`. Loosening any required bound would break compilation.\n- The `send(...)` helper checks that the `load_evidence` and `store_evidence` futures are `Send` even though the error is not `Sync`.\n- It calls `node_content`, `node_path`, `outgoing_edges`, `load_evidence` and `store_evidence` with the declared signatures and asserts their results. That includes an error from `outgoing_edges`, duplicate and empty successor lists, and distinct node paths.\n- It asserts that the default `project_sources` returns `None` and that the default `source_node` returns `SourceError::Invalid`.\n- `crates/trust-but-verify/tests/contracts.rs#fn[domain_without_project_sources_leaves_source_tools_disabled]` asserts that the default `source_address` returns `None`. It carries no `{test}` reference to this requirement. The text specifies no behavior for the defaults beyond their signatures, so this is not a gap.\n\n**Safe to share between executions.** Several tests run one domain in concurrent executions and assert separate traces and records:\n- `concurrent_single_node_validations_keep_separate_traces`\n- `concurrent_same_criterion_executions_keep_complete_independent_records`\n- `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads`\n- `shared_context_allows_independent_concurrent_agent_calls`\n- `later_lighter_agent_calls_preserve_the_contexts_existing_trace` also asserts that the context is `Send + Sync`.\n\n**Implementing the trait in real domains.** Further tests use domain implementations through the trait:\n- `criteria_keep_typed_answers_and_persist_only_when_requested`\n- `deterministic_validation_uses_required_storage_without_an_agent`\n- `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer`\n- `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text`\n- `src/sdk.rs#mod[tests]/fn[domain_formats_supplied_contents_without_resolving_a_replacement]`, which does so for the habeas domain.\n\n`public_exports_match_the_appendix` tests the public export inventory, not this requirement's behavior.\n\nI found no gaps and no marking gaps. No `{fixme}` acknowledgments apply.",
   "references": "def95cddcfd729d8ab2a7869cd3b7c1d236dc0d2686efb64ec30c6a98a2e742a",
   "inputs": [
     {
@@ -66,12 +66,12 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[deterministic_validation_uses_required_storage_without_an_agent]",
-      "hash": "d26c975d0d117f4234ef63a135d6154ad3acf6743dd2c9a567842dec925fa2a9"
+      "hash": "744f61b15e6acace9d745f474ecd3efd0733907389f6bc82870a8a9ea5769173"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]",
-      "hash": "69048b64a195513551fdc8614a7e6cea5e002203603971efcae1e18be26ff809"
+      "hash": "e7612967baf35151d91388d3bdcba2d29524109c2ecbbe5f1d242cfce6f6f959"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
@@ -91,22 +91,22 @@
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[concurrent_single_node_validations_keep_separate_traces]",
-      "hash": "657d8b2da60ea29abeedb9c94da1b3a2a877add285648841e65d988648bdaba4"
+      "hash": "5013e59de848fef5d0de348958c93db5e4030fbf79d55559833aeaca30e2e544"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]",
-      "hash": "f2e82361bdd1652718ae5096ea111e774efeae93333bc69b10254303d26b103e"
+      "hash": "e46366c5a0de1a3dcbb7370d737f808366b44a3118471cff53135b299943401f"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[criteria_keep_typed_answers_and_persist_only_when_requested]",
-      "hash": "c91f0b4950727c0c402d2eb000e29722804773d0c55fa7a32eb8154e8e60a8c3"
+      "hash": "f47c40151c7d8ba4e5cd3b84d1c8d19288a02beb3f6148a79bdbcf6bc857964c"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[concurrent_same_criterion_executions_keep_complete_independent_records]",
-      "hash": "4f73c97763bcf0157666d94ecfd67a67a9ffe643002796b9b3e90bfb31f78cb4"
+      "hash": "70754a4e4c0dca2f9b977cedc23fb77732e752f36e72e309fe495e2ee218931a"
     },
     {
       "file": "src/sdk.rs",
@@ -134,14 +134,14 @@
       ]
     },
     {
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "fn[domain_without_project_sources_leaves_source_tools_disabled]",
+      "hash": "3ef383bbbb405d6770ae546b56e0550e7638c3c4ed50a53ba9c7161410e1f047"
+    },
+    {
       "file": "crates/trust-but-verify/src/domain.rs",
       "item": "trait[Domain]/fn[source_address]",
       "hash": "2b4d0d0abe0d0a3d3b546ca2799462aaf3c83cda7f2837cb9d8808759ea1a85e"
-    },
-    {
-      "file": "src/sdk.rs",
-      "item": "impl[HabeasDomain/Domain]/fn[source_address]",
-      "hash": "ba5652b744d1bc7ba10d5b2b5d0407b94c7aaa04a6e3e97594d5fb946f7798fe"
     }
   ],
   "format_version": 1,
@@ -211,7 +211,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f98f7eb44c540fb32d9d615e0699ad81c288576b6e30ad42bfc9b3ed39bde19e"
+          "value": "a1973d45464b99414240d422952dd92e55809e39b804c0a6502fa99c9eeda77c"
         }
       ]
     },
@@ -228,7 +228,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "53b29e878fc28b411aeb2c3a8544267087c2ebd893b981cac35ebbdbe82f3cff"
+          "value": "ac3e898eec9a1723e1c59e83e24f6afa5897c45140603fe41abe15fa7b9c1267"
         }
       ]
     },
@@ -296,7 +296,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "268fdc7ca61481f590070d30fa2489e82a30ab3da883895df98e0f2cdac57d68"
+          "value": "a158b933c1595082748de465ad9b4c1e4b4f58e0a50d16d56d2efcede1795db4"
         }
       ]
     },
@@ -313,7 +313,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "74f6324e2786c0590ed175ee978418de8a5973f9db898d4780029eac379c590b"
+          "value": "a7126df2582fdb2ea3ec536fdb6958e12e9cc217504ebc04488581f41f4bc723"
         }
       ]
     },
@@ -330,7 +330,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "71daa5201e44592a4d878703ba9d3631160d1d9e7b691018fb772f8c27ef8312"
+          "value": "b2aa59812b415b1de724515125462a57ef9f47d53921320f7a17a982d8e93a7b"
         }
       ]
     },
@@ -347,7 +347,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "33d99cc7e85459def8c3b050059876740d56532315d55122813711348da160a7"
+          "value": "1d059bf8a14563da0b47410d7d86691eccd91a87c0ff0b77f23dc1baadc50ad0"
         }
       ]
     },
@@ -402,14 +402,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/domain.rs"
+              "location": "crates/trust-but-verify/tests/contracts.rs"
             },
-            "selector": "trait[Domain]/fn[source_address]"
+            "selector": "fn[domain_without_project_sources_leaves_source_tools_disabled]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1dd4d6c9fb28dfc3bb64a7b988142929e12613656ca477160058ea7c1aa30c29"
+          "value": "dee2f373609017c50fdb424124fefd361c05b57f7d8125cf12b3f4122e43861a"
         }
       ]
     },
@@ -419,14 +419,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "src/sdk.rs"
+              "location": "crates/trust-but-verify/src/domain.rs"
             },
-            "selector": "impl[HabeasDomain/Domain]/fn[source_address]"
+            "selector": "trait[Domain]/fn[source_address]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "06932b33fc5e2a4e9b49ba03044dca78f80624588fee0c21db764a76cc73ba79"
+          "value": "1dd4d6c9fb28dfc3bb64a7b988142929e12613656ca477160058ea7c1aa30c29"
         }
       ]
     }

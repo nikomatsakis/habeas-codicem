@@ -159,6 +159,33 @@ pub trait Conversation: Send {
     fn cut_off(&mut self, response: &CompletionResponse, limit: u64) -> Vec<Message>;
 }
 
+// Publish an interrupted attempt too. A dropped provider future supplies no token measurements.
+// {impl}`requirements.sdk.validation-cache.usage`
+struct ProviderAttempt<'a, 'd, D: crate::domain::Domain> {
+    context: &'a crate::request::ValidationContext<'d, D>,
+    usage: crate::graph::UsageStats,
+}
+
+impl<D: crate::domain::Domain> Drop for ProviderAttempt<'_, '_, D> {
+    // {impl}`requirements.sdk.validation-cache.usage`
+    // {impl}`requirements.sdk.graph.running-criteria.Validator.usage`
+    fn drop(&mut self) {
+        if let Some(local) = &self.context.usage {
+            local
+                .lock()
+                .expect("usage lock poisoned")
+                .accumulate(&self.usage);
+        }
+        self.context
+            .graph()
+            .cache()
+            .usage
+            .lock()
+            .expect("usage lock poisoned")
+            .accumulate(&self.usage);
+    }
+}
+
 // {impl}`requirements.sdk.graph.agent-calls.judge.submission`
 // {impl}`requirements.sdk.graph.agent-harness.submission.acceptance`
 // {impl}`requirements.sdk.graph.agent-harness.submission.reminder`
@@ -166,7 +193,8 @@ pub trait Conversation: Send {
 // {impl}`requirements.authoring.provider_backoff`
 // {impl}`requirements.authoring.output_limit`
 #[doc(hidden)]
-pub async fn converse<P: CompletionProvider, C: Conversation>(
+pub async fn converse<P: CompletionProvider, C: Conversation, D: crate::domain::Domain>(
+    context: &crate::request::ValidationContext<'_, D>,
     provider: &P,
     session: &mut C,
     mut request: CompletionRequest,
@@ -174,11 +202,16 @@ pub async fn converse<P: CompletionProvider, C: Conversation>(
 ) -> io::Result<C::Output> {
     request.tools = session.tools()?;
     let mut backoff = ProviderBackoff::default();
+    let mut retrying = false;
     let mut continued = false;
     let mut reminded = false;
     loop {
         let index = session.begin_request()?;
         let started = Instant::now();
+        let mut attempt = ProviderAttempt {
+            context,
+            usage: crate::graph::UsageStats::attempt(retrying, false, None),
+        };
         let response = match tokio::time::timeout(
             Duration::from_secs(600),
             provider.complete(request.clone()),
@@ -191,11 +224,18 @@ pub async fn converse<P: CompletionProvider, C: Conversation>(
                 "provider request had no response within ten minutes",
             )),
         };
+        attempt.usage = crate::graph::UsageStats::attempt(
+            retrying,
+            response.is_err(),
+            response.as_ref().ok().map(|r| &r.usage),
+        );
+        drop(attempt);
         session.end_request(index, started.elapsed(), &response)?;
         let response = match response {
             Ok(response) => response,
             Err(error) => match backoff.retry(error, tokio::time::Instant::now().into_std()) {
                 Retry::Wait(delay) => {
+                    retrying = true;
                     session.retried(index)?;
                     tokio::time::sleep(delay).await;
                     continue;
@@ -203,6 +243,7 @@ pub async fn converse<P: CompletionProvider, C: Conversation>(
                 Retry::Stop(error) => return Err(error),
             },
         };
+        retrying = false;
         backoff = ProviderBackoff::default();
         session.delivered()?;
         if matches!(response.finish_reason(), Some(FinishReason::Length)) {
@@ -350,11 +391,9 @@ pub async fn converse<P: CompletionProvider, C: Conversation>(
 #[doc(hidden)]
 #[cfg(any(test, feature = "habeas-integration"))]
 pub async fn verify_with_agent<D: crate::domain::Domain, V: crate::graph::Criterion<D>>(
-    domain: &D,
+    validator: &mut crate::graph::Validator<'_, D>,
     agent: &dyn crate::request::Agent<D>,
     criterion: V,
 ) -> Result<crate::graph::Fingerprinted<D, V::Ok>, crate::graph::ValidationError<D::Error>> {
-    let ctx =
-        crate::request::ValidationContext::with_agent(domain, criterion.source_node_id(), agent);
-    crate::graph::execute_with_context(ctx, criterion).await
+    validator.execute(criterion, Some(agent)).await
 }

@@ -1,7 +1,7 @@
 {
   "requirement": "`SourceProject` supplies the project files and domain mapping for a single agent request.\n\n```rust,ignore\npub struct SourceProject<D: Domain> { /* private fields */ }\n\nimpl<D: Domain> SourceProject<D> {\n    pub fn new(domain: D, sources: Sources) -> Self;\n    pub async fn search_text(&self, query: &TextQuery,) -> Result<SearchResults<SearchHit<NodeId<D>>>, SourceError>;\n    pub async fn search_structure(&self, query: &StructuralQuery,) -> Result<SearchResults<SearchHit<NodeId<D>>>, SourceError>;\n}\n```",
   "determination": true,
-  "rationale": "`requirements.sdk.sources.SourceProject` states no MUST/SHOULD clauses. It gives a public API shape and one purpose: the type supplies the project files and the domain mapping for a single agent request. Its testable obligations are `new(domain, sources)`, `search_text` and `search_structure`. Each search must return hits that come from the project's files and map to domain `NodeId`s.\n\nI read the implementation only to see what these items do. `new` wraps the domain and sources in `Arc`s (`crates/trust-but-verify/src/sources/public.rs#impl[SourceProject<D>]`). The searches go through `find_hits` in `crates/trust-but-verify/src/sources/hits.rs#impl[SourceProject<D>]`. That function lists files from `Sources`, filters by language for structural searches, and interns each hit as a domain node.\n\nCoverage by the reviewed tests:\n- **`new` and `search_text`:**\n  - `search_groups_exact_occurrences_and_records_the_selected_declaration` in `agent/project_sources.rs` builds the project with `ProjectSources::new(project(\"\"), Sources::new(root))`. `ProjectSources` is an alias for `SourceProject`.\n  - It calls `project.search_text(&TextQuery::new(\"hit\"))` directly. It asserts the exact node (`code.rs#const[A]` and `code.rs#const[B]`, interned through the domain cache), the exact spans (including a non-ASCII byte offset) and the text of three hits. That checks the domain mapping and the file-derived results.\n  - It also exercises the agent session built from the same project, which includes `finish_search` dependencies.\n- **`search_structure`:**\n  - `structural_tags_select_only_the_original_enclosing_item` calls `tools.search_structure(&query)` directly on a `ProjectSources` value. It asserts the nodes (`code.rs#fn[one]` and `code.rs#fn[two]`), the spans (9..15 and 27..33) and the text. It also compares them with `StructuralRule::matches` on the file text.\n  - It checks the `limit` case (`complete == false`, one match) and rejects invalid arguments.\n  - It also covers the session-level read and finish behavior.\n- **Project files and domain mapping through the real domain path:** `configured_agent_uses_domain_source_tools_in_independent_executions` in `agent/configured.rs` attaches `Sources` to a `ValidationCache`. It runs two independent agent executions against a local server. It checks that listing and reading go through domain node IDs. It also checks that `.gitignore`d files are excluded, that a sibling directory outside the scope is not exposed, and that dependencies are recorded per execution.\n\nEach of these tests carries a `{test}` reference to the subject. I found no obligation in the requirement text without a test, and no case where the assertions would accept behavior that violates the text. The signatures carry no further error-handling or boundary conditions. `SourceError` cases are not specified here.",
+  "rationale": "`requirements.sdk.sources.SourceProject` is a declarative API requirement. It says `SourceProject` supplies project files and the domain mapping for one agent request. It lists `new`, `search_text` and `search_structure`. It states no MUST/SHOULD clauses about errors, ordering or limits beyond those signatures. Refining behavior such as search semantics and node mapping belongs to other requirements, which the tests cite separately.\n\nCoverage by the three marked tests:\n- **`new`**: `search_groups_exact_occurrences_and_records_the_selected_declaration` builds the project with `ProjectSources::new(project(\"\"), Sources::new(root))`. `ProjectSources` is an alias for `SourceProject`. It then runs a real search over files on disk.\n- **`search_text`**: the same test calls `project.search_text(&TextQuery::new(\"hit\"))`. It asserts the exact hits: domain node ids interned for `code.rs#const[A]` and `code.rs#const[B]`, byte spans `19..22`, `42..45` and `46..49`, and the hit text. Together these show the project supplies both the files and the domain-node mapping. The test also runs `search_text` through a session tool. It checks that the finished search records the right declaration dependency.\n- **`search_structure`**: `structural_tags_select_only_the_original_enclosing_item` builds a `SourceProject` literal (the `ProjectSources` alias), not `new`. It calls `tools.search_structure(&StructuralQuery)` and asserts the exact node, span and text for each hit in `fn[one]` and `fn[two]`. It also checks that the spans equal the compiled rule's own matches, and exercises the limit (`complete` false). `new` is covered by the other test.\n- **A single agent request, with domain-supplied files**: `configured_agent_uses_domain_source_tools_in_independent_executions` runs two independent executions through `Domain::project_sources`, which constructs the `SourceProject` from the cache's sources and the domain. Each execution lists, reads and searches the project's files, and exposes the source tools. The test asserts the domain node mappings and the resulting dependencies. It also checks that `.gitignore`d files and files outside the scope are not exposed. Both executions give the same results, so the per-request project is rebuilt cleanly.\n\nThe implementations (`sources/public.rs#impl[SourceProject<D>]` and `sources/hits.rs#impl[SourceProject<D>]/fn[search_text]` and `fn[search_structure]`) have no conditional that the requirement states and the tests leave unexercised. The conditions in `find_hits` are the language filter, the limit and empty matches. They are covered, or belong to the search requirements that the tests also cite.\n\nI found no unacknowledged gap in the tests' coverage of this requirement.",
   "references": "61d817e0045de305ffb7314d4e7fc908903dc4a8a5f601aee33454564d2e45e0",
   "inputs": [
     {
@@ -29,7 +29,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]",
-      "hash": "86df255472eea22f9d40c9d987ebd319db936d04d5a0ef876576577d4be99c2d"
+      "hash": "427b782e325cca833c6c1329448fab75c0cfe769ecf50f8d17ec16d0be0e75c0"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
@@ -50,6 +50,11 @@
       "file": "crates/trust-but-verify/src/sources/hits.rs",
       "item": "impl[SourceProject<D>]",
       "hash": "50d60b5f33e17ea696b068fe412a848657d3e44279a270caf8e931cf0c9a28d8"
+    },
+    {
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "trait[Domain]/fn[project_sources]",
+      "hash": "7e2d7410f834a61a2accca905d01bbc4cc5f6f65783b431fbd84c1b8d3825eae"
     },
     {
       "file": "crates/trust-but-verify/src/sources/public.rs",
@@ -107,7 +112,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "34583fda418eba03368d18721f3e85387cfdfeba5c7f97b0225bac62686a952b"
+          "value": "5195752f5d50c69eae3f26174a9baf255de6fe3e1c31d0611dad8b7a10e945b5"
         }
       ]
     },
@@ -176,6 +181,23 @@
         {
           "scheme": "habeas-input-v1",
           "value": "d61473bae6cba0f5ccf3a45640d548cd7eacbc1140bf0d1d03916e8f914c5195"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "trait[Domain]/fn[project_sources]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "b472e3859e4e5ed8b5421a1eeeae2eece885456b1d33ca57dcf0996b7c5b141e"
         }
       ]
     },

@@ -110,6 +110,7 @@ pub trait Agent<D: Domain>: Send + Sync {
 pub struct ValidationContext<'d, D: Domain> {
     node: NodeId<D>,
     graph: &'d D,
+    pub(crate) usage: Option<std::sync::Mutex<&'d mut UsageStats>>,
     // Hold this lock only while reading or recording dependencies.
     observations: std::sync::Mutex<Vec<Dependency<NodeId<D>, D::EdgeLabel>>>,
     agent: Option<&'d dyn Agent<D>>,
@@ -124,7 +125,7 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
 
     // {cite}`habeas:util`
     #[doc(hidden)]
-    #[cfg(any(test, feature = "habeas-integration"))]
+    #[cfg(test)]
     pub(crate) fn with_agent(graph: &'d D, node: NodeId<D>, agent: &'d dyn Agent<D>) -> Self {
         Self::configured(graph, node, Some(agent))
     }
@@ -139,6 +140,7 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
         Self {
             node,
             graph,
+            usage: None,
             observations: Default::default(),
             agent,
         }

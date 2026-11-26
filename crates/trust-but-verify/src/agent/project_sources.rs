@@ -262,6 +262,29 @@ mod tests {
         )
     }
 
+    // {test}`requirements.sdk.validation-cache.with_sources`
+    #[tokio::test]
+    async fn attached_sources_map_a_nested_rust_method_to_its_domain_identity() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("parser.rs"),
+            "struct Parser; impl Parser { fn parse() { consume(); } }",
+        )
+        .unwrap();
+        let mut domain = project("");
+        domain.1 = domain.1.with_sources(Sources::new(root.path()));
+        let sources = domain.project_sources().unwrap();
+        let hits = sources
+            .search_text(&crate::sources::TextQuery::new("consume".into()))
+            .await
+            .unwrap();
+        assert_eq!(hits.matches.len(), 1);
+        assert_eq!(
+            &**domain.cache().node_data(hits.matches[0].node).unwrap(),
+            "parser.rs#impl[Parser]/fn[parse]"
+        );
+    }
+
     // {test}`requirements.sdk.graph.validation-context.read_node.mcp`
     // {test}`requirements.sdk.sources.source_nodes`
     // {test}`requirements.sdk.graph.validation-context.file_node_arguments`
@@ -1446,12 +1469,11 @@ mod tests {
         });
         let mut domain = domain;
         domain.1 = crate::domain::ValidationCache::with_agent(config);
-        let first = validation::refresh_evidence(
-            &domain,
-            ReadSource(domain.cache().intern_node("source-node".into())),
-        )
-        .await
-        .unwrap();
+        let mut validator = validation::Validator::new(&domain);
+        let first = validator
+            .refresh_evidence(ReadSource(domain.cache().intern_node("source-node".into())))
+            .await
+            .unwrap();
         assert_eq!(first.output(), "first");
         assert_eq!(
             first.dependencies(),
@@ -1460,20 +1482,16 @@ mod tests {
                 Content::Text("first".into()).fingerprint()
             )]
         );
-        let saved = validation::refresh_evidence(
-            &domain,
-            ReadSource(domain.cache().intern_node("source-node".into())),
-        )
-        .await
-        .unwrap();
+        let saved = validator
+            .refresh_evidence(ReadSource(domain.cache().intern_node("source-node".into())))
+            .await
+            .unwrap();
         assert_eq!(saved.output(), "first");
         domain.0.lock().unwrap().text = "second".into();
-        let changed = validation::refresh_evidence(
-            &domain,
-            ReadSource(domain.cache().intern_node("source-node".into())),
-        )
-        .await
-        .unwrap();
+        let changed = validator
+            .refresh_evidence(ReadSource(domain.cache().intern_node("source-node".into())))
+            .await
+            .unwrap();
         assert_eq!(changed.output(), "second");
     }
 

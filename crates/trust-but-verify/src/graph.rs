@@ -335,130 +335,224 @@ pub trait Criterion<D: Domain>: Send + Sized {
     ) -> impl Future<Output = Result<Self::Ok, ValidationError<D::Error>>> + Send;
 }
 
-// {impl}`requirements.sdk.graph.evidence.refresh_evidence`
-/// Reuse compatible, current evidence, or evaluate and save a new answer.
-/// Errors from loading, decoding, checking, execution, or saving propagate.
-// {impl}`requirements.sdk.graph.running-criteria.refresh_evidence`
-pub fn refresh_evidence<D: Domain, V: Criterion<D>>(
-    domain: &D,
-    criterion: V,
-) -> impl Future<Output = Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>>> + Send {
-    async move {
-        if let Some(saved) = load_evidence(domain, &criterion).await? {
-            if criterion.version().is_compatible_with(saved.version())
-                && check_inputs(domain, &saved).map_err(ValidationError::Graph)?
-            {
-                return Ok(saved);
-            }
-        }
+/// Provider attempts and token measurements accumulated during validation.
+// {impl}`requirements.sdk.graph.running-criteria.UsageStats`
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+#[non_exhaustive]
+pub struct UsageStats {
+    pub attempts: u64,
+    pub retries: u64,
+    pub failed_attempts: u64,
+    pub input_tokens: TokenCount,
+    pub output_tokens: TokenCount,
+    pub cached_input_tokens: TokenCount,
+    pub cache_creation_input_tokens: TokenCount,
+    pub reasoning_tokens: TokenCount,
+}
 
-        let inputs = verify(domain, criterion).await?;
-        store_evidence(domain, &inputs).await?;
-        Ok(inputs)
+impl UsageStats {
+    pub(crate) fn attempt(
+        retry: bool,
+        failed: bool,
+        usage: Option<&rig_core::completion::Usage>,
+    ) -> Self {
+        Self {
+            attempts: 1,
+            retries: u64::from(retry),
+            failed_attempts: u64::from(failed),
+            input_tokens: TokenCount::measurement(usage.and_then(|u| u.input_tokens)),
+            output_tokens: TokenCount::measurement(usage.and_then(|u| u.output_tokens)),
+            cached_input_tokens: TokenCount::measurement(usage.and_then(|u| u.cached_input_tokens)),
+            cache_creation_input_tokens: TokenCount::measurement(
+                usage.and_then(|u| u.cache_creation_input_tokens),
+            ),
+            reasoning_tokens: TokenCount::measurement(usage.and_then(|u| u.reasoning_tokens)),
+        }
+    }
+
+    pub(crate) fn accumulate(&mut self, other: &Self) {
+        self.attempts += other.attempts;
+        self.retries += other.retries;
+        self.failed_attempts += other.failed_attempts;
+        self.input_tokens.accumulate(other.input_tokens);
+        self.output_tokens.accumulate(other.output_tokens);
+        self.cached_input_tokens
+            .accumulate(other.cached_input_tokens);
+        self.cache_creation_input_tokens
+            .accumulate(other.cache_creation_input_tokens);
+        self.reasoning_tokens.accumulate(other.reasoning_tokens);
     }
 }
 
-// {impl}`requirements.sdk.graph.evidence.check_node`
-// {impl}`requirements.sdk.graph.evidence.procedure_identity`
-// {impl}`requirements.sdk.graph.evidence.record.output`
-// {impl}`requirements.sdk.graph.evidence.inputs`
-/// Load this criterion's evidence and decode its answer.
-// {impl}`requirements.sdk.graph.running-criteria.load_evidence`
-pub fn load_evidence<D: Domain, V: Criterion<D>>(
-    domain: &D,
-    criterion: &V,
-) -> impl Future<Output = Result<Option<Fingerprinted<D, V::Ok>>, ValidationError<D::Error>>> + Send
-{
-    // Read the descriptor before constructing the future: V needs no Sync.
-    let node = criterion.source_node_id();
-    let criterion_path = criterion.criterion_path();
-    async move {
-        let Some(record) = domain
-            .load_evidence(&node, &criterion_path)
-            .await
-            .map_err(ValidationError::Graph)?
-        else {
-            return Ok(None);
-        };
-        let output = serde_json::from_value(record.output).map_err(ValidationError::Output)?;
-        Ok(Some(Fingerprinted {
+/// Measured tokens and the number of attempts without a measurement for this category.
+// {impl}`requirements.sdk.graph.running-criteria.TokenCount`
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+#[non_exhaustive]
+pub struct TokenCount {
+    pub reported: u64,
+    pub missing_attempts: u64,
+}
+
+impl TokenCount {
+    fn measurement(value: Option<u64>) -> Self {
+        Self {
+            reported: value.unwrap_or_default(),
+            missing_attempts: u64::from(value.is_none()),
+        }
+    }
+
+    fn accumulate(&mut self, other: Self) {
+        self.reported += other.reported;
+        self.missing_attempts += other.missing_attempts;
+    }
+}
+
+/// Executes criteria on a borrowed domain and counts the provider usage of this operation.
+// {impl}`requirements.sdk.graph.running-criteria.Validator`
+pub struct Validator<'d, D: Domain> {
+    domain: &'d D,
+    usage: UsageStats,
+}
+
+impl<'d, D: Domain> Validator<'d, D> {
+    // {impl}`requirements.sdk.graph.running-criteria.Validator.new`
+    pub fn new(domain: &'d D) -> Self {
+        Self {
+            domain,
+            usage: UsageStats::default(),
+        }
+    }
+
+    // {impl}`requirements.sdk.graph.running-criteria.Validator.usage`
+    pub fn usage(&self) -> &UsageStats {
+        &self.usage
+    }
+    // {impl}`requirements.sdk.graph.evidence.refresh_evidence`
+    /// Reuse compatible, current evidence, or evaluate and save a new answer.
+    /// Errors from loading, decoding, checking, execution, or saving propagate.
+    // {impl}`requirements.sdk.graph.running-criteria.refresh_evidence`
+    pub fn refresh_evidence<V: Criterion<D>>(
+        &mut self,
+        criterion: V,
+    ) -> impl Future<Output = Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>>> + Send
+    {
+        async move {
+            if let Some(saved) = self.load_evidence(&criterion).await? {
+                if criterion.version().is_compatible_with(saved.version())
+                    && self.check_inputs(&saved).map_err(ValidationError::Graph)?
+                {
+                    return Ok(saved);
+                }
+            }
+
+            let inputs = self.verify(criterion).await?;
+            self.store_evidence(&inputs).await?;
+            Ok(inputs)
+        }
+    }
+
+    // {impl}`requirements.sdk.graph.evidence.check_node`
+    // {impl}`requirements.sdk.graph.evidence.procedure_identity`
+    // {impl}`requirements.sdk.graph.evidence.record.output`
+    // {impl}`requirements.sdk.graph.evidence.inputs`
+    /// Load this criterion's evidence and decode its answer.
+    // {impl}`requirements.sdk.graph.running-criteria.load_evidence`
+    pub fn load_evidence<V: Criterion<D>>(
+        &self,
+        criterion: &V,
+    ) -> impl Future<Output = Result<Option<Fingerprinted<D, V::Ok>>, ValidationError<D::Error>>> + Send
+    {
+        // Read the descriptor before constructing the future: V needs no Sync.
+        let node = criterion.source_node_id();
+        let criterion_path = criterion.criterion_path();
+        async move {
+            let Some(record) = self
+                .domain
+                .load_evidence(&node, &criterion_path)
+                .await
+                .map_err(ValidationError::Graph)?
+            else {
+                return Ok(None);
+            };
+            let output = serde_json::from_value(record.output).map_err(ValidationError::Output)?;
+            Ok(Some(Fingerprinted {
+                source: node,
+                criterion: criterion_path,
+                version: record.version,
+                dependencies: restore_dependencies(self.domain, &record.dependencies),
+                output,
+            }))
+        }
+    }
+
+    // {impl}`requirements.sdk.graph.evidence.checking_records`
+    /// Compare recorded input fingerprints with the current domain state.
+    // {impl}`requirements.sdk.graph.running-criteria.check_inputs`
+    pub fn check_inputs<O>(&self, inputs: &Fingerprinted<D, O>) -> Result<bool, D::Error> {
+        dependencies_are_current(self.domain, &inputs.dependencies)
+    }
+
+    // {impl}`requirements.sdk.graph.evidence.procedure_identity`
+    // {impl}`requirements.sdk.graph.evidence.inputs`
+    /// Execute the criterion and return its completed answer and observed inputs.
+    // {impl}`requirements.sdk.graph.running-criteria.verify`
+    // {impl}`requirements.sdk.graph.running-criteria.verify.concurrent`
+    // {impl}`requirements.sdk.graph.validation-context.shared_context`
+    pub fn verify<V: Criterion<D>>(
+        &mut self,
+        criterion: V,
+    ) -> impl Future<Output = Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>>> + Send
+    {
+        self.execute(criterion, None)
+    }
+
+    // {impl}`requirements.sdk.graph.running-criteria.validate_node`
+    // {impl}`requirements.sdk.graph.running-criteria.validate_node.errors`
+    // {impl}`requirements.sdk.graph.running-criteria.Validator.usage`
+    pub(crate) async fn execute<V: Criterion<D>>(
+        &mut self,
+        criterion: V,
+        agent: Option<&dyn crate::request::Agent<D>>,
+    ) -> Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>> {
+        let node = criterion.source_node_id();
+        let mut ctx = ValidationContext::configured(self.domain, node, agent);
+        ctx.usage = Some(std::sync::Mutex::new(&mut self.usage));
+        let criterion_path = criterion.criterion_path();
+        let version = criterion.version();
+
+        let answer = criterion.execute(&mut ctx).await?;
+        Ok(Fingerprinted {
             source: node,
             criterion: criterion_path,
-            version: record.version,
-            dependencies: restore_dependencies(domain, &record.dependencies),
-            output,
-        }))
+            version: Some(version),
+            dependencies: ctx.dependencies(),
+            output: answer,
+        })
     }
-}
 
-// {impl}`requirements.sdk.graph.evidence.checking_records`
-/// Compare recorded input fingerprints with the current domain state.
-// {impl}`requirements.sdk.graph.running-criteria.check_inputs`
-pub fn check_inputs<D: Domain, O>(
-    domain: &D,
-    inputs: &Fingerprinted<D, O>,
-) -> Result<bool, D::Error> {
-    dependencies_are_current(domain, &inputs.dependencies)
-}
-
-// {impl}`requirements.sdk.graph.running-criteria.validate_node`
-// {impl}`requirements.sdk.graph.running-criteria.validate_node.errors`
-// {impl}`requirements.sdk.graph.evidence.procedure_identity`
-// {impl}`requirements.sdk.graph.evidence.inputs`
-/// Execute the criterion and return its completed answer and observed inputs.
-// {impl}`requirements.sdk.graph.running-criteria.verify`
-// {impl}`requirements.sdk.graph.running-criteria.verify.concurrent`
-// {impl}`requirements.sdk.graph.validation-context.shared_context`
-pub fn verify<D: Domain, V: Criterion<D>>(
-    domain: &D,
-    criterion: V,
-) -> impl Future<Output = Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>>> + Send {
-    execute_with_context(
-        ValidationContext::new(domain, criterion.source_node_id()),
-        criterion,
-    )
-}
-
-pub(crate) async fn execute_with_context<D: Domain, V: Criterion<D>>(
-    mut ctx: ValidationContext<'_, D>,
-    criterion: V,
-) -> Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>> {
-    let node = ctx.node_id().clone();
-    let criterion_path = criterion.criterion_path();
-    let version = criterion.version();
-
-    let answer = criterion.execute(&mut ctx).await?;
-    Ok(Fingerprinted {
-        source: node,
-        criterion: criterion_path,
-        version: Some(version),
-        dependencies: ctx.dependencies(),
-        output: answer,
-    })
-}
-
-// {impl}`requirements.sdk.graph.evidence.store_evidence`
-// {impl}`requirements.sdk.graph.evidence.record.output`
-/// Encode the answer and atomically replace its source/criterion record.
-// {impl}`requirements.sdk.graph.running-criteria.store_evidence`
-pub fn store_evidence<D: Domain, O: Serialize>(
-    domain: &D,
-    inputs: &Fingerprinted<D, O>,
-) -> impl Future<Output = Result<(), ValidationError<D::Error>>> + Send {
-    // Encode before constructing the future: O needs no Sync or Clone.
-    let encoded = serde_json::to_value(&inputs.output).map(|output| Record {
-        version: inputs.version.clone(),
-        dependencies: persist_dependencies(domain, &inputs.dependencies),
-        output,
-    });
-    let node = inputs.source;
-    let criterion_path = inputs.criterion.clone();
-    async move {
-        let record = encoded.map_err(ValidationError::Output)?;
-        domain
-            .store_evidence(&node, &criterion_path, &record)
-            .await
-            .map_err(ValidationError::Graph)
+    // {impl}`requirements.sdk.graph.evidence.store_evidence`
+    // {impl}`requirements.sdk.graph.evidence.record.output`
+    /// Encode the answer and atomically replace its source/criterion record.
+    // {impl}`requirements.sdk.graph.running-criteria.store_evidence`
+    pub fn store_evidence<O: Serialize>(
+        &self,
+        inputs: &Fingerprinted<D, O>,
+    ) -> impl Future<Output = Result<(), ValidationError<D::Error>>> + Send {
+        // Encode before constructing the future: O needs no Sync or Clone.
+        let encoded = serde_json::to_value(&inputs.output).map(|output| Record {
+            version: inputs.version.clone(),
+            dependencies: persist_dependencies(self.domain, &inputs.dependencies),
+            output,
+        });
+        let node = inputs.source;
+        let criterion_path = inputs.criterion.clone();
+        async move {
+            let record = encoded.map_err(ValidationError::Output)?;
+            self.domain
+                .store_evidence(&node, &criterion_path, &record)
+                .await
+                .map_err(ValidationError::Graph)
+        }
     }
 }
 

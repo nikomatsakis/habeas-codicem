@@ -171,8 +171,7 @@ rationale goes to stderr. {cite}`requirements.authoring.reporting`
 
 Transient provider token/request throttling is retried automatically with
 exponential backoff and jitter, honoring `Retry-After` when the provider exposes
-it. Every attempt is counted in usage, with each failure's HTTP status and
-error code. Retrying gives up once a request has been failing for a minute, and
+it. Each assessment’s usage record counts provider attempts, retries, and failed attempts, and summarizes reported token usage. Retrying gives up once a request has been failing for a minute, and
 the error names the last failure; Ctrl-C interrupts waiting. Requests that exceed a model's input/context limit still fail
 because waiting cannot make that request fit. {cite}`requirements.authoring.provider_backoff`
 

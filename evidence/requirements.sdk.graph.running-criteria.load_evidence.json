@@ -1,8 +1,8 @@
 {
-  "requirement": "Use the criterion to locate and decode a saved answer. `Ok(None)` means there is no record. A loaded answer can be stale. See {cite}`requirements.sdk.graph.evidence.check_node`.\n\n```rust,ignore\npub fn load_evidence<D: Domain, V: Criterion<D>>(\n    domain: &D,\n    criterion: &V,\n) -> impl Future<Output = Result<Option<Fingerprinted<D, V::Ok>>, ValidationError<D::Error>>> + Send;\n```",
+  "requirement": "Use the criterion to locate and decode a saved answer. `Ok(None)` means there is no record. A loaded answer can be stale. See {cite}`requirements.sdk.graph.evidence.check_node`.\n\n```rust,ignore\nimpl<'d, D: Domain> Validator<'d, D> {\n    pub fn load_evidence<V: Criterion<D>>(\n        &self,\n        criterion: &V,\n    ) -> impl Future<Output = Result<Option<Fingerprinted<D, V::Ok>>, ValidationError<D::Error>>> + Send;\n}\n```",
   "determination": true,
-  "rationale": "The marked tests cover each obligation in `requirements.sdk.graph.running-criteria.load_evidence`.\n\n**Locate and decode a saved answer.**\n- `crates/trust-but-verify/tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` stores a negative answer. It loads it back with `validation::load_evidence` and asserts the output, source node id, criterion path, version and dependencies all equal the stored value.\n- The same test checks that a different criterion path (`text`) returns `None` until it is persisted, and then loads it.\n- `crates/trust-but-verify/src/graph/validation_tests.rs#fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]` loads a stored record and decodes the negative `result`. It also checks that a different node (8) returns `None`.\n\n**`Ok(None)` means no record.**\n- Both tests assert `is_none()` before any store.\n- Both also assert `is_none()` for a record under a different criterion path or node.\n- In the contracts test, `verify` writes nothing: after it, a load still returns `None`. After a second `verify` with a new answer, a load still returns the old stored answer. So execution does not create or change a record.\n\n**A loaded answer can be stale.**\n- In `validation_tests.rs`, loading with revision `v2` still returns the stored `v1` record (`old.version()` is `v1`). The test then asserts that `v2` is not compatible with it. A record with no version (`legacy`) also loads.\n- `contracts.rs#fn[typed_loading_reports_decode_errors_even_for_stale_evidence]` loads a record with changed dependencies and a changed revision. It shows that loading does no dependency resolution: `reads` stays empty even though `fail_read` is set.\n\n**Decode failure.** `typed_loading_reports_decode_errors_even_for_stale_evidence` asserts `Err(ValidationError::Output(_))` for a stored output that does not decode as the requested type. It checks this for both a stale revision and a matching revision.\n\n**Storage errors.** The requirement text does not state storage-error behaviour beyond the signature. Other tests (`resolution_storage_and_callback_errors_are_not_judgments` and `loading_execution_resolution_and_saving_failures_do_not_publish_answers`) also exercise a failing `load_evidence` through the `fail_load` flag. They are not marked against this requirement, and the text does not require them.\n\nThe cited `check_node` text is context only. Its points that version and input comparison are separate steps and that `load_evidence` needs no `Sync` bound are not extra obligations of this requirement. The tests also show that loading does not perform the version or input comparison.\n\nI found no untested obligation and no assertion that contradicts the requirement.",
-  "references": "c8c5d48de5985ff2fc753bb5aed7a86117ae6b2c42849cd210d67c30d9a08aa8",
+  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.graph.running-criteria.load_evidence` and the `check_node` text it cites. I did not read the implementation.\n\n- **`Ok(None)` when there is no record.**\n  - `criteria_keep_typed_answers_and_persist_only_when_requested` asserts `None` before any save.\n  - It asserts `None` again after `verify` without `store_evidence`, which shows that verifying alone saves nothing.\n  - It asserts `None` for an unsaved criterion path, `[\"text\"]`.\n  - `caller_reuses_negative_answers_and_compares_revisions_explicitly` asserts `None` for a different source node (8 instead of 9).\n- **Locate and decode a saved answer using the criterion.**\n  - After `store_evidence`, `load_evidence` returns the output, `source_node_id`, `criterion_path`, version and dependencies, each compared against the stored value.\n  - The same test checks that the raw stored JSON of the saved records is as expected.\n  - The negative-answer test in `validation_tests.rs` checks the same round trip.\n  - A load of the `[\"text\"]` criterion, whose output is `()` and stored as JSON null, also succeeds.\n  - Loading `[\"behavior\"]` after a replacement `verify` still returns the old negative answer. This shows the load reads the saved record and does not re-execute.\n- **A loaded answer can be stale.**\n  - `caller_reuses_negative_answers_and_compares_revisions_explicitly` loads a v1 record using a v2 criterion and gets the old record back (`version` \"v1\"). It does not reject it.\n  - In the same test, a record with `version = None` also loads.\n  - `typed_loading_reports_decode_errors_even_for_stale_evidence` loads stale records and asserts that decode errors are reported.\n- **Complete record loaded, with version and input comparison as separate steps.**\n  - Loading a record with a changed version and a stale dependency does not touch inputs. The test sets `fail_read` and asserts `reads.is_empty()`, so `load_evidence` neither compares inputs nor resolves them.\n  - Version compatibility and `check_inputs` are called separately by the caller in the validation test.\n- **Decode errors.** `typed_loading_reports_decode_errors_even_for_stale_evidence` stores a JSON object and then loads it as a `String` output. It asserts `Err(ValidationError::Output(_))` for both a changed-revision criterion and a same-revision criterion.\n- **Captures identity at future construction, retains no criterion reference, needs no `Sync`.**\n  - `validation_and_answer_need_send_without_sync` wraps `load_evidence` for `Review<Cell<u32>>` in `send(..)`, where `send<T: Send>` is a compile-time check. `Cell` is `!Sync`, so a future holding `&criterion` would not be `Send` and the test would not compile.\n  - The test also loads the saved answer (17) and checks that the criterion's source-node-id accessor was read once (`descriptor_reads == 1`).\n\nI found no unmet obligation, so no acknowledgments are needed.",
+  "references": "32615c993f8155218156db42f9476f2c641b1eebb7269a53fbc0a70aac4a0005",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.running-criteria.load_evidence",
@@ -15,10 +15,12 @@
         "Use the criterion to locate and decode a saved answer. `Ok(None)` means there is no record. A loaded answer can be stale. See {cite}`requirements.sdk.graph.evidence.check_node`.",
         "",
         "```rust,ignore",
-        "pub fn load_evidence<D: Domain, V: Criterion<D>>(",
-        "    domain: &D,",
-        "    criterion: &V,",
-        ") -> impl Future<Output = Result<Option<Fingerprinted<D, V::Ok>>, ValidationError<D::Error>>> + Send;",
+        "impl<'d, D: Domain> Validator<'d, D> {",
+        "    pub fn load_evidence<V: Criterion<D>>(",
+        "        &self,",
+        "        criterion: &V,",
+        "    ) -> impl Future<Output = Result<Option<Fingerprinted<D, V::Ok>>, ValidationError<D::Error>>> + Send;",
+        "}",
         "```",
         ":::"
       ]
@@ -30,14 +32,7 @@
       ],
       "text": [
         ":::{req} check_node",
-        "```rust,ignore",
-        "/// Load this criterion's evidence and decode its answer as V::Ok.",
-        "/// Ok(None) means no saved record exists.",
-        "pub fn load_evidence<D: Domain, V: Criterion<D>>(",
-        "    domain: &D,",
-        "    criterion: &V,",
-        ") -> impl Future<Output = Result<Option<Fingerprinted<D, V::Ok>>, ValidationError<D::Error>>> + Send;",
-        "```",
+        "The method is declared under {cite}`requirements.sdk.graph.running-criteria.load_evidence`.",
         "",
         "`load_evidence` captures the source identity and criterion path while constructing",
         "its future. It retains no reference to the criterion value while storage is",
@@ -50,22 +45,37 @@
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]",
-      "hash": "65383d8d39496a55d9a333b6fab2bf77901e2a6851787dfacdc351ef43f24e00"
+      "hash": "4050d7164d344983064df2ae023af8d39fc28f0cfe0437e2e558d3f65111498c"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[criteria_keep_typed_answers_and_persist_only_when_requested]",
-      "hash": "c91f0b4950727c0c402d2eb000e29722804773d0c55fa7a32eb8154e8e60a8c3"
+      "hash": "f47c40151c7d8ba4e5cd3b84d1c8d19288a02beb3f6148a79bdbcf6bc857964c"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[typed_loading_reports_decode_errors_even_for_stale_evidence]",
-      "hash": "928603917f43ecdb1515c3d89d0e065cc6a078d81d377bcefd6a22ea7ff7d1d5"
+      "hash": "a01bc430f7621e26f62a3028ef443c3746ee12fd7770c17774af73ccedd5a00b"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "fn[validation_and_answer_need_send_without_sync]",
+      "hash": "2bf006acebdb8fc3df250c66c66a218d7e2e7d0edd1566f398067c9a9012f735"
     },
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[public_exports_match_the_appendix]",
       "hash": "4d6ce6161754fb9e88ad84ef64f9bb131b308298104915179b2c5d573ed2b087"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "impl[Review<O>/Criterion<Application>]/fn[source_node_id]",
+      "hash": "d75641e490d99c582421310863ffd6f1cf57c0f6919d1a488b032d91081cf192"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "fn[send]",
+      "hash": "8584e807e9abc79dc59d3352ed10789b3f88c34eaf2710718740786192bf2708"
     }
   ],
   "format_version": 1,
@@ -78,7 +88,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "c8c5d48de5985ff2fc753bb5aed7a86117ae6b2c42849cd210d67c30d9a08aa8"
+          "value": "32615c993f8155218156db42f9476f2c641b1eebb7269a53fbc0a70aac4a0005"
         }
       ]
     },
@@ -90,7 +100,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "93313f9b0f20e1cfc4bcd08eabe6ecf88d24a5967e4e05b404a06238f599c083"
+          "value": "bcd4bd2a4a81ca127df5f0306e5f6d7074e4d340f976c9c70272310b6f4e674c"
         }
       ]
     },
@@ -101,7 +111,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9203088d4280b5bcfefdbcd88b2ea5157f0d8fb88816b0f07a271cfedc28c459"
+          "value": "3ee36ac642ffabe41027447c19777b3aa5e4a71a66c14a46784843565ef2c5c5"
         }
       ]
     },
@@ -112,7 +122,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "16759a0553641eb62a62a41406f418e8276724cec0db826c571f6654053f6963"
+          "value": "ab09893535d55027ff42e05bb2dd5e8fc90d663420daffe9e635dbd34103275a"
         }
       ]
     },
@@ -129,7 +139,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "13ad916fe183a37a1bf329a1f4806d47b46a686b93a41cfc89e96e503a57db88"
+          "value": "33fe32033234ab722c1a97539319554106d9f7b74dbfcccafac552743ff8d105"
         }
       ]
     },
@@ -146,7 +156,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "71daa5201e44592a4d878703ba9d3631160d1d9e7b691018fb772f8c27ef8312"
+          "value": "b2aa59812b415b1de724515125462a57ef9f47d53921320f7a17a982d8e93a7b"
         }
       ]
     },
@@ -163,7 +173,24 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "26bf7bcdf50cd9526f76b555c5d2831837e501deb041db70101b930b7cb86762"
+          "value": "2c226f1e9b7446f63f46c8a9595941bc19333f929e2808523608f791a1a329d5"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/contracts.rs"
+            },
+            "selector": "fn[validation_and_answer_need_send_without_sync]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "185edd9bc444aee35803058de24cd8929e8f70024e6a62a3c08a8a4fdc688c3c"
         }
       ]
     },
@@ -181,6 +208,40 @@
         {
           "scheme": "habeas-input-v1",
           "value": "ae4819b6e5ac9cd22992cc4254e7868f438e101dbd53f1bd7d443a33ee96f61d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/contracts.rs"
+            },
+            "selector": "impl[Review<O>/Criterion<Application>]/fn[source_node_id]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "caa34239d2c2175648895920b17040e6618c40266c148cb4044d55d6508b8685"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/contracts.rs"
+            },
+            "selector": "fn[send]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "86bee7067ca39c280b68dadad8b407627bc90720b9cbf2702e8aa3e626a35880"
         }
       ]
     }

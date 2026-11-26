@@ -238,7 +238,8 @@ async fn a_second_verification_starts_with_an_empty_trace() {
         node,
         revision: "v1",
     };
-    let first = validation::verify(&graph, review()).await.unwrap();
+    let mut validator = validation::Validator::new(&graph);
+    let first = validator.verify(review()).await.unwrap();
     assert_eq!(
         first.dependencies(),
         &[Dependency::Node(
@@ -247,7 +248,10 @@ async fn a_second_verification_starts_with_an_empty_trace() {
         )]
     );
     graph.read_in_callback = false;
-    let second = validation::verify(&graph, review()).await.unwrap();
+    let second = validation::Validator::new(&graph)
+        .verify(review())
+        .await
+        .unwrap();
     assert!(second.dependencies().is_empty());
 }
 
@@ -282,13 +286,11 @@ async fn historical_freshness_reads_do_not_enter_the_replacement_trace() {
         node,
         revision: "v1",
     };
-    let old = validation::load_evidence(&graph, &review())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(!validation::check_inputs(&graph, &old).unwrap());
-    let value = validation::verify(&graph, review()).await.unwrap();
-    validation::store_evidence(&graph, &value).await.unwrap();
+    let mut validator = validation::Validator::new(&graph);
+    let old = validator.load_evidence(&review()).await.unwrap().unwrap();
+    assert!(!validator.check_inputs(&old).unwrap());
+    let value = validator.verify(review()).await.unwrap();
+    validator.store_evidence(&value).await.unwrap();
     let state = graph.state.lock().unwrap();
     assert_eq!(state.reads, vec![2, 1]);
     assert_eq!(
@@ -319,15 +321,14 @@ async fn runner_does_not_store_a_missing_agent_error_and_supports_intermediate_c
         .unwrap()
         .contents
         .insert(1, "root".into());
+    let mut validator = validation::Validator::new(&graph);
     assert!(matches!(
-        validation::verify(
-            &graph,
-            Review {
+        validator
+            .verify(Review {
                 node: graph.cache().intern_node(1),
                 revision: "v1"
-            }
-        )
-        .await,
+            })
+            .await,
         Err(ValidationError::NoAgentConfigured)
     ));
     {
@@ -338,7 +339,7 @@ async fn runner_does_not_store_a_missing_agent_error_and_supports_intermediate_c
     let agent = Arc::new(MockAgent::default());
 
     let value = crate::agent_runtime::verify_with_agent(
-        &graph,
+        &mut validator,
         agent.as_ref(),
         Review {
             node: graph.cache().intern_node(1),
@@ -348,7 +349,7 @@ async fn runner_does_not_store_a_missing_agent_error_and_supports_intermediate_c
     .await
     .unwrap();
     assert!(value.output().result);
-    validation::store_evidence(&graph, &value).await.unwrap();
+    validator.store_evidence(&value).await.unwrap();
     let state = graph.state.lock().unwrap();
     assert_eq!(
         state.records[&1].dependencies,
@@ -850,17 +851,15 @@ async fn caller_reuses_negative_answers_and_compares_revisions_explicitly() {
         node: graph.cache().intern_node(9),
         revision: "v1",
     };
-    let value = validation::verify(&graph, review()).await.unwrap();
+    let mut validator = validation::Validator::new(&graph);
+    let value = validator.verify(review()).await.unwrap();
     assert!(!value.output().result);
     assert!(graph.state.lock().unwrap().records.is_empty());
-    validation::store_evidence(&graph, &value).await.unwrap();
-    let cached = validation::load_evidence(&graph, &review())
-        .await
-        .unwrap()
-        .unwrap();
+    validator.store_evidence(&value).await.unwrap();
+    let cached = validator.load_evidence(&review()).await.unwrap().unwrap();
     assert!(!cached.output().result);
     assert!(review().version().is_compatible_with(cached.version()));
-    assert!(validation::check_inputs(&graph, &cached).unwrap());
+    assert!(validator.check_inputs(&cached).unwrap());
     {
         let state = graph.state.lock().unwrap();
         assert_eq!(state.started, vec![9]);
@@ -869,32 +868,25 @@ async fn caller_reuses_negative_answers_and_compares_revisions_explicitly() {
         assert!(state.records[&9].dependencies.is_empty());
     }
     assert!(
-        validation::load_evidence(
-            &graph,
-            &Review {
+        validator
+            .load_evidence(&Review {
                 node: graph.cache().intern_node(8),
                 revision: "v1"
-            }
-        )
-        .await
-        .unwrap()
-        .is_none()
+            })
+            .await
+            .unwrap()
+            .is_none()
     );
     let v2 = Review {
         node: graph.cache().intern_node(9),
         revision: "v2",
     };
-    let old = validation::load_evidence(&graph, &v2)
-        .await
-        .unwrap()
-        .unwrap();
+    let old = validator.load_evidence(&v2).await.unwrap().unwrap();
     assert_eq!(old.version().unwrap().as_str(), "v1");
-    assert!(validation::check_inputs(&graph, &old).unwrap());
+    assert!(validator.check_inputs(&old).unwrap());
     assert!(!v2.version().is_compatible_with(old.version()));
-    let replacement = validation::verify(&graph, v2).await.unwrap();
-    validation::store_evidence(&graph, &replacement)
-        .await
-        .unwrap();
+    let replacement = validator.verify(v2).await.unwrap();
+    validator.store_evidence(&replacement).await.unwrap();
     assert_eq!(
         graph.state.lock().unwrap().records[&9]
             .version
@@ -911,19 +903,17 @@ async fn caller_reuses_negative_answers_and_compares_revisions_explicitly() {
         .get_mut(&9)
         .unwrap()
         .version = None;
-    let legacy = validation::load_evidence(
-        &graph,
-        &Review {
+    let legacy = validator
+        .load_evidence(&Review {
             node: graph.cache().intern_node(9),
             revision: "v2",
-        },
-    )
-    .await
-    .unwrap()
-    .unwrap();
+        })
+        .await
+        .unwrap()
+        .unwrap();
     assert!(CriterionVersion::new("v2").is_compatible_with(legacy.version()));
     assert!(!legacy.output().result);
-    assert!(validation::check_inputs(&graph, &legacy).unwrap());
+    assert!(validator.check_inputs(&legacy).unwrap());
 }
 
 // {test}`requirements.sdk.graph.evidence.store_evidence`
@@ -937,28 +927,26 @@ async fn resolution_storage_and_callback_errors_are_not_judgments() {
     let graph = Memory::default();
     graph.state.lock().unwrap().fail_load = true;
     assert!(matches!(
-        validation::load_evidence(
-            &graph,
-            &Review {
+        validation::Validator::new(&graph)
+            .load_evidence(&Review {
                 node: graph.cache().intern_node(1),
                 revision: "v1"
-            }
-        )
-        .await,
+            })
+            .await,
         Err(ValidationError::Graph("load"))
     ));
-    let value = validation::verify(
-        &graph,
-        Review {
+    let value = validation::Validator::new(&graph)
+        .verify(Review {
             node: graph.cache().intern_node(1),
             revision: "v1",
-        },
-    )
-    .await
-    .unwrap();
+        })
+        .await
+        .unwrap();
     graph.state.lock().unwrap().fail_store = true;
     assert!(matches!(
-        validation::store_evidence(&graph, &value).await,
+        validation::Validator::new(&graph)
+            .store_evidence(&value)
+            .await,
         Err(ValidationError::Graph("store"))
     ));
     assert!(graph.state.lock().unwrap().records.is_empty());
@@ -967,14 +955,12 @@ async fn resolution_storage_and_callback_errors_are_not_judgments() {
         ..Memory::default()
     };
     assert!(matches!(
-        validation::verify(
-            &graph,
-            Review {
+        validation::Validator::new(&graph)
+            .verify(Review {
                 node: graph.cache().intern_node(1),
                 revision: "v1"
-            }
-        )
-        .await,
+            })
+            .await,
         Err(ValidationError::Graph("missing"))
     ));
     assert!(graph.state.lock().unwrap().records.is_empty());
@@ -1523,37 +1509,31 @@ async fn concurrent_single_node_validations_keep_separate_traces() {
             state.edges.insert(node, vec![(1, 99)]);
         }
     }
+    let mut first_validator = validation::Validator::new(&graph);
+    let mut second_validator = validation::Validator::new(&graph);
+    let mut third_validator = validation::Validator::new(&graph);
     let (first, second, third) = futures::join!(
-        validation::verify(
-            &graph,
-            Review {
-                node: graph.cache().intern_node(1),
-                revision: "v1"
-            }
-        ),
-        validation::verify(
-            &graph,
-            Review {
-                node: graph.cache().intern_node(2),
-                revision: "v1"
-            }
-        ),
-        validation::verify(
-            &graph,
-            Review {
-                node: graph.cache().intern_node(3),
-                revision: "v1"
-            }
-        ),
+        first_validator.verify(Review {
+            node: graph.cache().intern_node(1),
+            revision: "v1"
+        }),
+        second_validator.verify(Review {
+            node: graph.cache().intern_node(2),
+            revision: "v1"
+        }),
+        third_validator.verify(Review {
+            node: graph.cache().intern_node(3),
+            revision: "v1"
+        }),
     );
     let (first, second, third) = (first.unwrap(), second.unwrap(), third.unwrap());
     assert!(first.output().result);
     assert!(second.output().result);
     assert!(third.output().result);
     let (a, b, c) = futures::join!(
-        validation::store_evidence(&graph, &first),
-        validation::store_evidence(&graph, &second),
-        validation::store_evidence(&graph, &third)
+        first_validator.store_evidence(&first),
+        second_validator.store_evidence(&second),
+        third_validator.store_evidence(&third)
     );
     a.unwrap();
     b.unwrap();
@@ -1606,7 +1586,7 @@ async fn invalid_typed_submission_is_an_agent_error() {
     ));
     assert!(matches!(
         crate::agent_runtime::verify_with_agent(
-            &graph,
+            &mut validation::Validator::new(&graph),
             &agent,
             Review {
                 node: graph.cache().intern_node(1),
@@ -1653,7 +1633,9 @@ async fn criterion_decode_errors_are_execution_errors_and_false_is_a_completed_a
         .unwrap()
         .contents
         .insert(1, "not JSON".into());
-    let error = validation::verify(&graph, ParseAnswer(graph.cache().intern_node(1)))
+    let mut validator = validation::Validator::new(&graph);
+    let error = validator
+        .verify(ParseAnswer(graph.cache().intern_node(1)))
         .await
         .err()
         .unwrap();
@@ -1666,7 +1648,8 @@ async fn criterion_decode_errors_are_execution_errors_and_false_is_a_completed_a
         .unwrap()
         .contents
         .insert(1, "false".into());
-    let answer = validation::verify(&graph, ParseAnswer(graph.cache().intern_node(1)))
+    let answer = validator
+        .verify(ParseAnswer(graph.cache().intern_node(1)))
         .await
         .unwrap();
     assert!(!answer.output());
@@ -1674,7 +1657,7 @@ async fn criterion_decode_errors_are_execution_errors_and_false_is_a_completed_a
         answer.dependencies(),
         &[Dependency::Node(graph.cache().intern_node(1), fp("false"))]
     );
-    validation::store_evidence(&graph, &answer).await.unwrap();
+    validator.store_evidence(&answer).await.unwrap();
     assert_eq!(graph.state.lock().unwrap().records[&1].output, json!(false));
 }
 

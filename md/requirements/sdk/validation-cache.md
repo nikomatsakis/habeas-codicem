@@ -4,7 +4,7 @@
 :phrase: validation cache
 
 A *validation cache* assigns node handles and retains file snapshots for outline lookups. It also holds
-the agent configuration for criteria run on an {term}`requirements.sdk.application_domain`. Each criterion execution has its own dependency trace and agent
+the agent configuration and accumulates provider usage across calls to that agent. Each criterion execution has its own dependency trace and agent
 conversation.
 :::
 
@@ -13,8 +13,8 @@ conversation.
 :::{req} cache
 
 Every domain supplies its validation cache through `Domain::cache`. Repeated
-calls on the domain and its clones provide access to the same node handles, cached outlines
-and agent configuration.
+calls on the domain and its clones provide access to the same node handles, cached outlines,
+agent configuration, and usage counters.
 
 ```rust,ignore
 pub trait Domain: Clone + Send + Sync {
@@ -123,6 +123,35 @@ let cache = match settings.agent {
 
 [Agent harness](graph/agent-harness.md) describes the available backends and
 model settings.
+
+## Inspect aggregate usage
+
+:::{req} usage
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+`ValidationCache::usage()` returns an owned snapshot of the cache’s lifetime
+{cite}`requirements.sdk.graph.running-criteria.UsageStats`. A newly constructed
+cache starts at zero. Every agent call through the cache or any clone adds its
+usage exactly once by the time the call returns, including retries and failed
+attempts. Concurrent calls contribute to the same totals. Reading a snapshot
+preserves the counters, and later calls leave earlier snapshots unchanged.
+
+```rust,ignore
+impl<D: Domain> ValidationCache<D> {
+    pub fn usage(&self) -> UsageStats;
+}
+```
+:::
+
+:::{example} shared_usage
+{cite}`requirements.sdk.validation-cache.usage`
+{cite}`requirements.sdk.graph.running-criteria.Validator.usage`
+
+Two validators borrow domains that share a fresh cache. The first succeeds on
+its second provider attempt. The second succeeds on its first attempt. Their
+local attempt counts are two and one. After both validators are dropped,
+`cache.usage()` still reports three attempts, one retry, and one failed attempt.
+:::
 
 ## Configure project sources
 

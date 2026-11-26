@@ -255,7 +255,7 @@ impl<P: CompletionProvider, T> ToolAgent<P, T> {
             if !request.prefix.is_empty() {
                 opening = opening.preamble(request.prefix);
             }
-            converse(&self.provider, &mut session, opening, &submit).await
+            converse(inspection, &self.provider, &mut session, opening, &submit).await
         })
     }
 }

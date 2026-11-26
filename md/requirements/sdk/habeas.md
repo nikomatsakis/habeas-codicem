@@ -90,14 +90,17 @@ HC's criterion types specify the questions. Its `Context` implementations
 supply the review instructions and conventions. HC loads SDK agent
 configuration through its own [configuration policy](../configuration.md),
 then uses `ValidationCache::with_agent(agent_config)` to create the domain’s
-cache. To run a review:
+cache. Each assessment creates its own validator and reads its usage before handling the result under {cite}`requirements.authoring.usage_requests`.
 
 ```rust,ignore
-use trust_but_verify::graph::verify;
+use trust_but_verify::graph::Validator;
 
-let result = verify(&hc_domain, review_criterion).await?;
+let mut validator = Validator::new(&hc_domain);
+let result = validator.verify(review_criterion).await;
+let usage = validator.usage(); // Available on success and failure.
+let assessment = result?;
 
-// HC interprets result.output() according to its validation policy.
+// HC interprets assessment.output() according to its validation policy.
 ```
 
 The SDK supplies the agent, built-in tools, paging,
