@@ -1,7 +1,7 @@
 {
   "requirement": "So that concurrent assessments find their system prompt cached under\n{cite}`requirements.authoring.cache_checkpoints`, a batch MUST start one\nassessment of each kind it contains before any other of that kind, and start the\nothers only once that assessment's first provider request has finished, whether\nor not it succeeded.",
   "determination": true,
-  "rationale": "The tests adequately cover `requirements.authoring.cache_warmup`.\n\n**Obligations derived from the text**\n1. For each kind in a batch, one assessment starts before any other of that kind.\n2. The other assessments of that kind start only after the first one's first provider request has finished.\n3. That release happens whether or not the request succeeded.\n\n**Mapping to tests**\n- **Obligation 1, scheduling logic.** `src/authoring/batch.rs#mod[tests]/fn[each_kind_starts_one_assessment_until_its_first_request_finishes]` uses a mixed queue of requirements and examples.\n  - It asserts that exactly one of each kind starts, flagged as warming. The others wait, and `next` returns `None`.\n  - It asserts that after `warmed(\"requirement\")` the remaining requirements start in order, not flagged as warming.\n  - It also covers an assessment that finishes without making any request. The next of its kind then warms instead.\n- **Kinds are distinct.** `src/authoring/batch.rs#mod[tests]/fn[structural_and_test_reviews_warm_separately_without_changing_usage_labels]` shows that \"structural requirement\" and \"requirement\" are warmed separately. Releasing one kind does not release the other.\n- **Obligation 2, end to end.** `tests/authoring_batch.rs#fn[a_batch_warms_each_kind_with_one_assessment_before_starting_the_others]` runs `author --all` against a mock provider.\n  - The helper `assert_warmed_first` checks that every other assessment of a kind arrived at or after the time the first request was answered.\n  - It checks this separately for requirements and examples.\n  - The `WarmupBarrier` behavior also shows that the released requests then run concurrently (`peak >= 3`).\n- **Obligation 3, failed first request.** `tests/authoring_batch.rs#fn[a_failed_first_request_still_releases_its_kind]` throttles the first request with a 429 response.\n  - It asserts that the other requirements start after that response and before the retry.\n  - `assert_warmed_first` is applied as well.\n- **Obligation 3, completion signal.** `src/authoring/usage.rs#mod[tests]/fn[the_first_finished_request_is_reported_once_whatever_its_outcome]` checks the callback that signals the first request's completion.\n  - It fires exactly once.\n  - It fires after the first request ends, including when that request ends without usage data.\n  - It does not fire again for the second request.\n\nNo plausible violating behavior is accepted by these tests:\n- Starting several of a kind at once fails the unit and integration assertions.\n- Releasing a kind before the first request finishes fails the timing assertion in `assert_warmed_first`.\n- Holding a kind until the first assessment completes fails the retry-timing assertion in the failure test.\n- Not releasing on failure fails the same test.\n\nAll tests carry `{test}` references to the requirement. The cited `cache_checkpoints` requirement is context only and needs no separate coverage here.",
+  "rationale": "The tests adequately cover `requirements.authoring.cache_warmup`.\n\n**Obligations derived from the text**\n1. For each kind in the batch, one assessment starts before any other of that kind.\n2. The other assessments of that kind start only once the warming assessment's first provider request has finished.\n3. That release happens whether or not the first request succeeded.\n4. Kinds warm independently of each other.\n\n**Coverage**\n- **Obligations 1, 2 and 4, scheduler level:** `src/authoring/batch.rs#mod[tests]/fn[each_kind_starts_one_assessment_until_its_first_request_finishes]` drives `CacheWarmup` directly.\n  - It queues requirements and examples. The first requirement and the first example start with `warms = true`, and `next` then returns `None`, so the other assessments of each kind wait.\n  - After `warmed(\"requirement\")`, the remaining requirements start with `warms = false`, while the example kind stays independent.\n  - It also covers an assessment that finishes without making a request: `finished(\"example\")` lets the next example warm the kind instead.\n- **Obligations 1, 2 and 4, kinds:** `src/authoring/batch.rs#mod[tests]/fn[structural_and_test_reviews_warm_separately_without_changing_usage_labels]` checks that \"structural requirement\" and \"requirement\" are separate kinds. One of each starts, the rest wait, and each kind is released only by its own `warmed` call.\n- **Obligations 1, 2 and 4, end to end:** `tests/authoring_batch.rs#fn[a_batch_warms_each_kind_with_one_assessment_before_starting_the_others]` runs `author --all` against a mock server.\n  - The helper `assert_warmed_first` checks that, for both requirement and example kinds, no other subject's request arrives before the first subject's first request was answered.\n  - The `WarmupBarrier` behavior requires the post-warmup requests to run together, and the test asserts `peak >= 3`.\n- **Obligation 3, trigger:** `src/authoring/usage.rs#mod[tests]/fn[the_first_finished_request_is_reported_once_whatever_its_outcome]` checks the callback.\n  - It does not fire at `begin_request`.\n  - It fires once when the first request ends with an error, and not again after a second request ends successfully.\n- **Obligation 3, end to end:** `tests/authoring_batch.rs#fn[a_failed_first_request_still_releases_its_kind]` throttles the first request with a 429. The other three requirements all arrive before the retry, which backs off for at least half a second. This shows the failed first request released the kind without waiting for a successful retry.\n\n**Gaps**\nI found none. A violation such as starting a second assessment of a kind early, waiting for success rather than completion, or sharing one warm state across kinds would fail at least one of these tests. There are no acknowledgments, and none are needed.",
   "references": "7aef24c8195435c2bcd712a5ba8b2a1881fe6aae261304b43112cc328d6f5b9e",
   "inputs": [
     {
@@ -73,11 +73,6 @@
     },
     {
       "file": "src/authoring/batch.rs",
-      "item": "fn[run_batch]",
-      "hash": "46353666f173609907ff0a8288dc7e42ec61d417b7f59c95f78ece414eff13b7"
-    },
-    {
-      "file": "src/authoring/batch.rs",
       "item": "struct[CacheWarmup]",
       "hash": "91a8598ac70e393429a82c759fbeb434eee59ec9f1be57961525b3b3760cc88d"
     },
@@ -87,9 +82,9 @@
       "hash": "6028876d23bc77c0005a15d8866b7715a1f3c3b2c0e59238ce50ab0695076717"
     },
     {
-      "file": "tests/authoring_batch.rs",
-      "item": "fn[serve]",
-      "hash": "bbeee52452b26d4c02ae4ae00ed6b666523e228e4ec8730c896c75d7747efd24"
+      "file": "src/authoring/batch.rs",
+      "item": "impl[CacheWarmup]/fn[warmed]",
+      "hash": "7f248ba20c45e8c72e1f78dd5c5e1439f4611d0ad7068a62927c70d3622925fa"
     }
   ],
   "format_version": 1,
@@ -250,23 +245,6 @@
               "scheme": "repo",
               "location": "src/authoring/batch.rs"
             },
-            "selector": "fn[run_batch]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "0a9b16cdb2b5cfc023bb27f80cae59fcac09c2f393fb965a8f1dd25cf94fbd86"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/batch.rs"
-            },
             "selector": "struct[CacheWarmup]"
           }
         },
@@ -299,14 +277,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "tests/authoring_batch.rs"
+              "location": "src/authoring/batch.rs"
             },
-            "selector": "fn[serve]"
+            "selector": "impl[CacheWarmup]/fn[warmed]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "3ee9235f64ab949552f02275ce571558f5da118ae6eef1b8674313c5d0986b2a"
+          "value": "7079c2042831ae26fe1967d7eb0cb4e27295608448b4ab9ac71e98add0ec564a"
         }
       ]
     }

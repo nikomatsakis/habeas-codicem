@@ -1,7 +1,7 @@
 {
   "requirement": "The harness MUST stop retrying a completion request under\n{cite}`requirements.authoring.provider_backoff` when the next attempt would\nstart more than one minute after the first of its consecutive transient\nfailures, including when a provider `Retry-After` delay would pass that point.\nIt MUST then fail the assessment with an error naming the number of attempts\nand the last failure's HTTP status and provider error code, when available.",
   "determination": true,
-  "rationale": "The reviewed tests adequately check `requirements.authoring.provider_backoff.limit`.\n\n**Obligations derived from the requirement**\n1. The harness stops retrying when the next attempt would start more than one minute after the first of its consecutive transient failures.\n2. That includes a provider `Retry-After` delay that would pass that point.\n3. It then fails the assessment with an error naming the number of attempts.\n4. The error also names the last failure's HTTP status and provider error code, when available.\n\n**Unit test `crates/trust-but-verify/src/agent/providers.rs#mod[tests]/fn[retrying_stops_once_a_request_has_failed_for_a_minute]`**\n- **Stop condition:**\n  - A simulated clock advances by each returned delay through repeated 429 failures.\n  - The test asserts that no attempt starts after `start + 60s`.\n  - It asserts that more than 3 attempts occur and that the loop ends with `Retry::Stop`.\n- **Boundary:**\n  - A second failure at 58s waits with a delay of at most 2s. The window is 2s at that point, and the attempt would start exactly at 60s.\n  - A `Retry-After` of \"60\" must wait with a delay of exactly 60s.\n  - A `Retry-After` of \"61\" must stop.\n  - Together these pin the exact \"more than one minute\" boundary and show it is measured from the first failure rather than the last.\n- **`Retry-After` past the limit:** a `Retry-After` of \"90\" stops at once.\n- **Error content:**\n  - The message contains \"kept failing for a minute\".\n  - It contains \"after {attempts+1} attempts\", which is the count of failures including the stopping one.\n  - It contains \"HTTP 429 ThrottlingException\".\n- **Partial availability:**\n  - Status only gives \"HTTP 503\".\n  - Code only gives \"ThrottlingException\".\n  - A timeout failure gives its own text, \"no response within ten minutes\".\n  - In each case the stop error is checked, along with its `TimedOut` kind.\n- **Permanent failure:** it stops with its own error and without the \"kept failing\" message, so it is not treated as the limit.\n\n**End-to-end test `src/authoring/mod.rs#mod[tests]/fn[a_request_failing_for_a_minute_fails_the_assessment]`**\n- A provider that always returns 503 `ServiceUnavailableException` runs under paused tokio time.\n- The assessment must fail, and the elapsed time must be at most `RETRY_LIMIT`.\n- The error must contain \"after {attempts} attempts; last failure: HTTP 503 ServiceUnavailableException\", where `attempts` is the provider's actual request count.\n- The usage log must show consistent attempts, failed attempts and retries, and the final failure must be marked `retried: false`.\n\n**Consecutive failures and reset**\n- The \"consecutive\" part rests on `converse` replacing the backoff after a success.\n- That reset is exercised by `success_resets_backoff_and_retries_keep_history_without_repeating_tools`, which is marked for the parent requirement `provider_backoff`.\n- The limit's timer lives in the same struct. I did not find a test where a minute-long failure window spans an intervening success, but the reset mechanism itself is tested. I do not treat this as a gap.\n\n**Gaps and acknowledgments**\nNo unacknowledged gap found, and there are no `{fixme}` acknowledgments.",
+  "rationale": "The tests adequately check `requirements.authoring.provider_backoff.limit`.\n\n**Obligations derived from the text**\n1. Stop retrying when the next attempt would start more than one minute after the first consecutive transient failure.\n2. That stop applies even when a provider `Retry-After` delay would pass the one-minute point.\n3. On stopping, fail with an error that names the attempt count and the last failure's HTTP status and provider error code, when available.\n\n**Unit test: `crates/trust-but-verify/src/agent/providers.rs#mod[tests]/fn[retrying_stops_once_a_request_has_failed_for_a_minute]`**\n- **Cut-off with simulated time.** It drives `ProviderBackoff::retry` with simulated time. Each `Wait` advances the clock, and the test asserts that no attempt starts after `start + 60s`. The loop ends in a `Stop`, and more than three attempts were made first, so backoff was really applied.\n- **Boundary.** After a failure at `start`, a second failure at 58s still waits with a delay of at most 2s. This pins the \"not more than a minute\" side.\n- **`Retry-After` boundary.** A `Retry-After` of `60` waits for exactly 60s. A `Retry-After` of `61` stops. This is the exact boundary, and it covers the clause \"including when a provider `Retry-After` delay would pass that point\". A `Retry-After` of `90` also stops at once.\n- **Attempt count.** The message must contain `kept failing for a minute` and `after {attempts+1} attempts`.\n- **Status and code.** The message must contain `HTTP 429 ThrottlingException`.\n- **Partial information.** Three cases check the \"when available\" wording: status only (`HTTP 503`), code only (`ThrottlingException`) and a timeout with neither (`no response within ten minutes`).\n- **First failure.** In each of those three cases, the first failure is made at `start + RETRY_LIMIT`, so the clock is measured from the first failure rather than from process start. A later failure at `start + RETRY_LIMIT*3` stops.\n- **Permanent error.** A permanent 400 `ValidationException` stops with its own error, not the \"kept failing\" error.\n\n**Integration test: `src/authoring/mod.rs#mod[tests]/fn[a_request_failing_for_a_minute_fails_the_assessment]`**\n- It runs the whole assessment with a provider that always returns 503 `ServiceUnavailableException`, under paused tokio time.\n- It asserts that elapsed time stays within `RETRY_LIMIT`.\n- It asserts that more than three attempts were made.\n- It asserts that the assessment error contains `after {attempts} attempts; last failure: HTTP 503 ServiceUnavailableException`, with the attempt count matching the provider's recorded requests.\n- It asserts that the usage log's attempt counts are consistent, and that the last attempt is not marked retried.\n\n**Gaps considered and ruled out**\n- Resetting the clock after a success belongs to the parent `requirements.authoring.provider_backoff`, not to this subject. `ProviderBackoff::retry` only records the first failure time, and a new backoff per completion request is what resets it.\n- I found no obligation in this requirement text without a test that exercises it and asserts the outcome.",
   "references": "f9afcaaa0c2ffbaaa6fcc3741b735fd3412e3bfaa8f983a0e4da23ef111bb507",
   "inputs": [
     {
@@ -75,12 +75,7 @@
     {
       "file": "crates/trust-but-verify/src/agent.rs",
       "item": "fn[converse]",
-      "hash": "868df51f2ba7ccd3699486e607923d5fdc90d4e1b7e0542892b0561c1f3771f6"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/backoff.rs",
-      "item": "impl[ProviderBackoff]/fn[retry]",
-      "hash": "51147019f43368bee0e3d0a065eb00a70f430e605be3eb021c04fdbbf0e7e48b"
+      "hash": "b3877f81002d46e9e04a359e5eca75e2bc6983eb128276241118bc851c2e439a"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -200,24 +195,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "0ff67787e41043346e61a512d5519c96b7399274595d949fc37a41e537bbfa13"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/backoff.rs"
-            },
-            "selector": "impl[ProviderBackoff]/fn[retry]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "3f46f9bd7c018347c87b0b3072d05e9974e4cc7e8e0b4cceb381b037d0d22538"
+          "value": "19fbb35053a58b1e5f78767d587203f981026df77d2bb38c37c1b17844458f78"
         }
       ]
     },

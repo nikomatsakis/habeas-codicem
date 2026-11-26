@@ -1,7 +1,7 @@
 {
   "requirement": "`UsageStats` exposes the following totals. `attempts` counts each request sent to the provider once. `retries` counts attempts that repeat a failed request. `failed_attempts` counts attempts that returned a provider error, including those followed by a successful retry.\n\n```rust,ignore\n#[non_exhaustive]\npub struct UsageStats {\n    pub attempts: u64,\n    pub retries: u64,\n    pub failed_attempts: u64,\n    pub input_tokens: TokenCount,\n    pub output_tokens: TokenCount,\n    pub cached_input_tokens: TokenCount,\n    pub cache_creation_input_tokens: TokenCount,\n    pub reasoning_tokens: TokenCount,\n}\n```\n\nTrait implementations\n\n```rust,ignore\nimpl Clone for UsageStats;\nimpl Copy for UsageStats;\nimpl Debug for UsageStats;\nimpl Default for UsageStats;\nimpl Serialize for UsageStats;\n```",
   "determination": true,
-  "rationale": "**Verdict:** the reviewed tests adequately check `requirements.sdk.graph.running-criteria.UsageStats`.\n\n**Obligations and the tests that cover them**\n\n- **`attempts` counts each request once.**\n  - `validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse` asserts attempts of 2 and then 3 across a retry, a success and a terminal failure. Evidence reuse via `store_evidence` and `refresh_evidence` does not add attempts.\n  - `cache_retains_usage_across_validators_and_sums_each_token_category` asserts a total of 3 across two validators sharing a cache.\n  - `generic_conversations_can_use_default_telemetry_through_retry_and_continuation` asserts 4 attempts across a retry, a tool turn and a length continuation.\n  - `throttled_requests_retry_unchanged_and_record_every_attempt` in `src/authoring/mod.rs` asserts 6 attempts.\n- **`retries` counts only attempts that repeat a failed request.**\n  - The validator test gives `(attempts, retries, failed_attempts) = (3, 1, 2)`. The terminal failure counts as failed but not as a retry, so the two counters are distinguished.\n  - The authoring test asserts 5 retries after 5 throttles. `permanent_provider_failure_returns_without_waiting_or_retrying` asserts 0 retries with 1 failed attempt.\n- **`failed_attempts` includes failures followed by a successful retry.**\n  - The validator test asserts 1 failed attempt after the throttle followed by success (`before_failure.failed_attempts`).\n  - The cache test asserts 1, and the generic-conversation test asserts 1. The throttled authoring test asserts 5 failed attempts before the final success.\n- **Token fields.** The cache test sums all five `TokenCount` categories across attempts (19, 13, 5, 3 and 8). The validator test checks the `reported` and `missing_attempts` values for each category.\n- **`Default`.** The validator test asserts that a fresh `Validator::new` reports all-zero counters and token counts.\n- **`Copy`.** The validator test uses `*validator.usage()`, which needs `Copy`.\n- **`Serialize`.** The authoring test reads the JSON `provider_usage` object and asserts the `attempts`, `retries` and `failed_attempts` keys and the token objects. `UsageRecord.provider_usage` is a `trust_but_verify::graph::UsageStats`.\n- **Field set and path.** `public_exports_match_the_appendix` checks that the struct and its fields are exported at the documented path.\n\n**Items without a dedicated test**\n\n`Clone` and `Debug` are plain derives (`#[derive(Clone, Copy, Debug, Default, Serialize)]` on `struct[UsageStats]`). They have no conditional or transformation of their own, so they fall under the exemption for unchanged pass-through code. `#[non_exhaustive]` is an attribute with no runtime behavior.\n\nI found no gap and no unacknowledged fixme.",
+  "rationale": "The tests adequately check `requirements.sdk.graph.running-criteria.UsageStats`.\n\n**Obligations:**\n- `attempts` counts each request sent to the provider once.\n- `retries` counts attempts that repeat a failed request.\n- `failed_attempts` counts attempts that returned a provider error, including those followed by a successful retry.\n- The struct has the listed fields and is `#[non_exhaustive]`.\n- It implements `Clone`, `Copy`, `Debug`, `Default` and `Serialize`.\n\n**Coverage:**\n- **Retried failure followed by success.** `crates/trust-but-verify/src/agent/tests.rs#fn[validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse]` runs a throttled error, then a success, then a terminal non-retryable error.\n  - It asserts `(attempts, retries, failed_attempts)` of `(1 failure, 2 attempts)` after the first call, which shows the failed attempt that was retried is counted in `failed_attempts`.\n  - It asserts `(3, 1, 2)` after the terminal error. That shows a failed attempt that is not retried is not counted as a retry.\n  - It checks the same totals on both `validator.usage()` and `graph.cache().usage()`, and checks the token-count fields.\n  - It also asserts that a fresh validator's stats are all zero. `*validator.usage()` copies the struct, so `Copy` is exercised.\n- **Shared totals across validators.** `fn[cache_retains_usage_across_validators_and_sums_each_token_category]` asserts totals of `(3, 1, 1)` across two validators. It also asserts each token-category sum, so the five `TokenCount` fields are distinct and correctly aggregated.\n- **Continuations.** `fn[generic_conversations_can_use_default_telemetry_through_retry_and_continuation]` asserts `(4, 1, 1)`. A tool turn and a length continuation count as fresh attempts, not retries, so each request is counted once.\n- **Repeated failures and serialization.** `src/authoring/mod.rs#mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]` has five throttled failures, then a success.\n  - It asserts `attempts` is 6, `retries` is 5 and `failed_attempts` is 5.\n  - It asserts the per-category `{reported, missing_attempts}` values.\n  - It reads these from the serialized JSON log, where `provider_usage` is a `UsageStats` (`src/authoring/usage.rs#struct[UsageRecord]`). That exercises `Serialize` and the field names.\n- **Other authoring tests.** `permanent_provider_failure_returns_without_waiting_or_retrying`, `a_request_failing_for_a_minute_fails_the_assessment` and `cancelling_during_backoff_prevents_another_request` check `attempts`, `retries` and `failed_attempts` for a non-retried failure, a run of failures, and a cancelled backoff. Their `{test}` markings are not shown, but they add no new obligation.\n- **Public surface.** `crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]` covers the export of the type and its fields.\n\n**Untested trait impls.** `Clone`, `Debug` and `Default` are plain `#[derive(Clone, Copy, Debug, Default, Serialize)]` in `crates/trust-but-verify/src/graph.rs#struct[UsageStats]`. They have no conditionals or transformations. `Default` is indirectly shown by the zeroed fresh validator and the `Default::default()` initialisation in the log.\n\nI found no plausible requirement-violating behavior that these tests would accept. Examples are counting a retried failure out of `failed_attempts`, counting a continuation as a retry, counting a non-retried failure as a retry, or double-counting attempts. No `{fixme}` acknowledgments are involved.",
   "references": "2e5116da8e41f81143f2192fb37549d2a0323135a3d396eff1c125f7a322947a",
   "inputs": [
     {
@@ -53,7 +53,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[generic_conversations_can_use_default_telemetry_through_retry_and_continuation]",
-      "hash": "3af47fcec2b9263596075fa6d3828fe3cf7e5adcd4f616210f77df0b20c796a8"
+      "hash": "9a6b52c352bf3f5b67cb3e87ec0b8c859a0a3c3ed1ade3acda97b73c76d58c76"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -64,11 +64,6 @@
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[public_exports_match_the_appendix]",
       "hash": "4d6ce6161754fb9e88ad84ef64f9bb131b308298104915179b2c5d573ed2b087"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "struct[UsageStats]",
-      "hash": "c9780f826db30fe99e7bbfc55d43ccdf8e906dff9b0e6d1a03438c107637a120"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -94,6 +89,11 @@
       "file": "src/authoring/usage.rs",
       "item": "struct[UsageRecord]",
       "hash": "392773d9486c1a93a841ac1fbe209e1dbd2de04b1eaf4dbe303ca8ebc2fa165d"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "struct[UsageStats]",
+      "hash": "c9780f826db30fe99e7bbfc55d43ccdf8e906dff9b0e6d1a03438c107637a120"
     }
   ],
   "format_version": 1,
@@ -180,7 +180,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ceb9ae8267bbb63f3274a18c1c42b8e420f281ac24ed8f645a6bbb7b4cbcb224"
+          "value": "1d1831983f81fa59d1caa938f7b684e4eb4af3b5e014911f965e6bda6516e71e"
         }
       ]
     },
@@ -215,23 +215,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "ae4819b6e5ac9cd22992cc4254e7868f438e101dbd53f1bd7d443a33ee96f61d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
-            },
-            "selector": "struct[UsageStats]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "68c126f51f189c1df60bca905943d9b19be14cc7c3bc07ad506afa90f177c1dd"
         }
       ]
     },
@@ -317,6 +300,23 @@
         {
           "scheme": "habeas-input-v1",
           "value": "d41e365aa90dad72f6dd4b10d6f3ea7dc7fc7e860b13e72d238c4d04abd92e7a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "struct[UsageStats]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "68c126f51f189c1df60bca905943d9b19be14cc7c3bc07ad506afa90f177c1dd"
         }
       ]
     }

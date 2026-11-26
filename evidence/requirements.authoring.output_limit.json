@@ -1,7 +1,7 @@
 {
   "requirement": "When a Bedrock configuration sets no `maxTokens` option, each provider request\nMUST ask for at most 16,384 output tokens. A configured `maxTokens` MUST be used\nas given.\n\nWhen a response stops because it reached a known output limit, the harness MUST\ncontinue the same conversation once, adding a user message with an error result\nfor each tool call in the cut-off response, followed by this text with `<limit>`\nreplaced by the limit:\n\n```text\nYour previous response reached the <limit>-token output limit and was cut off,\nso its tool call was incomplete. Keep within the limit: make your rationale\nshorter, then call the tool again.\n```\n\nA second response that reaches the limit, or a response that stops at an\noutput limit that is not known, MUST fail the assessment as an incomplete\nresponse. Where the provider reports whether a response stopped at the output\nlimit or because the conversation exceeded the model's context window, the\nharness SHOULD continue only the former and fail the assessment on the latter;\nwhere it does not, the stop MUST be treated as reaching the output limit.",
   "determination": true,
-  "rationale": "The reviewed tests cover every obligation in `requirements.authoring.output_limit`, and their assertions enforce the expected outcomes.\n\n- **Default limit when `maxTokens` is unset (at most 16,384):**\n  - `tests/authoring_cli.rs#fn[bedrock_requests_without_max_tokens_ask_for_at_most_16k_output_tokens]` runs two models. It asserts that every request's `inferenceConfig` is exactly `{\"maxTokens\":16384}`.\n  - The unit test `providers.rs#mod[tests]/fn[bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted]` asserts that `request.max_tokens` is `Some(16_384)` when the option is absent. It also asserts that invalid `maxTokens` values (`-1` and `2147483648`) are rejected.\n- **A configured `maxTokens` is used as given:**\n  - `fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]` configures 321. It asserts that both requests carry `maxTokens` 321.\n  - `fn[a_configured_bedrock_limit_controls_requests_and_the_continuation_note]` asserts 321 on every request.\n- **Continue the same conversation once after a stop at a known limit:**\n  - `fn[a_response_cut_off_at_the_output_limit_is_continued_once]` checks the second request against the first. The history prefix is identical and the cut-off assistant turn is appended. Then one user message follows.\n  - That message holds an error `toolResult` for each of the two cut-off calls (`cut` and `read-cut`) and then the text note. The note is compared with `LIMIT_NOTE`. `LIMIT_NOTE` matches the required wording with 16384 substituted.\n  - The test also asserts that the cut-off tool calls were skipped and not run.\n  - The `<limit>` substitution is tested with a configured Bedrock limit of 321 and with an Ollama `num_predict` of 512.\n  - `tests.rs#fn[retries_and_cut_off_tools_preserve_inputs_and_submission_skips_other_reads]` checks two error results and \"32 tokens\" in the generic conversation layer. `tests.rs#fn[generic_conversations_can_use_default_telemetry_through_retry_and_continuation]` covers a text-only cut-off continuation.\n- **A second response at the limit fails as incomplete:** `fn[a_second_response_at_the_output_limit_fails_the_assessment]` asserts a failing exit status, \"incomplete\" in stderr, exactly two requests (so no third continuation), and a `failed` outcome.\n- **A stop at an output limit that is not known fails:**\n  - `fn[a_stop_at_an_output_limit_that_is_not_known_fails_the_assessment]` uses Ollama with no `num_predict`. It asserts failure, one request only, and unchanged evidence.\n  - `src/authoring/mod.rs#mod[tests]/fn[a_cut_off_response_without_a_known_output_limit_fails_without_continuing]` asserts the same at the library level, with a provider call count of 1.\n- **Context-window exceedance fails without a continuation (SHOULD):** `fn[a_context_window_overflow_fails_without_a_continuation]` sends the Bedrock stop reason `model_context_window_exceeded`. It asserts failure, a \"context window\" message, and a single request.\n- **Where the provider does not report the reason, treat the stop as reaching the limit:** `fn[a_configured_ollama_num_predict_is_the_known_output_limit]` has Ollama report a bare `length` stop. The harness treats it as the output limit and continues with the 512-token note.\n\nI found no uncovered obligation or weak assertion, and no acknowledgments apply.",
+  "rationale": "The reviewed tests cover every obligation in `requirements.authoring.output_limit`. I found no unacknowledged gap and no marking gap. I read `converse` only to see how known limits, repeats and context-window stops are routed. I took expected behaviour from the requirement text.\n\n**Obligations and the tests that cover them**\n\n1. **Default of at most 16,384 output tokens when Bedrock sets no `maxTokens`.**\n   - `tests/authoring_cli.rs#fn[bedrock_requests_without_max_tokens_ask_for_at_most_16k_output_tokens]` runs two models. For every request body it asserts `inferenceConfig == {\"maxTokens\":16384}`.\n   - `crates/trust-but-verify/src/agent/providers.rs#mod[tests]/fn[bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted]` asserts `request.max_tokens == Some(16_384)` when the options carry only `top_k`.\n   - That unit test also rejects a negative `maxTokens` and one above `i32::MAX`, among other invalid native option types.\n\n2. **A configured `maxTokens` is used as given.**\n   - `tests/authoring_cli.rs#fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]` configures 321. It asserts `maxTokens` is 321 on the first request and on the second.\n   - `fn[a_configured_bedrock_limit_controls_requests_and_the_continuation_note]` asserts 321 on every request body.\n\n3. **Continue the same conversation once, with an error result for each cut-off tool call followed by the note text.**\n   - `fn[a_response_cut_off_at_the_output_limit_is_continued_once]` uses a cut-off turn with two tool calls (`cut` and `read-cut`). It checks that the first request's history is preserved as a prefix. It checks that the cut-off assistant turn is replayed. It checks that a single user message follows, containing one `toolResult` with status `error` per call (\"not run\") and then the exact `LIMIT_NOTE` text. It checks that the cut-off calls were never run.\n   - `fn[a_configured_bedrock_limit_controls_requests_and_the_continuation_note]` asserts that `<limit>` is replaced by 321, not 16384.\n   - `fn[a_configured_ollama_num_predict_is_the_known_output_limit]` asserts \"reached the 512-token output limit\".\n   - `crates/trust-but-verify/src/agent/tests.rs#fn[retries_and_cut_off_tools_preserve_inputs_and_submission_skips_other_reads]` checks that the continuation request keeps the original history as a prefix. It checks that both cut-off calls get \"not run\" results and that the limit (32) appears.\n   - `fn[generic_conversations_can_use_default_telemetry_through_retry_and_continuation]` checks continuation of a text-only cut-off response after retry.\n\n4. **A second response that reaches the limit fails as incomplete.** `fn[a_second_response_at_the_output_limit_fails_the_assessment]` scripts two cut-off replies. It asserts a non-zero exit, \"incomplete\" in stderr, exactly two requests, a `failed` outcome, and no authored result.\n\n5. **A stop at a limit that is not known fails.**\n   - `fn[a_stop_at_an_output_limit_that_is_not_known_fails_the_assessment]` uses Ollama without `num_predict`. It asserts failure with \"incomplete\" and \"does not set\". It asserts exactly one request, unchanged evidence and a `failed` outcome.\n   - `src/authoring/mod.rs#mod[tests]/fn[a_cut_off_response_without_a_known_output_limit_fails_without_continuing]` asserts the same message and that only one provider call is made. It asserts no determination is recorded.\n\n6. **Where the provider reports a context-window stop, fail instead of continuing (the SHOULD).** `fn[a_context_window_overflow_fails_without_a_continuation]` sets `stopReason: model_context_window_exceeded`. It asserts failure mentioning \"context window\", exactly one request and a `failed` outcome.\n\n7. **Where the provider does not report the distinction, treat the stop as reaching the output limit.** The Ollama cut-off in `fn[a_configured_ollama_num_predict_is_the_known_output_limit]` has no context-window signal. It is continued with the limit note. The generic `Length` scenarios in `agent/tests.rs` do the same.\n\n**Residual observation, not a gap**\n\nNo test sends a cut-off response through the OpenAI backend. The OpenAI branch of `output_limit` only reads a configured `max_output_tokens`. The requirement does not single out that backend. Its known-limit and unknown-limit behaviour is exercised through the Bedrock and Ollama paths. I do not treat this as a missing obligation.",
   "references": "34311a5dd927c647e3c53c34ccec3913d705385c72e477980232366438dea47a",
   "inputs": [
     {
@@ -48,7 +48,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[generic_conversations_can_use_default_telemetry_through_retry_and_continuation]",
-      "hash": "3af47fcec2b9263596075fa6d3828fe3cf7e5adcd4f616210f77df0b20c796a8"
+      "hash": "9a6b52c352bf3f5b67cb3e87ec0b8c859a0a3c3ed1ade3acda97b73c76d58c76"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -94,6 +94,16 @@
       "file": "tests/authoring_cli.rs",
       "item": "fn[a_configured_ollama_num_predict_is_the_known_output_limit]",
       "hash": "ba5dc0e41cdf60e8699c85eb79b7082d70e1fb50642ac368848cc55939bec94e"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent.rs",
+      "item": "fn[converse]",
+      "hash": "b3877f81002d46e9e04a359e5eca75e2bc6983eb128276241118bc851c2e439a"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
+      "item": "impl[RigProvider/CompletionProvider]/fn[output_limit]",
+      "hash": "d604937adf6ac07c29c16d68ad373b4b9b3233445f03727ebdebee812c029952"
     },
     {
       "file": "tests/authoring_cli.rs",
@@ -195,7 +205,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ceb9ae8267bbb63f3274a18c1c42b8e420f281ac24ed8f645a6bbb7b4cbcb224"
+          "value": "1d1831983f81fa59d1caa938f7b684e4eb4af3b5e014911f965e6bda6516e71e"
         }
       ]
     },
@@ -349,6 +359,40 @@
         {
           "scheme": "habeas-input-v1",
           "value": "c3601dce0dd49f7ffd933689fd3c4eebaaa235531ac08db579403fd2ab6099de"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent.rs"
+            },
+            "selector": "fn[converse]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "19fbb35053a58b1e5f78767d587203f981026df77d2bb38c37c1b17844458f78"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/providers.rs"
+            },
+            "selector": "impl[RigProvider/CompletionProvider]/fn[output_limit]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "f715c6de4b36820e724bb65eac26718b0e9303fc30f068afdbd3f6f721a26ea7"
         }
       ]
     },

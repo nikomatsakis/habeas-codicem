@@ -1,7 +1,7 @@
 {
   "requirement": "When a provider reports a transient failure, the harness MUST wait and retry\nthe same completion request. Transient failures are throttling, reported\nthrough HTTP 429 or a Bedrock `ThrottlingException`; temporary unavailability,\nreported through HTTP 500, 502, 503, or 504 or a Bedrock\n`ServiceUnavailableException`, `InternalServerException`, or\n`ModelNotReadyException`; and a request with no response after ten minutes,\nwhich the harness MUST abandon. The retry MUST retain its prompt, history,\ntools, and pending inputs. It MUST NOT\nrestart the assessment or repeat already completed tool calls. A permanent\ninput/context-length error, authentication failure, or invalid request MUST\nremain an error; mentioning tokens in an error message alone MUST NOT trigger\nretries.\n\nThe backoff window MUST start at one second and double after each consecutive\ntransient failure, up to sixty seconds. Each delay MUST be randomly selected\nbetween half and all of that window to spread parallel retries. An available\nprovider `Retry-After` value, in seconds or HTTP-date form, MUST be honored as a\nminimum delay even when longer than the window. A successful response MUST reset\nbackoff for the next completion request, and interruption MUST cancel both the\nwait and further retries.\n\nEach attempt MUST count toward the assessment totals under {cite}`requirements.authoring.usage_requests`.\nHidden SDK retries MUST remain disabled so the harness can account for attempts.\nTransient retries MUST NOT be reported as finished judgments or terminal\nassessment errors while recovery is still in progress. Pending inputs MUST be\nrecorded as evidence only after the request succeeds.\n{cite}`requirements.authoring.provider` {cite}`requirements.authoring.delivered_inputs`",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation of `requirements.authoring.provider_backoff`. They also assert the expected outcomes.\n\n**Classification of transient and permanent failures**\n- `providers.rs#mod[tests]/fn[retries_throttling_unavailability_and_timeouts_but_not_permanent_errors]` covers these cases:\n  - Retried: 429, 500, 502, 503 and 504. Also retried: `ThrottlingException`, `ServiceUnavailableException`, `InternalServerException` and `ModelNotReadyException`. A `TimedOut` error is also retried.\n  - Not retried: 400 `ValidationException`, 403 `AccessDeniedException`, 501, and an error with no status or code.\n  - A message that only mentions tokens and 429 (\"Too many tokens; HTTP 429\") is not retried.\n- `transient_bedrock_codes_retry_whatever_their_http_status` checks that a transient Bedrock code wins over a non-transient status. It also checks that a transient status wins over a permanent code.\n- `rig_failures_keep_their_provider_report_for_backoff` and `sdk.rs#mod[tests]/fn[sdk_string_errors_preserve_habeas_provider_reports_and_error_kinds]` check that provider reports survive Rig and SDK error wrapping. A permanent 403 stays an error and keeps its kind.\n- `authoring/mod.rs#mod[tests]/fn[permanent_provider_failure_returns_without_waiting_or_retrying]` checks the end-to-end permanent case. A 400 whose message contains \"Too many tokens\" returns the error. It makes one request and waits zero time. The usage log records `retried: false`.\n\n**Ten-minute timeout**\n- `unanswered_requests_are_abandoned_and_retried` runs under paused time. It asserts that elapsed time is 600–601 seconds. It then asserts a second request, an outcome of failed then completed, and a `request_count` of 2.\n\n**Retry keeps the same request, with no restart and no repeated tools**\n- `throttled_requests_retry_unchanged_and_record_every_attempt` makes six identical requests after five failures. It asserts that the inputs and reference set are intact.\n- `success_resets_backoff_and_retries_keep_history_without_repeating_tools` asserts identical requests across each retry. It asserts that the tool ran once. It asserts that the input was recorded after the successful retry.\n- The agent tests `retries_and_cut_off_tools_preserve_inputs_and_submission_skips_other_reads` and `generic_conversations_can_use_default_telemetry_through_retry_and_continuation` also assert identical serialized requests across a retry.\n\n**Backoff schedule**\n- `jittered_backoff_grows_to_a_ceiling` runs 100 consecutive failures. Each delay must lie in `[window/2, window]`, where the window doubles from 1s and caps at 60s. It asserts that the capped draws vary, which shows the delay is random.\n- `retry_after_accepts_seconds_and_dates_without_shortening_provider_delay` covers `Retry-After`. It checks seconds, a future HTTP-date, a past date (zero), and an invalid value (none). A 90s value is honored through `next_delay`, even though it is longer than the window. It also checks minimums of 0, 5 and 45 against the capped window.\n- Success reset is asserted in `success_resets_backoff_and_retries_keep_history_without_repeating_tools`. The retry after the tool turn waits only 0.5–1s.\n\n**Interruption**\n- `cancelling_during_backoff_prevents_another_request` drops the assessment future during the wait. It then advances time by 120s. Only one request was made. No inputs were recorded, and the log shows the request as failed.\n- The production interruption paths (`ctrl_c` and the batch cancel signal in `authoring/mod.rs`) drop the assessment future in a `select!`. This test exercises that drop.\n\n**Accounting, SDK retries, and input timing**\n- `throttled_requests_retry_unchanged_and_record_every_attempt` asserts the following:\n  - Six attempts, five retries and five failed attempts.\n  - Per-category missing counts.\n  - Each failure logged as `retried: true`.\n  - Recorded inputs show `submitted_in_request` 0 and `sent_in_request` 5.\n- `bedrock_sdk_retries_are_disabled` asserts that `max_attempts` is 1.\n- Recording pending inputs only after success is shown by the success-reset test (recorded after the retry). It is also shown by the cancellation test (`recorded_inputs()` empty after the failed attempt).\n- Not reporting a transient failure as a terminal error while recovering is shown by `assess` returning `Ok` after five or more failures. The failed attempts are logged as retried.\n\nI found no clause with a missing test or a weak assertion. The cited requirements (`provider`, `delivered_inputs`, `usage_requests`) are context only and were not reassessed.",
+  "rationale": "I judged the supplied tests against each obligation in `requirements.authoring.provider_backoff`. I found no gap. I did not request implementation source.\n\n**Which failures retry**\n- `retries_throttling_unavailability_and_timeouts_but_not_permanent_errors` covers the retry table:\n  - HTTP 429, 500, 502, 503 and 504 retry.\n  - The Bedrock `ThrottlingException`, `ServiceUnavailableException`, `InternalServerException` and `ModelNotReadyException` retry.\n  - An `io::ErrorKind::TimedOut` error retries.\n- The same test covers the failures that must stay errors: 400 `ValidationException`, 403 `AccessDeniedException`, 501 and an unclassified error.\n- It also covers \"mentioning tokens alone MUST NOT trigger retries\": a plain `\"Too many tokens; HTTP 429\"` string error does not retry.\n- `transient_bedrock_codes_retry_whatever_their_http_status` checks that Bedrock transient codes retry whatever the HTTP status. It also checks that a permanent code does not override a transient 503.\n- `rig_failures_keep_their_provider_report_for_backoff` and `sdk_string_errors_preserve_habeas_provider_reports_and_error_kinds` check that provider reports survive wrapping and error kinds are preserved.\n- `permanent_provider_failure_returns_without_waiting_or_retrying` is the integration check for a permanent context-length error:\n  - A 400 `ValidationException` whose message contains \"Too many tokens\" is returned as an error.\n  - There is exactly one request and no elapsed time.\n  - The usage log records the failure as `retried: false`.\n\n**Ten-minute timeout**\n- `unanswered_requests_are_abandoned_and_retried` uses a hanging provider. It asserts that the request is abandoned after about 600 seconds and retried, with 2 requests logged (failed, then completed).\n\n**Backoff window and jitter**\n- `jittered_backoff_grows_to_a_ceiling` runs 100 consecutive failures. It checks that each delay lies in `[window/2, window]` with the window starting at 1 second, doubling, and capping at 60 seconds. It also checks that capped draws are not constant, so the delay really is random.\n\n**Retry-After**\n- `retry_after_accepts_seconds_and_dates_without_shortening_provider_delay` covers seconds and HTTP-date forms, a past date, and an invalid value.\n- It checks that a 90-second `Retry-After` beats the 1-second window.\n- It checks that, in a saturated window, the delay is at least the `Retry-After` minimum and at most 60 seconds, for minimums of 0, 5 and 45.\n\n**Reset after success**\n- `success_resets_backoff_and_retries_keep_history_without_repeating_tools` fails once, succeeds with a tool turn, then fails again. The second wait is still within 0.5–1 second, which shows the window reset.\n\n**Retained request, no repeated tool calls, pending inputs**\n- The same test asserts identical request payloads before and after a retry, including history and tools. It also asserts that the tool ran once (`tool_calls.habeas == 1`).\n- It asserts that the input was recorded only after the retried request succeeded.\n- `throttled_requests_retry_unchanged_and_record_every_attempt` asserts that all six requests are identical and the mandatory inputs are unchanged. The recorded inputs have `submitted_in_request` 0 and `sent_in_request` 5.\n- The agent tests in `agent/tests.rs` also assert that a retried request is identical to the failed one and that the history is preserved.\n\n**Interruption**\n- `cancelling_during_backoff_prevents_another_request` drops the future during the wait. Even after the clock advances 120 seconds, only 1 request was made, no inputs were recorded, and the log shows a single failed request.\n\n**Counting attempts and hidden SDK retries**\n- `throttled_requests_retry_unchanged_and_record_every_attempt` asserts attempts 6, retries 5, failed attempts 5 and `request_count` 6. It also asserts the per-attempt token measurements.\n- `bedrock_sdk_retries_are_disabled` asserts `max_attempts() == 1`.\n\n**Not reported as terminal while recovering**\n- The retry tests show recovery ending in an `Ok` judgment after transient failures. The only error return is the permanent-failure test.",
   "references": "4807ba486ec0a165a1469f4324a5d1e9d880173c5abf9810cf0568d1d4aa5912",
   "inputs": [
     {
@@ -120,7 +120,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[generic_conversations_can_use_default_telemetry_through_retry_and_continuation]",
-      "hash": "3af47fcec2b9263596075fa6d3828fe3cf7e5adcd4f616210f77df0b20c796a8"
+      "hash": "9a6b52c352bf3f5b67cb3e87ec0b8c859a0a3c3ed1ade3acda97b73c76d58c76"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -161,21 +161,6 @@
         "A *validator* runs criteria against one borrowed domain and accumulates agent usage for the caller's operation. The caller chooses the operation's scope by creating a validator and using it for one or more criteria.",
         ":::"
       ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[author_evidence_with_options]",
-      "hash": "63ffe3db073d1c705bbe4a53b6fbc36ed1efb68dab58337e83ebeb485f3ee3b9"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[prepare_assessment]",
-      "hash": "68acc29ef6fc83280cf083508972aa1203d40cdfd97780e4feba7ad35cbd374e"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent.rs",
-      "item": "fn[converse]",
-      "hash": "868df51f2ba7ccd3699486e607923d5fdc90d4e1b7e0542892b0561c1f3771f6"
     }
   ],
   "format_version": 1,
@@ -380,7 +365,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ceb9ae8267bbb63f3274a18c1c42b8e420f281ac24ed8f645a6bbb7b4cbcb224"
+          "value": "1d1831983f81fa59d1caa938f7b684e4eb4af3b5e014911f965e6bda6516e71e"
         }
       ]
     },
@@ -494,57 +479,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "fccf7e4f4b7ad677067e7080c8396e547eb9e4b73d0a9455f6c5df4648d200a6"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/mod.rs"
-            },
-            "selector": "fn[author_evidence_with_options]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "aa536121fa4adff543c83ae829ae307558403424e6b9f9d4511169787e89d51b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/mod.rs"
-            },
-            "selector": "fn[prepare_assessment]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "0679fb438e37600e57b1764b8ce3e2e2ce11c76699b7a184723bb3143a94fa90"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent.rs"
-            },
-            "selector": "fn[converse]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "0ff67787e41043346e61a512d5519c96b7399274595d949fc37a41e537bbfa13"
         }
       ]
     }

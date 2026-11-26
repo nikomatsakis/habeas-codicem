@@ -1,7 +1,7 @@
 {
   "requirement": "The SDK's backend integration makes the rendered prefix available to its supported\nprompt-caching mechanism. The prefix includes all context, including the\nquestion, and precedes node contents. A cache hit is not guaranteed.\nThe prefix fingerprint follows\n{cite}`requirements.sdk.graph.agent-calls.agent_context`.",
   "determination": true,
-  "rationale": "I judge the tests adequate for `requirements.sdk.graph.agent-calls.judge.caching`.\n\n**Obligations derived from the text**\n1. The backend integration delivers the rendered prefix to the provider as a stable leading segment, so the provider's prompt-caching mechanism can use it.\n2. The prefix contains all context, including the question, and comes before node contents.\n3. A cache hit is not guaranteed. This is a non-obligation and needs no test.\n4. The fingerprint follows `requirements.sdk.graph.agent-calls.agent_context`. It hashes the exact UTF-8 prefix with a versioned scheme and preserves order and repetition. It covers only the prefix, not node inputs or the schema.\n\n**Mapping to tests**\n- **Prefix delivered as the leading segment, before node contents.** `crates/trust-but-verify/src/agent/tests.rs#fn[default_tool_accepts_scalar_results_and_keeps_the_exact_prefix]` runs `ToolAgent` with the context `\"Question é\"`.\n  - It asserts `chat_history[0] == Message::system(\"Question é\")`. That is the exact prefix as the leading preamble, with no node content in it.\n  - It asserts `chat_history[1]` contains the formatted node contents, so the contents follow the prefix.\n  - The implementation `tools.rs#impl[ToolAgent<P, T>]/fn[run_with_domain_tools]` sets the prefix as the provider preamble. The test also covers the non-ASCII case.\n- **Prefix includes all context, including the question.** `crates/trust-but-verify/src/graph/validation_tests.rs#fn[contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text]` combines several `.context(...)` calls, including a tuple that holds the question. It asserts the delivered prefix is `\"héllo\\n\\npolicy\\n\\nquestion\"`.\n- **Order, repetition, forms and empty prefix.** `#fn[string_and_str_contexts_deliver_identical_prefixes_and_fingerprints]` covers these cases.\n  - It checks `String` against `&str`, slice against `Vec`, tuple, and chained calls. Each gives the same prefix and fingerprint.\n  - It checks the empty and NUL/non-ASCII prefixes.\n  - It checks that later mutation of the source value does not change the prefix.\n  - It checks that the prefix and fingerprint stay the same across different node inputs, a different result type, and a different current node. This matches the rule that node inputs and the rest of the request sit outside the fingerprint.\n- **Fingerprint scheme.** `#fn[prefix_hashes_match_known_utf8_sha256_without_normalization]` pins the versioned scheme name `context-prefix-sha256-v1`. It checks the SHA-256 vector for the empty string and for `\"héllo\"`. It also checks that `é` and `e\\u{301}` differ and that whitespace differences are preserved. The first test also asserts that order matters, since `\"a\\n\\nb\"` and `\"b\\n\\na\"` have different fingerprints.\n- **Authoring backend.** `src/authoring/sdk.rs#mod[tests]/fn[authoring_keeps_the_prepared_subject_snapshot_and_concrete_version]` covers the review agent that carries the other `{impl}`. It compares the provider request with the expected prompt request. The implementation sets `prompt.system = request.prefix`.\n\n**Delegated or exempt**\n- The provider-level cache checkpoints (`RigProvider::complete`, `place_cache_checkpoints`) are tested by `providers.rs#mod[tests]/fn[cache_checkpoints_are_requested_for_caching_models]`. That test is marked for the separate requirement `requirements.authoring.cache_checkpoints`, so it needs no assessment here.\n- OpenAI caching is automatic and prefix-based, so putting the prefix first is enough. This is covered by the `ToolAgent` test above.\n\n**Gaps**\nI found no unacknowledged gap. Each testable clause has a test with assertions that would reject a violating implementation, such as prefix content leaking into the user message, a changed order, a normalized hash, or node inputs mixed into the fingerprint.",
+  "rationale": "**Obligations derived from `requirements.sdk.graph.agent-calls.judge.caching`**\n1. The backend integration hands the rendered prefix to the prompt-caching mechanism. Rig places Bedrock cache checkpoints after the system prompt, so the prefix must be the leading preamble.\n2. The prefix contains all context, including the question, and comes before node contents.\n3. A cache hit is not guaranteed. This clause states no behavior to test.\n4. The prefix fingerprint follows `agent_context`:\n   - It hashes the exact UTF-8 prefix with a versioned scheme.\n   - It preserves order and repetition.\n   - It is independent of node inputs and the result schema.\n   - An empty prefix has the same fingerprint as an explicit empty string.\n   - Each `.context(value)` call renders once and retains no borrow.\n   - Combinations use a two-newline separator.\n\n**Test coverage**\n- **Backend delivery and ordering.** `crates/trust-but-verify/src/agent/tests.rs#fn[default_tool_accepts_scalar_results_and_keeps_the_exact_prefix]` asks with `.context(\"Question é\")` and `contents_of_current_node()`. It asserts the following:\n  - `chat_history[0] == Message::system(\"Question é\")`, so the question is the leading system preamble, exactly and with non-ASCII text.\n  - `chat_history[1]` contains the node contents (\"formatted input: source\"), so the prefix precedes node contents.\n  \n  The implementation in `tools.rs#impl[ToolAgent<P, T>]#2/fn[run_with_domain_tools]` is the single place that sets the preamble. `src/authoring/sdk.rs#mod[tests]/fn[authoring_keeps_the_prepared_subject_snapshot_and_concrete_version]` also compares the whole request sent by the `ReviewAgent` backend with the expected prompt request. That covers the second backend, where `prompt.system = request.prefix`.\n- **Context rendering and fingerprint.**\n  - `validation_tests.rs#fn[contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text]` covers these cases:\n    - The context renders once even after the source value is mutated.\n    - The builder future is `Send` with a non-`Send` context.\n    - Multiple context calls and tuples join with `\\n\\n`: `\"héllo\\n\\npolicy\\n\\nquestion\"`.\n    - The request fingerprint equals `context_fingerprint(prefix)`.\n    - No context and an empty `Vec` both give the empty prefix and the empty-string fingerprint.\n    - Order matters, since `a\\n\\nb` and `b\\n\\na` have different fingerprints.\n    - Repetition is preserved in `(vec![\"a\",\"a\"], \"b\")`.\n    - A 12-tuple is joined correctly.\n  - `validation_tests.rs#fn[string_and_str_contexts_deliver_identical_prefixes_and_fingerprints]` covers these cases:\n    - `String`, `&str`, slice, `Vec` and tuple contexts give identical delivered prefixes and fingerprints.\n    - Empty and `\\0`/non-ASCII text work.\n    - A cleared temporary `String` shows no borrow is kept.\n    - The same prefix gives the same fingerprint across different node inputs (current node, successors, another node) and a different result schema (`Answer` vs `Value`). Node inputs and schema are therefore outside the fingerprint.\n  - `validation_tests.rs#fn[prefix_hashes_match_known_utf8_sha256_without_normalization]` checks these points:\n    - The scheme string is `context-prefix-sha256-v1`.\n    - Known SHA-256 vectors hold for the empty string and `héllo`.\n    - There is no Unicode or whitespace normalization.\n\n**Gaps considered**\n- The Bedrock checkpoint placement test, `providers.rs#mod[tests]/fn[cache_checkpoints_are_requested_for_caching_models]`, is marked for `requirements.authoring.cache_checkpoints`, a separate requirement. The subject's `{impl}` sites are the `ToolAgent` and `ReviewAgent` agents, which put the prefix first. The delivery obligation is asserted there.\n- \"A cache hit is not guaranteed\" is not a testable obligation.\n\nI found no plausible requirement-violating behavior that these tests would accept.",
   "references": "8cdc5f8f90d4af5694834afaad610a97abfcf9251f639c33ac187884fc499645",
   "inputs": [
     {
@@ -108,23 +108,13 @@
     },
     {
       "file": "crates/trust-but-verify/src/agent/providers.rs",
-      "item": "struct[RigProvider]",
-      "hash": "e6bfca1f16fee771aa05b56f0f4a3fe828d7a132b228c6dbd240a04675f04f9c"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/providers.rs",
       "item": "impl[RigProvider]/fn[connect]",
       "hash": "4aceeee346dc8ed3d743eb309f00fc0263d4d19929ee2c73cd27fdb6735205c9"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/providers.rs",
-      "item": "mod[tests]/fn[cache_checkpoints_are_requested_for_caching_models]",
-      "hash": "bf1d467d486bbc62b611a7680d8d2e17f6f1fbddd30ac916a1534ce1aabc1c41"
-    },
-    {
       "file": "crates/trust-but-verify/src/agent/tools.rs",
       "item": "impl[ToolAgent<P,%20T>]#2/fn[run_with_domain_tools]",
-      "hash": "f9e730ce56dc97818f18b71491eaf7768d493470eeb56286f3ce23b6bda6c67d"
+      "hash": "06b83def03a7f87fe6be65a7d78dd5fe5930a6ae322a34930c2bfbb997d0fa01"
     },
     {
       "file": "crates/trust-but-verify/src/procedure.rs",
@@ -137,14 +127,9 @@
       "hash": "95cf0505ca2ea5c4b2e0ce09d8359183cc4db409fbf67aca2400df702c9f1b72"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/providers.rs",
-      "item": "impl[RigProvider]",
-      "hash": "9ff31e576f8299601ec8728960c39918f66037e8228364dd992fa98a3d355e94"
-    },
-    {
       "file": "src/authoring/sdk.rs",
-      "item": "impl[ReviewAgent<'_,%20P>/Agent<HabeasDomain>]",
-      "hash": "9938508d7e92ebe8893664364d8e8fff1c16413b389fbe2442674b2eb5010e4b"
+      "item": "impl[ReviewAgent<'_,%20P>/Agent<HabeasDomain>]/fn[run]",
+      "hash": "0ce4bfe9df0b8f83231501905c7fd3433814a5c89d6c15cfc8534fb4990bd48e"
     },
     {
       "file": "crates/trust-but-verify/src/agent/providers.rs",
@@ -157,9 +142,24 @@
       "hash": "faf094ed40b166db2eaebd7866bb146bf9ea99f97597a3eb116802016cdee96a"
     },
     {
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
+      "item": "mod[tests]/fn[cache_checkpoints_are_requested_for_caching_models]",
+      "hash": "bf1d467d486bbc62b611a7680d8d2e17f6f1fbddd30ac916a1534ce1aabc1c41"
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/tools.rs",
       "item": "impl[ToolAgent<P,%20T>/Agent<D>]",
       "hash": "a1bab80ebbb2dc11046e013783372898faaec3a8f6c4fcc36e61863e166bbc44"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
+      "item": "fn[bedrock_caches]",
+      "hash": "c316c3bccc7a2cc2f13634677639ec3cd79776825f5a843115d9098a97948485"
+    },
+    {
+      "file": "src/authoring/sdk.rs",
+      "item": "impl[ReviewAgent<'_,%20P>/Agent<HabeasDomain>]",
+      "hash": "bde88ee09848b976b7639e9ed796f6a7505941b64133ed32c287b3436a2f8732"
     }
   ],
   "format_version": 1,
@@ -303,46 +303,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/providers.rs"
             },
-            "selector": "struct[RigProvider]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "2c7770ff987823e31d1cba07a1c09177b397d799ce84f0e269b03de2a334444c"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/providers.rs"
-            },
             "selector": "impl[RigProvider]/fn[connect]"
           }
         },
         {
           "scheme": "habeas-input-v1",
           "value": "15aecbe6e1f7394587f8a501b58cf28adc8ce3bff549cfcbe08b6215d04adfa6"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/providers.rs"
-            },
-            "selector": "mod[tests]/fn[cache_checkpoints_are_requested_for_caching_models]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "780db8c466c1a39a4145c8b89e1473053dbb290432b947fed15e2b065601a4a6"
         }
       ]
     },
@@ -359,7 +325,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "a40f106215c5596d686b209e44ff99f74c20f24578ee3ef7a17dbd92ea7a2513"
+          "value": "48ba445b5bbfb15b01cac9684a4538ad7e098a21ab105fe950e72c5bd9ac7a34"
         }
       ]
     },
@@ -403,31 +369,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/providers.rs"
-            },
-            "selector": "impl[RigProvider]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "c77520b4f20dbc10fd10ed9449880a0c4f9bec57758cdd168b96513f8bf55f2f"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
               "location": "src/authoring/sdk.rs"
             },
-            "selector": "impl[ReviewAgent<'_,%20P>/Agent<HabeasDomain>]"
+            "selector": "impl[ReviewAgent<'_,%20P>/Agent<HabeasDomain>]/fn[run]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "43eff565cf9be1cc8333032954390bbc4acb27da90fa27e0336b94f50aebd5fa"
+          "value": "1a285f988d755e09eca46dd3bf019ab6343bbd7bdb24b121249c7c9ee9b65b48"
         }
       ]
     },
@@ -471,6 +420,23 @@
           "Source": {
             "resource": {
               "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/providers.rs"
+            },
+            "selector": "mod[tests]/fn[cache_checkpoints_are_requested_for_caching_models]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "780db8c466c1a39a4145c8b89e1473053dbb290432b947fed15e2b065601a4a6"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/tools.rs"
             },
             "selector": "impl[ToolAgent<P,%20T>/Agent<D>]"
@@ -479,6 +445,40 @@
         {
           "scheme": "habeas-input-v1",
           "value": "42fd701802fca4e9a475e564701ab373e0aa7990046f789f3abc9b5179d98fc7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/providers.rs"
+            },
+            "selector": "fn[bedrock_caches]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "87ad17fe64ddd106951c7027af585ae1a5bf7cb6d8474bfbe2f58860c0943621"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/sdk.rs"
+            },
+            "selector": "impl[ReviewAgent<'_,%20P>/Agent<HabeasDomain>]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "f19ea14780d392cef6a58eed1f38d09978f423abd7a90a3c623b27149d2e9510"
         }
       ]
     }
