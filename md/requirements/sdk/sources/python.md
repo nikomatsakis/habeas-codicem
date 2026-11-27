@@ -59,6 +59,15 @@ class Tokens:
         return True
 ```
 
+## Inspect attachments
+
+:::{req} attachments
+Python reports `#` comments as `Comment` and each decorator as one
+`Annotation` on the decorated class or function. The decorator span starts
+at `@` and includes the expression and any arguments. These are the two kinds
+Python reports. Docstrings are string expressions.
+:::
+
 ## Fingerprint the contents
 
 :::{req} fingerprints

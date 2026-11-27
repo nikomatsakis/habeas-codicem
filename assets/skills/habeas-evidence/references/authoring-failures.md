@@ -22,19 +22,8 @@ second assessment to save time and tokens; use it only if the user asks.
 
 ## Denied reads
 
-Authoring reads only permitted sources. By default it excludes untracked files,
-generated `evidence/` content, and paths outside the project; existing Cargo
-build-script output directories are allowed when discoverable.
-
-The nearest enclosing `habeas.toml` can set `[evidence]` `allow` and `disallow`
-paths: literal files or directory subtrees, relative to that file. Allow
-overrides the defaults, and disallow wins over allow.
-
-A denied model read, such as an untracked file, `evidence/`, a path an
-`[evidence] disallow` rule matches, a path outside the project, or build output,
-is an ordinary tool error: the reviewer is told the path and why, and the
-assessment continues (see Gotchas in SKILL.md). Only a denied mandatory input aborts
-the assessment, before any model request; other assessments in the batch
-continue, and the command reports failure. If the denied file is one you
-created, stage it and rerun. Otherwise ask the user whether to stage it or
-change the `[evidence]` policy.
+Authoring uses the SDK’s project source rules. Untracked files are readable
+unless a project `.gitignore` excludes them. Git metadata and files outside
+the project are excluded, including external symlink targets. A failed tool
+read returns an error to the reviewer. An unavailable mandatory input aborts
+that assessment before inference and the other assessments in a batch continue.

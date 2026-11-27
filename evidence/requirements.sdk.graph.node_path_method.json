@@ -1,8 +1,8 @@
 {
-  "requirement": "{cite}`requirements.sdk.domain`\n\n`trust_but_verify::domain::Domain::node_path` converts a node identity to its stable path:\n\n```rust,ignore\npub trait Domain: Clone + Send + Sync {\n    // ...\n\n    /// Convert a `NodeId` into its `NodePath`.\n    ///\n    /// The relationship between a `NodeId` and its `NodePath` must be 1:1.\n    /// That is: converting the same `NodeId` twice gives the same `NodePath` each time.\n    /// And distinct `NodeId`s get distinct `NodePath`s.\n    /// The mapping stays stable across runs and changes to node contents.\n    fn node_path(&self, node: &Self::NodeId) -> NodePath;\n\n    // ...\n}\n```",
+  "requirement": "{cite}`requirements.sdk.domain`\n\n`trust_but_verify::domain::Domain::node_path` converts a node identity to its stable path:\n\n```rust,ignore\npub trait Domain: Clone + Send + Sync {\n    // ...\n\n    /// Convert a `NodeId` into its `NodePath`.\n    ///\n    /// Equal node data yields the same path across caches and runs.\n    /// Distinct node data yields distinct paths.\n    fn node_path(&self, node: &NodeId<Self>) -> NodePath;\n\n    // ...\n}\n```",
   "determination": true,
-  "rationale": "The tests cover each obligation in `requirements.sdk.graph.node_path_method`. I judged this from the supplied test source and did not read any implementation source.\n\n**Obligations derived from the text**\n1. Converting the same `NodeId` twice gives the same `NodePath`.\n2. Distinct `NodeId`s get distinct `NodePath`s.\n3. The mapping stays stable across runs and across changes to node contents.\n\n**Coverage**\n- **Same id, same path.**\n  - `tests/contracts.rs#fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]` calls `node_path(&Node(1))` more than once and asserts equality.\n  - `tests/validation.rs#fn[enum_node_ids_distinguish_requirements_and_source_items_in_one_domain]` asserts equality across two calls on the same domain.\n  - `src/sdk.rs#mod[tests]/fn[habeas_paths_preserve_opaque_segments_and_separate_all_node_kinds]` re-derives each path.\n- **Stable across runs.**\n  - The contracts test compares against `Application::default().node_path(..)`, a fresh domain instance.\n  - The validation test compares against `ReviewDomain::default()`, also fresh.\n  - The `HabeasDomain` test rebuilds the domain with a fresh `OutlineCache` and asserts the same path. A fresh instance is a reasonable stand-in for a separate run.\n- **Stable across content changes.** The contracts test records the path, then changes the node's content from \"before\" to \"after\". It asserts the path is unchanged.\n- **Distinct ids, distinct paths.**\n  - The contracts test asserts that nodes 1 and 2 differ, and checks a table of `NodePath` values that differ only in segment boundaries, case, whitespace, `/`, and Unicode normalization.\n  - The validation test uses enum variants that map to different paths.\n  - The `HabeasDomain` test inserts the paths of all seven node kinds, with the same inner id `same`, into a `HashSet` and asserts each is new. It then varies the scheme, location, and selector of a source id and asserts each variant gives a new path.\n  - The opaque-segment fixtures in the `HabeasDomain` test cover the case where a naive segment-joining scheme would collide.\n- **Fixed segments.** The `ReviewGraph` test in `src/authoring/sdk.rs#mod[tests]/fn[review_graph_delegates_unprepared_sources_and_paths_to_the_domain]` asserts the exact segments for a requirement node and a source node.\n- **Marking.** `tests/contracts.rs#fn[domain_relationships_accept_opaque_types_and_send_only_errors]` also asserts an exact path and that two paths differ.\n\n**Residual observation**\nThe `HabeasDomain` test does not change file or content state between calls. It only checks that the filesystem is not touched. The content-change stability obligation is asserted in the contracts test, and the project has no content-dependent `node_path` that would need its own test. I do not count this as a gap.\n\nNo gaps are established.",
-  "references": "fccf4101a1471b5ce2049455863d45d6743b9fd1aa7f5c70e76de7ec10cf35a1",
+  "rationale": "The tests adequately check `requirements.sdk.graph.node_path_method`. The requirement has two obligations: equal node data gives the same path across caches and runs, and distinct node data gives distinct paths.\n\n**Equal data gives the same path across caches and runs**\n- `crates/trust-but-verify/src/graph/validation_tests.rs#fn[enum_node_ids_distinguish_requirements_and_source_items_in_one_domain]` interns the same hierarchical requirement in two separate `ReviewDomain` caches. It asserts the paths are equal and that the segments are `[\"requirement\",\"a\",\"b\",\"c\"]`. It also asserts exact segments for requirement and source nodes.\n- `crates/trust-but-verify/tests/contracts.rs#fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]` checks that the path for `Node(1)` is unchanged after the underlying content is mutated. It also checks that a fresh `Application` gives an equal path.\n- `src/sdk.rs#mod[tests]/fn[habeas_paths_preserve_opaque_segments_and_separate_all_node_kinds]` rebuilds a `HabeasDomain` with a fresh `OutlineCache` for each node kind. It asserts the path is equal to the original.\n- Across runs, the hardcoded expected segment lists in the enum, Habeas and `domain_shares_discovery_snapshots_with_tracked_reads` tests fix the path form. A path that varied between runs would fail those literal assertions. Real separate processes can't be tested here, and fixed literals are the practical stand-in.\n\n**Distinct data gives distinct paths**\n- `crates/trust-but-verify/tests/contracts.rs#fn[domain_relationships_accept_opaque_types_and_send_only_errors]` asserts that `Identity(1)` and `Identity(2)` have different paths. It also checks the exact segments `[\"relationships\",\"1\"]`.\n- `crates/trust-but-verify/tests/contracts.rs#fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]` asserts that `Node(2)` differs from `Node(1)`.\n- The Habeas test uses the same string `\"same\"` for the requirement, references, selection, definition and site-review nodes. It inserts every resulting path into a `HashSet` and asserts each insert is new. This shows distinct node kinds are separated.\n- The same test varies the scheme, location and selector of a `Source` node separately. Each variant must produce a new path.\n- It also uses opaque segment content such as `opaque/../é` and an empty selector, so a path that normalised or merged segments would be caught.\n- The enum test separates requirement and source nodes through exact, different segment lists.\n- `src/authoring/sdk.rs#mod[tests]/fn[domain_shares_discovery_snapshots_with_tracked_reads]` asserts exact paths for a requirement and a source node in a discovered domain.\n\nThe `{test}` markings are present on all of these tests.\n\nOne scenario is untested. The distinctness check never varies only the requirement part of a `SiteReview` node while holding its source fixed. I don't consider this a gap, because the text doesn't distinguish that case and the requirement field already feeds the path and is checked through exact segments.\n\nNo gaps were found.",
+  "references": "6d75620e1bbfe13d887a27f90838b1b4b9e605be61754b7d232152fb1eac7bae",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.node_path_method",
@@ -21,11 +21,9 @@
         "",
         "    /// Convert a `NodeId` into its `NodePath`.",
         "    ///",
-        "    /// The relationship between a `NodeId` and its `NodePath` must be 1:1.",
-        "    /// That is: converting the same `NodeId` twice gives the same `NodePath` each time.",
-        "    /// And distinct `NodeId`s get distinct `NodePath`s.",
-        "    /// The mapping stays stable across runs and changes to node contents.",
-        "    fn node_path(&self, node: &Self::NodeId) -> NodePath;",
+        "    /// Equal node data yields the same path across caches and runs.",
+        "    /// Distinct node data yields distinct paths.",
+        "    fn node_path(&self, node: &NodeId<Self>) -> NodePath;",
         "",
         "    // ...",
         "}",
@@ -49,60 +47,68 @@
         "```rust,ignore",
         "pub trait Domain: Clone + Send + Sync {",
         "    type Error: Send;",
-        "    type NodeId: Clone + Eq + Send + Sync;",
+        "    type NodeData: Clone + Eq + Hash + Send + Sync;",
         "    type NodeContent: NodeContents;",
         "    type EdgeLabel: Clone + Send + Sync;",
         "",
-        "    fn node_path(&self, node: &Self::NodeId) -> NodePath;",
+        "    fn cache(&self) -> &ValidationCache<Self>;",
+        "    fn node_path(&self, node: &NodeId<Self>) -> NodePath;",
         "    fn node_content(",
         "        &self,",
-        "        node: &Self::NodeId,",
+        "        node: &NodeId<Self>,",
         "    ) -> Result<Self::NodeContent, Self::Error>;",
         "    fn outgoing_edges(",
         "        &self,",
-        "        node: &Self::NodeId,",
+        "        node: &NodeId<Self>,",
         "        label: Self::EdgeLabel,",
-        "    ) -> Result<Vec<Self::NodeId>, Self::Error>;",
+        "    ) -> Result<Vec<NodeId<Self>>, Self::Error>;",
         "    fn load_evidence(",
         "        &self,",
-        "        node: &Self::NodeId,",
+        "        node: &NodeId<Self>,",
         "        criterion: &CriterionPath,",
-        "    ) -> impl Future<Output = Result<Option<Record<Self::NodeId, Self::EdgeLabel>>, Self::Error>> + Send;",
+        "    ) -> impl Future<Output = Result<Option<Record<Self::NodeData, Self::EdgeLabel>>, Self::Error>> + Send;",
         "    fn store_evidence(",
         "        &self,",
-        "        node: &Self::NodeId,",
+        "        node: &NodeId<Self>,",
         "        criterion: &CriterionPath,",
-        "        record: &Record<Self::NodeId, Self::EdgeLabel>,",
+        "        record: &Record<Self::NodeData, Self::EdgeLabel>,",
         "    ) -> impl Future<Output = Result<(), Self::Error>> + Send;",
+        "",
+        "    fn project_sources(&self) -> Option<SourceProject<Self>> { ... }",
+        "    fn source_node(",
+        "        &self,",
+        "        item: &OutlineData,",
+        "    ) -> Result<Self::NodeData, SourceError> { ... }",
+        "    fn source_address(&self, _data: &Self::NodeData) -> Option<OutlineData> { ... }",
         "}",
         "```",
         ":::"
       ]
     },
     {
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "fn[enum_node_ids_distinguish_requirements_and_source_items_in_one_domain]",
+      "hash": "61a93d21edb1be43a9acb04687588ecd89d787604e3082ebd7ac294567a7df36"
+    },
+    {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]",
-      "hash": "08c301667d5351dbec856e9e4a7ca5ea28ea55e2f5751c178725bce30822803e"
+      "hash": "e46366c5a0de1a3dcbb7370d737f808366b44a3118471cff53135b299943401f"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]",
-      "hash": "b674e4cebcb6efc83126680f2e192ff172ebfab167973b43544d48ae6528c0e7"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/validation.rs",
-      "item": "fn[enum_node_ids_distinguish_requirements_and_source_items_in_one_domain]",
-      "hash": "de4ef23efec56bf68236da93453ee7a761a59ba35e241442f6b5305d155d2714"
+      "hash": "39b621f61ac860578f1ce6544cd645bb9cabd138be2466122e877ef621164150"
     },
     {
       "file": "src/authoring/sdk.rs",
-      "item": "mod[tests]/fn[review_graph_delegates_unprepared_sources_and_paths_to_the_domain]",
-      "hash": "735807b2eb09ea6da2f011f04ba744f8d0acbfa7e9a6c897443b4211e0957a05"
+      "item": "mod[tests]/fn[domain_shares_discovery_snapshots_with_tracked_reads]",
+      "hash": "eec4d8ce907d5bceed2c8c306c1cc96ee7d8722b17ec9f5f68bf8ffda1c3df60"
     },
     {
       "file": "src/sdk.rs",
       "item": "mod[tests]/fn[habeas_paths_preserve_opaque_segments_and_separate_all_node_kinds]",
-      "hash": "f742a12229ad9ccae1a498bbedf5dd3c7b328544d577a0b5db1a0eca3553f43a"
+      "hash": "882a0ff1bea54ee207f7654a0e2abeea4a4eed0b79c2ae555b418860fc0a05b2"
     },
     {
       "definition": "requirements.sdk.application_domain",
@@ -130,7 +136,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "fccf4101a1471b5ce2049455863d45d6743b9fd1aa7f5c70e76de7ec10cf35a1"
+          "value": "6d75620e1bbfe13d887a27f90838b1b4b9e605be61754b7d232152fb1eac7bae"
         }
       ]
     },
@@ -142,7 +148,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "debee7776c4060b3bf71225776971f6a72e7e92b7ecba8f93fe663742ad6fda7"
+          "value": "0017e3a8b8d6b2e457a4eeb7f2aa9942f7fd0f9fadceb2e4e0af06cbe81acf47"
         }
       ]
     },
@@ -153,7 +159,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1af4b14aa5ecdb19164e1d3afac4096856ed95c6939df2a9e8e7bcbdcb2a028c"
+          "value": "6fef01f151fc284996448a9f5cc5c75bad18efd812cc1a8961a134b48f496a73"
         }
       ]
     },
@@ -164,7 +170,24 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "877152da04beedf84fa17e2badad2ebaf956b8433bc2005fe585986cf7d0f146"
+          "value": "2e0a36b62ec75626b47edc2d133582146b235b039c605e398ae3dcc838c69532"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+            },
+            "selector": "fn[enum_node_ids_distinguish_requirements_and_source_items_in_one_domain]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "7abf74e685943be056be35af5195e6751036effdf1f6027d2dce28165f4e9ce1"
         }
       ]
     },
@@ -180,8 +203,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "82ea2b0a09f948766d729aba68721bac4156039e9ce4e715745c953541934eb9"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "d716dd363d853324dd9f5fd4438552af5c4b4393d20276f68743f7c9d2546b5d"
         }
       ]
     },
@@ -197,25 +220,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "5f1fcd0f1aa97ebb2ce3f9225cd48fc59e663e1215e4d4c801e434ad966d66f7"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
-            },
-            "selector": "fn[enum_node_ids_distinguish_requirements_and_source_items_in_one_domain]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "a79e7ab7d06c6351096ea5667882457d71093e0ce04fe9bb710844f3377de525"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "39b621f61ac860578f1ce6544cd645bb9cabd138be2466122e877ef621164150"
         }
       ]
     },
@@ -227,12 +233,12 @@
               "scheme": "repo",
               "location": "src/authoring/sdk.rs"
             },
-            "selector": "mod[tests]/fn[review_graph_delegates_unprepared_sources_and_paths_to_the_domain]"
+            "selector": "mod[tests]/fn[domain_shares_discovery_snapshots_with_tracked_reads]"
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "eb77c7194196c935e1eb7de24b72408a515c511ab0052001eeb62a5e2949b22a"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "eec4d8ce907d5bceed2c8c306c1cc96ee7d8722b17ec9f5f68bf8ffda1c3df60"
         }
       ]
     },
@@ -248,8 +254,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "8f43f83afb6d8bd394d046774efa8559a44e4a5f2a4c0ed81caff047b3e8236b"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "882a0ff1bea54ee207f7654a0e2abeea4a4eed0b79c2ae555b418860fc0a05b2"
         }
       ]
     },

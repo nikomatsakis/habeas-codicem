@@ -6,7 +6,7 @@ returns an application-defined answer. A criterion starts the request with
 `cx.ask::<R>()`, adds context and inputs, then awaits an `R`.
 
 This chapter covers that caller-facing interface. [Agent harness](agent-harness.md)
-covers the configuration of SDK-supplied agents, their fixed tools, and how a
+covers the configuration of SDK-supplied agents, their built-in and domain tools, and how a
 structured submission becomes the answer.
 
 ## Compose reusable context
@@ -122,6 +122,12 @@ impl<'a, 'd, D: Domain, R> Ask<'a, 'd, D, R, ContextPhase> {
 }
 
 impl<'a, 'd, D: Domain, R, P> Ask<'a, 'd, D, R, P> {
+    pub fn vet_answer(
+        self,
+        vet: impl FnMut(&R) -> Result<VetResult, D::Error> + Send + 'a,
+    ) -> Self;
+    pub fn message(self, text: impl Into<String>) -> Self;
+    pub fn contents_of_node(self, node: NodeId<D>) -> Ask<'a, 'd, D, R, NodePhase>;
     pub fn contents_of_current_node(self) -> Ask<'a, 'd, D, R, NodePhase>;
     pub fn contents_of_successors(
         self,
@@ -135,22 +141,30 @@ impl<'a, 'd, D: Domain, R, P> Ask<'a, 'd, D, R, P> {
 Trait implementations
 
 ```rust,ignore
-impl<'a, 'd, D: Domain, R> IntoFuture for Ask<'a, 'd, D, R, ContextPhase> where R: DeserializeOwned + JsonSchema + Send + 'a, 'd: 'a {
+impl<'a, 'd, D: Domain, R> IntoFuture for Ask<'a, 'd, D, R, ContextPhase> where R: DeserializeOwned + JsonSchema + Send + 'a, D::Error: Display, D::EdgeLabel: DeserializeOwned + JsonSchema + PartialEq, 'd: 'a {
     type Output = Result<R, ValidationError<<D as Domain>::Error>>;
     type IntoFuture = Pin<Box<dyn Future<Output = <Ask<'a, 'd, D, R, ContextPhase> as IntoFuture>::Output> + Send + 'a>>;
 }
-impl<'a, 'd, D: Domain, R> IntoFuture for Ask<'a, 'd, D, R, NodePhase> where R: DeserializeOwned + JsonSchema + Send + 'a, 'd: 'a {
+impl<'a, 'd, D: Domain, R> IntoFuture for Ask<'a, 'd, D, R, NodePhase> where R: DeserializeOwned + JsonSchema + Send + 'a, D::Error: Display, D::EdgeLabel: DeserializeOwned + JsonSchema + PartialEq, 'd: 'a {
     type Output = Result<R, ValidationError<<D as Domain>::Error>>;
     type IntoFuture = Pin<Box<dyn Future<Output = <Ask<'a, 'd, D, R, NodePhase> as IntoFuture>::Output> + Send + 'a>>;
 }
 ```
 :::
 
+:::{req} subject_message
+`message` sets the task-specific text at the beginning of the opening user message, before queued node contents. The last call supplies the text. The system prefix and its fingerprint depend only on `context` calls.
+:::
+
+:::{req} named_input
+`contents_of_node` queues a node by its domain ID. The SDK prepares, formats, and records its contents on delivery in the same way as `contents_of_current_node`.
+:::
+
 :::{req} judge.phases
 An ask builder begins in `ContextPhase`. Only that state exposes `context`,
 composing the reusable prefix under
 {cite}`requirements.sdk.graph.agent-calls.agent_context`. The first
-`contents_of_current_node` or `contents_of_successors` call enters `NodePhase`, even
+call to `contents_of_current_node`, `contents_of_node`, or `contents_of_successors` enters `NodePhase`, even
 with an empty successor selection. This state allows further node insertions
 and awaiting, with no `context` method or transition back. The builder's types
 enforce the restriction.
@@ -290,23 +304,73 @@ The prefix fingerprint follows
 
 The result type describes the answer the agent should submit. The supplied
 harness exposes a structured submission tool with that schema, and awaiting
-the builder decodes the accepted submission into `R`.
+the builder returns the accepted `R`.
 
 :::{req} judge.submission
-Awaiting the builder returns the harness's accepted result deserialized into
-`R`. The harness obtains the submitted value under
+Awaiting the builder returns the decoded `R` that passes answer vetting under
+{cite}`requirements.sdk.graph.agent-calls.vet_answer`. The harness obtains the submitted value under
 {cite}`requirements.sdk.graph.agent-harness.submission.acceptance`.
 :::
 
 :::{req} judge.submission.decoding
-If the accepted result cannot be deserialized into `R`, awaiting the builder
-returns `ValidationError::Agent`.
+If the submitted result cannot be deserialized into `R`, the call ends with
+`ValidationError::Agent` before invoking any vetting callbacks.
 :::
 
 [Agent harness](agent-harness.md#submit-a-structured-answer) defines the submission
 tool, its schema, and its reminder and error behavior. The criterion can interpret
 the typed answer and make another ask request; its application owns the assessment
 policy.
+
+## Vet a submitted answer
+
+:::{definition} vetting
+:phrase: vetting
+
+*Vetting* is the application’s check of a decoded agent answer before the
+conversation ends. It lets the application accept the answer or tell the
+agent what to correct in its next submission.
+:::
+
+:::{req} VetResult
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+A `VetResult` reports whether one callback accepts the typed answer or
+requests a correction.
+
+```rust,ignore
+pub enum VetResult {
+    Accept,
+    CorrectAndTryAgain(String),
+}
+```
+:::
+
+:::{req} vet_answer
+Each call to `Ask::vet_answer` appends an independent `FnMut` callback to this
+request in either builder phase.
+
+For each decoded submission, the harness invokes the callbacks in registration
+order with the same `&R`, stopping at the first `Err`. Each callback retains
+its state across submissions in the same conversation.
+
+If any callback returns `Err(error)`, the harness MUST stop running callbacks
+and end the conversation immediately, even if an earlier callback requested a
+correction. Awaiting the `Ask` MUST return
+`Err(ValidationError::Graph(error))` carrying the original `D::Error`.
+:::
+
+:::{req} vet_answer.ok
+If every `vet_answer` callback invoked by {cite}`requirements.sdk.graph.agent-calls.vet_answer` returns `Ok(VetResult::Accept)`, or the request has no callbacks, the answer is successfully submitted and the agent conversation ends.
+:::
+
+:::{req} vet_answer.corrections
+If all callbacks return `Ok(_)` and any callback returns `Ok(VetResult::CorrectAndTryAgain(message))`, the answer is not recorded.
+
+The harness collects the correction messages in registration order.
+`submit_result` returns the newline-separated messages in one tool response
+and asks the agent to resubmit in the same conversation.
+:::
 
 ## Combine inputs from several calls
 

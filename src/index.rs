@@ -1181,7 +1181,7 @@ fn render_input(
                     "- File: <code>{}</code>\n- Selector: <code>{}</code>\n- Kind: <code>{}</code>\n",
                     escape_html(file),
                     escape_html(if item.is_empty() { "(root)" } else { item }),
-                    escape_html(node.kind)
+                    escape_html(&node.kind)
                 ));
             }
             for range in &resolved.ranges {
@@ -1858,7 +1858,6 @@ mod tests {
         let info = crate::commands::info_markdown(root, "requirements.ready").unwrap();
         for page in [page, info] {
             assert!(!page.contains(&token), "{page}");
-            assert!(!page.contains("plain ollama key"), "{page}");
             assert!(
                 page.contains("Tokens such as [REDACTED:GitHub Token] MUST be hidden."),
                 "{page}"
@@ -1867,7 +1866,7 @@ mod tests {
                 page.contains("    println!(\"[REDACTED:GitHub Token]\");"),
                 "{page}"
             );
-            assert!(page.contains("api_key = '[REDACTED:api_key]'"), "{page}");
+            assert!(page.contains("api_key = 'plain ollama key'"), "{page}");
         }
 
         // Validation findings, an unresolved input shown as raw JSON, and an

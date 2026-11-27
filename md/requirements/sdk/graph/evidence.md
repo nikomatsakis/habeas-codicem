@@ -18,51 +18,27 @@ encoded answer, version, and dependencies for storage under that
 source/criterion key.
 :::
 
-`Validator::verify` returns a `Fingerprinted` containing the completed result and the
+`verify` returns a `Fingerprinted` containing the completed result and the
 observations captured during execution. The application calls `store_evidence`
 to save it, and `load_evidence` to retrieve a typed answer later. Storage is a
 required domain capability; the application chooses its backend.
 
 ## Refresh evidence
 
-`Validator::refresh_evidence` implements the usual reuse workflow. It loads a
+`refresh_evidence` implements the usual reuse workflow. It loads a
 previous answer, checks its criterion version and recorded inputs, and
 returns it when both still match. Otherwise it evaluates the criterion and
-saves the new answer. Its definition uses the granular methods described below:
+saves the new answer. The validator method is declared under {cite}`requirements.sdk.graph.running-criteria.refresh_evidence`.
 
 :::{req} refresh_evidence
-```rust,ignore
-use std::future::Future;
-
-// Method on Validator<D>.
-/// Reuse compatible, current evidence, or evaluate and save a new answer.
-/// Errors from loading, decoding, checking, execution, or saving propagate.
-pub fn refresh_evidence<V: Criterion<D>>(
-    &self,
-    criterion: V,
-) -> impl Future<Output = Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>>> + Send {
-    async move {
-        if let Some(saved) = self.load_evidence(&criterion).await? {
-            if criterion.version().is_compatible_with(saved.version())
-                && self.check_inputs(&saved).map_err(ValidationError::Graph)?
-            {
-                return Ok(saved);
-            }
-        }
-
-        let inputs = self.verify(criterion).await?;
-        self.store_evidence(&inputs).await?;
-        Ok(inputs)
-    }
-}
-```
+The validator MUST load the saved answer, check version compatibility and input freshness, and return a current answer immediately. If the record is missing, incompatible, or stale, it MUST verify the criterion and store the completed result before returning it. Errors from any step propagate to the caller.
 
 Loading and decoding follow {cite}`requirements.sdk.graph.evidence.check_node`
 and {cite}`requirements.sdk.graph.evidence.record.output`. Revision and input
 comparison follow
 {cite}`requirements.sdk.graph.evidence.checking_records.version_match` and
 {cite}`requirements.sdk.graph.evidence.checking_records`. Evaluation follows
-{cite}`requirements.sdk.graph.validators.validate_node`; saving follows
+{cite}`requirements.sdk.graph.running-criteria.validate_node`; saving follows
 {cite}`requirements.sdk.graph.evidence.store_evidence`.
 :::
 
@@ -71,11 +47,10 @@ record, an incompatible version, or changed inputs leads to a new evaluation.
 A load or decoding failure is reported even when the stored evidence is stale,
 as required by the loading contract.
 
-The helper packages this workflow; the individual methods remain available for
+The individual validator methods also support
 applications that need to inspect an old answer, force a new evaluation with
-`verify`, or decide when to save a result. Concurrent calls follow the validator's
-independent-execution policy; [storage](#look-up-a-source-and-criterion) provides
-atomic record replacement.
+`verify`, or decide when to save a result. Concurrent validators run independently. [Storage](#look-up-a-source-and-criterion)
+provides atomic record replacement.
 
 ## Keep the answer with its inputs
 
@@ -98,16 +73,16 @@ Keeps a typed output with its source, criterion, version, and observed dependenc
 
 `verify` constructs this value from the criterion's completed answer and
 execution trace. `load_evidence` reconstructs it from the selected saved record.
-Its node identities and edge labels keep their domain-defined types.
+Its dependencies use `NodeId<D>` handles from the current cache and domain-defined edge labels.
 
 ```rust,ignore
 pub struct Fingerprinted<D: Domain, O> { /* private fields */ }
 
 impl<D: Domain, O> Fingerprinted<D, O> {
-    pub fn source_node_id(&self) -> &D::NodeId;
+    pub fn source_node_id(&self) -> &NodeId<D>;
     pub fn criterion_path(&self) -> &CriterionPath;
     pub fn version(&self) -> Option<&CriterionVersion>;
-    pub fn dependencies(&self) -> &[Dependency<D::NodeId, D::EdgeLabel>];
+    pub fn dependencies(&self) -> &[Dependency<NodeId<D>, D::EdgeLabel>];
     pub fn output(&self) -> &O;
     pub fn into_output(self) -> O;
 }
@@ -132,26 +107,26 @@ pub trait Domain: Clone + Send + Sync {
     /// Ok(None) means absent; Err means loading failed.
     fn load_evidence(
         &self,
-        source: &Self::NodeId,
+        source: &NodeId<Self>,
         criterion: &CriterionPath,
     ) -> impl Future<Output = Result<
-        Option<Record<Self::NodeId, Self::EdgeLabel>>,
+        Option<Record<Self::NodeData, Self::EdgeLabel>>,
         Self::Error,
     >> + Send;
 
     /// Atomically replace only this source/criterion pair's complete record.
     fn store_evidence(
         &self,
-        source: &Self::NodeId,
+        source: &NodeId<Self>,
         criterion: &CriterionPath,
-        record: &Record<Self::NodeId, Self::EdgeLabel>,
+        record: &Record<Self::NodeData, Self::EdgeLabel>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     // ...
 }
 ```
 
-The validator passes the source identity and criterion path to both methods. The
+The SDK passes the source identity and criterion path to both methods. The
 key preserves both parts: source paths `["a"]` and `["a", "b"]` with criteria
 `["b", "c"]` and `["c"]` identify different records, even though flattening each
 pair would produce the same segments.
@@ -172,6 +147,17 @@ storage](../filesystem-storage.md) supplies a JSON-backed helper.
 
 The criterion's `Ok` type is serializable and deserializable. The storage
 interface uses `Record` to hold its encoded answer and input trace.
+
+:::{req} persisted_dependencies
+Before saving a record, the SDK replaces each dependency's `NodeId<D>` with the corresponding `D::NodeData`. When loading a record into an execution or checking it against a domain, the SDK interns each dependency's data in that domain's cache. Both conversions preserve the dependency kind, label, and observed fingerprint.
+:::
+
+:::{example} reassigned-handles
+{cite}`requirements.sdk.graph.evidence.persisted_dependencies`
+{cite}`requirements.sdk.graph.validation-context.snapshot`
+
+A first run assigns handle `7` to requirement `R` and records a query for its implementation edges. The next run assigns `7` to requirement `S` and `12` to `R`. Loading the record resolves its dependency to `12`. If `R` has the same implementation targets, their edge fingerprint still matches, even if their handles also changed. Removing an implementation target changes the fingerprint and makes the saved observation stale.
+:::
 
 :::{req} record
 :test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
@@ -213,12 +199,12 @@ impl<N, L> Serialize for Record<N, L> where N: Serialize, L: Serialize;
 ## Encode and decode the answer
 
 :::{req} record.output
-`Validator::store_evidence` serializes the answer in `Fingerprinted` before passing
+`store_evidence` serializes the answer in `Fingerprinted` before passing
 the complete record to storage. A serialization failure returns
 `ValidationError::Output` and leaves the existing record unchanged. A storage
 failure returns `ValidationError::Graph`.
 
-`Validator::load_evidence` decodes a loaded record's output into the requested
+`load_evidence` decodes a loaded record's output into the requested
 `Criterion::Ok`. An output that cannot decode returns `ValidationError::Output`,
 including when the saved version or inputs are stale. Missing evidence returns
 `Ok(None)`; malformed stored records and storage failures return
@@ -328,15 +314,7 @@ Loading returns the saved answer and its input trace, if a record exists.
 The caller can then compare the version and inputs or inspect the answer.
 
 :::{req} check_node
-```rust,ignore
-// Method on Validator<D>.
-/// Load this criterion's evidence and decode its answer as V::Ok.
-/// Ok(None) means no saved record exists.
-pub fn load_evidence<V: Criterion<D>>(
-    &self,
-    criterion: &V,
-) -> impl Future<Output = Result<Option<Fingerprinted<D, V::Ok>>, ValidationError<D::Error>>> + Send;
-```
+The method is declared under {cite}`requirements.sdk.graph.running-criteria.load_evidence`.
 
 `load_evidence` captures the source identity and criterion path while constructing
 its future. It retains no reference to the criterion value while storage is
@@ -346,14 +324,7 @@ Version and input comparison are separate steps.
 :::
 
 :::{req} store_evidence
-```rust,ignore
-// Method on Validator<D>.
-/// Encode the answer and atomically replace this source/criterion's record.
-pub fn store_evidence<O: serde::Serialize>(
-    &self,
-    inputs: &Fingerprinted<D, O>,
-) -> impl Future<Output = Result<(), ValidationError<D::Error>>> + Send;
-```
+The method is declared under {cite}`requirements.sdk.graph.running-criteria.store_evidence`.
 
 The method saves under the source identity and criterion path captured in
 `Fingerprinted`, preserving its version, input trace, and completed answer. Encoding follows
@@ -376,7 +347,7 @@ also depends on compatibility with the criterion's current review-rule
 version, which is checked separately.
 :::
 
-`Validator::check_inputs` checks
+`check_inputs` checks
 {term}`requirements.sdk.graph.evidence.input_freshness`. It reads current
 contents and edge selections through the
 domain, computes their fingerprints, and compares them with the observations in
@@ -384,15 +355,7 @@ domain, computes their fingerprints, and compares them with the observations in
 current criterion and decides which review rules remain compatible.
 
 :::{req} checking_records
-```rust,ignore
-// Method on Validator<D>.
-/// Compare each recorded input with the current domain state.
-/// Return true when every fingerprint still matches, including an empty trace.
-pub fn check_inputs<O>(
-    &self,
-    inputs: &Fingerprinted<D, O>,
-) -> Result<bool, D::Error>;
-```
+The method is declared under {cite}`requirements.sdk.graph.running-criteria.check_inputs`.
 
 The method resolves the recorded dependencies through graph operations and
 fingerprinting, comparing each with its saved observation. A fingerprint
@@ -420,7 +383,7 @@ impl<N, L> Record<N, L> {
         version: &CriterionVersion,
     ) -> Result<bool, D::Error>
     where
-        D: Domain<NodeId = N, EdgeLabel = L>;
+        D: Domain<NodeData = N, EdgeLabel = L>;
 }
 ```
 :::

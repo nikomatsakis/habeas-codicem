@@ -1,8 +1,8 @@
 {
-  "requirement": "Usage MUST record mandatory input counts and sizes by evidence kind, in UTF-8\nbytes and lines, and the same information for additional inputs requested through\n`habeas` or `ripgrep`. A requirements input MUST also record its number of matched declarations.\nUsage MUST distinguish unique inputs from repeated reads, successful from\nfailed reads, and prepared inputs from those actually sent to the model.\nFile-discovery calls MUST count as tool calls without recording directory\nlistings as evidence or source inputs.",
+  "requirement": "Each assessment’s usage record MUST report its validator’s `prepared_inputs` and `delivered_inputs` under {cite}`requirements.sdk.graph.running-criteria.UsageStats`. It MUST also report the invocation count and total result bytes for each invoked tool under {cite}`requirements.sdk.graph.running-criteria.ToolUsage.calls` and {cite}`requirements.sdk.graph.running-criteria.ToolUsage.result_bytes`.",
   "determination": true,
-  "rationale": "The reviewed tests adequately check `requirements.authoring.usage_inputs`.\n\n**Counts and sizes by evidence kind, in UTF-8 bytes and lines.**\n- `usage.rs#mod[tests]/fn[input_metadata_counts_components_and_reads_without_persisting_source]` exercises every kind that `UsageLog::prepared` assigns: `outline`, `requirements`, `definition`, `builtin` and `search`.\n- For each kind it asserts `bytes` and `lines`. The byte checks use the multi-byte text `λ`, so they show UTF-8 byte counts rather than character counts, and the line checks match the length of the `text` array.\n- Both mandatory inputs and habeas/ripgrep additional inputs are covered. The mandatory origin is `log.prepared(\"mandatory\", ...)`, the habeas origin is `log.prepared(\"habeas\", ...)`, and ripgrep results go through `log.search_result`.\n- `tests/authoring_cli.rs#fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]` confirms the end-to-end record. It checks a ripgrep `search` input with bytes and lines above 0, a habeas input, and a mandatory `definition` input with bytes above 0.\n\n**Matched-declaration count for requirements inputs.** The unit test asserts `components == 2` for a requirements input with two matches. It does not check `components` for other kinds, but the requirement only names requirements inputs.\n\n**Unique versus repeated, prepared versus sent.**\n- The unit test re-prepares the same file input under the `habeas` origin and sends the same search result twice. It asserts `unique` is true the first time and false the second time, for both outline and search inputs.\n- It asserts `submitted_in_request` and `sent_in_request` are null when prepared. After `begin_request` it asserts `submitted_in_request` is set, and after `end_request` it asserts `sent_in_request` is set.\n- `fn[failed_submission_can_be_confirmed_on_a_later_attempt]` shows a failed request leaves `sent_in_request` null while `submitted_in_request` stays at the first attempt. A later successful attempt sets `sent_in_request` to the retry index.\n- `fn[throttled_requests_retry_unchanged_and_record_every_attempt]` checks the same split over five failed attempts. It asserts `submitted_in_request == 0` and `sent_in_request == 5` for every input.\n- The CLI test also checks a repeated habeas read with `unique == false` and `sent_in_request == 1`.\n\n**Successful versus failed reads.**\n- `fn[tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text]` asserts `tool_failures` and `tool_skipped` are kept apart from `tool_calls`.\n- The CLI test performs a real failed habeas read of `absent.txt`. It asserts `tool_failures.habeas == 1` and that the failed read produces no evidence input.\n\n**File-discovery calls.**\n- The unit test calls `list_files` and `outline` as tools. It asserts both count in `tool_calls` (and in `tool_call_count`) and that `inputs` stays empty.\n- The CLI test asserts `tool_calls.list_files == 1` and that no usage input has `origin == \"list_files\"`. It also checks that no `.` or `absent.txt` entry appears among the evidence inputs.\n\nI found no untested obligation or assertion gap, and there are no acknowledgments to consider.",
-  "references": "f3c6df64571bb1fb4a09f00f53001fba69388a1ad5682d0c6ba6fd2bce741d6b",
+  "rationale": "**Obligations.** `requirements.authoring.usage_inputs` has two obligations. The assessment's usage record must report the validator's `prepared_inputs` and `delivered_inputs`. It must also report each invoked tool's invocation count and total result bytes. The cited `UsageStats` and `ToolUsage` rules supply the counting details to apply in this case:\n- The opening message counts one input per node.\n- Each `read_node` page counts, including repeated reads.\n- Each `outgoing_edges` result counts.\n- A search page counts one input per excerpt.\n- Listings, search finalization and failed lookups count zero.\n- Delivery is counted once, across retries and later turns.\n- A permanent failure before any reply leaves delivered at zero.\n- Calls include invocations that return errors.\n- Error messages count toward bytes.\n- An invocation with no result text adds zero bytes.\n\n**Test mapping.**\n- `tests/authoring_cli.rs#fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]` covers most scenarios:\n  - It runs `list_sources`, `search_text`, `read_node` twice on the same node, a failing `read_node` on a missing file, `finish_search`, and `submit_result`, over three provider turns.\n  - It asserts `prepared_inputs == opening count + search excerpt count + 2`. That excludes the listing, the finish_search call and the failed read, and counts the repeated read twice.\n  - It asserts `delivered_inputs == prepared_inputs`, so inputs replayed across turns are not double-counted.\n  - It asserts per-tool `{calls, result_bytes}` equal to the actual tool message lengths for `list_sources`, `search_text` and `read_node`. The `read_node` total includes the error message from the missing file.\n  - It asserts `finish_search` bytes equal the delivered text length, and `submit_result` is `{calls:1, result_bytes:0}`, the zero-result-text case.\n- `each_edge_result_counts_once_and_a_failed_lookup_only_charges_tool_usage` covers the rest of the counting rules:\n  - Two identical `outgoing_edges` calls add exactly 2 to both prepared and delivered inputs.\n  - `outgoing_edges` is `{calls:2, bytes: sum of both replies}`.\n  - An erroring `lookup_requirements` adds no inputs but is `{calls:1, bytes: error text length}`. That covers errors counting as calls and as bytes.\n- `listing_charges_result_bytes_while_only_the_explicit_read_adds_an_input` runs a baseline, a listing, and a listing plus a read. It asserts the listing leaves the counts equal to the baseline and charges the listing's bytes. It asserts the explicit read adds exactly one prepared and one delivered input.\n- `a_successful_retry_reports_partial_token_measurements` covers a 503 followed by success. Prepared and delivered both equal the opening count, so delivery is counted once across the retry. Attempts, retries and failed attempts are also asserted.\n- `terminal_provider_failure_retains_the_retry_and_undelivered_inputs` covers a 503 followed by a 400. Prepared is greater than 0 and delivered is exactly 0, which is the example in the cited text.\n\n**Possible gaps I checked.**\n- The `get_next_page` paging cases (extra `read_node` or search pages) are not exercised in the authoring tests. They belong to the cited `UsageStats` counting, which I was told not to reassess. The SDK tests in `crates/trust-but-verify/src/agent/tests.rs` cover that counting: `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` and `inputs_count_each_opening_insertion_and_each_repeated_node_read`.\n- I found no authoring-level \"skipped call\" scenario in the tests or source I searched, so I did not require one.\n- Opaque custom-tool results are not exercised at authoring level. The authoring tests show no custom tools, so I did not require that case.\n\nThe assertions compare reported values against independently computed counts, such as the opening-message length and actual tool message byte lengths, so they would catch wrong counts or byte totals. All the reviewed tests carry `{test}` references to the subject. No acknowledgments apply.",
+  "references": "a5e629ceb75089492e7c278d888aab20036adce7b11e9dc988fda562587e148d",
   "inputs": [
     {
       "requirements": "requirements.authoring.usage_inputs",
@@ -11,68 +11,138 @@
       ],
       "text": [
         ":::{req} usage_inputs",
-        "Usage MUST record mandatory input counts and sizes by evidence kind, in UTF-8",
-        "bytes and lines, and the same information for additional inputs requested through",
-        "`habeas` or `ripgrep`. A requirements input MUST also record its number of matched declarations.",
-        "Usage MUST distinguish unique inputs from repeated reads, successful from",
-        "failed reads, and prepared inputs from those actually sent to the model.",
-        "File-discovery calls MUST count as tool calls without recording directory",
-        "listings as evidence or source inputs.",
+        "Each assessment’s usage record MUST report its validator’s `prepared_inputs` and `delivered_inputs` under {cite}`requirements.sdk.graph.running-criteria.UsageStats`. It MUST also report the invocation count and total result bytes for each invoked tool under {cite}`requirements.sdk.graph.running-criteria.ToolUsage.calls` and {cite}`requirements.sdk.graph.running-criteria.ToolUsage.result_bytes`.",
         ":::"
       ]
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]",
-      "hash": "b1d2bf893c3a81aaf83b09c35f22ebd3a36c7670081f4f904e3da4075c24e0ad"
+      "requirements": "requirements.sdk.graph.running-criteria.UsageStats",
+      "matches": [
+        "requirements.sdk.graph.running-criteria.UsageStats"
+      ],
+      "text": [
+        ":::{req} UsageStats",
+        "",
+        "`UsageStats` exposes the following totals. `attempts` counts each request sent to the provider once. `retries` counts attempts that repeat a failed request. `failed_attempts` counts attempts that returned a provider error, including those followed by a successful retry.",
+        "",
+        "`prepared_inputs` counts inputs prepared for agent messages. Each node inserted in the opening message counts once. Each requested `read_node` page and each `outgoing_edges` result counts once, including repeated reads. A requested search page counts one input per excerpt on that page. Source listings, search finalization, and opaque custom-tool results contribute zero.",
+        "",
+        "`delivered_inputs` counts those inputs when the provider first responds successfully to the request carrying them. Each input counts once across retries and subsequent turns that replay the same conversation history. For example, if the opening message supplies three nodes and the provider fails permanently before replying, usage records three prepared inputs and zero delivered inputs.",
+        "",
+        "```rust,ignore",
+        "#[non_exhaustive]",
+        "pub struct UsageStats {",
+        "    pub attempts: u64,",
+        "    pub retries: u64,",
+        "    pub failed_attempts: u64,",
+        "    pub prepared_inputs: u64,",
+        "    pub delivered_inputs: u64,",
+        "    pub tools: BTreeMap<String, ToolUsage>,",
+        "    pub input_tokens: TokenCount,",
+        "    pub output_tokens: TokenCount,",
+        "    pub cached_input_tokens: TokenCount,",
+        "    pub cache_creation_input_tokens: TokenCount,",
+        "    pub reasoning_tokens: TokenCount,",
+        "}",
+        "```",
+        "",
+        "Trait implementations",
+        "",
+        "```rust,ignore",
+        "impl Clone for UsageStats;",
+        "impl Debug for UsageStats;",
+        "impl Default for UsageStats;",
+        "impl Serialize for UsageStats;",
+        "```",
+        ":::"
+      ]
     },
     {
-      "file": "src/authoring/usage.rs",
-      "item": "mod[tests]/fn[input_metadata_counts_components_and_reads_without_persisting_source]",
-      "hash": "73853fca9d06001574344ed1d13f00ec6d7e397692077cb4858d2cb54a638519"
+      "requirements": "requirements.sdk.graph.running-criteria.ToolUsage.calls",
+      "matches": [
+        "requirements.sdk.graph.running-criteria.ToolUsage.calls"
+      ],
+      "text": [
+        ":::{req} ToolUsage.calls",
+        "Each invocation increments the tool’s `calls` by one, including an invocation that returns an error. Skipped calls leave usage unchanged.",
+        ":::"
+      ]
     },
     {
-      "file": "src/authoring/usage.rs",
-      "item": "mod[tests]/fn[tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text]",
-      "hash": "1fe174e669a960b594539f9439ae08128fde9ad55f75b4b2b02fcb4cc7052a29"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "mod[tests]/fn[failed_submission_can_be_confirmed_on_a_later_attempt]",
-      "hash": "e2bc10dd2de55edbf962870c9ccab8f0f579028360aff091eaaac2af8955acf6"
+      "requirements": "requirements.sdk.graph.running-criteria.ToolUsage.result_bytes",
+      "matches": [
+        "requirements.sdk.graph.running-criteria.ToolUsage.result_bytes"
+      ],
+      "text": [
+        ":::{req} ToolUsage.result_bytes",
+        "Each invocation adds the UTF-8 byte length of its result text to the tool’s `result_bytes`, measured before the provider encodes the request. Error messages count by the same rule. An invocation that produces no result text adds zero bytes.",
+        ":::"
+      ]
     },
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]",
-      "hash": "431b1b1c6f0c314531419dd15112e2dcf2e9ce29d8132e062160032c0a3059d5"
+      "hash": "c710fed6606490c4a6b84a2b0282971e28c960c35b8ac9e50a10f1d8bcc73257"
     },
     {
-      "file": "src/authoring/usage.rs",
-      "item": "impl[UsageLog]/fn[prepared]",
-      "hash": "0b9c898548278856940facbc2baa2134e27df09bc91274bc887603c5e9195659"
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[a_successful_retry_reports_partial_token_measurements]",
+      "hash": "55815fc106216191a6be4f5652ae8fecac6f60e3694ee76ace34cfe2d0a87396"
     },
     {
-      "file": "src/authoring/usage.rs",
-      "item": "impl[UsageLog]/fn[search_result]",
-      "hash": "a49da1601be32ea6fe408b84ed659cf149aab7e7806f170ef9709433f93bd688"
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[terminal_provider_failure_retains_the_retry_and_undelivered_inputs]",
+      "hash": "09a600088fc2d40fb63fddd44475715207f54e3a50e68509452a125b52d28792"
     },
     {
-      "file": "src/authoring/usage.rs",
-      "item": "fn[tool_name]",
-      "hash": "e46c9dfbef5e6ba35be5665e76cc025388e21389c3c553da2461a2acc047b40c"
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[each_edge_result_counts_once_and_a_failed_lookup_only_charges_tool_usage]",
+      "hash": "70ef109f8d66e5e82deac0479afd2deb7fc7ea31214303df19ed16e538b40075"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[listing_charges_result_bytes_while_only_the_explicit_read_adds_an_input]",
+      "hash": "10826088db288cfb07156a5fedf91d81455a87fe0dfd958e5213bffb717620d4"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]",
+      "hash": "0c0217a969462f34a207b95f6c51ce626f62487ea2a24b75751f4aaab352d09d"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[configured_record]",
+      "hash": "c457a9feba1038fbe06f2325c46dce804599c0de07cf0db6c5f0c046994cfbbf"
+    },
+    {
+      "file": "src/authoring/sdk.rs",
+      "item": "impl[AssessmentUsage<'_,%20'_>/Drop]/fn[drop]",
+      "hash": "d3767f3479ee1c1f7457031c3bfb7ec9095bcc097794e4b1a63d44958c31cf46"
     }
   ],
   "format_version": 1,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
+      "Node": [
+        {
+          "ReferenceSet": "requirements.authoring.usage_inputs"
+        },
+        {
+          "scheme": "habeas-reference-set-v1",
+          "value": "a5e629ceb75089492e7c278d888aab20036adce7b11e9dc988fda562587e148d"
+        }
+      ]
+    },
+    {
       "OutgoingEdges": [
         {
           "Requirement": "requirements.authoring.usage_inputs"
         },
+        "Mandatory",
         {
-          "scheme": "habeas-reference-set-v1",
-          "value": "f3c6df64571bb1fb4a09f00f53001fba69388a1ad5682d0c6ba6fd2bce741d6b"
+          "scheme": "node-path-set-sha256-v1",
+          "value": "b8397d25554a47bf0d1f6b2579a4dd7d931d16d79119df9ae1a813c629f061d9"
         }
       ]
     },
@@ -83,75 +153,40 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1305c01c61ebcfbb133a42e2a626fd96f9ead0c61589ae56de67bbd366302921"
+          "value": "ef0482bbd7141087f443dfbd1669d5f0d02cf0b63457b65b4715ad6ea66c7b6e"
         }
       ]
     },
     {
       "Node": [
         {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/mod.rs"
-            },
-            "selector": "mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]"
-          }
+          "Requirement": "requirements.sdk.graph.running-criteria.UsageStats"
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ba0231c64afb42b91077c96994a63a5b91ec4d53e78c3e02e452b93b16f47f8c"
+          "value": "acada9370a9aa5e46ab48f6bd6c3b337f00d357491ac0b8fc97a4a1bb1811196"
         }
       ]
     },
     {
       "Node": [
         {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/usage.rs"
-            },
-            "selector": "mod[tests]/fn[input_metadata_counts_components_and_reads_without_persisting_source]"
-          }
+          "Requirement": "requirements.sdk.graph.running-criteria.ToolUsage.calls"
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "246290b4d6337c2bac35f89c00a18d64ef54727900f7b4a5e8423d289305e969"
+          "value": "ff99b28ffe816d5ff3435724fb459726e13cf2feafb59cef45c3e6058b3ad1a1"
         }
       ]
     },
     {
       "Node": [
         {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/usage.rs"
-            },
-            "selector": "mod[tests]/fn[tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text]"
-          }
+          "Requirement": "requirements.sdk.graph.running-criteria.ToolUsage.result_bytes"
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ee64b8fb07fcdb919719406fee5958be2684e32823554e4136933a6a9eaec0c0"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/usage.rs"
-            },
-            "selector": "mod[tests]/fn[failed_submission_can_be_confirmed_on_a_later_attempt]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "98860f8701681af1853cdf2066c9bcb62a8d22af4acc7792d30b6e5fc4ebb33a"
+          "value": "e31135c228141577fb74038ddba623fd583aefb823141bfbaa83e11f22b293e4"
         }
       ]
     },
@@ -167,8 +202,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "11c82d7b9346bfb24542e10b6851069926343cfea0dc76f3a7ec5baf71a854a9"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "c710fed6606490c4a6b84a2b0282971e28c960c35b8ac9e50a10f1d8bcc73257"
         }
       ]
     },
@@ -178,14 +213,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "src/authoring/usage.rs"
+              "location": "tests/authoring_cli.rs"
             },
-            "selector": "impl[UsageLog]/fn[prepared]"
+            "selector": "fn[a_successful_retry_reports_partial_token_measurements]"
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "521ffdd371eefe7fbc8dc3a9138ce81343b6f009b88f696a5d18993c0a977a23"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "55815fc106216191a6be4f5652ae8fecac6f60e3694ee76ace34cfe2d0a87396"
         }
       ]
     },
@@ -195,14 +230,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "src/authoring/usage.rs"
+              "location": "tests/authoring_cli.rs"
             },
-            "selector": "impl[UsageLog]/fn[search_result]"
+            "selector": "fn[terminal_provider_failure_retains_the_retry_and_undelivered_inputs]"
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "da2810d8d0b707c8124c6fa7f92cd8e365c6c9a85b58f09634766184ece72f26"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "09a600088fc2d40fb63fddd44475715207f54e3a50e68509452a125b52d28792"
         }
       ]
     },
@@ -212,14 +247,94 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "src/authoring/usage.rs"
+              "location": "tests/authoring_cli.rs"
             },
-            "selector": "fn[tool_name]"
+            "selector": "fn[each_edge_result_counts_once_and_a_failed_lookup_only_charges_tool_usage]"
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "883e11bf1f2bf5171f2258c0e5976e8b6d80c3c470688ac30747825f2670d569"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "70ef109f8d66e5e82deac0479afd2deb7fc7ea31214303df19ed16e538b40075"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/authoring_cli.rs"
+            },
+            "selector": "fn[listing_charges_result_bytes_while_only_the_explicit_read_adds_an_input]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "10826088db288cfb07156a5fedf91d81455a87fe0dfd958e5213bffb717620d4"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/authoring_cli.rs"
+            },
+            "selector": "fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "0c0217a969462f34a207b95f6c51ce626f62487ea2a24b75751f4aaab352d09d"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.authoring.usage_inputs"
+        },
+        "Implements",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "511a0fefb1720a3663ec13db3e64851227afd7bfe0b9b3670c1a479e92372b8a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/mod.rs"
+            },
+            "selector": "fn[configured_record]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "c457a9feba1038fbe06f2325c46dce804599c0de07cf0db6c5f0c046994cfbbf"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/sdk.rs"
+            },
+            "selector": "impl[AssessmentUsage<'_,%20'_>/Drop]/fn[drop]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "d3767f3479ee1c1f7457031c3bfb7ec9095bcc097794e4b1a63d44958c31cf46"
         }
       ]
     }

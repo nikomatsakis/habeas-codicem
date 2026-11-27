@@ -55,6 +55,13 @@ This source contains `rule[.token]`:
 .token { color: red; }
 ```
 
+## Inspect attachments
+
+:::{req} attachments
+CSS reports only `Comment` attachments. These include `/* … */` blocks and
+`//` line comments recognized by the bundled CSS grammar.
+:::
+
 ## Fingerprint the contents
 
 :::{req} fingerprints

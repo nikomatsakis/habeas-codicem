@@ -5,7 +5,9 @@ use std::path::{Component, Path, PathBuf};
 
 use serde_json::{Map, Value};
 use toml_edit::DocumentMut;
+use trust_but_verify::outline::languages::name_for_path;
 
+pub(crate) use crate::authoring::access::discovery_files as discovered_files;
 use crate::inputs::{InputSelector, OutlineCache, ResolvedInput, ResolvedNode};
 use crate::judgment::Judgment;
 use crate::{
@@ -152,11 +154,18 @@ pub(crate) struct InspectionProgress {
 // {impl}`requirements.ci.book_source`
 // {impl}`requirements.ci.definition_errors`
 pub(crate) fn load_definitions(root: &Path) -> io::Result<BTreeMap<String, Declaration>> {
+    load_definition_snapshots(root, &OutlineCache::default())
+}
+
+pub(crate) fn load_definition_snapshots(
+    root: &Path,
+    outlines: &OutlineCache,
+) -> io::Result<BTreeMap<String, Declaration>> {
     let root = fs::canonicalize(root)?;
     // Any failure aborts, so this is not a validation site.
     let mut failures = Vec::new();
     let md_root = book_source_dir(&root, &mut failures);
-    let definitions = collect_definitions(&root, &md_root, &mut failures);
+    let definitions = collect_definitions(&root, &md_root, outlines, &mut failures);
     if failures.is_empty() {
         Ok(definitions)
     } else {
@@ -201,7 +210,8 @@ pub(crate) fn inspect_repository_with_progress(
         errors.push(error.to_string());
     }
     let md_root = book_source_dir(&root, &mut errors);
-    let definitions = collect_definitions(&root, &md_root, &mut errors);
+    let outlines = OutlineCache::default();
+    let definitions = collect_definitions(&root, &md_root, &outlines, &mut errors);
     let mut discovery_errors = errors.clone();
     // {impl}`requirements.test-coverage.setup.validation`
     // {impl}`requirements.test-coverage.setup.validation.static`
@@ -215,7 +225,7 @@ pub(crate) fn inspect_repository_with_progress(
         Vec::new()
     };
     let mut present = BTreeSet::new();
-    let outlines = OutlineCache::default();
+    let domain = crate::sdk::HabeasDomain::new(&root, &definitions, &outlines);
     // Citation reviews are validated against their source items below.
     let (review_files, ordinary_files): (Vec<_>, Vec<_>) = evidence_files
         .iter()
@@ -256,7 +266,7 @@ pub(crate) fn inspect_repository_with_progress(
         } else {
             errors.push(format!("{label}: no matching requirement or example"));
         }
-        validate_evidence_file(&root, file, expected, &definitions, &outlines, &mut errors);
+        validate_evidence_file(&domain, file, expected, &mut errors);
     }
     progress(InspectionProgress {
         stage: "evidence files",
@@ -287,7 +297,13 @@ pub(crate) fn inspect_repository_with_progress(
         total: None,
     });
     let files = discovered_files(&root, &mut errors);
-    let references = collect_references_with_progress(&root, &files, &mut errors, &mut progress);
+    let references = collect_references_with_progress(
+        &outlines.validation,
+        &root,
+        &files,
+        &mut errors,
+        &mut progress,
+    );
     discovery_errors.extend(errors[scanned..].iter().cloned());
     validate_committed_credentials(&root, &mut errors);
     // {impl}`requirements.references.distributed`
@@ -309,20 +325,16 @@ pub(crate) fn inspect_repository_with_progress(
         &mut progress,
     );
     crate::citations::validate(
-        &root,
-        &definitions,
+        &domain,
         &references,
-        &outlines,
         &review_files,
         &mut errors,
         &mut progress,
     );
     crate::sites::validate(
-        &root,
-        &definitions,
+        &domain,
         &references,
         &sites,
-        &outlines,
         &site_files,
         &mut errors,
         &mut progress,
@@ -429,6 +441,7 @@ pub(crate) fn book_source_dir(root: &Path, errors: &mut Vec<String>) -> PathBuf 
 fn collect_definitions(
     root: &Path,
     md_root: &Path,
+    outlines: &OutlineCache,
     errors: &mut Vec<String>,
 ) -> BTreeMap<String, Declaration> {
     let mut definitions = BTreeMap::new();
@@ -442,13 +455,16 @@ fn collect_definitions(
         }
 
         let label = display_path(root, &file);
-        let content = match fs::read_to_string(&file) {
-            Ok(content) => content,
-            Err(error) => {
-                errors.push(format!("{label}: cannot read chapter: {error}"));
-                continue;
-            }
-        };
+        let snapshot =
+            match trust_but_verify::outline::OutlineContent::from_path(&outlines.validation, &file)
+            {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    errors.push(format!("{label}: cannot read chapter: {error}"));
+                    continue;
+                }
+            };
+        let content = snapshot.text();
         let namespace = chapter_namespace(relative);
         let blocks = definition_blocks(&content);
         crate::sites::validate_query_placement(&label, &content, &blocks, errors);
@@ -659,13 +675,14 @@ pub(crate) fn files_with_extension(
 // {impl}`requirements.ci.errors`
 // {impl}`requirements.ci.outcomes`
 fn validate_evidence_file(
-    root: &Path,
+    domain: &crate::sdk::HabeasDomain,
     path: &Path,
     expected: Option<&Declaration>,
-    definitions: &BTreeMap<String, Declaration>,
-    outlines: &OutlineCache,
     errors: &mut Vec<String>,
 ) {
+    let root = domain.root.as_ref();
+    let definitions = domain.definitions.as_ref();
+    let outlines = &domain.outlines;
     let label = display_path(root, path);
     let content = match fs::read_to_string(path) {
         Ok(content) => content,
@@ -687,11 +704,6 @@ fn validate_evidence_file(
             .to_string_lossy()
             .into_owned(),
     ));
-    let domain = crate::sdk::HabeasDomain {
-        root,
-        definitions,
-        outlines,
-    };
     let native = value.clone();
     let value = match crate::evidence_format::view(&value) {
         Ok(value) => value,
@@ -1139,6 +1151,8 @@ pub(crate) struct SourceReference {
     pub(crate) file: PathBuf,
     /// Line of the reference, or of a fenced reference's opening fence.
     pub(crate) line: usize,
+    /// One-based UTF-8 byte column of the role or opening fence.
+    pub(crate) column: usize,
     /// A fenced reference's body without comment delimiters; `None` for an
     /// inline reference.
     pub(crate) commentary: Option<String>,
@@ -1189,8 +1203,8 @@ pub(crate) fn fixme_acknowledgments<'a>(
             let file = display_path(root, &reference.file);
             let parsed = outlines.parse(root, &file);
             let parsed = parsed.as_ref().as_ref().map_err(Clone::clone)?;
-            let item = if parsed.outline.profile.language.is_some() {
-                let index = parsed.reference_owner_at_line(reference.line);
+            let item = if parsed.outline.language != "plain-text" {
+                let index = parsed.reference_owner(reference.line, reference.column);
                 parsed.outline.nodes[index].selector.as_str()
             } else {
                 ""
@@ -1234,8 +1248,6 @@ pub(crate) fn reference_set_digest<'a>(
     sites: &crate::sites::Sites,
 ) -> String {
     digest_definition_entries(
-        root,
-        outlines,
         definition,
         reference_set_entries(root, outlines, name, definition, references, sites),
     )
@@ -1258,26 +1270,18 @@ pub(crate) fn reference_set_digest<'a>(
 // tests cover exclusive selection, not both checks or removal of either edge kind.
 // :::
 pub(crate) fn structural_assessment(
-    root: &Path,
-    outlines: &OutlineCache,
     definition: &Declaration,
     entries: &[ReferenceSetEntry],
 ) -> bool {
-    let access = outlines.source_access(root);
-    let considered = |entry: &&ReferenceSetEntry| {
-        access
-            .as_ref()
-            .is_ok_and(|access| !access.omit_generated_evidence(root, Path::new(&entry.file)))
-    };
     definition.kind == DefinitionKind::Requirement
         && !crate::structural::has_query_directive(definition)
-        && !entries
-            .iter()
-            .filter(considered)
-            .any(|entry| entry.role == "test")
-        && entries.iter().filter(considered).any(|entry| {
-            let profile = crate::outline::profile_for_path(Path::new(&entry.file));
-            entry.role == "impl" && profile.language.is_some() && profile.name != "markdown"
+        && !entries.iter().any(|entry| entry.role == "test")
+        && entries.iter().any(|entry| {
+            entry.role == "impl"
+                && !matches!(
+                    name_for_path(Path::new(&entry.file)),
+                    "plain-text" | "markdown"
+                )
         })
 }
 
@@ -1292,12 +1296,10 @@ pub(crate) fn structural_assessment(
 // assert the current exclusive mode's digest, not full independent-check freshness.
 // :::
 pub(crate) fn digest_definition_entries(
-    root: &Path,
-    outlines: &OutlineCache,
     definition: &Declaration,
     entries: Vec<ReferenceSetEntry>,
 ) -> String {
-    let structural = structural_assessment(root, outlines, definition, &entries);
+    let structural = structural_assessment(definition, &entries);
     let digest = digest_entries(entries);
     if structural {
         use sha2::{Digest, Sha256};
@@ -1339,8 +1341,8 @@ pub(crate) fn reference_set_entries<'a>(
         let file = display_path(root, &reference.file);
         let parsed = outlines.parse(root, &file);
         let item = match parsed.as_ref() {
-            Ok(parsed) if parsed.outline.profile.language.is_some() => {
-                let index = parsed.reference_owner_at_line(reference.line);
+            Ok(parsed) if parsed.outline.language != "plain-text" => {
+                let index = parsed.reference_owner(reference.line, reference.column);
                 parsed.outline.nodes[index].selector.clone()
             }
             // Plain-text files have only a root node; a source that cannot be
@@ -1419,7 +1421,8 @@ pub fn reference_set_digest_for(root: &Path, name: &str) -> io::Result<String> {
     // this definition's reference set.
     let mut ignored = Vec::new();
     let md_root = book_source_dir(&root, &mut ignored);
-    let definitions = collect_definitions(&root, &md_root, &mut ignored);
+    let outlines = OutlineCache::default();
+    let definitions = collect_definitions(&root, &md_root, &outlines, &mut ignored);
     let definition = definitions
         .get(name)
         .filter(|definition| definition.kind != DefinitionKind::Term)
@@ -1432,11 +1435,16 @@ pub fn reference_set_digest_for(root: &Path, name: &str) -> io::Result<String> {
     // A discovery failure aborts, so this is not a validation site.
     let mut failures = Vec::new();
     let files = discovered_files(&root, &mut failures);
-    let references = collect_references_with_progress(&root, &files, &mut failures, &mut |_| {});
+    let references = collect_references_with_progress(
+        &outlines.validation,
+        &root,
+        &files,
+        &mut failures,
+        &mut |_| {},
+    );
     if !failures.is_empty() {
         return Err(io::Error::other(failures.join("\n")));
     }
-    let outlines = OutlineCache::default();
     let sites = definition_sites(&root, name, definition, &files, &outlines)?;
     Ok(reference_set_digest(
         &root,
@@ -1890,36 +1898,27 @@ pub(crate) fn validate_fixme_entries(
 // {impl}`requirements.references.discovery`
 pub(crate) fn collect_references(root: &Path, errors: &mut Vec<String>) -> Vec<SourceReference> {
     let files = discovered_files(root, errors);
-    collect_references_with_progress(root, &files, errors, &mut |_| {})
-}
-
-/// The project files reference discovery considers under source-access
-/// policy, reporting a failure to read the Git index as a discovery error.
-// {impl}`requirements.ci.errors`
-pub(crate) fn discovered_files(root: &Path, errors: &mut Vec<String>) -> Vec<PathBuf> {
-    match crate::authoring::access::load_discovery_sources(root) {
-        Ok(sources) => sources.files(errors),
-        Err(error) => {
-            errors.push(format!("cannot discover reference sources: {error}"));
-            Vec::new()
-        }
-    }
+    collect_references_with_progress(&Default::default(), root, &files, errors, &mut |_| {})
 }
 
 /// Reports each workspace `habeas.toml` in the Git index that contains
 /// explicit credentials, naming its credential settings but never their
-/// values. Outside Git nothing is committed, so nothing is reported; a Git
-/// index that cannot be read is reported by discovery.
+/// values. An unreadable index is a configuration-check error.
 // {impl}`requirements.authoring.credentials`
 // {impl}`requirements.ci.errors`
 fn validate_committed_credentials(root: &Path, errors: &mut Vec<String>) {
-    let Ok(sources) = crate::authoring::access::load_discovery_sources(root) else {
-        return;
+    let indexed = match crate::authoring::access::tracked_sources(root) {
+        Ok(Some(files)) => files,
+        Ok(None) => return,
+        Err(error) => {
+            errors.push(format!(
+                "cannot check tracked workspace credentials: {error}"
+            ));
+            return;
+        }
     };
-    for file in sources
-        .indexed()
-        .into_iter()
-        .flatten()
+    for file in indexed
+        .iter()
         .filter(|file| file.file_name().is_some_and(|name| name == "habeas.toml"))
     {
         let Some(fields) = fs::read_to_string(file)
@@ -1931,7 +1930,7 @@ fn validate_committed_credentials(root: &Path, errors: &mut Vec<String>) {
         };
         let settings = fields
             .iter()
-            .map(|field| format!("`{}`", field.setting))
+            .map(|setting| format!("`{setting}`"))
             .collect::<Vec<_>>()
             .join(", ");
         errors.push(format!(
@@ -1941,28 +1940,9 @@ fn validate_committed_credentials(root: &Path, errors: &mut Vec<String>) {
     }
 }
 
-// {cite}`habeas:util`
-/// Untracked files in a Git worktree, outside the discovery exclusions, that
-/// contain references discovery would otherwise find; empty outside Git.
-pub(crate) fn untracked_reference_files(root: &Path) -> io::Result<Vec<PathBuf>> {
-    let root = fs::canonicalize(root)?;
-    let md_root = book_source_dir(&root, &mut Vec::new());
-    let untracked = crate::authoring::access::load_discovery_sources(&root)?.untracked()?;
-    Ok(untracked
-        .into_iter()
-        .filter(|file| {
-            fs::read_to_string(file).is_ok_and(|content| {
-                !content.contains('\0')
-                    && file_references(file, &content, file.starts_with(&md_root))
-                        .iter()
-                        .any(|reference| reference.kind != ReferenceKind::Term)
-            })
-        })
-        .collect())
-}
-
 // {impl}`requirements.ci.errors`
 pub(crate) fn collect_references_with_progress(
+    cache: &crate::inputs::SourceCache,
     root: &Path,
     files: &[PathBuf],
     errors: &mut Vec<String>,
@@ -1992,7 +1972,12 @@ pub(crate) fn collect_references_with_progress(
         if content.contains('\0') {
             continue;
         }
-        references.extend(file_references(file, &content, file.starts_with(&md_root)));
+        references.extend(file_references(
+            cache,
+            file,
+            &content,
+            file.starts_with(&md_root),
+        ));
     }
     progress(InspectionProgress {
         stage: "reference source files",
@@ -2002,50 +1987,82 @@ pub(crate) fn collect_references_with_progress(
     references
 }
 
-/// The inline and fenced references in one text file, in line order.
-/// Where roles count as references in a file's content: the byte ranges of
-/// its comments when it has a language outline, or `None` where roles count
-/// anywhere: Markdown, which has its own rules, and plain text. Syntax errors
-/// do not expand the grammar's comment ranges.
+/// The source regions in which inline and fenced references can occur.
 // {impl}`requirements.references.reference_contexts`
-pub(crate) fn reference_contexts(
+pub(crate) enum ReferenceContexts {
+    Text {
+        markdown: bool,
+    },
+    Parsed {
+        items: crate::outline_items::OutlineItems,
+        rust: bool,
+    },
+    Unavailable,
+}
+
+impl ReferenceContexts {
+    pub(crate) fn parse(cache: &crate::inputs::SourceCache, file: &Path, content: &str) -> Self {
+        let language = name_for_path(file);
+        if matches!(language, "plain-text" | "markdown") {
+            return Self::Text {
+                markdown: language == "markdown",
+            };
+        }
+        match crate::outline_items::for_file(cache, file, content) {
+            Ok(items) => Self::Parsed {
+                items,
+                rust: language == "rust",
+            },
+            Err(_) => Self::Unavailable,
+        }
+    }
+
+    pub(crate) fn allows(&self, byte: usize) -> bool {
+        match self {
+            Self::Text { .. } => true,
+            Self::Parsed { items, .. } => items
+                .comments
+                .iter()
+                .any(|comment| comment.span.contains(&byte)),
+            Self::Unavailable => false,
+        }
+    }
+
+    pub(crate) fn fences(&self, content: &str) -> Vec<crate::fenced::SourceFence> {
+        if !content.contains(":::") {
+            return Vec::new();
+        }
+        match self {
+            Self::Text { markdown } => crate::fenced::text_fences(content, *markdown),
+            Self::Parsed { items, rust } if items.diagnostic.is_none() => {
+                crate::fenced::comment_fences(content, items, *rust)
+            }
+            Self::Parsed { .. } | Self::Unavailable => Vec::new(),
+        }
+    }
+}
+
+// {impl}`requirements.references.reference_contexts`
+pub(crate) fn file_references(
+    cache: &crate::inputs::SourceCache,
     file: &Path,
     content: &str,
-) -> Option<Vec<std::ops::Range<usize>>> {
-    if crate::outline::is_markdown_path(file) {
-        return None;
-    }
-    let profile = crate::outline::profile_for_path(file);
-    profile.language?;
-    crate::outline::comment_ranges(profile, content).ok()
-}
-
-/// Whether a role at byte `start` counts under [`reference_contexts`].
-// {impl}`requirements.references.reference_contexts`
-pub(crate) fn in_reference_context(
-    contexts: Option<&[std::ops::Range<usize>]>,
-    start: usize,
-) -> bool {
-    contexts.is_none_or(|ranges| ranges.iter().any(|range| range.contains(&start)))
-}
-
-// {impl}`requirements.references.reference_contexts`
-fn file_references(file: &Path, content: &str, in_book: bool) -> Vec<SourceReference> {
+    in_book: bool,
+) -> Vec<SourceReference> {
     let markdown = crate::outline::is_markdown_path(file);
     let mut references = Vec::new();
     let roles = reference_roles(content, markdown);
-    let contexts = if roles.is_empty() {
-        None
-    } else {
-        reference_contexts(file, content)
-    };
+    if roles.is_empty() && !content.contains(":::") {
+        return references;
+    }
+    let contexts = ReferenceContexts::parse(cache, file, content);
     let declarations = if markdown {
         declaration_line_ranges(content)
     } else {
         Vec::new()
     };
     for role in roles {
-        if !in_reference_context(contexts.as_deref(), role.start) {
+        if !contexts.allows(role.start) {
             continue;
         }
         let line = content[..role.start]
@@ -2058,6 +2075,7 @@ fn file_references(file: &Path, content: &str, in_book: bool) -> Vec<SourceRefer
             kind: role.kind,
             file: file.to_owned(),
             line,
+            column: content[..role.start].rsplit('\n').next().unwrap().len() + 1,
             commentary: None,
             closed: true,
             in_book,
@@ -2066,7 +2084,7 @@ fn file_references(file: &Path, content: &str, in_book: bool) -> Vec<SourceRefer
                 .any(|&(start, end)| start < line && line < end),
         });
     }
-    let fences = crate::fenced::source_fences(file, content);
+    let fences = contexts.fences(content);
     for fence in fences {
         references.push(SourceReference {
             in_declaration: declarations
@@ -2076,12 +2094,13 @@ fn file_references(file: &Path, content: &str, in_book: bool) -> Vec<SourceRefer
             kind: fence.kind,
             file: file.to_owned(),
             line: fence.line,
+            column: fence.column,
             commentary: Some(fence.body),
             closed: fence.closed,
             in_book,
         });
     }
-    references.sort_by_key(|reference| reference.line);
+    references.sort_by_key(|reference| (reference.line, reference.column));
     references
 }
 
@@ -2151,7 +2170,7 @@ pub(crate) mod tests {
         // The role's brace is built at run time, so this source holds none.
         let role = |name: &str| format!("{{impl}}`{name}`");
         let names = |file: &str, content: String| {
-            super::file_references(Path::new(file), &content, false)
+            super::file_references(&Default::default(), Path::new(file), &content, false)
                 .into_iter()
                 .map(|reference| reference.name)
                 .collect::<Vec<_>>()
@@ -2250,10 +2269,25 @@ pub(crate) mod tests {
             ),
             ["f.comment"]
         );
+        for (file, prefix, declaration) in [
+            ("lib.rs", "///", "fn f() {}"),
+            ("tool.py", "#", "value = 1"),
+        ] {
+            let source = format!(
+                "{prefix} :::{{impl}} f.docs\n{prefix} Body.\n{prefix} :::\n{declaration}\n"
+            );
+            assert_eq!(names(file, source), ["f.docs"], "{file}");
+        }
         // Plain text has no comments: roles count anywhere.
         assert_eq!(
-            names("notes.txt", format!("see {}\n", role("d.text"))),
-            ["d.text"]
+            names(
+                "notes.txt",
+                format!(
+                    "see {}\n\n:::{{impl}} d.fenced\nBody.\n:::\n",
+                    role("d.text")
+                )
+            ),
+            ["d.text", "d.fenced"]
         );
         // Markdown keeps its own rules.
         assert_eq!(
@@ -2399,7 +2433,22 @@ pub(crate) mod tests {
         let temp = fixture();
         let root = temp.path();
         fs::create_dir_all(root.join("tools")).unwrap();
-        let config = "version = 1\n[authoring.configs.cloud]\nbackend = 'bedrock'\nmodel = 'm'\n[authoring.configs.cloud.credentials]\naccess_key_id = 'PRIVATE_ACCESS'\nsecret_access_key = 'PRIVATE_SECRET'\n";
+        let config = "version = 1
+[authoring.configs.cloud]
+backend = 'bedrock'
+model = 'm'
+[authoring.configs.cloud.credentials]
+access_key_id = 'PRIVATE_ACCESS'
+secret_access_key = 'PRIVATE_SECRET'
+[authoring.configs.local]
+backend = 'ollama'
+model = 'm'
+api_key = 'PRIVATE_LOCAL'
+[authoring.configs.remote]
+backend = 'openai'
+model = 'm'
+api_key = 'PRIVATE_REMOTE'
+";
         fs::write(root.join("habeas.toml"), config).unwrap();
         fs::write(root.join("tools/habeas.toml"), config).unwrap();
         crate::authoring::access::tests::git(root, &["init", "--quiet"]);
@@ -2416,6 +2465,12 @@ pub(crate) mod tests {
         assert_eq!(found.len(), 1, "{:#?}", report.errors);
         assert!(found[0].starts_with("tools/habeas.toml: "), "{}", found[0]);
         assert!(found[0].contains("`authoring.configs.cloud.credentials.access_key_id`, `authoring.configs.cloud.credentials.secret_access_key`"), "{}", found[0]);
+        for setting in [
+            "authoring.configs.local.api_key",
+            "authoring.configs.remote.api_key",
+        ] {
+            assert!(found[0].contains(setting), "{}", found[0]);
+        }
         assert!(found[0].contains("aws_profile") && found[0].contains("api_key_env"));
         assert!(!found[0].contains("PRIVATE_"), "{}", found[0]);
         // Staging the workspace file reports it too; a credential-free one is fine.
@@ -2893,6 +2948,7 @@ pub(crate) mod tests {
 
     // {test}`requirements.references.discovery`
     // {test}`requirements.references.markdown_literals`
+    // {test}`requirements.references.reference_contexts`
     #[test]
     fn every_markdown_extension_keeps_escaped_and_code_roles_literal() {
         let temp = fixture();
@@ -3197,7 +3253,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         // A `.git` file naming a missing Git directory makes the Git index
-        // unreadable, so reference discovery fails.
+        // unreadable, so the tracked configuration check reports an error.
         fs::write(
             temp.path().join(".git"),
             format!("gitdir: {}\n", temp.path().join("missing").display()),
@@ -3205,11 +3261,11 @@ pub(crate) mod tests {
         .unwrap();
         fs::write(temp.path().join("evidence/ghost.json"), "{").unwrap();
         let errors = validate_repository(temp.path()).unwrap().errors;
-        let discovery = errors
+        let credential_errors = errors
             .iter()
-            .filter(|error| error.starts_with("cannot discover reference sources:"))
+            .filter(|error| error.starts_with("cannot check tracked workspace credentials:"))
             .count();
-        assert_eq!(discovery, 1, "{errors:#?}");
+        assert_eq!(credential_errors, 1, "{errors:#?}");
         let errors = errors.join("\n");
         for detail in [
             "evidence/rules.ready.json: missing for requirement",

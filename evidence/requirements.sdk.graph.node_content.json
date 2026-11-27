@@ -1,8 +1,8 @@
 {
-  "requirement": "{cite}`requirements.sdk.domain`\n\n`trust_but_verify::domain::Domain` reads an\n{term}`requirements.sdk.application_domain`'s nodes as values implementing\n`trust_but_verify::domain::NodeContents`. Reading includes the loading and preparation\nneeded to fingerprint and format the returned value; failures return the\ndomain's error:\n\n```rust,ignore\npub trait Domain: Clone + Send + Sync {\n    // ...\n\n    /// The application's representation of a node's contents.\n    type NodeContent: NodeContents;\n\n    /// Load and prepare this node's contents.\n    fn node_content(&self, node: &Self::NodeId) -> Result<Self::NodeContent, Self::Error>;\n\n    // ...\n}\n```",
+  "requirement": "{cite}`requirements.sdk.domain`\n\n`trust_but_verify::domain::Domain` reads an\n{term}`requirements.sdk.application_domain`'s nodes as values implementing\n`trust_but_verify::domain::NodeContents`. Reading includes the loading and preparation\nneeded to fingerprint and format the returned value; failures return the\ndomain's error:\n\n```rust,ignore\npub trait Domain: Clone + Send + Sync {\n    // ...\n\n    /// The application's representation of a node's contents.\n    type NodeContent: NodeContents;\n\n    /// Load and prepare this node's contents.\n    fn node_content(&self, node: &NodeId<Self>) -> Result<Self::NodeContent, Self::Error>;\n\n    // ...\n}\n```",
   "determination": true,
-  "rationale": "The tests adequately check `requirements.sdk.graph.node_content`.\n\n**Obligations derived from the text**\n1. `Domain::node_content` returns a value implementing `NodeContents` for a node.\n2. Reading includes the loading and preparation needed to fingerprint and format the value.\n3. A failure at any point, including preparation, returns the domain's error.\n\n**Success path**\n- `crates/trust-but-verify/tests/contracts.rs#fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]` reads through `read_snapshot`, which calls `node_content`. It asserts that `format()` returns \"before\". After the underlying data changes, it asserts that `fingerprint()` and `format()` still match the supplied snapshot. This shows the returned value carries what is needed for both operations.\n- `src/sdk.rs#mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]` calls `HabeasDomain::node_content` directly. It asserts that the returned content's fingerprint equals the expected fingerprint, and that it changes after the source file changes.\n\n**Failure path**\n- `crates/trust-but-verify/tests/validation.rs#fn[wildcard_versions_still_check_inputs_and_errors]` sets `fail_read`. It asserts that the domain's `Err(\"read\")` is returned unchanged through `is_current`.\n- `crates/trust-but-verify/tests/validation.rs#fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]` covers two failures. With `fail_read`, it asserts `ValidationError::Graph(\"read\")`. With `fail_prepare`, it asserts `Graph(\"render\")`. The `Memory` domain's `node_content` returns `Err(\"render\")` for `fail_prepare`, so this exercises a preparation failure. The test also asserts that no dependencies are recorded and that no agent call is made.\n\n**Conclusion**\nEach clause (value returned, fingerprint and format readiness, and the load and preparation failure modes) has a test with a relevant assertion. The test items carry {test} references to the subject.\n\nTwo obligations belong to refining requirements and are not assessed here: `requirements.sdk.graph.node_content.fingerprint` and `requirements.sdk.graph.node_content.format`.",
-  "references": "2326e495846bebd6b2ea9ac4b84d377d4289bf66629e949a8634c3d4ced4b90f",
+  "rationale": "The tests adequately check `requirements.sdk.graph.node_content`.\n\n**Obligations derived from the text**\n1. `Domain::node_content` returns a value implementing `NodeContents` for a node.\n2. Reading includes the loading and preparation needed to fingerprint and format the returned value.\n3. Failures return the domain's own error.\n\n**Mapping to tests**\n- **Success and returned value:**\n  - `crates/trust-but-verify/tests/contracts.rs#fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]` reads a node through `read_snapshot`. It asserts `snapshot.content.format()` is \"before\", that `fingerprint()` equals the snapshot fingerprint, and that the value is unchanged after the underlying content changes.\n  - `src/sdk.rs#mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]` calls `domain.node_content(...)` directly on `HabeasDomain`. It asserts the exact `format()` JSON and a fixed `Fingerprint` for the returned content. It also shows that a fresh domain reading changed source returns content with a different fingerprint, while the retained content keeps its original fingerprint.\n- **Loading and preparation:** the `NodeContents` value is both fingerprinted and formatted in the tests above. The preparation step is exercised in `queued_reads_selection_and_rendering_fail_before_agent_invocation`.\n- **Failures return the domain's error:**\n  - The `Memory` test domain's `node_content` returns `Err(\"read\")` when `fail_read` is set, and `Err(\"render\")` when `fail_prepare` is set.\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` asserts `ValidationError::Graph(\"read\")` for a load failure and `ValidationError::Graph(\"render\")` for a preparation failure. It also asserts that no dependency is recorded and no agent call is made.\n  - `wildcard_versions_still_check_inputs_and_errors` asserts `record.is_current(...)` returns `Err(\"read\")` when the node read fails. This confirms the domain error propagates unchanged.\n\nBoth failure classes the text names, loading and preparation, are therefore tested with assertions on the returned error. The only failing domain tested is the `Memory` test double, not `HabeasDomain`, but the requirement states a trait contract, so this is not a gap. I found no unacknowledged gap and no marking gap.",
+  "references": "3c2acadf683164a09960387005361d6e2bffadeaf749a9c70df2744d4d55cced",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.node_content",
@@ -27,7 +27,7 @@
         "    type NodeContent: NodeContents;",
         "",
         "    /// Load and prepare this node's contents.",
-        "    fn node_content(&self, node: &Self::NodeId) -> Result<Self::NodeContent, Self::Error>;",
+        "    fn node_content(&self, node: &NodeId<Self>) -> Result<Self::NodeContent, Self::Error>;",
         "",
         "    // ...",
         "}",
@@ -51,55 +51,63 @@
         "```rust,ignore",
         "pub trait Domain: Clone + Send + Sync {",
         "    type Error: Send;",
-        "    type NodeId: Clone + Eq + Send + Sync;",
+        "    type NodeData: Clone + Eq + Hash + Send + Sync;",
         "    type NodeContent: NodeContents;",
         "    type EdgeLabel: Clone + Send + Sync;",
         "",
-        "    fn node_path(&self, node: &Self::NodeId) -> NodePath;",
+        "    fn cache(&self) -> &ValidationCache<Self>;",
+        "    fn node_path(&self, node: &NodeId<Self>) -> NodePath;",
         "    fn node_content(",
         "        &self,",
-        "        node: &Self::NodeId,",
+        "        node: &NodeId<Self>,",
         "    ) -> Result<Self::NodeContent, Self::Error>;",
         "    fn outgoing_edges(",
         "        &self,",
-        "        node: &Self::NodeId,",
+        "        node: &NodeId<Self>,",
         "        label: Self::EdgeLabel,",
-        "    ) -> Result<Vec<Self::NodeId>, Self::Error>;",
+        "    ) -> Result<Vec<NodeId<Self>>, Self::Error>;",
         "    fn load_evidence(",
         "        &self,",
-        "        node: &Self::NodeId,",
+        "        node: &NodeId<Self>,",
         "        criterion: &CriterionPath,",
-        "    ) -> impl Future<Output = Result<Option<Record<Self::NodeId, Self::EdgeLabel>>, Self::Error>> + Send;",
+        "    ) -> impl Future<Output = Result<Option<Record<Self::NodeData, Self::EdgeLabel>>, Self::Error>> + Send;",
         "    fn store_evidence(",
         "        &self,",
-        "        node: &Self::NodeId,",
+        "        node: &NodeId<Self>,",
         "        criterion: &CriterionPath,",
-        "        record: &Record<Self::NodeId, Self::EdgeLabel>,",
+        "        record: &Record<Self::NodeData, Self::EdgeLabel>,",
         "    ) -> impl Future<Output = Result<(), Self::Error>> + Send;",
+        "",
+        "    fn project_sources(&self) -> Option<SourceProject<Self>> { ... }",
+        "    fn source_node(",
+        "        &self,",
+        "        item: &OutlineData,",
+        "    ) -> Result<Self::NodeData, SourceError> { ... }",
+        "    fn source_address(&self, _data: &Self::NodeData) -> Option<OutlineData> { ... }",
         "}",
         "```",
         ":::"
       ]
     },
     {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]",
-      "hash": "b674e4cebcb6efc83126680f2e192ff172ebfab167973b43544d48ae6528c0e7"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/validation.rs",
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[wildcard_versions_still_check_inputs_and_errors]",
       "hash": "2056a24b49cd7a2e254e477383e8e262d4a4c200bafb15a6614318e928de6bfa"
     },
     {
-      "file": "crates/trust-but-verify/tests/validation.rs",
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]",
-      "hash": "d87746a361dc0b25514fe633d10fa2512926e1ba51ffb2643755ea717b6fd42b"
+      "hash": "16e5d66c127375503160b7357b3aab780341b16eb17adf36510391e372907734"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]",
+      "hash": "39b621f61ac860578f1ce6544cd645bb9cabd138be2466122e877ef621164150"
     },
     {
       "file": "src/sdk.rs",
       "item": "mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]",
-      "hash": "8c7767a3319874c082b7d4114dda121d857384a73fb31e4ba0093b3930581d66"
+      "hash": "31f193d35a164fef1a88a2b59a8c2b7be575148cb46f4a4c12acf57f20bdfe48"
     },
     {
       "definition": "requirements.sdk.application_domain",
@@ -117,19 +125,9 @@
       ]
     },
     {
-      "file": "crates/trust-but-verify/tests/validation.rs",
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "impl[Memory/Domain]/fn[node_content]",
-      "hash": "48e6e232c127fbbe6657844de47a68192f416aa79b7b135d4ef2a13968cdd9b7"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/validation.rs",
-      "item": "struct[State]",
-      "hash": "c2b2b883beeff88f0c7feaeaa4362cb6b2faf855b231dc13920e97bc709d4ff5"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "impl[Application/Domain]/fn[node_content]",
-      "hash": "c77807454faabf74c875247623015bf81fbfc3b2806a52fe355758adc045a5a3"
+      "hash": "b349c79de3f7318fb56a0371a63b05bef13c245cd377e32967bf0d7c01aa9374"
     }
   ],
   "format_version": 1,
@@ -142,7 +140,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "2326e495846bebd6b2ea9ac4b84d377d4289bf66629e949a8634c3d4ced4b90f"
+          "value": "3c2acadf683164a09960387005361d6e2bffadeaf749a9c70df2744d4d55cced"
         }
       ]
     },
@@ -154,7 +152,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "293cffd75be652b5e478f821c87fe0a1ab66afbcc65bb316b5fb9a8f6a72d798"
+          "value": "540546385295e42c87fb9c1e9b7d01f0f992f4ee34b094c2dc08c4a134ad7f3c"
         }
       ]
     },
@@ -165,7 +163,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "08a38fc5202e5a4b3a0a0046e90139825c6e3baa93366a10619b8e7bcc6d7c92"
+          "value": "948db73aedf37d9232aef5194144fc9393f117b36b1796422bbacabf650bc565"
         }
       ]
     },
@@ -176,7 +174,41 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "877152da04beedf84fa17e2badad2ebaf956b8433bc2005fe585986cf7d0f146"
+          "value": "2e0a36b62ec75626b47edc2d133582146b235b039c605e398ae3dcc838c69532"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+            },
+            "selector": "fn[wildcard_versions_still_check_inputs_and_errors]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "7e3dadf769ce29dbc0927f36616c5e54f60bafde3e9eb179de7497ce1f42778c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+            },
+            "selector": "fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "cee46e0806fccf4bd824ab4d2ae06bf43eff788b48df5c8c006b31383f7cd626"
         }
       ]
     },
@@ -193,41 +225,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "5f1fcd0f1aa97ebb2ce3f9225cd48fc59e663e1215e4d4c801e434ad966d66f7"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
-            },
-            "selector": "fn[wildcard_versions_still_check_inputs_and_errors]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "ee6db2c6ac9a4c08700c5c7ac320fb3d3463490b166cd26eebb141e7f6147f7f"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
-            },
-            "selector": "fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "f600679868a81e3df3f2a309538cb211607328389902cad216efd03a50c58104"
+          "value": "594ad1890d1514304554c636722ad54b63597179a7585db57c2f1011fbf545eb"
         }
       ]
     },
@@ -244,7 +242,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c7ddcef507841329938721c6d30eb38ed121f88ae883eb04fffe285d3c614cf4"
+          "value": "7b58d8a3b786c53dbfcfc4187a5b60a156f79bac335c38cd0441a8dbbe19ab6d"
         }
       ]
     },
@@ -265,48 +263,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
             },
             "selector": "impl[Memory/Domain]/fn[node_content]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "87ddc07ac20720a9388e67ea932e3230debcd21c12e0fb72cc1636502ede6e82"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
-            },
-            "selector": "struct[State]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "78cca401c9048c4415f81079e0aaa5a5f8db948a64062cd04fb6982cf28b9e6d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "impl[Application/Domain]/fn[node_content]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "bbbe0cc52d73001c4040793324d5f9fad5848b571341c41ad46a671a702e3b79"
+          "value": "bf14f7833d7c118e3d44bbd93722bea23ee07553d90d72ebef2b8443939a2f03"
         }
       ]
     }

@@ -423,6 +423,26 @@ fn status_lists_nonvalid_requirements_and_all_option_in_name_order() {
             "{text}"
         );
     }
+    let visible: Vec<_> = text
+        .lines()
+        .filter_map(|l| {
+            l.strip_prefix("| `requirements.")?
+                .split_once('`')
+                .map(|x| x.0)
+        })
+        .collect();
+    assert_eq!(
+        visible,
+        [
+            "absent",
+            "case",
+            "malformed",
+            "pending",
+            "stale",
+            "stale_input",
+            "uncovered"
+        ]
+    );
     assert!(!text.contains("| `requirements.ready`"), "{text}");
     assert!(!text.contains("| `requirements.xready`"), "{text}");
     assert!(text.contains("missing for requirement"), "{text}");

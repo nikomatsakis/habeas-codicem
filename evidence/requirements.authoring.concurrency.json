@@ -1,7 +1,7 @@
 {
   "requirement": "Each named authoring configuration MUST accept an optional positive integer\n`concurrency` in its configuration table. When omitted, the maximum number of\nsimultaneous assessments MUST default to the number of available logical CPUs\nfor Bedrock and OpenAI, falling back to one when that count is unavailable, and to one for\nOllama. A configured value MUST override the default for each backend; zero\nMUST be rejected as invalid configuration.\n\nBatch authoring MUST use asynchronous tasks on a runtime with a fixed worker\nthread pool. The number of assessments running at once MUST NOT exceed the\nselected concurrency. Each assessment MUST retain its own model conversation and\nusage record. Transient provider failures, including throttling, MUST be\nretried within the affected assessment under\n{cite}`requirements.authoring.provider_backoff`; every other provider error MUST\nbe reported through the ordinary assessment-failure path.",
   "determination": true,
-  "rationale": "The tests cover each testable obligation of `requirements.authoring.concurrency`. I judged against the requirement text only.\n\n**Configuration (tests/configuration.rs)**\n- Optional positive `concurrency` per named configuration, and the defaults: `authoring_concurrency_defaults_overrides_and_invalid_values` loops over bedrock, ollama and openai.\n  - Without a value, `resolved.concurrency` is `None`, and `effective_concurrency()` equals available parallelism (falling back to 1) for bedrock and openai, and 1 for ollama.\n  - With `concurrency = 7`, the value overrides the default for every backend, and the config round-trips through TOML.\n  - The invalid values `0`, `-1`, `1.5` and `'2'` are each rejected with an error that names `concurrency` and the config path. Zero rejection is covered.\n- `workspace_configurations_accept_validate_and_override_concurrency` repeats the checks for workspace configs. It covers override, omitted value, each backend, and the same invalid values, both through `WorkspaceConfig::parse` and through `load_workspace_config`.\n- The expected default in these tests is computed with the same formula the code uses. The CPU-unavailable fallback to 1 cannot be forced from a test. This is an acceptable limitation.\n\n**Batch behaviour (tests/authoring_batch.rs)**\n- **Maximum simultaneous assessments.**\n  - `batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs` runs with concurrency 2. It asserts `peak == 2` and that a second assessment started before the first model response, so the limit is both reached and not exceeded.\n  - `ollama_batches_are_serial_by_default` asserts `peak == 1` with no configured value, which exercises the Ollama default in a real batch.\n  - `interrupted_terminal_progress_keeps_unstarted_work_incomplete` runs both concurrency 2 and concurrency 1.\n  - `a_denied_mandatory_input_aborts_only_its_assessment` runs with concurrency 1.\n- **Own conversation and usage record.**\n  - `concurrent_assessments_keep_their_own_continuing_histories` runs at concurrency 4. For each subject it asserts that the second request extends the first request's messages exactly and adds only that subject's own tool call and tool result.\n  - The usage-record counts and per-subject `request_count` assertions in the throttle test and in the first batch test cover the usage record.\n- **Transient failure retried within the affected assessment.** `throttled_assessment_retries_within_itself_while_others_proceed` throttles one subject once. It asserts:\n  - 7 requests in total, with 2 for alpha;\n  - `peak <= 2`;\n  - alpha's usage record shows `request_count` 2, with a failed request followed by a completed one;\n  - every other assessment has `request_count` 1;\n  - all 6 usage records are `completed`, and alpha's evidence is written.\n  - The details of the backoff are delegated to `requirements.authoring.provider_backoff`, which is cited here, not reassessed.\n- **Other provider errors take the ordinary failure path.** `failed_assessment_keeps_other_results_and_reports_failure` fails one subject. It asserts a non-success exit, no evidence for that subject, evidence for the others, one `failed` and five `completed` usage records, and a diagnostic containing the subject name and the provider message.\n\n**Runtime obligation.** \"Asynchronous tasks on a runtime with a fixed worker thread pool\" is satisfied in `src/main.rs#fn[main]` by passing through `tokio::runtime::Runtime::new()`. That code has no conditional or transformation of its own. The concurrency bound it feeds is asserted through the peak-in-flight checks above.\n\nI found no unacknowledged gaps.",
+  "rationale": "I found no test-adequacy gap for `requirements.authoring.concurrency`.\n\n**Configuration obligations**\n- **Optional positive integer, default, override and zero rejection:** `tests/configuration.rs#fn[authoring_concurrency_defaults_overrides_and_invalid_values]` loops over bedrock, ollama and openai.\n  - With `concurrency` omitted, it asserts `resolved.concurrency` is `None`. It asserts `effective_concurrency()` equals `available_parallelism` (falling back to 1) for bedrock and openai, and 1 for ollama.\n  - With `concurrency = 7`, it asserts the override, a TOML round trip and serialization.\n  - It asserts that `0`, `-1`, `1.5` and `'2'` are rejected, with an error naming the path and `concurrency`.\n  - The 'unavailable count falls back to one' case is covered by the same expression. The unavailable branch can't realistically be forced in a test.\n- `tests/configuration.rs#fn[workspace_configurations_accept_validate_and_override_concurrency]` repeats this for workspace configurations. It covers each backend, the override, the default, and rejection of invalid values.\n- `tests/configuration.rs#fn[backend_configuration_round_trips_without_materializing_defaults]` asserts that an omitted `concurrency` is not materialized on serialization.\n\n**Batch obligations**\n- **Cap on simultaneous assessments:**\n  - `tests/authoring_batch.rs#fn[batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs]` uses concurrency 2. It asserts `peak == 2` and that the first pair overlapped. That shows concurrent execution that is bounded by the setting.\n  - `fn[ollama_batches_are_serial_by_default]` asserts `peak == 1` with the Ollama default.\n  - `fn[a_denied_mandatory_input_aborts_only_its_assessment]` runs with concurrency 1.\n  - `fn[interrupted_terminal_progress_keeps_unstarted_work_incomplete]` runs with concurrency 1 and 2.\n- **Each assessment keeps its own conversation and usage record:**\n  - `fn[concurrent_assessments_keep_their_own_continuing_histories]` uses concurrency 4. For each subject, the second request's messages must extend the first request's messages. The continuation must be that subject's own assistant tool call plus its tool result.\n  - The usage records are checked per subject in `fn[throttled_assessment_retries_within_itself_while_others_proceed]` and `fn[failed_assessment_keeps_other_results_and_reports_failure]`.\n- **Transient failures are retried within the affected assessment:** `fn[throttled_assessment_retries_within_itself_while_others_proceed]` throttles one subject once.\n  - That subject is requested twice and ends with a `true` determination.\n  - Its usage shows attempts 2, failed_attempts 1 and retries 1.\n  - The other five assessments have one attempt each, and all six completed.\n  - Peak stays at or below 2.\n  - The retry timing and backoff details belong to `requirements.authoring.provider_backoff`, which is cited here and not reassessed.\n- **Every other provider error goes through the ordinary failure path:**\n  - `fn[failed_assessment_keeps_other_results_and_reports_failure]` has one model rejection. It asserts a non-zero exit, no evidence for that subject, and one failed usage record with attempts 1 and retries 0. The other results are kept and the diagnostic is reported.\n  - `fn[a_denied_mandatory_input_aborts_only_its_assessment]` checks a related failure that stays inside its own assessment.\n\n**Async tasks on a fixed worker pool:** I read `src/main.rs#fn[main]`. It creates the runtime with a plain `tokio::runtime::Runtime::new()`, and `run_batch` spawns the assessments onto a `JoinSet`. That runtime construction is a pass-through default with no conditional or transformation, so it needs no dedicated test. The overlap and peak assertions above exercise asynchronous tasks end to end.\n\nNo acknowledgments apply.",
   "references": "da5efc360b3776f92b4eab5192cf38f0094d0c29ab6901b00f51eaf11682000e",
   "inputs": [
     {
@@ -56,7 +56,7 @@
         "backoff for the next completion request, and interruption MUST cancel both the",
         "wait and further retries.",
         "",
-        "Each attempt MUST be recorded under {cite}`requirements.authoring.usage_requests`.",
+        "Each attempt MUST count toward the assessment totals under {cite}`requirements.authoring.usage_requests`.",
         "Hidden SDK retries MUST remain disabled so the harness can account for attempts.",
         "Transient retries MUST NOT be reported as finished judgments or terminal",
         "assessment errors while recovery is still in progress. Pending inputs MUST be",
@@ -83,17 +83,17 @@
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[concurrent_assessments_keep_their_own_continuing_histories]",
-      "hash": "2e8be206ea40712be5d55f803dd59cbe4789fcbffc43a70fc98802a795d6ed89"
+      "hash": "3b2c3d51128f36eb4b7af67232316f5af8d25d7cde1dec2041ef8ac0a552fd79"
     },
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[throttled_assessment_retries_within_itself_while_others_proceed]",
-      "hash": "a15355a3a0c3fa38fa412c66f51269f8d78ab362cc825da3470093f13049b046"
+      "hash": "ee8aa200c1764db7de7d1afd41f79f65a07535cfe59bfc2ecd162729bb8d5206"
     },
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[failed_assessment_keeps_other_results_and_reports_failure]",
-      "hash": "2f783bcf3d834f9ccc927e6516b705adfa4853ea5b72df0ad38c0bb69e1d3cd1"
+      "hash": "cd9a481bd89685e0b7160c54ec226008e038e4847dd6c35a97534128dd1bd563"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -103,7 +103,7 @@
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[a_denied_mandatory_input_aborts_only_its_assessment]",
-      "hash": "7b6d9441e0f8502fc741f1c8d5d039ebe779d0dee503fc13ffb44c80e51133ea"
+      "hash": "d9157619c97e291b1a269126850be87ca2eb863d5890aed80ad4fa1e462a7374"
     },
     {
       "file": "tests/configuration.rs",
@@ -119,11 +119,39 @@
       "file": "tests/configuration.rs",
       "item": "fn[workspace_configurations_accept_validate_and_override_concurrency]",
       "hash": "8f26077cf1963093fb58bb543ac945427f6513efcaa412ef009d1dcedd6bb34c"
+    },
+    {
+      "file": "src/main.rs",
+      "item": "fn[main]",
+      "hash": "c8bb0bd2ba7bc0594725702c8ca176ff5a854077c1b930ca7de7018541ad534a"
     }
   ],
   "format_version": 1,
-  "review_version": "*",
+  "review_version": "habeas-review-v1",
   "dependencies": [
+    {
+      "Node": [
+        {
+          "ReferenceSet": "requirements.authoring.concurrency"
+        },
+        {
+          "scheme": "habeas-reference-set-v1",
+          "value": "da5efc360b3776f92b4eab5192cf38f0094d0c29ab6901b00f51eaf11682000e"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.authoring.concurrency"
+        },
+        "Mandatory",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "2e14faeb76dadf565ebd38d86f6390276a5dde2299a8a50e83fd9b5cd721ad3d"
+        }
+      ]
+    },
     {
       "Node": [
         {
@@ -142,7 +170,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "3d3e5a9287548ea0dcdad8558946ab6be3bdeaaa28e9694b9520faf30c3ea2c7"
+          "value": "094a1c1082cd15150a46703d3d023eebf82dbd16058264f9b17254777e7c21b0"
         }
       ]
     },
@@ -158,8 +186,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "711b69b6f240dabc315432711d242de09a7f31d37c6b405f8c851d34a3a6fce3"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "baeccd89c75573c80e9f49a32cbc764cba1e5a4d08eece25fc5300ca9f8b4aea"
         }
       ]
     },
@@ -175,8 +203,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "8c37a2b2356dd37561b70ed548fcee3f6c7bbbba2ffdf8ad77714758aad121e2"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "d5fe7916120b5e614107b2a33a2e72ace34608dd79154f34093b64929a56c8b3"
         }
       ]
     },
@@ -192,8 +220,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "6150d563be9ec6cbddd019fe00ced39f223f313c921657c77e85a8ac572ff6d0"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "a5101e530004e2e082992ebac366ba931366d77b57a2e7b030e7043b947dc141"
         }
       ]
     },
@@ -209,8 +237,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "e8293f2ec999061377dc381908cdbd39f65768fb0f27510b0ca2d102eb0c7502"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "3b2c3d51128f36eb4b7af67232316f5af8d25d7cde1dec2041ef8ac0a552fd79"
         }
       ]
     },
@@ -226,8 +254,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "b525faeeccfb7026482e85a9a2e8703b8247a956597de464e50333083afcbec6"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "ee8aa200c1764db7de7d1afd41f79f65a07535cfe59bfc2ecd162729bb8d5206"
         }
       ]
     },
@@ -243,8 +271,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "3818321d78328c9d5d4d03d5c1ebf90792a22c2fd5bc20e2669e84123eed2c49"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "cd9a481bd89685e0b7160c54ec226008e038e4847dd6c35a97534128dd1bd563"
         }
       ]
     },
@@ -260,8 +288,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "51fb42723e4e11cbd4f32e4dcc122ce4b3dcf9d19b64ebbf19026a4bcaede480"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "1a92f700ba506a8cb5b70bb00380535d3fc0b446fe4e267587e0dfc776617993"
         }
       ]
     },
@@ -277,8 +305,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "2a1684c3f082a058e769b4d6c87c7a28db8cacab57e84119a2234dbc1a19fe93"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "d9157619c97e291b1a269126850be87ca2eb863d5890aed80ad4fa1e462a7374"
         }
       ]
     },
@@ -294,8 +322,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "f339d98be0c892cb5a657e464e31baf3f93c4caeeefef81fb446636a06030444"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "7ca17bb2973b249554d2b3596889dd7011afaa21f69224953f6d065a40359724"
         }
       ]
     },
@@ -311,8 +339,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "31b445657af97da9147487f5974a790e3192cf631c8bc744339f81a45da73bf6"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "63eabea03cd37b19d8e7119a6b382cde0bfd165e4807445eeec5fcee30f6ae2e"
         }
       ]
     },
@@ -328,19 +356,25 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "e4a7acd9986ca3bfbc9e26309b8a239867d2f36fa259f16e785be5ffa073b309"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "8f26077cf1963093fb58bb543ac945427f6513efcaa412ef009d1dcedd6bb34c"
         }
       ]
     },
     {
-      "OutgoingEdges": [
+      "Node": [
         {
-          "Requirement": "requirements.authoring.concurrency"
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/main.rs"
+            },
+            "selector": "fn[main]"
+          }
         },
         {
-          "scheme": "habeas-reference-set-v1",
-          "value": "da5efc360b3776f92b4eab5192cf38f0094d0c29ab6901b00f51eaf11682000e"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b23a272898d6ef9d383eef0b0ae85522a942c54925a687228325b9d6e10c0b72"
         }
       ]
     }

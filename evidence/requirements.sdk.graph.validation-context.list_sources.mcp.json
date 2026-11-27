@@ -1,8 +1,8 @@
 {
-  "requirement": "Call `list_sources` with an empty object to list the project, or supply\n`prefix` to select a file or directory. Each page contains a `files` array of complete paths.\n\n```text\nlist_sources({prefix?: string})\n  -> {files: string[], next?: UUID}\n```",
+  "requirement": "List visible file-root node references under {cite}`requirements.sdk.graph.validation-context.node_reference`.\n\n```text\nlist_sources({}) -> {files: {node: NodeId, data: NodeData}[], next?: UUID}\n```",
   "determination": true,
-  "rationale": "The three marked tests together cover each obligation in `requirements.sdk.graph.validation-context.list_sources.mcp`.\n\n- **Empty object lists the project.** `crates/trust-but-verify/src/agent/project_sources.rs#mod[tests]/fn[listing_continuations_return_complete_paths_from_the_original_listing]` dispatches `list_sources` with `{}` over 200 long-named files. It asserts that `next` is a string and then follows `get_next_page` to the end. Finally it asserts that the accumulated `files` equal the full expected list of complete paths. A file added after the first call does not appear, which also checks that continuations come from the original listing.\n- **`prefix` selecting a file.** `crates/trust-but-verify/src/agent/project_sources.rs#mod[tests]/fn[fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies]` calls `list_sources` with `prefix: \"source.txt\"`. It asserts the whole result is exactly `{\"files\":[\"source.txt\"]}`. That also checks the shape: `files` is an array of strings, and `next` is omitted when there is no further page.\n- **`prefix` selecting a directory.** `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[supplied_agent_uses_attached_project_tools_in_both_configuration_orders]` sends `list_sources` with `prefix: \"visible\"` through the real tool path of a configured agent. It asserts that `files` equals `[\"visible/selected.txt\"]`. Complete paths are returned, not names relative to the prefix. Files outside the directory (`alpha.txt` and others) and the gitignored file are absent, so the prefix is actually applied. The test runs in both configuration orders.\n- **Optional `next` and its type.** The continuation test requires `next` to be a string, and it is passed back as `uuid` to `get_next_page`. The single-file test shows `next` is absent on a final or only page.\n\nI found no input class or output obligation of this requirement that lacks a test with an assertion.",
-  "references": "0e841c15afc712a709d03fac3f9998547394e5987e8f6f23df811c23fcf195a6",
+  "rationale": "The subject is the MCP-facing contract of `list_sources`. It takes `{}` and returns `{files: {node, data}[], next?: UUID}`. The entries are file-root node references as defined by `node_reference`: `node` is an unsigned integer ID, and `data` is the JSON form of `NodeData`.\n\nI judged this from the supplied test text only. I did not request implementation source.\n\n**Coverage by obligation**\n\n- **Call shape and tool exposure.**\n  - `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` has the mock model call `list_sources` with `{}` through the real tool dispatch. It asserts that `list_sources` is in the advertised tool list, in both independent executions.\n  - `crates/trust-but-verify/src/agent/project_sources.rs#mod[tests]/fn[listing_continuations_return_complete_paths_from_the_original_listing]` dispatches `list_sources` with `json!({})`.\n- **Entry shape.**\n  - The configured-agent test asserts that every listing entry has a `node` that is a u64 and a `data.id` that is a u64.\n  - The project_sources test deserializes each `entry[\"node\"]` as `NodeId<Project>`. It asserts that `entry[\"data\"]` equals the cache's `node_data` for that node, so the `data` JSON matches the domain's JSON representation.\n- **File-root references.**\n  - The project_sources test asserts that the collected node list equals the `intern_node(\"{file}#\")` identities for each expected file, in order. These are file-root nodes with an empty selector.\n  - The configured-agent test feeds a listing entry unchanged into `read_node`. It resolves to the file's snapshot text, which shows the entry is a usable node address. It also asserts that only the file-root identity (`visible/selected.txt` with an empty selector) was resolved.\n- **Visible files only.**\n  - The project_sources test creates an `empty_directory` that is not listed. Its exact-equality assertion would catch a listing that included it.\n  - The configured-agent test sets up a `.gitignore` and a `visible-old` directory, but it does not assert that the ignored file is absent from the listing. Exclusion of ignored files is the job of `list_sources.behavior`, not this MCP-shape requirement.\n- **Optional `next` UUID.**\n  - The project_sources test asserts that `next` is a string on the first page. It follows it with `get_next_page` and stops when `next` is absent.\n  - It asserts that the concatenated pages equal the complete original listing. A file added after the first call does not appear, so the continuation is not re-listed.\n  - It asserts that `first.dependencies` and each page's `dependencies` are empty, so listing enters no evidence.\n\nI found no gaps against the subject's text. Both tests carry `{test}` references to the subject.",
+  "references": "fb1f3d5434a2f3a43a7b4921aea1f9bc735013ee175b4e39362ba3cd970d0147",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.validation-context.list_sources.mcp",
@@ -11,30 +11,44 @@
       ],
       "text": [
         ":::{req} list_sources.mcp",
-        "Call `list_sources` with an empty object to list the project, or supply",
-        "`prefix` to select a file or directory. Each page contains a `files` array of complete paths.",
+        "List visible file-root node references under {cite}`requirements.sdk.graph.validation-context.node_reference`.",
         "",
         "```text",
-        "list_sources({prefix?: string})",
-        "  -> {files: string[], next?: UUID}",
+        "list_sources({}) -> {files: {node: NodeId, data: NodeData}[], next?: UUID}",
         "```",
         ":::"
       ]
     },
     {
+      "requirements": "requirements.sdk.graph.validation-context.node_reference",
+      "matches": [
+        "requirements.sdk.graph.validation-context.node_reference"
+      ],
+      "text": [
+        ":::{req} node_reference",
+        "The harness represents a `NodeId<D>` as an unsigned integer. Each built-in tool that accepts a node accepts the same top-level address fields, alongside its own arguments (such as an edge `label`). `NodeAddress` in tool signatures denotes these alternatives:",
+        "",
+        "| Address fields | Resolution |",
+        "| --- | --- |",
+        "| `node` | Look up the assigned ID in the domain's cache. |",
+        "| `path`, optional `location` | Resolve the project-relative file within the domain's visible sources. `location` is its outline selector and defaults to the empty selector for the file root. Resolve the item, map its `OutlineData` through `Domain::source_node`, and intern the resulting identity. |",
+        "| `data` | Deserialize the JSON value as `D::NodeData` and intern it in the domain's cache. |",
+        "",
+        "For domains using the agent harness, the tool schema describes `data` using the domain’s JSON schema for `D::NodeData`. The harness uses the same JSON representation when returning and accepting an identity.",
+        "",
+        "Resolving an address is discovery. The requested operation determines which observations enter evidence. Invalid addresses, unavailable files, and unknown selectors produce tool errors before the requested operation runs.",
+        ":::"
+      ]
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
-      "item": "mod[tests]/fn[supplied_agent_uses_attached_project_tools_in_both_configuration_orders]",
-      "hash": "e6ecd2d9b1420224c8370ee1ea1a9e103148a8a605d3a8648afdc02bcaf44e22"
+      "item": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]",
+      "hash": "1a1a252964872efc8573135d5fb391176e8a78b08c0d975f77b8072c6591f9e8"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[listing_continuations_return_complete_paths_from_the_original_listing]",
-      "hash": "80a3ad990d2e2be97c98fdbca678e310fa91336d72fff5b2b46597045795fdbd"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
-      "item": "mod[tests]/fn[fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies]",
-      "hash": "0643b397550aaf4ad2cb88164f43a54f6bf96b8866d6cd557aa5758827925d6a"
+      "hash": "3a77a5f68bc3616b12a38c7d1c1195743369a01f0af6cc1c643b4dc28ef1f63f"
     }
   ],
   "format_version": 1,
@@ -47,7 +61,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "0e841c15afc712a709d03fac3f9998547394e5987e8f6f23df811c23fcf195a6"
+          "value": "fb1f3d5434a2f3a43a7b4921aea1f9bc735013ee175b4e39362ba3cd970d0147"
         }
       ]
     },
@@ -59,7 +73,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "fc41c581a013dbe4b45482383b61abea9923a9245b833bfacc8910e91e0cac21"
+          "value": "c7d34a5dd75876d6d1407eb6786987f3b05c0da1ad9bc0366c644193c81d35ac"
         }
       ]
     },
@@ -70,7 +84,18 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "8d336f7a4461aecef7f64739fb1234d5be2a5de8961436987c1bd2cdceaa3aeb"
+          "value": "198608841f7aad4f051fcf73e420c089cc69118454c3fe1cc76ae5e0581347fb"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.sdk.graph.validation-context.node_reference"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "c620d2dfecfa08991060b45c3970a5375bf7d3f87bd288f41705003578ec3546"
         }
       ]
     },
@@ -82,12 +107,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/configured.rs"
             },
-            "selector": "mod[tests]/fn[supplied_agent_uses_attached_project_tools_in_both_configuration_orders]"
+            "selector": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]"
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "467913c7cc66e32119d121058d00ba59f2117e5869e13e10d57a1c60b6aeda9b"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "f9d8fbc31acd81ef8aa636e21fe02910790b3ec81c15b618e8fdb2b93a7a50de"
         }
       ]
     },
@@ -103,25 +128,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "bf524c5bfee229bd006d00a99245d94358c94f0cc6da12d368490656a4cd2372"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
-            },
-            "selector": "mod[tests]/fn[fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "c7c275851d98585a88c64f53d66e01f1008e02e2f779473f49dd7a545e217224"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "3a77a5f68bc3616b12a38c7d1c1195743369a01f0af6cc1c643b4dc28ef1f63f"
         }
       ]
     }

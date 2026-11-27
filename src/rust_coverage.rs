@@ -4,7 +4,6 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use crate::evidence::{Declaration, InspectionProgress};
-use crate::outline;
 use crate::reference_roles;
 
 /// The inspection phase label for Rust function coverage.
@@ -135,51 +134,33 @@ static TEST_ATTRIBUTE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::
         .expect("test attribute pattern")
 });
 
-// {impl}`requirements.references.coverage.tests`
-fn has_test_attribute(prefix: &str) -> bool {
-    let comment_ranges = comments(prefix);
-    let bytes = prefix.as_bytes();
-    let mut position = 0;
-    while position < bytes.len() {
-        if let Some(comment) = comment_ranges.iter().find(|range| range.start == position) {
-            position = comment.end;
-            continue;
-        }
-        match bytes[position] {
-            b'#' if TEST_ATTRIBUTE.is_match(&prefix[position..]) => return true,
-            b'r' | b'b' | b'c' => {
-                position = raw_string_end(bytes, position).unwrap_or(position + 1);
-            }
-            b'"' => position = quoted_end(bytes, position),
-            b'\'' => position = char_end(prefix, position).unwrap_or(position + 1),
-            _ => position += 1,
-        }
-    }
-    false
-}
-
 /// Test functions of a Rust source without a valid `{test}` reference, as
 /// `(node, line, name)`.
 // {impl}`requirements.references.coverage.tests`
 pub(crate) fn untested_tests(
     source: &str,
-    outline: &outline::Outline,
     definitions: &BTreeMap<String, Declaration>,
-) -> Vec<(usize, usize, String)> {
+) -> Result<Vec<(usize, usize, String)>, trust_but_verify::outline::OutlineError> {
+    use trust_but_verify::outline::{AttachmentKind, OutlineLang, languages::Rust};
+    let public = Rust.outline(source)?;
+    if let Some(error) = public.diagnostic {
+        return Err(error);
+    }
+    let items = crate::outline_items::OutlineItems::new(&public, source);
     // Only an explicit, valid `{test}` reference supplies a test obligation.
     let counts = |kind: crate::ReferenceKind, name: &str| {
         kind == crate::ReferenceKind::Test && covering_reference(kind, name, definitions)
     };
-    let mut tested = vec![false; outline.nodes.len()];
-    for comment in &outline.comments {
-        if reference_roles(&source[comment.byte_start..comment.byte_end], false)
+    let mut tested = vec![false; public.items.len()];
+    for comment in &items.comments {
+        if reference_roles(&source[comment.span.clone()], false)
             .iter()
             .any(|role| counts(role.kind, role.name))
         {
             tested[comment.owner] = true;
         }
     }
-    for fence in crate::fenced::comment_fences(source, outline) {
+    for fence in crate::fenced::comment_fences(source, &items, true) {
         if let Some(owner) = fence.owner
             && fence.closed
             && counts(fence.kind, &fence.name)
@@ -187,16 +168,23 @@ pub(crate) fn untested_tests(
             tested[owner] = true;
         }
     }
-    outline
-        .nodes
+    Ok(public
+        .items
         .iter()
         .enumerate()
-        .filter(|(index, node)| node.kind == "fn" && !tested[*index])
-        // Use attached byte ranges, so a same-line attribute belongs only to
-        // its following function, even when several items share a line.
-        .filter(|(_, node)| has_test_attribute(&source[node.source_start..node.byte_start]))
-        .filter_map(|(index, node)| Some((index, node.declaration_line, node.display_name()?)))
-        .collect()
+        .filter(|(index, item)| {
+            item.kind == "fn"
+                && !tested[*index]
+                && item.attachments.iter().any(|attachment| {
+                    attachment.kind == AttachmentKind::Annotation
+                        && TEST_ATTRIBUTE.is_match(&source[attachment.span])
+                })
+        })
+        .filter_map(|(index, item)| {
+            let name = item.name_span?;
+            Some((index, items.line_at(name.start), source[name].to_owned()))
+        })
+        .collect())
 }
 
 /// Whether a reference with role `kind` to `name` covers the item it belongs
@@ -349,9 +337,9 @@ pub(crate) fn validate_rust_functions(
                 continue;
             }
         };
-        match outline::parse_with(&outline::RUST_PROFILE, &source) {
-            Ok(outline) => {
-                for (_, line, name) in untested_tests(&source, &outline, definitions) {
+        match untested_tests(&source, definitions) {
+            Ok(tests) => {
+                for (_, line, name) in tests {
                     errors.push(format!("{label}:{line}: test function {name} has no {{test}} reference to a requirement or example"));
                 }
             }
@@ -484,6 +472,7 @@ mod tests {
 
     // {test}`requirements.references.coverage.tests`
     // {test}`requirements.references.procedure`
+    // {test}`requirements.references.outline_comments`
     #[test]
     fn test_functions_need_a_test_reference() {
         let source = concat!(
@@ -502,8 +491,13 @@ mod tests {
             "// {impl}`requirements.example`\n#[test] fn only_implemented() {}\n",
             "#[doc = \"a ] #[test] string\"] fn documented_helper() {}\n",
         );
-        let outline = crate::outline::parse_with(&crate::outline::RUST_PROFILE, source).unwrap();
-        let names: Vec<String> = super::untested_tests(source, &outline, &definitions())
+        let multiline = "#[test]\nfn\n    café() {}";
+        assert_eq!(
+            super::untested_tests(multiline, &definitions()).unwrap(),
+            [(1, 3, "café".into())]
+        );
+        let names: Vec<String> = super::untested_tests(source, &definitions())
+            .unwrap()
             .into_iter()
             .map(|(_, _, name)| name)
             .collect();
@@ -539,8 +533,8 @@ mod tests {
             "// {test}`requirements.case`\n#[test]\nfn traced() {}\n\n",
             "// {test}`requirements.orphan`\n#[test]\nfn orphan() {}\n",
         );
-        let outline = crate::outline::parse_with(&crate::outline::RUST_PROFILE, source).unwrap();
-        let names: Vec<String> = super::untested_tests(source, &outline, &definitions)
+        let names: Vec<String> = super::untested_tests(source, &definitions)
+            .unwrap()
             .into_iter()
             .map(|(_, _, name)| name)
             .collect();

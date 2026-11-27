@@ -123,22 +123,60 @@ impl Server {
                 });
                 before_reply();
                 let mut response = response;
-                if response == json!({"__finish_latest_search":true}) {
+                if response == json!({"__read_edge_target":true}) {
+                    let body = &requests.last().unwrap().body;
+                    let result: Value = serde_json::from_str(
+                        body["messages"].as_array().unwrap().last().unwrap()["content"]
+                            .as_str()
+                            .unwrap(),
+                    )
+                    .unwrap();
+                    response = reply(vec![call(
+                        "read",
+                        "read_node",
+                        json!({"node":result["targets"][0]}),
+                    )]);
+                }
+                if response == json!({"__keep_rationale":true}) {
+                    let messages = requests.last().unwrap().body["messages"]
+                        .as_array()
+                        .unwrap();
+                    let uuid = messages
+                        .iter()
+                        .filter(|m| m["role"] == "tool")
+                        .filter_map(|m| m["content"].as_str())
+                        .find_map(|s| {
+                            s.split_once("rationale set to exactly ")
+                                .and_then(|(_, s)| s.split_whitespace().next())
+                        })
+                        .expect("rationale correction");
+                    uuid::Uuid::parse_str(uuid).unwrap();
+                    response = reply(vec![call(
+                        "keep",
+                        "submit_result",
+                        json!({"result":{"determination":false,"rationale":uuid}}),
+                    )]);
+                }
+                if let Some(index) = response.get("__finish_search").and_then(Value::as_u64) {
                     let messages = requests.last().unwrap().body["messages"]
                         .as_array()
                         .unwrap();
                     let search = messages
                         .iter()
-                        .rev()
-                        .filter_map(|message| {
-                            serde_json::from_str::<Value>(message["content"].as_str()?).ok()
-                        })
-                        .find(|result| result.get("matches").is_some())
-                        .unwrap();
+                        .filter(|m| m["role"] == "tool")
+                        .filter_map(|m| serde_json::from_str::<Value>(m["content"].as_str()?).ok())
+                        .filter(|r| r.get("matches").is_some())
+                        .nth(index as usize)
+                        .expect("delivered search page");
+                    let used = if response["use_first"] == true {
+                        json!([search["matches"][0]["tag"]])
+                    } else {
+                        json!([])
+                    };
                     response = reply(vec![call(
                         "finish",
                         "finish_search",
-                        json!({"search_id":search["search_id"],"used":[]}),
+                        json!({"search_id":search["search_id"], "used":used}),
                     )]);
                 }
                 let status = response
@@ -295,22 +333,19 @@ fn reply(calls: Vec<Value>) -> Value {
 // {test}`requirements.authoring.fixme_inputs`
 // {test}`requirements.authoring.complete_initial_bundle`
 #[test]
+// {test}`requirements.authoring.no_line_numbers`
 fn implementation_discovery_has_no_text_or_evidence_until_the_model_requests_a_read() {
     let server = Server::start(vec![
         reply(vec![call(
             "locate",
-            "references",
-            json!({"selection": SUBJECT, "roles": ["impl"]}),
+            "outgoing_edges",
+            json!({"data":{"Requirement":SUBJECT},"label":"Implements"}),
         )]),
-        reply(vec![call(
-            "read",
-            "habeas",
-            json!({"file": "src/lib.rs", "item": "fn[ready]"}),
-        )]),
+        json!({"__read_edge_target":true}),
         reply(vec![call(
             "submit",
-            "submit_judgment",
-            json!({"determination": true, "rationale": "The tests check the requirement."}),
+            "submit_result",
+            json!({"result":{"determination": true, "rationale": "The tests check the requirement."}}),
         )]),
     ]);
     let fixture = Fixture::new(&server.endpoint);
@@ -333,7 +368,11 @@ fn implementation_discovery_has_no_text_or_evidence_until_the_model_requests_a_r
         serde_json::from_str(message["content"].as_str().unwrap()).unwrap()
     };
     let locations = tool_result(&requests[1]);
-    assert!(locations.to_string().contains("fn[ready]"), "{locations:#}");
+    assert_eq!(
+        locations.as_object().unwrap().keys().collect::<Vec<_>>(),
+        ["targets"]
+    );
+    assert_eq!(locations["targets"].as_array().unwrap().len(), 1);
     for text in [
         REQUIREMENT,
         "One acknowledged gap.",
@@ -344,15 +383,16 @@ fn implementation_discovery_has_no_text_or_evidence_until_the_model_requests_a_r
         assert!(!locations.to_string().contains(text), "{locations:#}");
     }
     let read = tool_result(&requests[2]);
-    assert!(read["input"]["text"].to_string().contains("pub fn ready()"));
-    assert_eq!(read["input"]["file"], "src/lib.rs");
-    assert_eq!(read["input"]["item"], "fn[ready]");
-    assert_eq!(
-        read["input"]["hash"],
-        habeas::outline_input(&fixture.project, "src/lib.rs", "fn[ready]").unwrap()["hash"]
-    );
+    assert!(read["text"].as_str().unwrap().contains("pub fn ready()"));
+    assert_eq!(read["file"], "src/lib.rs");
+    assert_eq!(read["selector"], "fn[ready]");
     let record: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
     let inputs = record["inputs"].as_array().unwrap();
+    assert!(
+        inputs
+            .contains(&habeas::outline_input(&fixture.project, "src/lib.rs", "fn[ready]").unwrap())
+    );
+    assert!(locations["targets"][0].is_u64());
     assert_eq!(
         inputs
             .iter()
@@ -360,7 +400,10 @@ fn implementation_discovery_has_no_text_or_evidence_until_the_model_requests_a_r
             .count(),
         1
     );
-    assert!(!fixture.usage()["inputs"].to_string().contains("references"));
+    assert_eq!(
+        fixture.usage()["provider_usage"]["tools"]["outgoing_edges"]["calls"],
+        1
+    );
 }
 
 // {test}`requirements.authoring.complete_initial_bundle`
@@ -382,42 +425,37 @@ fn implementation_discovery_has_no_text_or_evidence_until_the_model_requests_a_r
 // {test}`requirements.configuration.serialization`
 // {test}`requirements.ci.fixme_implementation_gap`
 // {test}`requirements.sdk.habeas.assessment_policy`
-// {test}`requirements.authoring.finish_search.empty`
-// {test}`requirements.authoring.finish_search.completion`
 #[test]
 // {test}`requirements.authoring.persistence`
 // {test}`requirements.authoring.reporting`
+// {test}`requirements.sdk.habeas.evidence_format`
 fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     let server = Server::start(vec![
         reply(vec![
-            call("list", "list_files", json!({})),
+            call("list", "list_sources", json!({})),
             call(
                 "search",
-                "ripgrep",
+                "search_text",
                 json!({"path":"extra.txt","pattern":"needle"}),
             ),
             call(
                 "read",
-                "habeas",
-                json!({"file":"extra.txt","line_start":10}),
+                "read_node",
+                json!({"path":"extra.txt","location":"line@36a3bca8a276"}),
             ),
             call(
                 "repeat",
-                "habeas",
-                json!({"file":"extra.txt","line_start":10}),
+                "read_node",
+                json!({"path":"extra.txt","location":"line@36a3bca8a276"}),
             ),
-            call(
-                "missing",
-                "habeas",
-                json!({"file":"absent.txt","line_start":1}),
-            ),
+            call("missing", "read_node", json!({"path":"absent.txt"})),
         ]),
-        json!({"__finish_latest_search":true}),
+        json!({"__finish_search":0}),
         reply(vec![call(
             "submit",
-            "submit_judgment",
-            json!({
-            "determination":{"FIXME":["example/app#125"]},"rationale":"SECRET_RATIONALE: `src/lib.rs#fn[ready]` documents the gap."}),
+            "submit_result",
+            json!({"result":{
+            "determination":{"FIXME":["example/app#125"]},"rationale":"SECRET_RATIONALE: `src/lib.rs#fn[ready]` documents the gap."}}),
         )]),
     ]);
     let fixture = Fixture::new(&server.endpoint);
@@ -452,7 +490,7 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
         REQUIREMENT,
         "SECRET_DEFINITION_TEXT",
         "fn ready_test()",
-        "You MUST end by calling submit_judgment",
+        "You MUST end by calling submit_result",
     ] {
         assert!(prompt.contains(text), "prompt missing {text}");
     }
@@ -468,16 +506,18 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     assert_eq!(
         tools,
         [
-            "ast_grep",
             "finish_search",
+            "get_next_page",
             "github",
-            "habeas",
-            "list_files",
-            "next_page",
-            "outline",
-            "references",
-            "ripgrep",
-            "submit_judgment"
+            "list_sources",
+            "lookup_requirements",
+            "outgoing_edges",
+            "outline_source",
+            "read_node",
+            "run_named_query",
+            "search_structure",
+            "search_text",
+            "submit_result"
         ]
     );
     let results = requests[1].body["messages"]
@@ -487,17 +527,33 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
         .filter(|message| message["role"] == "tool")
         .collect::<Vec<_>>();
     assert_eq!(results.len(), 5);
+    let result_json =
+        |i: usize| serde_json::from_str::<Value>(results[i]["content"].as_str().unwrap()).unwrap();
+    assert!(
+        result_json(0)["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|file| file["data"]["Source"]["resource"]["location"] == "extra.txt")
+    );
+    let hit = &result_json(1)["matches"][0];
+    assert!(hit["node"].is_u64());
+    assert_eq!(hit["selector"], result_json(2)["selector"]);
+    assert_eq!(hit["selector"], "line@36a3bca8a276");
+    assert!(hit["excerpt"].as_str().unwrap().contains("needle"));
     assert!(results.iter().any(|message| {
         message["content"]
             .as_str()
             .unwrap()
             .contains("SECRET_SOURCE_PAYLOAD")
     }));
-    assert!(
-        results
-            .iter()
-            .any(|message| message["content"].as_str().unwrap().contains("absent.txt"))
-    );
+    assert!(results.iter().any(|message| {
+        message["content"]
+            .as_str()
+            .unwrap()
+            .to_lowercase()
+            .contains("no such file")
+    }));
 
     let evidence: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
     assert_eq!(
@@ -516,6 +572,13 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
             .any(|input| input["file"] == "src/lib.rs" && input["item"] == "fn[ready_test]"),
         "{inputs:#?}"
     );
+    assert!(!evidence.to_string().contains("SECRET_SOURCE_PAYLOAD"));
+    for input in inputs.iter().filter(|input| input.get("file").is_some()) {
+        assert!(
+            input.get("text").is_none() && input["hash"].is_string(),
+            "{input}"
+        );
+    }
     // The acknowledgment reaches the model as metadata, without the
     // containing implementation. Its body is protected by the reference set.
     assert!(prompt.contains(":github: example/app#125"));
@@ -569,7 +632,7 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     // is recorded once, by selector and hash only.
     assert_eq!(
         extra,
-        habeas::outline_inputs_for_lines(&fixture.project, "extra.txt", 10, 12)
+        habeas::outline_inputs_for_lines(&fixture.project, "extra.txt", 6, 6)
             .unwrap()
             .iter()
             .collect::<Vec<_>>(),
@@ -590,55 +653,73 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     assert_eq!(usage["outcome"], "completed");
     assert_eq!(usage["determination"], "FIXME");
     assert_eq!(usage["evidence_written"], true);
-    assert_eq!(usage["request_count"], 3);
-    assert_eq!(usage["tool_call_count"], 7);
-    assert_eq!(usage["tool_calls"]["habeas"], 3);
-    assert_eq!(usage["tool_failures"]["habeas"], 1);
+    assert_eq!(usage["provider_usage"]["attempts"], 3);
+    assert_eq!(usage["provider_usage"]["tools"]["read_node"]["calls"], 3);
+
     // The directory listing counts as a tool call but is not an input.
-    assert_eq!(usage["tool_calls"]["list_files"], 1);
-    assert_eq!(usage["tool_calls"]["ripgrep"], 1);
-    assert_eq!(usage["tool_calls"]["finish_search"], 1);
-    let usage_inputs = usage["inputs"].as_array().unwrap();
-    assert!(
-        !usage_inputs
-            .iter()
-            .any(|input| input["origin"] == "list_files"),
-        "{usage_inputs:?}"
+    assert_eq!(usage["provider_usage"]["tools"]["list_sources"]["calls"], 1);
+    assert_eq!(usage["provider_usage"]["tools"]["search_text"]["calls"], 1);
+    assert_eq!(
+        usage["provider_usage"]["tools"]["finish_search"]["calls"],
+        1
     );
-    // Search snippets count toward usage, without becoming evidence inputs.
-    assert!(
-        usage_inputs.iter().any(|input| input["origin"] == "ripgrep"
-            && input["kind"] == "search"
-            && input["bytes"].as_u64().unwrap() > 0
-            && input["lines"].as_u64().unwrap() > 0),
-        "{usage_inputs:?}"
+    let usage_stats = &usage["provider_usage"];
+    let opening = requests[0].body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|m| m["content"].as_str()?.split_once("# Mandatory inputs"))
+        .unwrap()
+        .1
+        .trim_start();
+    let initial = serde_json::Deserializer::from_str(opening)
+        .into_iter::<Vec<Value>>()
+        .next()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        usage_stats["prepared_inputs"],
+        initial.len() + result_json(1)["matches"].as_array().unwrap().len() + 2
     );
-    assert!(
-        usage_inputs
-            .iter()
-            .any(|input| input["origin"] == "habeas" && input["unique"] == true),
-        "{usage_inputs:?}"
+    let finished = requests[2].body["messages"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()["content"]
+        .as_str()
+        .unwrap();
+    assert_eq!(
+        usage_stats["tools"]["finish_search"]["result_bytes"],
+        finished.len()
     );
-    assert_eq!(usage["tokens"]["input"], 33);
-    assert_eq!(usage["tokens"]["output"], 21);
-    assert_eq!(usage["tokens"]["complete"], true);
-    assert!(
-        usage["inputs"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|input| input["origin"] == "habeas"
-                && input["unique"] == false
-                && input["sent_in_request"] == 1)
+    assert_eq!(
+        usage_stats["delivered_inputs"],
+        usage_stats["prepared_inputs"]
     );
-    assert!(
-        usage["inputs"]
-            .as_array()
-            .unwrap()
+    let tools = &usage["provider_usage"]["tools"];
+    for (name, range) in [
+        ("list_sources", 0..1),
+        ("search_text", 1..2),
+        ("read_node", 2..5),
+    ] {
+        let bytes: usize = results[range.clone()]
             .iter()
-            .any(|input| input["origin"] == "mandatory"
-                && input["kind"] == "definition"
-                && input["bytes"].as_u64().unwrap() > 0)
+            .map(|message| message["content"].as_str().unwrap().len())
+            .sum();
+        assert_eq!(
+            tools[name],
+            json!({"calls": range.len(), "result_bytes": bytes})
+        );
+    }
+    assert_eq!(
+        tools["submit_result"],
+        json!({"calls": 1, "result_bytes": 0})
+    );
+    assert_eq!(usage["provider_usage"]["input_tokens"]["reported"], 33);
+    assert_eq!(usage["provider_usage"]["output_tokens"]["reported"], 21);
+    assert_eq!(
+        usage["provider_usage"]["input_tokens"]["missing_attempts"],
+        0
     );
     let serialized = usage.to_string();
     for secret in [
@@ -682,8 +763,8 @@ fn acknowledged_empty_input_boundary_is_explained_and_accepted() {
     let rationale = "`src/lib.rs#fn[ready_test]` checks nonempty input but omits the required empty-string boundary. The acknowledgment tracks that test gap as example/app#125.";
     let server = Server::start(vec![reply(vec![call(
         "submit",
-        "submit_judgment",
-        json!({"determination":{"FIXME":["example/app#125"]},"rationale":rationale}),
+        "submit_result",
+        json!({"result":{"determination":{"FIXME":["example/app#125"]},"rationale":rationale}}),
     )])]);
     let fixture = Fixture::new(&server.endpoint);
     common::coverage_setup(&fixture.project);
@@ -737,8 +818,8 @@ fn acknowledged_empty_input_boundary_is_explained_and_accepted() {
 fn authoring_uses_nearest_workspace_configuration_without_a_user_file() {
     let server = Server::start(vec![reply(vec![call(
         "submit",
-        "submit_judgment",
-        json!({"determination":true,"rationale":"The supplied sources support the subject."}),
+        "submit_result",
+        json!({"result":{"determination":true,"rationale":"The supplied sources support the subject."}}),
     )])]);
     let fixture = Fixture::new(&server.endpoint);
     fs::remove_file(fixture.config.join("habeas/config.toml")).unwrap();
@@ -800,11 +881,12 @@ fn authoring_uses_nearest_workspace_configuration_without_a_user_file() {
 // {test}`requirements.authoring.invocation`
 // {test}`requirements.authoring.configuration`
 #[test]
+// {test}`requirements.authoring.configuration_precedence`
 fn an_explicit_configuration_selects_the_nondefault_workspace_profile() {
     let server = Server::start(vec![reply(vec![call(
         "submit",
-        "submit_judgment",
-        json!({"determination":true,"rationale":"The supplied sources support the subject."}),
+        "submit_result",
+        json!({"result":{"determination":true,"rationale":"The supplied sources support the subject."}}),
     )])]);
     let fixture = Fixture::new(&server.endpoint);
     fs::remove_file(fixture.config.join("habeas/config.toml")).unwrap();
@@ -852,73 +934,311 @@ fn version_only_configurations_cannot_author_needed_evidence() {
 }
 
 // {test}`requirements.authoring.read_denial`
-// {test}`requirements.authoring.file_discovery`
-// {test}`requirements.authoring.text_search`
 // {test}`requirements.authoring.structural_search`
 // {test}`requirements.authoring.source_tools`
 // {test}`requirements.authoring.persistence`
 // {test}`requirements.authoring.usage_storage`
 // {test}`requirements.authoring.usage_requests`
-// {test}`requirements.authoring.read_denial.untracked`
+// {test}`requirements.authoring.read_denial`
+// {test}`requirements.authoring.tool_descriptions.special_cases`
+#[test]
+// {test}`requirements.authoring.no_line_numbers`
+// {test}`requirements.authoring.source_tools`
+// {test}`requirements.authoring.tool_descriptions.common_case`
+fn explicit_ignored_reads_return_an_error_and_the_assessment_continues() {
+    let tool = "read_node";
+    let arguments = json!({"path":"untracked.txt"});
+    let server = Server::start(vec![
+        reply(vec![
+            call("denied", tool, arguments),
+            call("missing", tool, json!({"path":"missing.rs"})),
+            call("malformed", tool, json!({"node":"wrong"})),
+            call("listing", "list_sources", json!({})),
+            call("text", "search_text", json!({"pattern":"hidden source"})),
+            call(
+                "structural",
+                "search_structure",
+                json!({"language":"rust","rule":{"rule":{"pattern":"hidden()"}}}),
+            ),
+        ]),
+        json!({"__finish_search":0}),
+        json!({"__finish_search":1}),
+        reply(vec![call(
+            "submit",
+            "submit_result",
+            json!({"result":{"determination": true, "rationale": "The tracked sources support it."}}),
+        )]),
+    ]);
+    let fixture = Fixture::new(&server.endpoint);
+    for args in [["init", "--quiet"], ["add", "."]] {
+        let git = Command::new("git")
+            .current_dir(&fixture.project)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(git.status.success(), "{git:?}");
+    }
+    fs::write(fixture.project.join("untracked.txt"), "hidden source\n").unwrap();
+    fs::write(fixture.project.join(".gitignore"), "untracked.txt\n").unwrap();
+    fs::write(
+        fixture.project.join("hidden.rs"),
+        "fn hidden_code() { hidden(); }\n",
+    )
+    .unwrap();
+    fs::write(
+        fixture.project.join(".gitignore"),
+        "untracked.txt\nhidden.rs\n",
+    )
+    .unwrap();
+    let output = fixture.run(&["author", SUBJECT, "--stdout"]);
+    assert!(output.status.success(), "{tool}: {output:?}");
+    let requests = server.finish();
+    assert_eq!(requests.len(), 4, "{tool}");
+    let results: Vec<_> = requests[1].body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["role"] == "tool")
+        .map(|m| m["content"].as_str().unwrap())
+        .collect();
+    assert_eq!(results.len(), 6);
+    let second = results[0];
+    assert!(
+        results[1].contains("missing.rs")
+            && (results[1].contains("No such file")
+                || results[1].contains("not found")
+                || results[1].contains("cannot find")),
+        "{results:?}"
+    );
+    assert!(results[2].contains("invalid node ID"), "{}", results[2]);
+    for text in &results[..3] {
+        assert!(!text.contains("line 1") && !text.contains(":1:"), "{text}");
+    }
+    assert!(!results[3].contains("untracked.txt") && !results[3].contains("hidden.rs"));
+    for text in &results[4..] {
+        assert_eq!(
+            serde_json::from_str::<Value>(text).unwrap()["matches"],
+            json!([])
+        );
+    }
+    let descriptions = requests[0].body["tools"].as_array().unwrap();
+    for name in ["github", "lookup_requirements", "run_named_query"] {
+        let d = descriptions
+            .iter()
+            .find(|x| x["function"]["name"] == name)
+            .unwrap()["function"]["description"]
+            .as_str()
+            .unwrap();
+        let expected: &[&str] = match name {
+            "lookup_requirements" => &[
+                "Find requirement and example nodes by optional selection, a name or glob",
+                "Pass it to read_node for the declaration or outgoing_edges for its references",
+                "requirements.sdk.**",
+                "node and data",
+                "read_node",
+                "outgoing_edges",
+            ],
+            "run_named_query" => &[
+                "Use a declared query to inspect the sites of a distributed requirement",
+                "Supply query as <requirement>/<query>, for example requirements.parser/functions",
+                "node and data",
+                "read_node",
+            ],
+            "github" => &[
+                "Inspect a project issue when reviewing an acknowledgment",
+                "Supply issue as owner/repository#number, for example org/project#42",
+                "title, opening post and state",
+            ],
+            _ => unreachable!(),
+        };
+        for phrase in expected {
+            assert!(d.contains(phrase), "{d}");
+        }
+        for rare in ["excluded", "redaction", "paging", "failure"] {
+            assert!(!d.contains(rare), "{d}");
+        }
+    }
+    assert!(
+        second.contains("untracked.txt") && second.contains("excluded"),
+        "{tool}: {second}"
+    );
+    assert!(!second.contains("hidden source"), "{tool}: {second}");
+    let evidence = String::from_utf8_lossy(&output.stdout);
+    assert!(!evidence.contains("untracked"), "{tool}: {evidence}");
+    let usage = fixture.usage();
+    assert_eq!(usage["outcome"], "completed", "{tool}: {usage}");
+    assert_eq!(usage["provider_usage"]["attempts"], 4, "{tool}: {usage}");
+}
+
 // {test}`requirements.authoring.read_denial`
 #[test]
-fn explicit_untracked_reads_return_an_untracked_error_and_the_assessment_continues() {
-    for (tool, arguments) in [
-        ("habeas", json!({"file":"untracked.txt", "line_start":1})),
-        (
-            "ripgrep",
-            json!({"path":"untracked.txt", "pattern":"hidden"}),
+fn explicit_source_addresses_report_exclusion_reasons_across_agent_tools() {
+    let mut calls = vec![
+        call(
+            "metadata",
+            "read_node",
+            json!({"data":{"Source":{"resource":{"scheme":"repo","location":".git/config"},"selector":""}}}),
         ),
-        (
-            "ast_grep",
-            json!({"path":"untracked.txt", "language":"rust", "rule":{"rule":{"pattern":"hidden"}}}),
+        call("escape", "outline_source", json!({"path":"../outside.rs"})),
+        call(
+            "child",
+            "read_node",
+            json!({"path":"ignored.rs","location":"fn[item]"}),
         ),
-        ("list_files", json!({"path":"untracked-directory"})),
-    ] {
-        let server = Server::start(vec![
-            reply(vec![call("denied", tool, arguments)]),
-            reply(vec![call(
-                "submit",
-                "submit_judgment",
-                json!({"determination": true, "rationale": "The tracked sources support it."}),
-            )]),
-        ]);
-        let fixture = Fixture::new(&server.endpoint);
-        for args in [["init", "--quiet"], ["add", "."]] {
-            let git = Command::new("git")
-                .current_dir(&fixture.project)
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(git.status.success(), "{git:?}");
-        }
-        fs::write(fixture.project.join("untracked.txt"), "hidden source\n").unwrap();
-        fs::create_dir(fixture.project.join("untracked-directory")).unwrap();
-        fs::write(
-            fixture.project.join("untracked-directory/hidden.txt"),
-            "hidden source\n",
-        )
-        .unwrap();
-
-        let output = fixture.run(&["author", SUBJECT, "--stdout"]);
-        assert!(output.status.success(), "{tool}: {output:?}");
-        // The model was told the path is untracked and how to fix it, and
-        // the file was neither delivered nor recorded.
-        let requests = server.finish();
-        assert_eq!(requests.len(), 2, "{tool}");
-        let second = requests[1].body.to_string();
+        call(
+            "edges",
+            "outgoing_edges",
+            json!({"path":"ignored.rs","label":"Implements"}),
+        ),
+        call("argument", "outline_source", json!({"path":false})),
+    ];
+    #[cfg(unix)]
+    calls.push(call(
+        "symlink",
+        "read_node",
+        json!({"path":"outside-link.rs"}),
+    ));
+    let server = Server::start(vec![
+        reply(calls),
+        reply(vec![call(
+            "submit",
+            "submit_result",
+            json!({"result":{"determination":true,"rationale":"Existing tests check readiness."}}),
+        )]),
+    ]);
+    let fixture = Fixture::new(&server.endpoint);
+    fs::create_dir_all(fixture.project.join(".git")).unwrap();
+    fs::write(fixture.project.join(".git/config"), "do not disclose").unwrap();
+    fs::write(fixture.project.join(".gitignore"), "ignored.rs\n").unwrap();
+    fs::write(fixture.project.join("ignored.rs"), "fn item() {}").unwrap();
+    #[cfg(unix)]
+    {
+        let outside = fixture.temp.path().join("outside.rs");
+        fs::write(&outside, "do not disclose").unwrap();
+        std::os::unix::fs::symlink(outside, fixture.project.join("outside-link.rs")).unwrap();
+    }
+    let output = fixture.run(&["author", SUBJECT]);
+    assert!(output.status.success(), "{output:?}");
+    let requests = server.finish();
+    let messages: Vec<_> = requests[1].body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["role"] == "tool")
+        .map(|m| m["content"].as_str().unwrap())
+        .collect();
+    for (index, (path, reason)) in [
+        (".git/config", "excluded"),
+        ("../outside.rs", "relative"),
+        ("ignored.rs", "excluded"),
+        ("ignored.rs", "excluded"),
+        ("path", "string"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let message = messages[index];
         assert!(
-            second.contains("is untracked") || second.contains("untracked, so"),
-            "{tool}: {second}"
+            message.contains(path) && message.contains(reason),
+            "{message}"
         );
-        assert!(second.contains("git add"), "{tool}: {second}");
-        assert!(!second.contains("hidden source"), "{tool}: {second}");
-        let evidence = String::from_utf8_lossy(&output.stdout);
-        assert!(!evidence.contains("untracked"), "{tool}: {evidence}");
-        let usage = fixture.usage();
-        assert_eq!(usage["outcome"], "completed", "{tool}: {usage}");
-        assert_eq!(usage["request_count"], 2, "{tool}: {usage}");
-        assert_eq!(usage["tool_failures"][tool], 1, "{tool}: {usage}");
+    }
+    #[cfg(unix)]
+    assert!(
+        messages[5].contains("outside-link.rs")
+            && messages[5].contains("outside the selected root"),
+        "{}",
+        messages[5]
+    );
+    let evidence = fs::read_to_string(&fixture.evidence).unwrap();
+    for path in [
+        ".git/config",
+        "../outside.rs",
+        "outside-link.rs",
+        "ignored.rs",
+        "do not disclose",
+    ] {
+        assert!(!evidence.contains(path));
+    }
+}
+
+// {test}`requirements.authoring.no_line_numbers`
+#[test]
+fn source_tool_results_use_selectors_and_keep_locations_inside_quoted_code() {
+    let server = Server::start(vec![
+        reply(vec![
+            call(
+                "read",
+                "read_node",
+                json!({"path":"quoted.rs","location":"fn[kept]"}),
+            ),
+            call("outline", "outline_source", json!({"path":"quoted.rs"})),
+            call(
+                "text",
+                "search_text",
+                json!({"path":"quoted.rs","pattern":"src/lib.rs:123"}),
+            ),
+            call(
+                "ast",
+                "search_structure",
+                json!({"path":"quoted.rs","language":"rust","rule":{"rule":{"pattern":"consume($A)"}}}),
+            ),
+            call(
+                "typo",
+                "read_node",
+                json!({"path":"quoted.rs","location":"fn[missing]"}),
+            ),
+            call(
+                "invalid",
+                "outline_source",
+                json!({"path":"quoted.rs","location":"fn["}),
+            ),
+        ]),
+        json!({"__finish_search":0}),
+        json!({"__finish_search":1}),
+        reply(vec![call(
+            "submit",
+            "submit_result",
+            json!({"result":{"determination":true,"rationale":"The tests cover the requirement."}}),
+        )]),
+    ]);
+    let fixture = Fixture::new(&server.endpoint);
+    fs::write(
+        fixture.project.join("quoted.rs"),
+        "fn kept() { consume(\"src/lib.rs:123\"); }\n",
+    )
+    .unwrap();
+    let output = fixture.run(&["author", SUBJECT]);
+    assert!(output.status.success(), "{output:?}");
+    let requests = server.finish();
+    let messages: Vec<_> = requests[1].body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["role"] == "tool")
+        .map(|m| m["content"].as_str().unwrap())
+        .collect();
+    let position=regex::Regex::new(r#"(?i)\blines?\s+\d|\.rs:\d|"(?:line|column|line_start|line_end|start_line|end_line)"\s*:"#).unwrap();
+    for (n, message) in messages.iter().enumerate() {
+        if n < 4 {
+            let mut body: Value = serde_json::from_str(message).unwrap();
+            assert!(message.contains("fn[kept]"), "{message}");
+            let quoted = match n {
+                0 => body.as_object_mut().unwrap().remove("text"),
+                2 | 3 => body["matches"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("excerpt"),
+                _ => None,
+            };
+            if n != 1 {
+                assert!(quoted.unwrap().as_str().unwrap().contains("src/lib.rs:123"));
+            }
+            assert!(!position.is_match(&body.to_string()), "{body}");
+        } else {
+            assert!(message.contains("quoted.rs#fn["), "{message}");
+            assert!(!position.is_match(message), "{message}");
+        }
     }
 }
 
@@ -932,8 +1252,8 @@ fn explicit_untracked_reads_return_an_untracked_error_and_the_assessment_continu
 fn false_is_a_completed_assessment() {
     let server = Server::start(vec![reply(vec![call(
         "submit",
-        "submit_judgment",
-        json!({"determination":false,"rationale":"The test checks refusal for a full positive-capacity queue, without acknowledging missing checks for preservation and zero capacity."}),
+        "submit_result",
+        json!({"result":{"determination":false,"rationale":"The test checks refusal for a full positive-capacity queue, without acknowledging missing checks for preservation and zero capacity."}}),
     )])]);
     let fixture = Fixture::new(&server.endpoint);
     fs::write(fixture.project.join("md/requirements.md"), ":::{req} ready\nInserting into a full queue MUST return false without overwriting its entries, including at zero capacity.\n:::\n").unwrap();
@@ -1005,13 +1325,13 @@ fn negative_assessment_records_additional_reads_and_fails_validation() {
     let server = Server::start(vec![
         reply(vec![call(
             "read",
-            "habeas",
-            json!({"file":"extra.txt","line_start":6,"line_end":6}),
+            "read_node",
+            json!({"path":"extra.txt","location":"line@36a3bca8a276"}),
         )]),
         reply(vec![call(
             "submit",
-            "submit_judgment",
-            json!({"determination":false,"rationale":rationale}),
+            "submit_result",
+            json!({"result":{"determination":false,"rationale":rationale}}),
         )]),
     ]);
     let fixture = Fixture::new(&server.endpoint);
@@ -1064,8 +1384,8 @@ fn completed_inadequate_expiration_review_is_current_and_reported_by_status() {
     let rationale = "No test covers expired tokens.";
     let server = Server::start(vec![reply(vec![call(
         "submit",
-        "submit_judgment",
-        json!({"determination":false,"rationale":rationale}),
+        "submit_result",
+        json!({"result":{"determination":false,"rationale":rationale}}),
     )])]);
     let fixture = Fixture::new(&server.endpoint);
     common::coverage_setup(&fixture.project);
@@ -1142,8 +1462,8 @@ fn initial_prompt_substitutes_subject_and_mandatory_inputs_into_the_template() {
     ] {
         let server = Server::start(vec![reply(vec![call(
             "submit",
-            "submit_judgment",
-            json!({"determination":true,"rationale":"covered"}),
+            "submit_result",
+            json!({"result":{"determination":true,"rationale":"covered"}}),
         )])]);
         let fixture = Fixture::new(&server.endpoint);
         fs::write(
@@ -1261,36 +1581,27 @@ fn initial_prompt_substitutes_subject_and_mandatory_inputs_into_the_template() {
         // block as written.
         assert!(prompt.starts_with(&before), "{prompt}");
         assert!(prompt.ends_with(after), "{prompt}");
-        let rendered = &prompt[before.len()..prompt.len() - after.len()];
-
-        // The mandatory inputs are a JSON array of evidence inputs.
-        let inputs: Vec<Value> = serde_json::from_str(rendered).unwrap();
-        assert!(!inputs.is_empty());
-        for input in &inputs {
-            let forms = [
-                ("file", &["item", "hash", "text"][..]),
-                ("requirements", &["matches", "text"][..]),
-                ("definition", &["text"][..]),
-            ];
-            let matching = forms
-                .iter()
-                .filter(|(key, _)| input.get(key).is_some())
-                .collect::<Vec<_>>();
-            assert_eq!(matching.len(), 1, "one evidence-input form: {input}");
-            for field in matching[0].1 {
-                assert!(input.get(field).is_some(), "{input} lacks {field}");
-            }
+        let metadata: Vec<Value> =
+            serde_json::Deserializer::from_str(prompt.strip_prefix(&before).unwrap())
+                .into_iter::<Vec<Value>>()
+                .next()
+                .unwrap()
+                .unwrap();
+        assert!(!metadata.is_empty());
+        for address in &metadata {
+            assert!(
+                address["node"].is_u64() && address["data"].is_object(),
+                "{address}"
+            );
+            assert!(address.get("line_start").is_none() && address.get("line_end").is_none());
         }
-        let defined = |name: &str| {
-            inputs
-                .iter()
-                .any(|input| input["definition"] == name || input["requirements"] == name)
-        };
-        assert!(defined(subject), "{inputs:?}");
+        // SDK inputs follow the task metadata in the same user message.
+        assert!(prompt.contains("Node: "));
+        assert!(prompt.contains(subject));
         if kind == "example" {
-            assert!(defined(SUBJECT), "cited requirement supplied: {inputs:?}");
+            assert!(prompt.contains(SUBJECT));
         } else {
-            assert!(defined("terms.readiness"), "{inputs:?}");
+            assert!(prompt.contains("terms.readiness"));
         }
     }
 }
@@ -1328,8 +1639,8 @@ fn usage_record_identifies_its_run_and_unusable_state_is_reported() {
     let server = Server::start(vec![
         reply(vec![call(
             "submit",
-            "submit_judgment",
-            json!({"determination":true,"rationale":"covered"}),
+            "submit_result",
+            json!({"result":{"determination":true,"rationale":"covered"}}),
         )]);
         2
     ]);
@@ -1350,7 +1661,7 @@ fn usage_record_identifies_its_run_and_unusable_state_is_reported() {
         format!("{run_id}.json"),
         "the record is named after its run"
     );
-    assert_eq!(usage["version"], 1);
+    assert_eq!(usage["version"], 3);
     assert_eq!(
         usage["project_root"],
         fixture.project.canonicalize().unwrap().to_str().unwrap()
@@ -1419,6 +1730,7 @@ fn usage_record_of_an_early_failure_identifies_its_subject_kind() {
     assert_eq!(files.len(), 1, "{output:?}");
     let usage: Value = serde_json::from_slice(&fs::read(&files[0]).unwrap()).unwrap();
     assert_eq!(usage["subject"], SUBJECT);
+    assert!(usage["backend"].is_null() && usage["model"].is_null());
     assert_eq!(usage["subject_kind"], "requirement", "{usage}");
     assert_eq!(usage["outcome"], "failed", "{usage}");
     assert_eq!(usage["evidence_written"], false, "{usage}");
@@ -1462,8 +1774,8 @@ fn verbose_single_author_reports_only_false_rationale_without_source_inputs() {
         let rationale = "REVIEW_RATIONALE_ONLY:\n\n- The captured test misses an interesting boundary.\n- Add an assertion for that boundary.";
         let server = Server::start(vec![reply(vec![call(
             "submit",
-            "submit_judgment",
-            json!({"determination": determination, "rationale": rationale}),
+            "submit_result",
+            json!({"result":{"determination": determination, "rationale": rationale}}),
         )])]);
         let fixture = Fixture::new(&server.endpoint);
         common::coverage_setup(&fixture.project);
@@ -1516,6 +1828,7 @@ fn verbose_single_author_reports_only_false_rationale_without_source_inputs() {
 // {test}`requirements.sdk.habeas.evidence_format`
 // {test}`requirements.sdk.habeas.evidence_conversion.writes`
 // {test}`requirements.ci.schema`
+// {test}`requirements.sdk.habeas.evidence_conversion.legacy_freshness`
 #[test]
 fn stdout_emits_only_evidence_json_without_changing_project_files() {
     for (determination, kind, existing_evidence, verbose) in [
@@ -1529,8 +1842,8 @@ fn stdout_emits_only_evidence_json_without_changing_project_files() {
         let rationale = "The supplied sources explain this judgment.";
         let server = Server::start(vec![reply(vec![call(
             "submit",
-            "submit_judgment",
-            json!({"determination":determination,"rationale":rationale}),
+            "submit_result",
+            json!({"result":{"determination":determination,"rationale":rationale}}),
         )])]);
         let fixture = Fixture::new(&server.endpoint);
         if !existing_evidence {
@@ -1635,32 +1948,681 @@ fn stdout_emits_only_evidence_json_without_changing_project_files() {
     }
 }
 
-// {test}`requirements.authoring.submission_count`
+// {test}`requirements.authoring.line_numbers.resubmission`
+#[test]
+fn keeping_a_rejected_rationale_waits_for_search_and_preserves_the_original_verdict() {
+    let original = "The condition is tested at src/lib.rs:4.";
+    let server = Server::start(vec![
+        reply(vec![call(
+            "submit",
+            "submit_result",
+            json!({"result":{"determination":true,"rationale":original}}),
+        )]),
+        reply(vec![call(
+            "search",
+            "search_text",
+            json!({"pattern":"absent marker"}),
+        )]),
+        json!({"__keep_rationale":true}),
+        json!({"__finish_search":0}),
+        json!({"__keep_rationale":true}),
+    ]);
+    let fixture = Fixture::new(&server.endpoint);
+    let output = fixture.run(&["author", SUBJECT]);
+    assert!(output.status.success(), "{output:?}");
+    let requests = server.finish();
+    assert_eq!(requests.len(), 5);
+    assert!(
+        requests[3].body["messages"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["content"]
+            .as_str()
+            .unwrap()
+            .contains("finish_search")
+    );
+    let record: Value = serde_json::from_slice(&fs::read(fixture.evidence).unwrap()).unwrap();
+    assert_eq!(record["determination"], true);
+    assert_eq!(record["rationale"], original);
+    let correction = requests[1].body["messages"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()["content"]
+        .as_str()
+        .unwrap();
+    let uuid = correction
+        .split_whitespace()
+        .find(|s| uuid::Uuid::parse_str(s).is_ok())
+        .unwrap();
+    assert!(!record.to_string().contains(uuid));
+}
+
+// {test}`requirements.authoring.usage_requests`
+// {test}`requirements.authoring.usage_requests.failures`
+#[test]
+// {test}`requirements.configuration.serialization`
+// {test}`requirements.authoring.usage_inputs`
+fn a_successful_retry_reports_partial_token_measurements() {
+    let mut accepted = reply(vec![call(
+        "submit",
+        "submit_result",
+        json!({"result":{"determination":true,"rationale":"The tests check readiness."}}),
+    )]);
+    accepted.as_object_mut().unwrap().remove("eval_count");
+    let server = Server::start(vec![
+        json!({"__http_status":503,"error":"unavailable"}),
+        accepted,
+    ]);
+    let fixture = Fixture::new(&server.endpoint);
+    let path = fixture.config.join("habeas/config.toml");
+    let before = fs::read(&path).unwrap();
+    let output = fixture.run(&["author", SUBJECT]);
+    assert!(output.status.success(), "{output:?}");
+    let requests = server.finish();
+    assert_eq!(requests.len(), 2);
+    let opening = requests[0].body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|m| m["content"].as_str()?.split_once("# Mandatory inputs"))
+        .unwrap()
+        .1
+        .trim_start();
+    let count = serde_json::Deserializer::from_str(opening)
+        .into_iter::<Vec<Value>>()
+        .next()
+        .unwrap()
+        .unwrap()
+        .len();
+    assert_eq!(fs::read(path).unwrap(), before);
+    let log = fixture.usage();
+    let stats = &log["provider_usage"];
+    assert_eq!(stats["prepared_inputs"], count);
+    assert_eq!(stats["delivered_inputs"], count);
+    assert_eq!(stats["attempts"], 2);
+    assert_eq!(stats["failed_attempts"], 1);
+    assert_eq!(stats["retries"], 1);
+    assert_eq!(
+        stats["input_tokens"],
+        json!({"reported":11,"missing_attempts":1})
+    );
+    assert_eq!(
+        stats["output_tokens"],
+        json!({"reported":0,"missing_attempts":2})
+    );
+    assert!(log["elapsed_ms"].as_u64().unwrap() > 0);
+}
+
+// {test}`requirements.authoring.usage_inputs`
+// {test}`requirements.authoring.usage_requests`
+// {test}`requirements.authoring.usage_requests.failures`
+// {test}`requirements.authoring.provider_backoff`
+#[test]
+fn terminal_provider_failure_retains_the_retry_and_undelivered_inputs() {
+    let server = Server::start(vec![
+        json!({"__http_status":503,"error":"unavailable"}),
+        json!({"__http_status":400,"error":"invalid request"}),
+    ]);
+    let fixture = Fixture::new(&server.endpoint);
+    let output = fixture.run(&["author", SUBJECT]);
+    assert!(!output.status.success());
+    let requests = server.finish();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].body, requests[1].body);
+    let log = fixture.usage();
+    let stats = &log["provider_usage"];
+    assert_eq!(log["outcome"], "failed");
+    assert!(log["elapsed_ms"].as_u64().unwrap() > 0);
+    assert_eq!(stats["attempts"], 2);
+    assert_eq!(stats["failed_attempts"], 2);
+    assert_eq!(stats["retries"], 1);
+    assert_eq!(stats["input_tokens"]["missing_attempts"], 2);
+    assert!(stats["prepared_inputs"].as_u64().unwrap() > 0);
+    assert_eq!(stats["delivered_inputs"], 0);
+}
+
+// {test}`requirements.sdk.graph.agent-harness.submission.acceptance`
+#[test]
+fn outstanding_search_preserves_the_prior_missing_submission_reminder() {
+    let server = Server::start(vec![
+        reply(vec![]),
+        reply(vec![call(
+            "search",
+            "search_text",
+            json!({"pattern":"absent"}),
+        )]),
+        reply(vec![
+            call(
+                "submit",
+                "submit_result",
+                json!({"result":{"determination":true,"rationale":"Complete."}}),
+            ),
+            call("unexecuted", "read_node", json!({"path":"extra.txt"})),
+        ]),
+        reply(vec![]),
+    ]);
+    let fixture = Fixture::new(&server.endpoint);
+    let output = fixture.run(&["author", SUBJECT]);
+    assert!(!output.status.success());
+    let requests = server.finish();
+    assert_eq!(requests.len(), 4);
+    assert!(
+        requests[3].body["messages"].as_array().unwrap().iter().any(
+            |m| m["role"] == "tool" && m["content"].as_str().unwrap().contains("finish_search")
+        )
+    );
+    assert!(
+        fixture.usage()["provider_usage"]["tools"]
+            .get("read_node")
+            .is_none()
+    );
+}
+
+// {test}`requirements.authoring.configuration`
+#[test]
+fn either_existing_configuration_file_can_omit_its_authoring_section() {
+    for user_has_profile in [true, false] {
+        let server = Server::start(vec![reply(vec![call(
+            "submit",
+            "submit_result",
+            json!({"result":{"determination":true,"rationale":"The tests cover the requirement."}}),
+        )])]);
+        let fixture = Fixture::new(&server.endpoint);
+        let user_file = fixture.config.join("habeas/config.toml");
+        let workspace = fixture.project.join("habeas.toml");
+        if user_has_profile {
+            fs::write(&workspace, "version = 1\n").unwrap();
+        } else {
+            fs::copy(&user_file, &workspace).unwrap();
+            fs::write(&user_file, "version = 1\n").unwrap();
+        }
+        let output = fixture.run(&["author", SUBJECT]);
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(server.finish()[0].body["model"], MODEL);
+    }
+}
+
+// {test}`requirements.authoring.delivered_inputs`
+#[test]
+// {test}`requirements.authoring.no_line_numbers`
+fn optional_requirement_and_example_reads_preserve_the_complete_declarations() {
+    let names = [
+        ("related", "req", "A related requirement."),
+        (
+            "illustration",
+            "example",
+            "An illustrative example. {cite}`requirements.related`",
+        ),
+    ];
+    let server = Server::start(vec![
+        reply(
+            names
+                .iter()
+                .map(|(name, _, _)| {
+                    call(
+                        name,
+                        "read_node",
+                        json!({"data":{"Requirement":format!("requirements.{name}")}}),
+                    )
+                })
+                .collect(),
+        ),
+        reply(vec![call(
+            "submit",
+            "submit_result",
+            json!({"result":{"determination":true,"rationale":"Both declarations support the assessment."}}),
+        )]),
+    ]);
+    let fixture = Fixture::new(&server.endpoint);
+    let chapter = fixture.project.join("md/requirements.md");
+    let mut book = fs::read_to_string(&chapter).unwrap();
+    let mut expected = Vec::new();
+    for (name, kind, body) in names {
+        let declaration = format!(":::{{{kind}}} {name}\n{body}\n:::");
+        book.push_str(&format!("\n{declaration}\n"));
+        let id = format!("requirements.{name}");
+        expected.push(json!({"requirements":id, "matches":[id], "text":declaration.lines().collect::<Vec<_>>() }));
+    }
+    fs::write(&chapter, &book).unwrap();
+    let output = fixture.run(&["author", SUBJECT]);
+    assert!(output.status.success(), "{output:?}");
+    let requests = server.finish();
+    let responses = requests[1].body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["role"] == "tool")
+        .collect::<Vec<_>>();
+    assert_eq!(responses.len(), 2);
+    for response in responses {
+        let body: Value = serde_json::from_str(response["content"].as_str().unwrap()).unwrap();
+        assert!(
+            body.get("line").is_none()
+                && body.get("line_start").is_none()
+                && body.get("line_end").is_none()
+        );
+    }
+    let opening = prompt_text(&requests[0].body);
+    assert!(names.iter().all(|(_, _, body)| !opening.contains(body)));
+    let record: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
+    for input in expected {
+        assert!(
+            record["inputs"].as_array().unwrap().contains(&input),
+            "{record}"
+        );
+    }
+    fs::write(
+        chapter,
+        book.replace("An illustrative example.", "An edited example."),
+    )
+    .unwrap();
+    let findings = habeas::validate_repository(&fixture.project)
+        .unwrap()
+        .errors;
+    assert!(
+        findings
+            .iter()
+            .any(|e| e.contains(SUBJECT) && e.contains("requirements.illustration")),
+        "{findings:?}"
+    );
+}
+
+// {test}`requirements.authoring.usage_inputs`
+#[test]
+fn each_edge_result_counts_once_and_a_failed_lookup_only_charges_tool_usage() {
+    let edges = || {
+        call(
+            "edges",
+            "outgoing_edges",
+            json!({"data":{"Requirement":SUBJECT},"label":"Implements"}),
+        )
+    };
+    let server = Server::start(vec![
+        reply(vec![
+            edges(),
+            edges(),
+            call("bad", "lookup_requirements", json!({"selection":"[bad]"})),
+        ]),
+        reply(vec![call(
+            "submit",
+            "submit_result",
+            json!({"result":{"determination":true,"rationale":"The tests cover the subject."}}),
+        )]),
+    ]);
+    let fixture = Fixture::new(&server.endpoint);
+    let output = fixture.run(&["author", SUBJECT]);
+    assert!(output.status.success(), "{output:?}");
+    let requests = server.finish();
+    let opening = requests[0].body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|m| m["content"].as_str()?.split_once("# Mandatory inputs"))
+        .unwrap()
+        .1
+        .trim_start();
+    let count = serde_json::Deserializer::from_str(opening)
+        .into_iter::<Vec<Value>>()
+        .next()
+        .unwrap()
+        .unwrap()
+        .len();
+    let replies: Vec<_> = requests[1].body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["role"] == "tool")
+        .map(|m| m["content"].as_str().unwrap())
+        .collect();
+    assert_eq!(replies.len(), 3);
+    assert_eq!(replies[0], replies[1]);
+    assert!(replies[0].contains("targets"));
+    assert!(replies[2].contains("invalid definition glob"));
+    let stats = &fixture.usage()["provider_usage"];
+    assert_eq!(stats["prepared_inputs"], count + 2);
+    assert_eq!(stats["delivered_inputs"], count + 2);
+    assert_eq!(
+        stats["tools"]["outgoing_edges"],
+        json!({"calls":2,"result_bytes":replies[0].len()+replies[1].len()})
+    );
+    assert_eq!(
+        stats["tools"]["lookup_requirements"],
+        json!({"calls":1,"result_bytes":replies[2].len()})
+    );
+}
+
+// {test}`requirements.authoring.site_prompt`
+#[test]
+fn site_review_requires_one_submission_after_a_reminder() {
+    let result = json!({"result":{"applies":true,"determination":true,"rationale":"The checker reports problems."}});
+    for calls in [
+        vec![],
+        vec![
+            call("first", "submit_result", result.clone()),
+            call("second", "submit_result", result.clone()),
+        ],
+    ] {
+        let server = Server::start(vec![reply(calls.clone()), reply(calls)]);
+        let fixture = Fixture::new(&server.endpoint);
+        fs::write(fixture.project.join("md/requirements.md"), "::::{req} rule\nEach checker MUST report problems.\n\n:::{sites} checkers\n```yaml\nlanguage: rust\npaths: [src]\nrule: { kind: function_item }\nmatch: ['fn check() {}']\nno_match: ['struct X;']\n```\n:::\n::::\n").unwrap();
+        fs::write(fixture.project.join("src/lib.rs"), "fn check() {}\n").unwrap();
+        let output = fixture.run(&["author", "sites:requirements.rule/src/lib.rs#fn[check]"]);
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("even after a reminder"),
+            "{output:?}"
+        );
+        assert_eq!(server.finish().len(), 2);
+        assert!(
+            !fixture
+                .project
+                .join("evidence/sites/requirements.rule/src/lib.rs/fn[check].json")
+                .exists()
+        );
+    }
+}
+
+// {test}`requirements.authoring.search_accounting.helper_freshness`
+// {test}`requirements.authoring.finish_search.inputs`
+// {test}`requirements.authoring.delivered_inputs`
+#[test]
+fn relying_on_a_helper_excerpt_makes_edits_to_that_helper_stale() {
+    let (sender, receiver) = std::sync::mpsc::channel::<(PathBuf, String)>();
+    let mut attempt = 0;
+    let server = Server::start_with(
+        vec![
+            reply(vec![
+                call(
+                    "search",
+                    "search_text",
+                    json!({"path":"src/lib.rs", "pattern":"assert_eq!", "window_bytes":0}),
+                ),
+                call(
+                    "explicit",
+                    "read_node",
+                    json!({"path":"src/lib.rs","location":"fn[read_me]"}),
+                ),
+            ]),
+            json!({"__finish_search":0,"use_first":true}),
+            reply(vec![call(
+                "submit",
+                "submit_result",
+                json!({"result":{"determination":true,"rationale":"The helper checks refusal."}}),
+            )]),
+        ],
+        move || {
+            attempt += 1;
+            if attempt == 2 {
+                let (path, edited) = receiver.recv().unwrap();
+                fs::write(path, edited).unwrap();
+            }
+        },
+    );
+    let fixture = Fixture::new(&server.endpoint);
+    let file = fixture.project.join("src/lib.rs");
+    let source = fs::read_to_string(&file).unwrap().replace(
+        "fn ready_test() {}",
+        "fn ready_test() { assert_refusal(); }\nfn assert_refusal() { assert_eq!(1, 1); }\nfn unselected() { assert_eq!(2, 2); }\nfn read_me() { original(); }",
+    );
+    fs::write(&file, &source).unwrap();
+    let expected =
+        |selector| habeas::outline_input(&fixture.project, "src/lib.rs", selector).unwrap();
+    let selected = expected("fn[assert_refusal]");
+    let read = expected("fn[read_me]");
+    sender
+        .send((
+            file.clone(),
+            source
+                .replace("assert_eq!(1, 1);", "updated();")
+                .replace("original();", "changed();"),
+        ))
+        .unwrap();
+    let output = fixture.run(&["author", SUBJECT]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(server.finish().len(), 3);
+    let evidence: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
+    let inputs = evidence["inputs"].as_array().unwrap();
+    assert!(
+        inputs.contains(&selected) && inputs.contains(&read),
+        "{inputs:?}"
+    );
+    assert!(!inputs.iter().any(|input| input["item"] == "fn[unselected]"));
+    let errors = || {
+        habeas::validate_repository(&fixture.project)
+            .unwrap()
+            .errors
+            .into_iter()
+            .filter(|e| e.contains(&format!("evidence/{SUBJECT}.json")))
+            .collect::<Vec<_>>()
+    };
+
+    assert!(
+        errors()
+            .iter()
+            .any(|e| e.contains("fn[assert_refusal]") && e.contains("changed"))
+    );
+}
+
+// {test}`requirements.sdk.graph.search.recovery`
+// {test}`requirements.authoring.submission`
+#[test]
+fn submission_reports_every_open_search_until_the_last_page_is_finished() {
+    let submit = || {
+        reply(vec![call(
+            "submit",
+            "submit_result",
+            json!({"result":{"determination":true,"rationale":"Ready."}}),
+        )])
+    };
+    let server = Server::start(vec![
+        reply(vec![
+            call("one", "search_text", json!({"pattern":"needle"})),
+            call("two", "search_text", json!({"pattern":"no_match_12345"})),
+        ]),
+        submit(),
+        json!({"__finish_search":0}),
+        submit(),
+        json!({"__finish_search":1}),
+        submit(),
+    ]);
+    let fixture = Fixture::new(&server.endpoint);
+    let output = fixture.run(&["author", SUBJECT]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let requests = server.finish();
+    let searches: Vec<Value> = requests[1].body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["role"] == "tool")
+        .map(|m| serde_json::from_str(m["content"].as_str().unwrap()).unwrap())
+        .collect();
+    assert_eq!(searches.len(), 2);
+    assert_eq!(searches[1]["matches"], json!([]));
+    let error = |i: usize| {
+        requests[i].body["messages"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["content"]
+            .as_str()
+            .unwrap()
+    };
+    let ids = [&searches[0], &searches[1]].map(|p| p["search_id"].as_str().unwrap());
+    assert!(ids.iter().all(|id| error(2).contains(id)));
+    assert!(!error(4).contains(ids[0]) && error(4).contains(ids[1]));
+    assert_eq!(fixture.usage()["outcome"], "completed");
+}
+
+// {test}`requirements.authoring.file_discovery_usage`
+// {test}`requirements.authoring.usage_inputs`
+#[test]
+fn listing_charges_result_bytes_while_only_the_explicit_read_adds_an_input() {
+    let mut counts = Vec::new();
+    for step in 0..=2 {
+        let mut replies = Vec::new();
+        if step >= 1 {
+            replies.push(reply(vec![call("list", "list_sources", json!({}))]));
+        }
+        if step == 2 {
+            replies.push(reply(vec![call(
+                "read",
+                "read_node",
+                json!({"path":"src/lib.rs", "location":"fn[ready]"}),
+            )]));
+        }
+        replies.push(reply(vec![call(
+            "submit",
+            "submit_result",
+            json!({"result":{"determination":true,"rationale":"Ready."}}),
+        )]));
+        let server = Server::start(replies);
+        let fixture = Fixture::new(&server.endpoint);
+        let output = fixture.run(&["author", SUBJECT]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let requests = server.finish();
+        let stats = &fixture.usage()["provider_usage"];
+        if step >= 1 {
+            let listing = requests[1].body["messages"]
+                .as_array()
+                .unwrap()
+                .last()
+                .unwrap()["content"]
+                .as_str()
+                .unwrap();
+            assert!(listing.contains("src/lib.rs"));
+            assert_eq!(
+                stats["tools"]["list_sources"],
+                json!({"calls":1,"result_bytes":listing.len()})
+            );
+        }
+        let evidence: Value =
+            serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
+        let expected = habeas::outline_input(&fixture.project, "src/lib.rs", "fn[ready]").unwrap();
+        assert_eq!(
+            evidence["inputs"].as_array().unwrap().contains(&expected),
+            step == 2
+        );
+        counts.push((
+            stats["prepared_inputs"].as_u64().unwrap(),
+            stats["delivered_inputs"].as_u64().unwrap(),
+        ));
+    }
+    assert_eq!(counts[1], counts[0]);
+    assert_eq!(counts[2], (counts[0].0 + 1, counts[0].1 + 1));
+}
+
+// {test}`requirements.authoring.submission.searches.line_numbers`
+// {test}`requirements.authoring.line_numbers.rejection`
+#[test]
+fn outstanding_search_preserves_the_rationale_correction_attempt() {
+    let submit = |rationale| {
+        reply(vec![call(
+            "submit",
+            "submit_result",
+            json!({"result": {"determination":true, "rationale":rationale}}),
+        )])
+    };
+    let cited = "See src/lib.rs:42 for the assertion.";
+    let server = Server::start(vec![
+        reply(vec![call(
+            "search",
+            "search_text",
+            json!({"pattern":"needle"}),
+        )]),
+        submit(cited),
+        json!({"__finish_search":0}),
+        submit(cited),
+        submit("The test checks the required outcome."),
+    ]);
+    let fixture = Fixture::new(&server.endpoint);
+    let output = fixture.run(&["author", SUBJECT]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let requests = server.finish();
+    let last_tool_response = |index: usize| {
+        requests[index].body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|message| message["role"] == "tool")
+            .unwrap()["content"]
+            .as_str()
+            .unwrap()
+    };
+    assert!(last_tool_response(2).contains("finish_search"));
+    assert!(last_tool_response(4).contains("the rationale cites line numbers"));
+    let message = last_tool_response(4);
+    let guidance = approved_text("judgment_rules", 0)
+        .split_once("- Give a source location")
+        .unwrap()
+        .1
+        .split("\n- ")
+        .next()
+        .unwrap();
+    assert!(
+        message.contains(guidance) && message.contains("src/lib.rs:42"),
+        "{message}"
+    );
+    assert!(
+        message
+            .split_whitespace()
+            .any(|word| uuid::Uuid::parse_str(word).is_ok())
+    );
+    let usage = fixture.usage();
+    assert_eq!(usage["determination"], "true");
+    assert_eq!(usage["provider_usage"]["attempts"], 5);
+    assert_eq!(
+        usage["provider_usage"]["tools"]["submit_result"]["calls"],
+        3
+    );
+}
+
+// {test}`requirements.sdk.habeas.assessment_policy`
+// {test}`requirements.sdk.graph.agent-harness.submission_count`
 // {test}`requirements.authoring.submission`
 // {test}`requirements.authoring.usage_storage`
 #[test]
+// {test}`requirements.authoring.invocation`
 fn missing_duplicate_and_invalid_submissions_preserve_existing_evidence() {
     let valid =
         json!({"determination":true,"rationale":"The reviewed sources support the subject."});
     for calls in [
         vec![],
         vec![
-            call("one", "submit_judgment", valid.clone()),
-            call("two", "submit_judgment", valid),
+            call("one", "submit_result", json!({"result":valid})),
+            call("two", "submit_result", json!({"result":valid})),
         ],
         vec![call(
             "bad",
-            "submit_judgment",
-            json!({"determination":true,"rationale":""}),
+            "submit_result",
+            json!({"result":{"determination":true,"rationale":""}}),
         )],
         vec![call(
             "empty",
-            "submit_judgment",
-            json!({"determination":{"FIXME":[]},"rationale":"No gap identified."}),
+            "submit_result",
+            json!({"result":{"determination":{"FIXME":[]},"rationale":"No gap identified."}}),
         )],
     ] {
         for stdout in [false, true] {
-            let count = if calls.is_empty() { 2 } else { 1 };
+            let count = if calls.len() == 1 { 1 } else { 2 };
             let server = Server::start(vec![reply(calls.clone()); count]);
             let fixture = Fixture::new(&server.endpoint);
             let mut args = vec!["author-evidence", SUBJECT];
@@ -1686,10 +2648,88 @@ fn missing_duplicate_and_invalid_submissions_preserve_existing_evidence() {
             );
             assert_eq!(usage["evidence_written"], false);
             // A response without a submission is reminded once.
-            assert_eq!(usage["request_count"], if calls.is_empty() { 2 } else { 1 });
+            assert_eq!(
+                usage["provider_usage"]["attempts"],
+                if calls.len() == 1 { 1 } else { 2 }
+            );
             assert!(usage["determination"].is_null());
         }
     }
+}
+
+// {test}`requirements.sdk.graph.agent-harness.submission_count`
+#[test]
+fn the_agent_can_submit_after_the_missing_submission_reminder() {
+    let server = Server::start(vec![
+        reply(vec![]),
+        reply(vec![call(
+            "submit",
+            "submit_result",
+            json!({"result":{"determination":true,"rationale":"The test exercises the requirement."}}),
+        )]),
+    ]);
+    let fixture = Fixture::new(&server.endpoint);
+    let output = fixture.run(&["author", SUBJECT]);
+    assert!(output.status.success(), "{output:?}");
+    let requests = server.finish();
+    assert_eq!(requests.len(), 2);
+    let reminder = requests[1].body["messages"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap();
+    assert_eq!(reminder["role"], "user");
+    assert!(
+        reminder["content"]
+            .as_str()
+            .unwrap()
+            .contains("invoke submit_result exactly once")
+    );
+    let evidence: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
+    assert_eq!(evidence["determination"], true);
+}
+
+// {test}`requirements.configuration.loading`
+#[test]
+fn ordinary_repository_validation_is_independent_of_the_user_file() {
+    const CHILD: &str = "HABEAS_FIXTURE_VALIDATE_WITH_INVALID_USER_FILE";
+    if std::env::var_os(CHILD).is_some() {
+        let report = habeas::validate_repository(std::path::Path::new(".")).unwrap();
+        assert!(
+            report.errors.iter().all(|e| !e.contains("config.toml")),
+            "{:?}",
+            report.errors
+        );
+        println!("fixture validation findings {:?}", report.errors);
+        return;
+    }
+    let fixture = Fixture::new("http://127.0.0.1:1");
+    let validate = || {
+        let result = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "ordinary_repository_validation_is_independent_of_the_user_file",
+                "--nocapture",
+            ])
+            .current_dir(&fixture.project)
+            .env(CHILD, "1")
+            .env("XDG_CONFIG_HOME", &fixture.config)
+            .env("APPDATA", &fixture.config)
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{result:?}");
+        String::from_utf8(result.stdout)
+            .unwrap()
+            .lines()
+            .find(|s| s.starts_with("fixture validation findings"))
+            .unwrap()
+            .to_owned()
+    };
+    let user_file = fixture.config.join("habeas/config.toml");
+    fs::remove_file(&user_file).unwrap();
+    let absent = validate();
+    fs::write(&user_file, "[broken syntax").unwrap();
+    assert_eq!(validate(), absent);
 }
 
 // {test}`requirements.authoring.deterministic_validation`
@@ -1814,10 +2854,10 @@ fn missing_or_stale_evidence_fails_validation_without_contacting_the_provider() 
 #[test]
 fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {
     for typed in [false, true] {
-        let mut read_call = json!({"toolUseId":"bedrock-read","name":"habeas",
-        "input":{"file":"extra.txt","line_start":1,"line_end":2}});
-        let mut submit_call = json!({"toolUseId":"bedrock-submit","name":"submit_judgment",
-        "input":{"determination":true,"rationale":"The supplied sources support the subject."}});
+        let mut read_call = json!({"toolUseId":"bedrock-read","name":"read_node",
+        "input":{"path":"extra.txt","location":"line@36a3bca8a276"}});
+        let mut submit_call = json!({"toolUseId":"bedrock-submit","name":"submit_result",
+        "input":{"result":{"determination":true,"rationale":"The supplied sources support the subject."}}});
         if typed {
             read_call["type"] = json!("tool_use");
             submit_call["type"] = json!("tool_use");
@@ -1880,7 +2920,7 @@ fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {
         let result = &requests[1].body["messages"][2]["content"][0]["toolResult"];
         assert_eq!(result["toolUseId"], "bedrock-read");
         let delivered = result["content"][0]["text"].as_str().unwrap();
-        assert!(delivered.contains("extra.txt") && delivered.contains("context line 1"));
+        assert!(delivered.contains("extra.txt") && delivered.contains("SECRET_SOURCE_PAYLOAD"));
         assert!(
             requests[0]
                 .headers
@@ -1922,32 +2962,25 @@ fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {
                 );
             }
         }
-        let habeas_schema = &tool_specs
+        let read = tool_specs
             .iter()
-            .find(|tool| tool["toolSpec"]["name"] == "habeas")
-            .unwrap()["toolSpec"]["inputSchema"]["json"];
-        assert_eq!(habeas_schema["additionalProperties"], false);
-        for field in ["file", "item", "requirements", "definition"] {
-            assert_eq!(habeas_schema["properties"][field]["type"], "string");
+            .find(|tool| tool["toolSpec"]["name"] == "read_node")
+            .unwrap();
+        for field in ["path", "location", "node", "data"] {
+            assert!(
+                read["toolSpec"]["inputSchema"]["json"]["properties"]
+                    .get(field)
+                    .is_some()
+            );
         }
-        for field in ["line_start", "line_end"] {
-            assert_eq!(habeas_schema["properties"][field]["type"], "integer");
-            assert_eq!(habeas_schema["properties"][field]["minimum"], 1);
-        }
-        let judgment_schema = &tool_specs
+        let submit = tool_specs
             .iter()
-            .find(|tool| tool["toolSpec"]["name"] == "submit_judgment")
-            .unwrap()["toolSpec"]["inputSchema"]["json"]["properties"]["determination"];
-        let outcomes = judgment_schema["oneOf"].as_array().unwrap();
-        assert!(outcomes.iter().any(|outcome| outcome["type"] == "boolean"));
-        let fixme = &outcomes
-            .iter()
-            .find(|outcome| outcome["type"] == "object")
-            .unwrap()["properties"]["FIXME"];
-        assert_eq!(fixme["type"], "array");
-        assert_eq!(fixme["minItems"], 1);
-        assert_eq!(fixme["items"]["type"], "string");
-        assert_eq!(fixme["items"]["minLength"], 1);
+            .find(|tool| tool["toolSpec"]["name"] == "submit_result")
+            .unwrap();
+        assert_eq!(
+            submit["toolSpec"]["inputSchema"]["json"]["required"],
+            json!(["result"])
+        );
         let mut tools = tool_specs
             .iter()
             .map(|tool| tool["toolSpec"]["name"].as_str().unwrap())
@@ -1956,16 +2989,18 @@ fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {
         assert_eq!(
             tools,
             [
-                "ast_grep",
                 "finish_search",
+                "get_next_page",
                 "github",
-                "habeas",
-                "list_files",
-                "next_page",
-                "outline",
-                "references",
-                "ripgrep",
-                "submit_judgment"
+                "list_sources",
+                "lookup_requirements",
+                "outgoing_edges",
+                "outline_source",
+                "read_node",
+                "run_named_query",
+                "search_structure",
+                "search_text",
+                "submit_result"
             ]
         );
         let evidence: Value =
@@ -1978,7 +3013,7 @@ fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {
                 .iter()
                 .filter(|input| input["file"] == "extra.txt")
                 .collect::<Vec<_>>()
-                == habeas::outline_inputs_for_lines(&fixture.project, "extra.txt", 1, 2)
+                == habeas::outline_inputs_for_lines(&fixture.project, "extra.txt", 6, 6)
                     .unwrap()
                     .iter()
                     .collect::<Vec<_>>()
@@ -1986,11 +3021,14 @@ fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {
         let usage = fixture.usage();
         assert_eq!(usage["backend"], "bedrock");
         assert_eq!(usage["model"], "fixture-bedrock-model");
-        assert_eq!(usage["tokens"]["input"], 38);
-        assert_eq!(usage["tokens"]["output"], 10);
-        assert_eq!(usage["request_count"], 2);
-        assert_eq!(usage["tool_calls"]["habeas"], 1);
-        assert_eq!(usage["tool_calls"]["submit_judgment"], 1);
+        assert_eq!(usage["provider_usage"]["input_tokens"]["reported"], 38);
+        assert_eq!(usage["provider_usage"]["output_tokens"]["reported"], 10);
+        assert_eq!(usage["provider_usage"]["attempts"], 2);
+        assert_eq!(usage["provider_usage"]["tools"]["read_node"]["calls"], 1);
+        assert_eq!(
+            usage["provider_usage"]["tools"]["submit_result"]["calls"],
+            1
+        );
         assert_eq!(usage["outcome"], "completed");
     }
 }
@@ -2006,7 +3044,7 @@ fn bedrock_run(model: &str) -> (Vec<Value>, Value) {
                 "output":{"message":{"role":"assistant","content":[
                     {"reasoningContent":{"reasoningText":{"text":"Read the extra source.","signature":"sig"}}},
                     {"toolUse":
-                    {"toolUseId":"read","name":"habeas","input":{"file":"extra.txt","line_start":1}}}]}},
+                    {"toolUseId":"read","name":"read_node","input":{"path":"extra.txt","location":"line@36a3bca8a276"}}}]}},
                 "stopReason":"tool_use",
                 "usage":{"inputTokens":7,"outputTokens":5,"totalTokens":1012,
                     "cacheReadInputTokens":0,"cacheWriteInputTokens":1000},
@@ -2014,8 +3052,8 @@ fn bedrock_run(model: &str) -> (Vec<Value>, Value) {
             }),
             json!({
                 "output":{"message":{"role":"assistant","content":[{"toolUse":
-                    {"toolUseId":"submit","name":"submit_judgment","input":
-                        {"determination":true,"rationale":"The supplied sources support the subject."}}}]}},
+                    {"toolUseId":"submit","name":"submit_result","input":
+                        {"result":{"determination":true,"rationale":"The supplied sources support the subject."}}}}]}},
                 "stopReason":"tool_use",
                 "usage":{"inputTokens":9,"outputTokens":5,"totalTokens":1214,
                     "cacheReadInputTokens":1000,"cacheWriteInputTokens":200},
@@ -2116,6 +3154,7 @@ fn without_cache_points(body: &Value) -> Value {
 // {test}`requirements.authoring.usage_requests`
 // {test}`requirements.authoring.prompt_parts`
 #[test]
+// {test}`requirements.authoring.usage_requests`
 fn claude_requests_carry_cache_checkpoints_and_record_cache_usage() {
     let checkpoint = json!({"cachePoint":{"type":"default"}});
     let (cached, usage) = bedrock_run("us.anthropic.claude-sonnet-4-5-20250929-v1:0");
@@ -2148,13 +3187,15 @@ fn claude_requests_carry_cache_checkpoints_and_record_cache_usage() {
         assert_eq!(&without_cache_points(cached), plain);
     }
     // Cache reads and writes are recorded per request and in total.
-    let requests = usage["requests"].as_array().unwrap();
-    assert_eq!(requests[0]["tokens"]["cached_input"], 0);
-    assert_eq!(requests[0]["tokens"]["cache_creation_input"], 1000);
-    assert_eq!(requests[1]["tokens"]["cached_input"], 1000);
-    assert_eq!(requests[1]["tokens"]["cache_creation_input"], 200);
-    assert_eq!(usage["tokens"]["cached_input"], 1000);
-    assert_eq!(usage["tokens"]["cache_creation_input"], 1200);
+
+    assert_eq!(
+        usage["provider_usage"]["cached_input_tokens"]["reported"],
+        1000
+    );
+    assert_eq!(
+        usage["provider_usage"]["cache_creation_input_tokens"]["reported"],
+        1200
+    );
 }
 
 // {test}`requirements.authoring.output_limit`
@@ -2185,7 +3226,7 @@ fn cut_off_submission(id: &str) -> Value {
     json!({
         "output":{"message":{"role":"assistant","content":[
             {"text":"Submitting."},
-            {"toolUse":{"toolUseId":id,"name":"submit_judgment","input":{"determination":true}}}
+            {"toolUse":{"toolUseId":id,"name":"submit_result","input":{"result":{"determination":true}}}}
         ]}},
         "stopReason":"max_tokens",
         "usage":{"inputTokens":7,"outputTokens":16384,"totalTokens":16391},
@@ -2194,7 +3235,7 @@ fn cut_off_submission(id: &str) -> Value {
 }
 
 /// The user message Habeas sends after a response cut off at 16,384 tokens.
-const LIMIT_NOTE: &str = "Your previous response reached the 16384-token output limit and was cut off,\nso its tool call was incomplete. Keep within the limit: make your rationale\nshorter, then call the tool again.";
+const LIMIT_NOTE: &str = "The response was cut off at 16384 tokens. Continue with a shorter response and finish with submit_result.";
 
 // {test}`requirements.authoring.output_limit`
 #[test]
@@ -2207,8 +3248,8 @@ fn a_configured_bedrock_limit_controls_requests_and_the_continuation_note() {
             cut_off,
             json!({
                 "output":{"message":{"role":"assistant","content":[{"toolUse":
-                    {"toolUseId":"submit","name":"submit_judgment","input":
-                        {"determination":true,"rationale":"Short."}}}]}},
+                    {"toolUseId":"submit","name":"submit_result","input":
+                        {"result":{"determination":true,"rationale":"Short."}}}}]}},
                 "stopReason":"tool_use",
                 "usage":{"inputTokens":9,"outputTokens":5,"totalTokens":14},
                 "metrics":{"latencyMs":1}
@@ -2226,7 +3267,7 @@ fn a_configured_bedrock_limit_controls_requests_and_the_continuation_note() {
         note["content"][1]["text"],
         LIMIT_NOTE.replace("16384", "321")
     );
-    assert_eq!(usage["request_count"], 2);
+    assert_eq!(usage["provider_usage"]["attempts"], 2);
     assert_eq!(usage["outcome"], "completed");
 }
 
@@ -2236,7 +3277,7 @@ fn a_configured_bedrock_limit_controls_requests_and_the_continuation_note() {
 fn a_response_cut_off_at_the_output_limit_is_continued_once() {
     let mut cut_off = cut_off_submission("cut");
     cut_off["output"]["message"]["content"].as_array_mut().unwrap().push(
-        json!({"toolUse":{"toolUseId":"read-cut","name":"habeas","input":{"file":"src/lib.rs"}}}),
+        json!({"toolUse":{"toolUseId":"read-cut","name":"read_node","input":{"file":"src/lib.rs"}}}),
     );
     let (output, bodies, usage) = bedrock_exchange(
         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -2244,8 +3285,8 @@ fn a_response_cut_off_at_the_output_limit_is_continued_once() {
             cut_off,
             json!({
                 "output":{"message":{"role":"assistant","content":[{"toolUse":
-                    {"toolUseId":"submit","name":"submit_judgment","input":
-                        {"determination":true,"rationale":"Short."}}}]}},
+                    {"toolUseId":"submit","name":"submit_result","input":
+                        {"result":{"determination":true,"rationale":"Short."}}}}]}},
                 "stopReason":"tool_use",
                 "usage":{"inputTokens":9,"outputTokens":5,"totalTokens":14},
                 "metrics":{"latencyMs":1}
@@ -2286,11 +3327,13 @@ fn a_response_cut_off_at_the_output_limit_is_continued_once() {
     );
     assert_eq!(content[2]["text"], LIMIT_NOTE);
     // Both requests are recorded, and the cut-off call never ran.
-    assert_eq!(usage["request_count"], 2);
-    assert_eq!(usage["requests"].as_array().unwrap().len(), 2);
-    assert_eq!(usage["tool_calls"]["submit_judgment"], 2);
-    assert_eq!(usage["tool_skipped"]["submit_judgment"], 1);
-    assert_eq!(usage["tool_skipped"]["habeas"], 1);
+    assert_eq!(usage["provider_usage"]["attempts"], 2);
+
+    assert_eq!(
+        usage["provider_usage"]["tools"]["submit_result"]["calls"],
+        1
+    );
+
     assert_eq!(usage["outcome"], "completed");
 }
 
@@ -2313,8 +3356,8 @@ fn a_second_response_at_the_output_limit_fails_the_assessment() {
         .unwrap()
         .clone();
     assert_eq!(last["content"][1]["text"], LIMIT_NOTE);
-    assert_eq!(usage["request_count"], 2);
-    assert_eq!(usage["tool_skipped"]["submit_judgment"], 1);
+    assert_eq!(usage["provider_usage"]["attempts"], 2);
+
     assert_eq!(usage["outcome"], "failed");
 }
 
@@ -2328,7 +3371,7 @@ fn a_context_window_overflow_fails_without_a_continuation() {
     assert!(!output.status.success(), "{stderr}");
     assert!(stderr.contains("context window"), "{stderr}");
     assert_eq!(bodies.len(), 1);
-    assert_eq!(usage["request_count"], 1);
+    assert_eq!(usage["provider_usage"]["attempts"], 1);
     assert_eq!(usage["outcome"], "failed");
 }
 
@@ -2338,8 +3381,8 @@ fn a_context_window_overflow_fails_without_a_continuation() {
 fn ollama_cut_off_reply() -> Value {
     let mut cut = reply(vec![call(
         "cut",
-        "submit_judgment",
-        json!({"determination":true}),
+        "submit_result",
+        json!({"result":{"determination":true}}),
     )]);
     cut["done_reason"] = json!("length");
     cut
@@ -2365,7 +3408,7 @@ fn a_stop_at_an_output_limit_that_is_not_known_fails_the_assessment() {
         fixture.original
     );
     let usage = fixture.usage();
-    assert_eq!(usage["request_count"], 1);
+    assert_eq!(usage["provider_usage"]["attempts"], 1);
     assert_eq!(usage["outcome"], "failed");
 }
 
@@ -2376,8 +3419,8 @@ fn a_configured_ollama_num_predict_is_the_known_output_limit() {
         ollama_cut_off_reply(),
         reply(vec![call(
             "submit",
-            "submit_judgment",
-            json!({"determination":true,"rationale":"Short."}),
+            "submit_result",
+            json!({"result":{"determination":true,"rationale":"Short."}}),
         )]),
     ]);
     let fixture = Fixture::new(&server.endpoint);
@@ -2398,10 +3441,7 @@ fn a_configured_ollama_num_predict_is_the_known_output_limit() {
         .last()
         .unwrap()
         .to_string();
-    assert!(
-        last.contains("reached the 512-token output limit"),
-        "{last}"
-    );
+    assert!(last.contains("cut off at 512 tokens"), "{last}");
     assert_eq!(fixture.usage()["outcome"], "completed");
 }
 
@@ -2414,10 +3454,10 @@ fn failed_evidence_write_keeps_the_accepted_judgment_in_usage() {
     let server = Server::start_with(
         vec![reply(vec![call(
             "submit",
-            "submit_judgment",
-            json!({
+            "submit_result",
+            json!({"result":{
                 "determination":{"FIXME":["#125"]},"rationale":"The source documents the remaining gap."
-            }),
+            }}),
         )])],
         move || {
             fs::remove_file(&evidence_path).unwrap();
@@ -2437,8 +3477,7 @@ fn failed_evidence_write_keeps_the_accepted_judgment_in_usage() {
     assert_eq!(usage["outcome"], "failed");
     assert_eq!(usage["determination"], "FIXME");
     assert_eq!(usage["evidence_written"], false);
-    assert_eq!(usage["request_count"], 1);
-    assert_eq!(usage["requests"][0]["outcome"], "completed");
+    assert_eq!(usage["provider_usage"]["attempts"], 1);
 }
 
 /// Answers one request with an HTTP error status and returns its JSON body.
@@ -2565,8 +3604,8 @@ fn all_adapters_preserve_prompt_tools_and_evidence_with_default_connections() {
     // Ollama with no authentication configured sends no credential.
     let server = Server::start(vec![reply(vec![call(
         "submit",
-        "submit_judgment",
-        submit.clone(),
+        "submit_result",
+        json!({"result":submit.clone()}),
     )])]);
     let fixture = Fixture::new(&server.endpoint);
     fs::write(
@@ -2599,7 +3638,7 @@ fn all_adapters_preserve_prompt_tools_and_evidence_with_default_connections() {
     // Bedrock without a profile or region uses the SDK default chain.
     let server = Server::start(vec![json!({
         "output":{"message":{"role":"assistant","content":[{"toolUse":
-            {"toolUseId":"submit","name":"submit_judgment","input":submit.clone()}}]}},
+            {"toolUseId":"submit","name":"submit_result","input":{"result":submit.clone()}}}]}},
         "stopReason":"tool_use",
         "usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2},
         "metrics":{"latencyMs":1}
@@ -2658,7 +3697,7 @@ fn all_adapters_preserve_prompt_tools_and_evidence_with_default_connections() {
         "id":"resp_submit", "object":"response", "status":"completed",
         "model":"fixture-openai", "output":[{
             "type":"function_call", "id":"fc_submit", "call_id":"submit",
-            "name":"submit_judgment", "arguments":submit.to_string(), "status":"completed"
+            "name":"submit_result", "arguments":json!({"result":submit}).to_string(), "status":"completed"
         }],
         "usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}
     })]);
@@ -2695,7 +3734,7 @@ fn all_adapters_preserve_prompt_tools_and_evidence_with_default_connections() {
     // and the entire evidence document, including inputs and reference hashes.
     assert_eq!(ollama, bedrock);
     assert_eq!(ollama, openai);
-    assert_eq!(ollama.1.len(), 10);
+    assert_eq!(ollama.1.len(), 12);
     assert_eq!(ollama_evidence["requirement"], REQUIREMENT);
     assert_eq!(ollama_evidence["determination"], true);
     assert_eq!(ollama_evidence["rationale"], submit["rationale"]);
@@ -2713,6 +3752,33 @@ fn assert_unrecorded_failure(output: &Output, expected: &str) {
     assert!(stderr.contains(expected), "{stderr}");
     assert!(!stdout.contains("Usage:"), "{stdout}");
     assert!(!stdout.contains("1 authored"), "{stdout}");
+}
+
+// {test}`requirements.configuration.user_location`
+#[test]
+fn authoring_uses_the_same_user_config_path_in_different_projects() {
+    let server = Server::start(Vec::new());
+    let first = Fixture::new(&server.endpoint);
+    let second = Fixture::new(&server.endpoint);
+    let path = first.config.join("habeas/config.toml");
+    fs::write(&path, "invalid toml = [").unwrap();
+    fs::write(second.project.join("habeas.toml"), "version = 1\n").unwrap();
+    for fixture in [&first, &second] {
+        let mut command = fixture.command();
+        command
+            .env("XDG_CONFIG_HOME", &first.config)
+            .env("APPDATA", &first.config)
+            .args(["author", SUBJECT]);
+        let result = command.output().unwrap();
+        assert_unrecorded_failure(&result, path.to_str().unwrap());
+        let result = command
+            .env_remove("HOME")
+            .env_remove("APPDATA")
+            .env_remove("XDG_CONFIG_HOME")
+            .output()
+            .unwrap();
+        assert_unrecorded_failure(&result, if cfg!(windows) { "APPDATA" } else { "HOME" });
+    }
 }
 
 // {test}`requirements.configuration.state_location`
@@ -2797,8 +3863,8 @@ fn usage_write_failures_are_reported_without_claiming_recorded_history() {
         let server = Server::start_with(
             vec![reply(vec![call(
                 "submit",
-                "submit_judgment",
-                json!({"determination":true,"rationale":"The supplied sources support the subject."}),
+                "submit_result",
+                json!({"result":{"determination":true,"rationale":"The supplied sources support the subject."}}),
             )])],
             move || {
                 for entry in fs::read_dir(&usage).unwrap() {
@@ -2871,11 +3937,7 @@ fn unresolvable_mandatory_inputs_fail_before_any_model_request() {
     listener.set_nonblocking(true).unwrap();
     let fixture = Fixture::new(&format!("http://{}", listener.local_addr().unwrap()));
     // The subject's own declaration is a mandatory input that cannot be read.
-    fs::write(
-        fixture.project.join("habeas.toml"),
-        "version = 1\n[evidence]\ndisallow = ['md/requirements.md']\n",
-    )
-    .unwrap();
+    fs::write(fixture.project.join(".gitignore"), "md/requirements.md\n").unwrap();
     let output = fixture.run(&["author", SUBJECT]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "{stderr}");
@@ -3157,6 +4219,8 @@ fn home_markers(home: &str) -> &'static [&'static str] {
             "Independent recount:",
         ],
         "habeas-refactor" => &[
+            "`--map requirements.cli.check=requirements.core.check`",
+            "`{impl}`, `{test}`, `{cite}`, `{fixme}`, and `{term}` references to a moved definition",
             "habeas refactor --dry-run",
             "`--map 'src/config.rs#fn[load]=src/config/load.rs#fn[load]'`",
             "\"Would leave ... unchanged\" lists records a mapping affects that fail a check",
@@ -3243,6 +4307,15 @@ fn bundled_skills_default_to_process_coverage_and_keep_artifacts_disposable() {
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");
+        if name == "habeas" {
+            assert!(
+                text.contains("are disposable build artifacts. Never stage or commit them to Git")
+            );
+        } else {
+            assert!(text.to_lowercase().contains(
+                "never stage or commit disposable coverage artifacts in the cargo target directory"
+            ));
+        }
         for required in [
             "`habeas coverage`",
             "`cargo nextest`",
@@ -3346,6 +4419,7 @@ fn bootstrap_checks_and_repairs_coverage_setup_and_preserves_conflicts() {
 
 // {test}`requirements.cli.skill_structure.refer`
 #[test]
+// {test}`requirements.cli.distributed_guidance.bootstrap`
 fn bundled_skills_refer_to_a_topic_home_instead_of_restating_it() {
     for (name, referrals) in [
         (
@@ -3441,7 +4515,7 @@ fn the_habeas_skill_is_home_of_routing_inspection_syntax_and_shared_gotchas() {
     assert_text(
         "gotchas",
         &section(raw, "## Gotchas"),
-        &["Reference discovery and authoring read only files in the Git index"],
+        &["Reference discovery scans the working directory"],
     );
     assert_text(
         "distributed requirements",
@@ -3548,6 +4622,24 @@ fn the_bootstrap_skill_is_home_of_deriving_an_initial_requirement_set() {
         "## Report",
     ] {
         section(raw, heading);
+    }
+    let proposing = collapse(&section(raw, "## Proposing requirements"));
+    assert!(proposing.contains("Write one requirement per obligation a user could rely on"));
+    assert!(proposing.contains("Label each proposal and act on the label"));
+    let tagging = collapse(&section(raw, "## Tagging"));
+    assert!(tagging.contains("`{test}` on tests and `{impl}` on roots"));
+    assert!(
+        tagging
+            .contains("Map each other inventoried item to the requirement whose root reaches it")
+    );
+    let report = section(raw, "## Report");
+    for field in [
+        "Tests mapped:",
+        "Items mapped:",
+        "Independent recount:",
+        "Gaps:",
+    ] {
+        assert!(report.contains(field), "{report}");
     }
     assert_home("habeas-bootstrap-requirements");
 }
@@ -4044,7 +5136,11 @@ fn the_requirements_skill_commits_agreed_requirements_before_code() {
 
 // {test}`requirements.cli.requirements_review_skill.agreed_text`
 #[test]
+// {test}`requirements.cli.requirements_review_skill`
 fn the_requirements_skill_reviews_every_change_to_agreed_text() {
+    let workflow = collapse(skill_md("habeas-requirements"));
+    assert!(workflow.contains("If the change adds, alters, or removes no observable behavior"));
+    assert!(workflow.contains("an existing requirement already specifies it (most bug fixes), tell the user which requirement covers it"));
     assert!(
         description("habeas-requirements")
             .contains("before changing code, tests, or requirement text")
@@ -4270,6 +5366,7 @@ fn the_requirements_skill_stops_and_reports_when_it_cannot_ask_the_user() {
 
 // {test}`requirements.cli.requirements_review_skill.commit`
 #[test]
+// {test}`requirements.cli.requirements_review_skill.text_change.uncovered`
 fn the_requirements_skill_commits_every_group_together_before_code() {
     const SKILL: &str = "habeas-requirements";
     let commit = step_of(
@@ -4349,6 +5446,8 @@ fn the_requirements_skill_stops_dependent_work_when_agreed_text_must_change() {
 // {test}`requirements.cli.requirements_review_skill.text_change.uncovered`
 #[test]
 fn the_requirements_skill_drafts_a_requirement_for_uncovered_behavior() {
+    assert!(step("habeas-requirements", 3).starts_with("Review."));
+    assert!(step("habeas-requirements", 4).starts_with("Present each group to the user"));
     assert_phrases(
         "habeas-requirements",
         &["Behavior no requirement covers goes back to step 2"],
@@ -4572,6 +5671,7 @@ fn the_review_prompt_gives_a_report_template() {
             "### Revised text",
             "as complete directives ready to paste, including new split requirements",
             "### Edits outside the group",
+            "revised text of other requirements your changes make stale",
             "### Mechanical changes",
             "list new full names and added examples",
             "### Design questions",
@@ -4701,6 +5801,7 @@ fn the_evidence_skill_never_writes_placeholder_evidence_for_pending_work() {
 
 // {test}`requirements.authoring.batch`
 #[test]
+// {test}`requirements.authoring.batch`
 fn bundled_skills_direct_the_agent_to_the_authoring_harness() {
     // habeas-evidence is the home of the authoring workflow.
     assert_phrases(
@@ -5117,7 +6218,12 @@ fn bundled_skills_explain_distributed_requirements() {
             "Each needs `within: <site query>`",
             "Each body has these keys: `language`",
             "`within`, required for violation queries; and `match` and `no_match` snippet lists",
-            "Each site-query match makes a site",
+            "Each site-query match makes a site: the innermost outline node containing the match",
+            "Matches from several queries on the same node produce one site",
+            "A violation belongs to the innermost containing site of its `within` query",
+            "original text of files included in reference discovery",
+            "Review changes to matches when upgrading `ast-grep-config`",
+            "badge with each query's kind and name above its code block",
         ],
     );
     assert_text(
@@ -5128,7 +6234,7 @@ fn bundled_skills_explain_distributed_requirements() {
             "`css`, `markdown`, `toml`, or `yaml`",
             "optional `paths` and `exclude`, lists of project-relative files or directories",
             "an ast-grep `rule`, with optional `utils` and `constraints`",
-            "A violation match is reported to the site that contains it",
+            "A violation belongs to the innermost containing site of its `within` query",
             "Don't reference the distributed requirement from a site just because it is a site",
             "A site review reads its site, which covers it for Rust item coverage",
             "`habeas author --all` authors a site review for each site",
@@ -5155,6 +6261,7 @@ fn bundled_skills_explain_distributed_requirements() {
 
 // {test}`requirements.cli.distributed_guidance.when`
 #[test]
+// {test}`requirements.cli.distributed_guidance`
 fn bundled_skills_make_a_requirement_distributed_only_for_per_site_obligations() {
     assert_text(
         "Do list",
@@ -5353,6 +6460,7 @@ fn the_refactor_skill_never_hand_edits_evidence_and_a_rename_is_not_a_move() {
 // {test}`requirements.authoring.cache_checkpoints`
 #[test]
 // {test}`requirements.authoring.usage_storage`
+// {test}`requirements.authoring.usage_requests`
 fn openai_responses_replays_tool_calls_and_records_usage() {
     fn assert_no_checkpoints(value: &Value) {
         match value {
@@ -5395,13 +6503,13 @@ fn openai_responses_replays_tool_calls_and_records_usage() {
     let server = Server::start(vec![
         response(
             "read",
-            "habeas",
-            json!({"file":"extra.txt","line_start":10}),
+            "read_node",
+            json!({"path":"extra.txt","location":"line@36a3bca8a276"}),
         ),
         response(
             "submit",
-            "submit_judgment",
-            json!({"determination":false,"rationale":"Missing implementation."}),
+            "submit_result",
+            json!({"result":{"determination":false,"rationale":"Missing implementation."}}),
         ),
     ]);
     let fixture = Fixture::new(&server.endpoint);
@@ -5421,7 +6529,7 @@ fn openai_responses_replays_tool_calls_and_records_usage() {
         assert_eq!(request.body["model"], "fixture-openai");
         assert_eq!(request.body["max_output_tokens"], 1024);
         assert_eq!(request.body["reasoning"]["effort"], "low");
-        assert_eq!(request.body["tools"].as_array().unwrap().len(), 10);
+        assert_eq!(request.body["tools"].as_array().unwrap().len(), 12);
         assert_no_checkpoints(&request.body);
     }
     assert!(
@@ -5449,11 +6557,14 @@ fn openai_responses_replays_tool_calls_and_records_usage() {
     let usage = fixture.usage();
     assert_eq!(usage["backend"], "openai");
     assert_eq!(usage["outcome"], "completed");
-    assert_eq!(usage["request_count"], 2);
-    assert_eq!(usage["tokens"]["input"], 22);
-    assert_eq!(usage["tokens"]["output"], 14);
-    assert_eq!(usage["tokens"]["cached_input"], 6);
-    assert_eq!(usage["tokens"]["reasoning"], 4);
+    assert_eq!(usage["provider_usage"]["attempts"], 2);
+    assert_eq!(usage["provider_usage"]["input_tokens"]["reported"], 22);
+    assert_eq!(usage["provider_usage"]["output_tokens"]["reported"], 14);
+    assert_eq!(
+        usage["provider_usage"]["cached_input_tokens"]["reported"],
+        6
+    );
+    assert_eq!(usage["provider_usage"]["reasoning_tokens"]["reported"], 4);
     assert!(!usage.to_string().contains(AUTH));
 }
 
@@ -5478,7 +6589,7 @@ fn openai_key_only_profile_defaults_to_sol_and_accepts_overrides() {
             "id":"resp_submit", "object":"response", "status":"completed",
             "model":model, "output":[{
                 "type":"function_call", "id":"fc_submit", "call_id":"submit",
-                "name":"submit_judgment", "arguments":submit.to_string(), "status":"completed"
+                "name":"submit_result", "arguments":json!({"result":submit}).to_string(), "status":"completed"
             }],
             "usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}
         })]);
@@ -5544,7 +6655,7 @@ fn adaptive_routes_fresh_assessments_and_records_each_model() {
             "id":"resp_submit", "object":"response", "status":"completed",
             "model":"mock", "output":[{
                 "type":"function_call", "id":"fc_submit", "call_id":"submit",
-                "name":"submit_judgment", "arguments":arguments.to_string(), "status":"completed"
+                "name":"submit_result", "arguments":json!({"result":arguments}).to_string(), "status":"completed"
             }], "usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}
         })
     };
@@ -5684,7 +6795,7 @@ fn adaptive_routes_fresh_assessments_and_records_each_model() {
         for model in expected_models {
             assert!(
                 logs.iter()
-                    .any(|log| log["model"] == model && log["request_count"] == 1)
+                    .any(|log| log["model"] == model && log["provider_usage"]["attempts"] == 1)
             );
         }
     }
@@ -5712,12 +6823,12 @@ fn adaptive_sol_failure_is_final_and_confirm_uses_sol_verification() {
         }
     };
     let good = response(
-        "submit_judgment",
-        json!({"determination":true,"rationale":"Good."}),
+        "submit_result",
+        json!({"result":{"determination":true,"rationale":"Good."}}),
     );
     let bad = response(
-        "submit_judgment",
-        json!({"determination":false,"rationale":"Gap."}),
+        "submit_result",
+        json!({"result":{"determination":false,"rationale":"Gap."}}),
     );
     for confirm in [false, true] {
         let replies = if confirm {
@@ -5726,15 +6837,15 @@ fn adaptive_sol_failure_is_final_and_confirm_uses_sol_verification() {
                 bad.clone(),
                 bad.clone(),
                 response(
-                    "submit_verification",
-                    json!({
-                "real":false,"acknowledged":false,"acknowledgments":[],"rationale":"No real gap."}),
+                    "submit_result",
+                    json!({"result":{
+                "real":false,"acknowledged":false,"acknowledgments":[],"rationale":"No real gap."}}),
                 ),
             ]
         } else {
             vec![
                 bad.clone(),
-                response("submit_judgment", json!({"invalid":true})),
+                response("submit_result", json!({"result":{"invalid":true}})),
             ]
         };
         let server = Server::start(replies);
@@ -5784,12 +6895,12 @@ fn adaptive_sol_failure_is_final_and_confirm_uses_sol_verification() {
     for policy in ["once", "confirm"] {
         let server = Server::start(vec![
             response(
-                "submit_judgment",
-                json!({"determination":false,"rationale":"Mini found a gap."}),
+                "submit_result",
+                json!({"result":{"determination":false,"rationale":"Mini found a gap."}}),
             ),
             response(
-                "submit_judgment",
-                json!({"determination":false,"rationale":"Sol confirms the gap."}),
+                "submit_result",
+                json!({"result":{"determination":false,"rationale":"Sol confirms the gap."}}),
             ),
         ]);
         let fixture = Fixture::new(&server.endpoint);
@@ -5847,11 +6958,7 @@ fn adaptive_preflight_and_provider_errors_never_attempt_sol() {
         let fixture = Fixture::new(&endpoint);
         configure_adaptive_fixture(&fixture, &endpoint);
         if failure == "mandatory" {
-            fs::write(
-                fixture.project.join("habeas.toml"),
-                "version = 1\n[evidence]\ndisallow = ['md/requirements.md']\n",
-            )
-            .unwrap();
+            fs::write(fixture.project.join(".gitignore"), "md/requirements.md\n").unwrap();
         }
         if failure == "storage" {
             fs::write(&fixture.state, "not a directory").unwrap();
@@ -5935,7 +7042,7 @@ fn adaptive_cancellation_does_not_escalate_or_replace_evidence() {
 #[test]
 fn adaptive_unsubmitted_conversation_escalates_once_with_fresh_input() {
     let empty = json!({"id":"resp","object":"response","status":"completed","model":"mock","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}});
-    let good = json!({"id":"resp","object":"response","status":"completed","model":"mock","output":[{"type":"function_call","id":"fc","call_id":"call","name":"submit_judgment","arguments":json!({"determination":true,"rationale":"Good."}).to_string(),"status":"completed"}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}});
+    let good = json!({"id":"resp","object":"response","status":"completed","model":"mock","output":[{"type":"function_call","id":"fc","call_id":"call","name":"submit_result","arguments":json!({"result":{"determination":true,"rationale":"Good."}}).to_string(),"status":"completed"}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}});
     let server = Server::start(vec![empty.clone(), empty, good]);
     let fixture = Fixture::new(&server.endpoint);
     configure_adaptive_fixture(&fixture, &server.endpoint);

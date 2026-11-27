@@ -153,24 +153,6 @@ pub fn status_markdown_with_github(
         .iter()
         .filter(|error| !associated_errors.contains(error.as_str()))
         .collect::<Vec<_>>();
-    match crate::evidence::untracked_reference_files(&inspection.root) {
-        Ok(untracked) if untracked.is_empty() => {}
-        Ok(untracked) => {
-            output.push_str(
-                "\n## Untracked files with references\n\n\
-                 Reference discovery considers only files in the Git index, so these \
-                 references are not validated. Stage the files with `git add` to include them.\n\n",
-            );
-            for file in untracked {
-                let file = file.strip_prefix(&inspection.root).unwrap_or(&file);
-                output.push_str(&format!("- `{}`\n", file.display()));
-            }
-        }
-        Err(error) => output.push_str(&format!(
-            "\n## Untracked files with references\n\nCannot check untracked files for references: {}\n",
-            escape_html(&error.to_string())
-        )),
-    }
     if !findings.is_empty() {
         output.push_str("\n## Validation findings\n");
         output.push_str(&findings);

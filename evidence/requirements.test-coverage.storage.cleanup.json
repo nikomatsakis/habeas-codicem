@@ -1,8 +1,8 @@
 {
   "requirement": "A successful collection removes superseded results and artifacts referenced\nby no current result or latest invocation record. This includes superseded\nprofiles and captured source snapshots; files and metadata shared by remaining\ncurrent results are preserved.\n\nInterruption or a cleanup error can leave unreferenced artifacts behind. The\nnext collection removes them before starting test execution. Cleanup errors\nare reported as collection failures and produce a failing exit status.\nUnreferenced artifacts never become eligible measurements again.\nRemoving unreferenced artifacts does not replace current test entries or\nchange the active build configuration.",
   "determination": true,
-  "rationale": "I judged this from the supplied test source only. I did not request implementation source.\n\nThe tests adequately cover each obligation of `requirements.test-coverage.storage.cleanup`.\n\n- **Superseded results and profiles are removed after a successful collection.**\n  - `store.rs#mod[tests]/fn[focused_replacement_preserves_unselected_results_and_shared_artifacts]` checks that after a focused replace and cleanup, the replaced test's old attempt directory is gone.\n  - After a full replace and cleanup, the whole superseded run directory is gone.\n  - In `tests/execution_coverage.rs#fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]`, a filtered rerun removes the old attempt (`!first.join(\"attempts\").join(old_second).exists()`).\n  - The same test checks that superseded retry profiles are removed, that a replaced run directory disappears (`!replaced_run.exists()`), and that a failed run's retained profiles are removed once a later attempt replaces them.\n  - An incompatible configuration drops the previous results and the old run directory (`!first.exists()`).\n- **Superseded source snapshots are removed.** The tests exercise this through removal of the whole superseded run directory. The sources are still readable from the preserved run record (`snapshot.runs[&first.id].sources`) while that run is current. I did not read the store layout, so this rests on the run directory being the place the snapshot lives.\n- **Shared files and metadata are preserved.**\n  - The unit test keeps `maps.json` and the unselected tests' `1.profraw` files and measurements. It also keeps the run record while the run is still referenced.\n  - The orphan-recovery unit test, `recovery_removes_orphans_and_cache_but_preserves_current_diagnostic_profiles`, preserves a current failed test's profile.\n  - The integration test preserves remaining attempts after partial replacement (for example, `attempts(&first).len() == 4`, then 3).\n- **The latest invocation record is retained.** The empty-selection loop in the integration test leaves a run record with diagnostics. That record is still the latest one after the next collection's cleanup.\n- **Interrupted or orphaned artifacts are removed on the next collection.**\n  - The unit test plants an orphan UUID directory and a stale `selection-cache.json`, then asserts both are removed after `cleanup`.\n  - In the integration test, `cleanup_failure_is_reported_and_next_collection_removes_orphans`, the following collection removes the orphan (`!orphan.exists()`).\n  - The ordering \"before starting test execution\" is only checked indirectly. In the failing-cleanup case, no run record is added and the attempts stay unchanged. This would catch an implementation that ran tests first and then failed on cleanup.\n- **Cleanup errors fail the collection.** The integration test makes an orphan directory unreadable (mode 000). It asserts a non-success exit status and that stderr contains \"Permission denied\". It also asserts that the runs and attempts are unchanged.\n- **Unreferenced artifacts never become eligible measurements again.** After a replacement, the unit test checks that the replaced test is `pending` with `measurements.is_none()`. The superseded attempt is not resurrected. The integration test checks that the surviving attempts are unchanged after each cleanup.\n- **Cleanup does not replace current entries or change the build configuration.** The unit test keeps the preserved entries with their original run and measurements. The integration test asserts that `configuration` stays equal to `first_configuration` across filtered reruns and a `--profile` change. The `--no-run` and compile-failure cases leave the runs and attempts unchanged.\n\nI found no unacknowledged gap.",
-  "references": "8ae8137b0fae0483bec51aded06adb2dd5e61cfdf050e6ea3ee5ce1099a7e9b0",
+  "rationale": "The reviewed tests cover each obligation of `requirements.test-coverage.storage.cleanup`. I read `Store::cleanup` in `src/execution_coverage/store.rs` only to see which state it removes and keeps. That gave me two facts. Invocation rows are deleted unless a test row or the latest state row references them. Run directories and attempt directories are then kept only if the resulting snapshot references them. I did not use the implementation to set expected behavior.\n\n**Superseded results and artifacts removed (profiles, snapshots, unreferenced runs)**\n- `focused_replacement_preserves_unselected_results_and_shared_artifacts` replaces one test of a focused run and calls `cleanup`.\n  - The superseded attempt directory (`old[0]`) is asserted gone.\n  - After a full replacement and cleanup, the whole old run directory `first.id` is asserted gone. The run directory is removed only when its invocation record, including its captured sources, is no longer in the snapshot, so this also covers superseded invocation and source-snapshot removal.\n- The integration test `real_parallel_processes_retries_child_profiles_and_filtered_reruns` asserts:\n  - superseded retry profiles are removed (the attempt count stays 5);\n  - `attempts(&first)` shrinks from 5 to 4 to 3 as tests are replaced;\n  - replaced runs no longer exist;\n  - the old run `first` no longer exists after an incompatible configuration change.\n\n**Shared files and metadata preserved**\n- The unit test asserts that the unselected results keep their run id, their measurements, and their `1.profraw` files.\n- It also asserts that `maps.json` is preserved, and that `snapshot.runs[&first.id].sources == first.sources`.\n- In the integration test, the latest invocation record survives an empty-selection collection that no test references. The assertion on `diagnostics[0]` containing \"Empty test selection\" shows this.\n- `recovery_removes_orphans_and_cache_but_preserves_current_diagnostic_profiles` shows that a current failed attempt's profile is kept while the orphan is removed.\n\n**Orphans removed by the next collection, before test execution**\n- `recovery_removes_orphans_and_cache_but_preserves_current_diagnostic_profiles` plants an orphan run directory and a stale `selection-cache.json`. After cleanup, both are gone.\n- `cleanup_failure_is_reported_and_next_collection_removes_orphans` makes an orphan unremovable, so a collection fails. The next collection succeeds and the orphan is gone.\n- In `cleanup_failures_before_and_after_execution_invalidate_the_run`, the first scenario fails with \"cleanup failed before test execution\" and the new attempt has no processes. That shows cleanup runs before any test execution.\n- In the same test, an orphan created by a test during execution is left behind, which simulates an interruption. A later cleanup then reports it.\n\n**Cleanup errors reported as collection failures with a failing status**\n- The tests above assert `!status.success()`, \"Permission denied\" on stderr, \"Coverage cleanup failed: \" on stderr, and a failed outcome with matching diagnostics in the saved run. They cover both pre-execution and post-execution cleanup failures.\n\n**Unreferenced artifacts never become eligible again**\n- Measurements are read from the `tests` rows, which are tied to invocations. Orphan directories and removed attempts therefore have no path into the snapshot.\n- Tests show that stale or removed data does not reappear as measurements. The replaced test is `pending` with `measurements.is_none()`. After a cleanup failure, the saved runs and attempts are unchanged (`runs(root) == before`, `attempts == original`).\n\n**Current entries and active configuration unchanged**\n- The unit test asserts that `snapshot.tests.len() == 3` survives cleanup.\n- The integration test asserts that `saved[1].1[\"configuration\"] == first_configuration` across cleanup after focused reruns and a `--profile focused` run. After a failed run and its retry, the earlier results in `attempts(&first)` stay intact.\n\nI found no untested obligation and no gap.",
+  "references": "f52d5e67e467fd3877ca079ab0070fd33373a6a6ebad932d8fda98932cc1c5bc",
   "inputs": [
     {
       "requirements": "requirements.test-coverage.storage.cleanup",
@@ -44,6 +44,31 @@
       "file": "tests/execution_coverage.rs",
       "item": "fn[cleanup_failure_is_reported_and_next_collection_removes_orphans]",
       "hash": "1fd328550cfc175ce60642fbb423b02ef866352ea6f2302748b375805f3ab05c"
+    },
+    {
+      "file": "tests/execution_coverage.rs",
+      "item": "fn[cleanup_failures_before_and_after_execution_invalidate_the_run]",
+      "hash": "28bddb1f937751ee2e9e0788ba157fe9155641a9be161b5aaa1d6f306936319c"
+    },
+    {
+      "file": "src/execution_coverage/store.rs",
+      "item": "impl[Store]/fn[cleanup]",
+      "hash": "27176d489809b126ffded1f8c4ff9465909f753fe746add12bb77f6ed5c716c2"
+    },
+    {
+      "file": "src/execution_coverage/store.rs",
+      "item": "impl[Store]/fn[open]",
+      "hash": "5592192cf45293e202adcb15a426bb54ac8e2c6a694ac7ef947f1c4c802a7cda"
+    },
+    {
+      "file": "src/execution_coverage/store.rs",
+      "item": "impl[Store]/fn[replace]",
+      "hash": "2e8c8d6fad07af2b86a11df76256686ccddb56e79cc1b4c51ee3b4f926af5f52"
+    },
+    {
+      "file": "src/execution_coverage/store.rs",
+      "item": "impl[Store]/fn[snapshot]",
+      "hash": "c6f53ac7c08df41aaf742ddf8c0572b291ed9a00d69227683832809f93ff0886"
     }
   ],
   "format_version": 1,
@@ -56,7 +81,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "8ae8137b0fae0483bec51aded06adb2dd5e61cfdf050e6ea3ee5ce1099a7e9b0"
+          "value": "f52d5e67e467fd3877ca079ab0070fd33373a6a6ebad932d8fda98932cc1c5bc"
         }
       ]
     },
@@ -68,7 +93,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "dc1b2dccce7470b336d690af29d871b7326249d56de9fa45e19fccbccb54c691"
+          "value": "782aa0a9757fba44dae32ca407fae1bae50d0fcbab9be2f5ab2700cb94eec965"
         }
       ]
     },
@@ -148,6 +173,91 @@
         {
           "scheme": "habeas-input-v1",
           "value": "7679c439c3c4e7ab7ee952fa13725897df34c5e507f091478ad3a35d727c88f3"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/execution_coverage.rs"
+            },
+            "selector": "fn[cleanup_failures_before_and_after_execution_invalidate_the_run]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "83daf1e5abcc50f42fd849025fc1259e9c17b6bc258a3c17815055daec8d370c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/store.rs"
+            },
+            "selector": "impl[Store]/fn[cleanup]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "0153c0bfcf388f98793a2e88dad96555d10a4201b739a6675549ecde97b83820"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/store.rs"
+            },
+            "selector": "impl[Store]/fn[open]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "825be9befda85079637867260b714d921fe474677029456e4966de8d28a2091e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/store.rs"
+            },
+            "selector": "impl[Store]/fn[replace]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "6c603982732d5761498561a1ca9cc1cf5b45c8c75b8c038f10132954e810be17"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/store.rs"
+            },
+            "selector": "impl[Store]/fn[snapshot]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "228220763e6144fff1b93a51a40427774933423e4da2ab963531685dada899c1"
         }
       ]
     }

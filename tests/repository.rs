@@ -542,8 +542,12 @@ fn workflow_job_marks_belong_to_the_job_that_follows() {
     ] {
         let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
         let source = std::fs::read_to_string(&file).unwrap();
-        let outline = trust_but_verify::outline_engine::parse(&file, &source).unwrap();
-        for (index, line) in source.lines().enumerate() {
+        use trust_but_verify::outline::{AttachmentKind, OutlineLang, languages::Yaml};
+        let outline = Yaml.outline(&source).unwrap();
+        let mut offset = 0;
+        for (index, line) in source.split_inclusive('\n').enumerate() {
+            let start = offset;
+            offset += line.len();
             let Some(job) = source.lines().nth(index + 1) else {
                 continue;
             };
@@ -552,11 +556,20 @@ fn workflow_job_marks_belong_to_the_job_that_follows() {
                 && job.starts_with("  ")
                 && job.trim_end().ends_with(':')
             {
-                let owners = outline.comment_owners_at_line(index + 1);
+                let owners: Vec<_> = outline
+                    .items
+                    .iter()
+                    .filter(|item| {
+                        item.attachments.iter().any(|a| {
+                            a.kind == AttachmentKind::Comment
+                                && (start..offset).contains(&a.span.start)
+                        })
+                    })
+                    .collect();
                 let name = job.trim().trim_end_matches(':');
                 assert_eq!(owners.len(), 1, "{path}:{}", index + 1);
                 assert_eq!(
-                    outline.nodes[owners[0]].selector,
+                    owners[0].selector,
                     format!("pair[jobs]/pair[{name}]"),
                     "{path}:{}",
                     index + 1

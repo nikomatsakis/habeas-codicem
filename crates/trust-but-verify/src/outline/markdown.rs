@@ -9,9 +9,9 @@ use pulldown_cmark::{Event, Parser as CommonMark};
 use tree_sitter::Node;
 
 use super::{
-    DraftComment, Encoder, HASH_DIGITS, Label, LegacyOutline, LineIndex, NameRule, OutlineError,
-    OutlineNode, Profile, Redaction, Segment, assign_comments, check_errors, disambiguate,
-    parse_tree, root_node,
+    DraftComment, Encoder, HASH_DIGITS, Label, LegacyOutline, LineIndex, OutlineError, OutlineNode,
+    Profile, Redaction, Segment, assign_comments, disambiguate, parse_tree, root_node,
+    syntax_diagnostic,
 };
 
 /// A parsing view with a source offset for each byte boundary. Removing quote
@@ -162,6 +162,7 @@ struct Builder<'a> {
     nodes: Vec<OutlineNode>,
     cores: Vec<usize>,
     comments: Vec<DraftComment>,
+    diagnostic: Option<OutlineError>,
 }
 
 // {impl}`requirements.sdk.sources.markdown.paragraphs`
@@ -185,6 +186,7 @@ pub(super) fn parse(
         nodes: vec![root_node(source, lines, String::new(), String::new())],
         cores: vec![0],
         comments: Vec::new(),
+        diagnostic: None,
     };
     builder.context(View::original(source), 0)?;
     for index in 0..builder.nodes.len() {
@@ -207,9 +209,11 @@ pub(super) fn parse(
     disambiguate(&mut builder.nodes);
     let comments = assign_comments(&mut builder.nodes, builder.comments, source, lines);
     Ok(LegacyOutline {
+        diagnostic: builder.diagnostic,
         profile,
         nodes: builder.nodes,
         comments,
+        annotations: Vec::new(),
     })
 }
 
@@ -227,10 +231,10 @@ impl Builder<'_> {
         if !view.text.contains(":::") {
             if let Some(view) = setext_sections(&view, original.root_node()) {
                 let tree = parse_tree(self.profile, self.grammar, &view.text)?;
-                check_errors(&tree, &LineIndex::new(&view.text))?;
+                self.record_diagnostic(&tree, &view);
                 return self.copy(tree.root_node(), &view, &HashSet::new(), parent);
             }
-            check_errors(&original, &LineIndex::new(&view.text))?;
+            self.record_diagnostic(&original, &view);
             return self.copy(original.root_node(), &view, &HashSet::new(), parent);
         }
         let (view, directives) = fences(view, original.root_node());
@@ -241,12 +245,19 @@ impl Builder<'_> {
         } else {
             view
         };
-        check_errors(&tree, &LineIndex::new(&view.text)).map_err(|mut error| {
-            let local = LineIndex::new(&view.text).starts[error.line - 1];
-            error.line = self.lines.line(view.offsets[local]);
-            error
-        })?;
+        self.record_diagnostic(&tree, &view);
         self.copy(tree.root_node(), &view, &directives, parent)
+    }
+
+    fn record_diagnostic(&mut self, tree: &tree_sitter::Tree, view: &View) {
+        if let Some(error) = syntax_diagnostic(tree, |byte| self.lines.line(view.offsets[byte]))
+            && self
+                .diagnostic
+                .as_ref()
+                .is_none_or(|first| error.line < first.line)
+        {
+            self.diagnostic = Some(error);
+        }
     }
 
     // {cite}`habeas:util`
@@ -284,38 +295,26 @@ impl Builder<'_> {
             });
         let rule = self.profile.rule(node);
         let owner = if colon || rule.is_some() {
-            let (kind, name, declaration) = if colon {
-                ("block", None, range.start)
+            let (kind, name, name_span) = if colon {
+                ("block", None, None)
             } else {
                 let rule = rule.expect("mapped node");
-                let named = match rule.name {
-                    NameRule::Custom(name) => name(node, &view.text),
-                    NameRule::Anonymous => None,
-                    NameRule::Field(field) => node.child_by_field_name(field).map(|child| {
-                        (
-                            vec![view.text[child.byte_range()].to_owned()],
-                            child.start_byte(),
-                        )
-                    }),
-                    NameRule::FirstChild(kinds) => children
-                        .iter()
-                        .find(|child| child.is_named() && kinds.contains(&child.kind()))
-                        .map(|child| {
-                            (
-                                vec![view.text[child.byte_range()].to_owned()],
-                                child.start_byte(),
-                            )
-                        }),
-                };
-                let (name, declaration) = named.map_or((None, range.start), |(name, byte)| {
-                    (Some(name), view.offsets[byte])
-                });
-                (rule.kind, name, declaration)
+                let (name, name_span) = rule
+                    .name
+                    .resolve(node, &view.text)
+                    .map(|(parts, bytes)| {
+                        // The next projected byte may skip a container prefix or newline.
+                        let start = view.offsets[bytes.start];
+                        let end = bytes.last().map_or(start, |last| view.offsets[last] + 1);
+                        (parts, crate::outline::Span::new(start, end))
+                    })
+                    .unzip();
+                (rule.kind, name, name_span)
             };
             if kind == "section" && name.is_none() && parent != 0 {
                 parent
             } else {
-                self.push(kind, name, declaration, range.clone(), syntax, parent)
+                self.push(kind, name, name_span, range.clone(), syntax, parent)
             }
         } else {
             parent
@@ -379,7 +378,7 @@ impl Builder<'_> {
         &mut self,
         kind: &'static str,
         name: Option<Vec<String>>,
-        declaration: usize,
+        name_span: Option<crate::outline::Span>,
         range: Range<usize>,
         syntax: usize,
         parent: usize,
@@ -390,13 +389,18 @@ impl Builder<'_> {
         self.nodes.push(OutlineNode {
             kind,
             name,
+            name_span,
+            header_span: None,
+            trailer_span: None,
             segment: String::new(),
             selector: String::new(),
             parent: Some(parent),
             children: Vec::new(),
             line_start,
             line_end,
-            declaration_line: self.lines.line(declaration),
+            declaration_line: self
+                .lines
+                .line(name_span.map_or(range.start, |span| span.start)),
             byte_start: range.start,
             byte_end: range.end,
             source_start: range.start,

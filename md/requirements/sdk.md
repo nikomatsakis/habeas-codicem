@@ -15,9 +15,8 @@ be added one key at a time.
 
 The SDK’s public modules follow the interfaces introduced in these chapters.
 
-- `domain`: application data and the `Domain`, `NodeContents`, and `SourceNodes` traits.
-- `graph`: criterion definitions, graph observations, and evidence; `graph::validator`
-  runs criteria.
+- `domain`: application data and the `Domain` and `NodeContents` traits.
+- `graph`: criterion definitions, graph observations, evidence, and functions for running criteria.
 - `request`: `ValidationContext`, typed `Ask` builders, context values, and request phases.
 - `agent`: configuration for the supplied agents.
 - `sources`: project inspection, search queries, and their results.
@@ -51,7 +50,7 @@ inspection tools, and records dependencies.
 | Node identities, paths, and labeled relationships | Domain and tracked inspection interfaces |
 | Node contents, formatting, and fingerprint rules | Recording and comparing supplied observations |
 | Criteria, `Context` values, and the meaning of their answers | Criterion execution and typed ask builders |
-| Serializable agent configuration loaded by the application | Supported agents, fixed tools, and backend integration |
+| Serializable backend configuration and optional domain tools | Agent harness, built-in tools, and backend integration |
 | Project directory and source-item-to-node mapping | Filesystem inspection respecting `.gitignore` and the outline module |
 | Evidence location and command acceptance policy | Evidence comparison and storage helpers |
 
@@ -147,31 +146,39 @@ time.
 ```rust,ignore
 pub trait Domain: Clone + Send + Sync {
     type Error: Send;
-    type NodeId: Clone + Eq + Send + Sync;
+    type NodeData: Clone + Eq + Hash + Send + Sync;
     type NodeContent: NodeContents;
     type EdgeLabel: Clone + Send + Sync;
 
-    fn node_path(&self, node: &Self::NodeId) -> NodePath;
+    fn cache(&self) -> &ValidationCache<Self>;
+    fn node_path(&self, node: &NodeId<Self>) -> NodePath;
     fn node_content(
         &self,
-        node: &Self::NodeId,
+        node: &NodeId<Self>,
     ) -> Result<Self::NodeContent, Self::Error>;
     fn outgoing_edges(
         &self,
-        node: &Self::NodeId,
+        node: &NodeId<Self>,
         label: Self::EdgeLabel,
-    ) -> Result<Vec<Self::NodeId>, Self::Error>;
+    ) -> Result<Vec<NodeId<Self>>, Self::Error>;
     fn load_evidence(
         &self,
-        node: &Self::NodeId,
+        node: &NodeId<Self>,
         criterion: &CriterionPath,
-    ) -> impl Future<Output = Result<Option<Record<Self::NodeId, Self::EdgeLabel>>, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Option<Record<Self::NodeData, Self::EdgeLabel>>, Self::Error>> + Send;
     fn store_evidence(
         &self,
-        node: &Self::NodeId,
+        node: &NodeId<Self>,
         criterion: &CriterionPath,
-        record: &Record<Self::NodeId, Self::EdgeLabel>,
+        record: &Record<Self::NodeData, Self::EdgeLabel>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    fn project_sources(&self) -> Option<SourceProject<Self>> { ... }
+    fn source_node(
+        &self,
+        item: &OutlineData,
+    ) -> Result<Self::NodeData, SourceError> { ... }
+    fn source_address(&self, _data: &Self::NodeData) -> Option<OutlineData> { ... }
 }
 ```
 :::
@@ -197,7 +204,8 @@ pub trait Domain: Clone + Send + Sync {
 :::
 
 Domains with mutable state commonly store it behind `Arc`, so cloned domains
-access the same graph and evidence storage.
+access the same graph and evidence storage. Each domain also supplies a
+[validation cache](sdk/validation-cache.md) through `Domain::cache`.
 
 ## SDK chapters
 
@@ -205,17 +213,18 @@ The chapters introduce each interface and the tools used with it:
 
 | Chapter | Purpose | Related traits and types |
 | --- | --- | --- |
+| [Validation cache](sdk/validation-cache.md) | Intern node data, share source outlines, and configure the agent. | `ValidationCache`, `Domain::cache` |
 | [Graph nodes](sdk/graph.md) | Node identities, stable paths, contents, and fingerprints. | [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html), [`NodeContents`](../rustdocs/trust_but_verify/domain/trait.NodeContents.html) |
 | [Graph edges](sdk/graph-edges.md) | Relationship labels and successor lookup. | [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html) |
 | [Criteria](sdk/graph/criteria.md) | Criterion types, completed answers, identity, review rules, and execution. | [`Criterion`](../rustdocs/trust_but_verify/graph/trait.Criterion.html) |
-| [Validators](sdk/graph/validators.md) | Constructing a validator and running criterion values. | [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html), [`Validator`](../rustdocs/trust_but_verify/graph/validator/struct.Validator.html) |
+| [Running criteria](sdk/graph/running-criteria.md) | Execute criteria and check or reuse saved evidence. | `Validator`, `UsageStats` |
 | [Validation context](sdk/graph/validation-context.md) | Tools for evaluating a criterion and recording its inputs. | [`ValidationContext`](../rustdocs/trust_but_verify/request/struct.ValidationContext.html) |
 | [Agent calls](sdk/graph/agent-calls.md) | Prompt construction and typed answers. | [`Context`](../rustdocs/trust_but_verify/request/trait.Context.html), [`Ask`](../rustdocs/trust_but_verify/request/struct.Ask.html) |
 | [Agent harness](sdk/graph/agent-harness.md) | Agent configuration, fixed inspection tools, and structured submissions. | [`AgentConfig`](../rustdocs/trust_but_verify/agent/enum.AgentConfig.html) |
 | [Storage](sdk/graph/evidence.md) | Where and how evidence is saved. | [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html) |
 | [Filesystem evidence storage](sdk/filesystem-storage.md) | Filesystem persistence for SDK evidence records. | [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html), [`FileEvidenceStorage`](../rustdocs/trust_but_verify/storage/struct.FileEvidenceStorage.html) |
-| [Sources and inspection](sdk/sources.md) | Project files, discovery, and source-item-to-node mapping. | [`Sources`](../rustdocs/trust_but_verify/sources/struct.Sources.html), [`SourceNodes`](../rustdocs/trust_but_verify/domain/trait.SourceNodes.html) |
-| [Source outlines](sdk/outlines.md) | Default language selection and ready-to-use source contents. | [`OutlineId`](../rustdocs/trust_but_verify/outline/struct.OutlineId.html), [`OutlineLang`](../rustdocs/trust_but_verify/outline/trait.OutlineLang.html), [`OutlineContent`](../rustdocs/trust_but_verify/outline/struct.OutlineContent.html) |
+| [Sources and inspection](sdk/sources.md) | Project files, discovery, and source-item-to-node mapping. | [`Sources`](../rustdocs/trust_but_verify/sources/struct.Sources.html), `Domain::source_node` |
+| [Source outlines](sdk/outlines.md) | Default language selection and ready-to-use source contents. | `OutlineData`, [`OutlineLang`](../rustdocs/trust_but_verify/outline/trait.OutlineLang.html), [`OutlineContent`](../rustdocs/trust_but_verify/outline/struct.OutlineContent.html) |
 
 ## Putting it all together
 

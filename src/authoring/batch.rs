@@ -151,6 +151,9 @@ async fn run_batch(
         .into_iter()
         .map(|subject| (assessment_kind(&inspection, &subject), subject))
         .collect::<Vec<_>>();
+    let mut domain =
+        crate::sdk::HabeasDomain::new(&root, &inspection.definitions, &inspection.outlines);
+    domain.populate_graph()?;
     let mut warmup = CacheWarmup::default();
     let (warmed, mut warmed_kinds) = tokio::sync::mpsc::unbounded_channel();
     let mut tasks = JoinSet::new();
@@ -170,11 +173,11 @@ async fn run_batch(
             let Some((kind, subject, warms)) = warmup.next(&mut subjects) else {
                 break;
             };
-            let root = root.clone();
+            let domain = domain.clone();
             let config = config.clone();
             let cancellation = cancellation.clone();
             let cancel = cancel.clone();
-            let first_request_finished = warms.then(|| {
+            let first_conversation_finished = warms.then(|| {
                 let warmed = warmed.clone();
                 Box::new(move || {
                     let _ = warmed.send(kind);
@@ -182,12 +185,12 @@ async fn run_batch(
             });
             tasks.spawn(async move {
                 let result = prepare_assessment(
-                    &root,
+                    domain,
                     &subject,
                     &config,
                     policy,
                     cancellation,
-                    first_request_finished,
+                    first_conversation_finished,
                 )
                 .await;
                 if let Err(error) = &result {
@@ -293,12 +296,7 @@ fn assessment_kind(inspection: &RepositoryInspection, subject: &AuthoringSubject
                 &inspection.references,
                 &inspection.sites,
             );
-            if crate::evidence::structural_assessment(
-                &inspection.root,
-                &inspection.outlines,
-                definition,
-                &entries,
-            ) {
+            if crate::evidence::structural_assessment(definition, &entries) {
                 "structural requirement"
             } else {
                 definition.kind.noun()
@@ -311,11 +309,11 @@ fn assessment_kind(inspection: &RepositoryInspection, subject: &AuthoringSubject
 
 /// Which assessment kinds have warmed their prompt cache: a kind's first
 /// assessment starts alone, and the others of its kind wait until its first
-/// provider request has finished, while other kinds proceed.
+/// conversation with a provider has finished, while other kinds proceed.
 #[derive(Default)]
 struct CacheWarmup {
-    /// Kinds whose first assessment is running but has not yet finished its
-    /// first provider request.
+    /// Kinds whose first assessment is running but has not yet finished a
+    /// conversation with a provider.
     warming: std::collections::BTreeSet<&'static str>,
     /// Kinds whose cache an earlier provider request has written.
     warm: std::collections::BTreeSet<&'static str>,
@@ -340,7 +338,7 @@ impl CacheWarmup {
         Some((kind, subject, warms))
     }
 
-    /// Records that a kind's first provider request has finished.
+    /// Records that a kind's first provider conversation has finished.
     fn warmed(&mut self, kind: &'static str) {
         self.warming.remove(kind);
         self.warm.insert(kind);
@@ -678,7 +676,7 @@ mod tests {
 
     // {test}`requirements.authoring.cache_warmup`
     #[test]
-    fn each_kind_starts_one_assessment_until_its_first_request_finishes() {
+    fn each_kind_starts_one_assessment_until_its_first_conversation_finishes() {
         let subject = |name: &str| AuthoringSubject::Definition(name.into());
         let mut queue = vec![
             ("requirement", subject("a")),
@@ -710,7 +708,7 @@ mod tests {
             label(warmup.next(&mut queue)),
             started("example", "e", true)
         );
-        // Once a kind's first request finishes, the others of it start.
+        // Once a kind's first conversation finishes, the others of it start.
         warmup.warmed("requirement");
         assert_eq!(
             label(warmup.next(&mut queue)),

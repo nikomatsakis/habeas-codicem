@@ -1,7 +1,7 @@
 {
   "requirement": "The SDK supplies a filesystem-backed helper for the methods under\n{cite}`requirements.sdk.graph.evidence.evidence_storage`. The domain can delegate\nto that helper. Its mapping distinguishes the source path from the criterion\npath and preserves segment boundaries under\n{cite}`requirements.sdk.filesystem-storage.keys`.",
   "determination": true,
-  "rationale": "I found no adequacy gap. The subject's obligations map to the two marked tests as follows.\n\n1. **A filesystem-backed helper exists for the evidence load and store methods, and the domain can delegate to it.**\n   - `crates/trust-but-verify/tests/storage.rs#fn[consumer_delegates_evidence_storage_using_only_the_requested_nodes_path]` builds a `StoredGraph` whose `Domain` impl wraps `FileEvidenceStorage`. Its `node_path` is `[\"consumer\", node]`.\n   - The test calls `load_evidence` and `store_evidence` through that domain.\n   - It asserts that a missing record loads as `None`, and that a stored record round-trips with its dependencies and output intact.\n   - It asserts that a different node loads as `None`.\n   - It writes bad JSON to the path returned by `record_path` and asserts `FileStorageError::Json`. This shows that delegation reads and writes the same path.\n\n2. **The mapping distinguishes the source path from the criterion path and preserves segment boundaries.**\n   - `crates/trust-but-verify/tests/storage.rs#fn[source_and_criterion_boundaries_preserve_independent_records]` covers the pairs `([\"a\"], [\"b\",\"c\"])` and `([\"a\",\"b\"], [\"c\"])`. These flatten to the same segments.\n   - It asserts the exact, different paths `s61/criteria/s62/s63/record.json` and `s61/s62/criteria/s63/record.json`.\n   - It stores a distinct record per pair, then reloads every pair afterwards and checks each output. This catches collisions or overwrites.\n   - It also checks that each record directory contains only `record.json`.\n   - Further pairs cover the boundary details of the cited `keys` requirement. These include empty source and criterion paths, empty segments, a segment named `criteria`, `../é`, and control-byte segments.\n\nTogether these cover the helper's existence, delegation, the source/criterion distinction, and boundary preservation. The cited `keys` requirement's own encoding and I/O-error rules are not reassessed here.",
+  "rationale": "The reviewed tests adequately check `requirements.sdk.graph.evidence.evidence_storage.filesystem`. I did not request implementation source. The tests alone settle the obligations below.\n\nThe subject has three obligations:\n1. The SDK supplies a filesystem-backed helper for the evidence load and store methods.\n2. The domain can delegate to that helper.\n3. The helper's mapping distinguishes the source path from the criterion path and preserves segment boundaries under `requirements.sdk.filesystem-storage.keys`.\n\n**Helper exists and is usable.**\n- Both tests construct `FileEvidenceStorage` and call its `load` and `store` methods. Neither would compile if the helper were missing.\n- `crates/trust-but-verify/tests/storage.rs#fn[source_and_criterion_boundaries_preserve_independent_records]` is marked `{test}` for this requirement.\n\n**Delegation.**\n- `crates/trust-but-verify/tests/storage.rs#fn[consumer_delegates_evidence_storage_using_only_the_requested_nodes_path]` builds a `StoredGraph` wrapping `FileEvidenceStorage`. It calls the domain's `load_evidence` and `store_evidence`.\n- It asserts that the first load is `None` (absence).\n- It asserts that a stored record round-trips with its dependencies and output unchanged.\n- It asserts that a different node loads as `None`, so the stored record is keyed to the requested node's path.\n- It asserts that corrupt JSON surfaces as `FileStorageError::Json`.\n- Together these cover delegation through the `Domain` evidence methods.\n\n**Source/criterion distinction and segment-boundary preservation.** `#fn[source_and_criterion_boundaries_preserve_independent_records]` covers this in several ways:\n- **Flattening collision:** it uses the pair `[\"a\"]` with `[\"b\",\"c\"]` and the pair `[\"a\",\"b\"]` with `[\"c\"]`. These are the exact collision example in `evidence_storage`. It asserts distinct exact paths: `s61/criteria/s62/s63/record.json` and `s61/s62/criteria/s63/record.json`.\n- **Empty paths:** it covers an empty source, an empty criterion, and both empty, giving `criteria/record.json`. It also covers an empty segment, which selects an `s` directory.\n- **Source named `criteria`:** a source segment `criteria` is hex-encoded, so it cannot be confused with the literal separator.\n- **Data, not path components:** `../é` is encoded as `s2e2e2fc3a9`, so the slash and `..` are data.\n- **Control bytes and hex ambiguity:** `\\0`, `\\x01#` and `\\x12\\x03` are encoded as hex. Swapping them between source and criterion yields different paths.\n- **Independence:** for every pair the test asserts the exact `record_path` and that the load is `None` before the save. After the save it asserts that the record directory holds only `record.json`. A second pass loads every pair and asserts that each record's `output` is its own, so no pair overwrote another.\n- **Load and store use the same mapping:** each pair is saved and then loaded.\n\n**Not required here.** The keys requirement's I/O-error case for a path the filesystem cannot represent is covered by that requirement's own tests. It is not an obligation of this subject.\n\nI found no plausible requirement-violating behavior that these assertions would accept. For example, a mapping that flattens source and criterion, or that omits the separator, would fail the exact-path assertions and the independence checks.",
   "references": "77a7de0274cc6a3169139b17b7c319d1c26defff3d8678c65ae9639bb521072a",
   "inputs": [
     {
@@ -41,26 +41,26 @@
         "    /// Ok(None) means absent; Err means loading failed.",
         "    fn load_evidence(",
         "        &self,",
-        "        source: &Self::NodeId,",
+        "        source: &NodeId<Self>,",
         "        criterion: &CriterionPath,",
         "    ) -> impl Future<Output = Result<",
-        "        Option<Record<Self::NodeId, Self::EdgeLabel>>,",
+        "        Option<Record<Self::NodeData, Self::EdgeLabel>>,",
         "        Self::Error,",
         "    >> + Send;",
         "",
         "    /// Atomically replace only this source/criterion pair's complete record.",
         "    fn store_evidence(",
         "        &self,",
-        "        source: &Self::NodeId,",
+        "        source: &NodeId<Self>,",
         "        criterion: &CriterionPath,",
-        "        record: &Record<Self::NodeId, Self::EdgeLabel>,",
+        "        record: &Record<Self::NodeData, Self::EdgeLabel>,",
         "    ) -> impl Future<Output = Result<(), Self::Error>> + Send;",
         "",
         "    // ...",
         "}",
         "```",
         "",
-        "The validator passes the source identity and criterion path to both methods. The",
+        "The SDK passes the source identity and criterion path to both methods. The",
         "key preserves both parts: source paths `[\"a\"]` and `[\"a\", \"b\"]` with criteria",
         "`[\"b\", \"c\"]` and `[\"c\"]` identify different records, even though flattening each",
         "pair would produce the same segments.",
@@ -105,7 +105,7 @@
     {
       "file": "crates/trust-but-verify/tests/storage.rs",
       "item": "fn[consumer_delegates_evidence_storage_using_only_the_requested_nodes_path]",
-      "hash": "dcf1b2516183c5a1137a7c42b7f447af84aee767dc8c872c35e5147bb0552a10"
+      "hash": "a933cf0b6bdc18abf82f30ed8e593c342b43aa40f8a89702192d9b6955013de3"
     },
     {
       "definition": "requirements.sdk.application_domain",
@@ -121,21 +121,6 @@
         ":::",
         "::::"
       ]
-    },
-    {
-      "file": "crates/trust-but-verify/tests/storage.rs",
-      "item": "impl[StoredGraph/Domain]",
-      "hash": "8698493762c002d742b1f263b33e32a549e17c8d9347c5f696531c1515d481a3"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/storage.rs",
-      "item": "impl[StoredGraph/Domain]/fn[node_path]",
-      "hash": "dd2d47d29e349a4740748b2e51ab9e2c52fa7a73004392f8da50303205905938"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/storage.rs",
-      "item": "struct[StoredGraph]",
-      "hash": "bc7b8c9a3662ab4e2891ece6dbeeb7ce8b5697fb4e05b019092245eab0560e5f"
     }
   ],
   "format_version": 1,
@@ -182,7 +167,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "b5dbc5d51989c6946cb5315f0b6c50f4bee399b7e66002da6c8b5cff4d6e6f68"
+          "value": "c7f27458b6588b955695e577d871fa935e4f6fde516107710f6681f589279d73"
         }
       ]
     },
@@ -227,7 +212,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "e6978d5d6493d8e751ef67ce280da383321504a4ca243aa2af23d54e463ff7a7"
+          "value": "6def220fe695111d722e8186c9a07d26b9eb98fc1a7cbdf765ee292615f6d88e"
         }
       ]
     },
@@ -239,57 +224,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "1f3d0d387ce356e5b4cc0cc22d20543142b5dcd7352c1eb5e4dd8dd73b058a34"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/storage.rs"
-            },
-            "selector": "impl[StoredGraph/Domain]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "3f679b0f6db3c50bbecbe326f9db52fec8210c8b119d8e33191264f26cb9f36e"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/storage.rs"
-            },
-            "selector": "impl[StoredGraph/Domain]/fn[node_path]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "4ffbfb22e55be39b017b0383883b1e390c3b5d26dbfe6bfef0cfa1bee9f35a5e"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/storage.rs"
-            },
-            "selector": "struct[StoredGraph]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "ddae1495526df5035219fdcb6dce7cecd85dad08c4cc9589d71858a355d7a747"
         }
       ]
     }

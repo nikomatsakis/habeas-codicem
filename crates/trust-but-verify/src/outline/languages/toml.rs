@@ -16,6 +16,7 @@ const KINDS: &[KindRule] = &[
 
 // {impl}`requirements.references.outline_comments`
 // {impl}`requirements.references.structural_hash`
+// {impl}`requirements.sdk.sources.toml.attachments`
 pub static PROFILE: Profile = Profile {
     name: "toml",
     expando_char: '_',

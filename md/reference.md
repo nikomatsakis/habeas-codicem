@@ -171,69 +171,55 @@ rationale goes to stderr. {cite}`requirements.authoring.reporting`
 
 Transient provider token/request throttling is retried automatically with
 exponential backoff and jitter, honoring `Retry-After` when the provider exposes
-it. Every attempt is counted in usage, with each failure's HTTP status and
-error code. Retrying gives up once a request has been failing for a minute, and
+it. Each assessment’s usage record counts provider attempts, retries, and failed attempts, and summarizes reported token usage. Retrying gives up once a request has been failing for a minute, and
 the error names the last failure; Ctrl-C interrupts waiting. Requests that exceed a model's input/context limit still fail
 because waiting cannot make that request fit. {cite}`requirements.authoring.provider_backoff`
 
 `habeas author <full-name>` assesses one requirement or example, records the
 source inputs delivered to the model, and writes its judgment to the usual
-evidence file. `author-evidence` remains an alias. The model can read sources
-with `habeas`, list files, list a file's selectable nodes with `outline`, search
-files with ripgrep (built in; no `rg` executable is needed), and use `references`
-to list definition names or every `{impl}`, `{cite}`, and `{test}` site for a
-definition selection. A `habeas` read names an outline node directly or asks for
-a line range; a line range is returned as the innermost outline nodes covering
-those lines, and those nodes are recorded as outline inputs. Each ripgrep or ast-grep match identifies an outline item and gives matching
-lines and context clipped to that item. Search results have UUIDs and their
+evidence file. `author-evidence` remains an alias. The model uses `list_sources` to discover files,
+`outline_source` to inspect their structure, and `read_node` to read one node and see its children.
+`lookup_requirements` finds requirement and example nodes. `outgoing_edges` follows
+relationships such as implementation and test sites. `search_text` and
+`search_structure` return excerpts clipped to the matching outline item. Search results have UUIDs and their
 entries have short tags. Before submitting, the model uses `finish_search`
 to select snippets it used to justify its conclusion without an additional
 read; an empty selection still closes the search. Selected items are recorded
 as evidence dependencies without requiring full-source delivery. Submission
 is rejected until every delivered search is finished, including empty results
-and individual search pages. Listings, outlines, and reference lookups are
-not recorded as evidence. No tool gives the model line numbers:
+and individual search pages. An explicit `outgoing_edges` inspection records the relationship the agent followed. No tool gives the model line numbers:
 every location it sees is a file and outline selector, which is also how its
 rationale cites code. {cite}`requirements.authoring.no_line_numbers`
 
-Choose a model that supports tool calls, either on Amazon Bedrock or an accessible
+Choose a model that supports tool calls, on Amazon Bedrock, OpenAI, or an accessible
 Ollama server. The server can run on another machine; Habeas does not need a GPU.
 {cite}`requirements.authoring.invocation` {cite}`requirements.authoring.provider`
-{cite}`requirements.authoring.text_search`
-{cite}`requirements.authoring.outline_tool`
+{cite}`requirements.sdk.graph.search.search_text.mcp`
+{cite}`requirements.sdk.graph.validation-context.outline_source.behavior`
 {cite}`requirements.authoring.reference_index`
 
-In a Git worktree, stage new source files with `git add` before authoring. The
-model can read unstaged edits to tracked files. By default, reads exclude untracked files,
-generated `evidence/` content, and paths outside the project, including symlink
-aliases. Standalone projects use the same containment rules without requiring Git.
-When the model requests an excluded path, the tool returns an error naming the
-path and the reason, such as an untracked file that `git add` would make
-readable, and the assessment continues. A denied mandatory input instead aborts
-that assessment and reports the path to you; in a batch, other assessments
-continue and successful writes are retained, and the command exits
-unsuccessfully after the batch finishes. Tool descriptions cover only the common
-case; redaction, paging, and errors are explained in the results where they
-occur.
+Authoring uses the SDK’s project source rules. You can read and search a new
+file before staging it. Project `.gitignore` files, including nested rules and
+exceptions, control visibility. The SDK excludes Git metadata and files outside
+the project, including symlinks to those files. An unavailable mandatory input
+stops that assessment before inference. A failed tool read returns its error to
+the reviewer and the assessment continues.
 {cite}`requirements.authoring.source_tools`
 {cite}`requirements.authoring.read_denial`
-{cite}`requirements.authoring.read_denial.untracked`
 {cite}`requirements.authoring.read_denial.mandatory`
 {cite}`requirements.authoring.tool_descriptions.special_cases`
 
 Source text sent to the model, and source text shown on book detail pages and by
-`habeas info`, is redacted. In a workspace `habeas.toml` or your user
-configuration file, the values of Bedrock `credentials` fields and Ollama
-`api_key` are replaced by name, whatever they contain. In every file, text
+`habeas info`, uses the same redaction rules in every file, including configuration files. Text
 matching one of the built-in credential rules of the
 [`secretshape`](https://docs.rs/secretshape) crate, such as a provider-prefixed
-token or a PEM private key header, is replaced too, extended through adjacent
+token or a PEM private key header, is replaced, extended through adjacent
 whitespace-separated text that looks random, such as the body of a private key.
 Random-looking text alone, such as a hex digest, is never redacted. Each
-replacement reads `[REDACTED:<kind>]`, naming the field or rule, and keeps the
+replacement reads `[REDACTED:<kind>]`, naming the matching rule, and keeps the
 replaced text's line breaks, so line numbers do not change. Outlines are built from
 the original file, and structural hashes use the redacted text, so evidence does
-not depend on a credential's value. Habeas pins its `secretshape` version;
+not depend on a recognized credential's value. Habeas pins its `secretshape` version;
 upgrading it is a deliberate change that may alter redaction and hashes.
 {cite}`requirements.authoring.redaction`
 
@@ -268,12 +254,12 @@ allow = ["generated"]
 disallow = ["generated/private"]
 ```
 
-An allow overrides all defaults; disallow wins if both match. Paths name literal
+When checking saved evidence inputs, disallow wins if both rules match. Paths name literal
 files or directory subtrees, not globs. Absolute paths can allow external inputs.
 Replace `generated` and `generated/private` with your own paths. Add or delete
 entries in either array to change the policy. An omitted `allow` or `disallow`
 means an empty list; delete the whole `[evidence]` table to restore the default
-source-access rules, or the `[authoring]` table to use only user settings.
+evidence validation rules, or the `[authoring]` table to use only user settings.
 {impl}`requirements.configuration.documentation`
 Workspace files can also define `[authoring.configs.<name>]` records, which
 replace same-named user records as a whole. No ancestor workspace files are
@@ -283,12 +269,9 @@ default, then user default.
 {cite}`requirements.configuration.evidence_paths`
 {cite}`requirements.authoring.configuration_precedence`
 
-Existing Cargo build-script output directories are automatically allowed when
-discoverable from the current build layout, including external build directories.
-No build is run to find or recreate them. Root listings expose discovered output
-directories, and workspace disallow rules still win. For an undiscovered layout,
-add its output directory to `allow`. CI must generate the recorded paths and
-contents before validating their evidence.
+Habeas can validate saved evidence that names an existing Cargo build-script
+output, including a discoverable external build directory. For new authoring,
+put generated sources inside the project and make them visible to the SDK.
 {cite}`requirements.authoring.generated_inputs`
 
 Create and edit `$XDG_CONFIG_HOME/habeas/config.toml`, or
@@ -343,8 +326,8 @@ Delete `endpoint` to return to the local default, or `api_key_env` to send no ke
 Profiles and environment references are preferred. Literal Bedrock
 `credentials` or Ollama `api_key` values are supported but not recommended in
 workspace files; see the [credential examples](requirements/authoring.md#editing-the-file).
-The model may read a configuration file that contains them, with the values
-redacted. Validation reports a workspace `habeas.toml` in the Git index that
+When a model reads a configuration file as source, it can see literal values
+that the built-in credential rules do not recognize. Validation reports a workspace `habeas.toml` in the Git index that
 contains literal credentials, naming the file and its credential settings,
 because committed credentials leak; keep such a file untracked or use credential
 sources instead.
@@ -512,7 +495,7 @@ first is recorded; site reviews that differ only in `applies` disagree. When
 they disagree, a third conversation verifies the less favorable one, where
 `false` is less favorable than FIXME and FIXME than `true`: the verifier
 receives the subject, its mandatory inputs, that assessment's rationale, and the
-source tools, and answers with `submit_verification`, saying whether its
+source tools, and answers with `submit_result`, saying whether its
 claimed gaps are real and whether `{fixme}` references acknowledge them. The
 recorded rationale then ends with a confirmation note stating that the
 assessments disagreed and what the verification concluded, and `habeas status`
@@ -590,7 +573,7 @@ the definition: a citing requirement or example receives the cited declaration
 as context. In the book, references and definitions become linked badges.
 {cite}`requirements.references.roles` {cite}`requirements.references.evidence_coverage` {cite}`requirements.references.authoring_inputs`
 
-Habeas discovers references in the same sources authoring may read. In a Git worktree, these are the files in the Git index, including staged new files; outside Git, every project file. Either way, the project-root `book` and `evidence` directories, `.git` and `target` directories at any depth, and paths your `[evidence]` configuration disallows are skipped. References in an untracked file are not validated and do not count toward any definition until you stage the file with `git add`; `habeas status` lists untracked files that contain references as a reminder.
+Habeas builds its reference graph from the files currently in the project directory. A reference in a new file counts immediately. Discovery honors the project's `.gitignore` files, including nested rules and exceptions. It skips the project-root `book` and `evidence` directories, Git metadata, `target` directories at any depth, and paths your `[evidence]` configuration disallows.
 {cite}`requirements.references.discovery` {cite}`requirements.cli.status`
 
 ### Choosing references

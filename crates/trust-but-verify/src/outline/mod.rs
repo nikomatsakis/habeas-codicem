@@ -17,15 +17,13 @@ use std::fmt;
 
 use tree_sitter::{Node, Parser, Tree};
 
-#[cfg(all(feature = "default-languages", test))]
+#[cfg(test)]
 use crate::outline::languages::rust::PROFILE as RUST_PROFILE;
 use crate::redaction::Redaction;
 use hash::Encoder;
-#[cfg(feature = "default-languages")]
 #[doc(hidden)]
 use profile::profile_for_path;
 pub(crate) use profile::{LanguageProvider, Profile};
-use profile::{NameRule, text};
 pub(crate) use selector::{HASH_DIGITS, Label, Segment, SelectorError, parse_selector};
 
 /// One outline node. Line numbers are one-based and inclusive.
@@ -38,6 +36,9 @@ pub struct OutlineNode {
     /// Name parts; `None` for an anonymous node. Most names have one part;
     /// a Rust trait impl has two, the self type and the trait.
     pub name: Option<Vec<String>>,
+    pub(crate) name_span: Option<crate::outline::Span>,
+    pub(crate) header_span: Option<crate::outline::Span>,
+    pub(crate) trailer_span: Option<crate::outline::Span>,
     /// This node's selector segment; empty for the root.
     pub segment: String,
     /// Full selector from the root; empty for the root.
@@ -63,28 +64,16 @@ pub struct OutlineNode {
     pub identity_hash: String,
 }
 
-impl OutlineNode {
-    /// The name as displayed, with parts joined by `/`.
-    // {impl}`requirements.authoring.outline_tool`
-    pub fn display_name(&self) -> Option<String> {
-        self.name.as_ref().map(|parts| parts.join("/"))
-    }
-}
-
 /// One comment and the outline node it belongs to.
 #[derive(Clone, Debug)]
 // {impl}`requirements.references.outline_comments`
-#[doc(hidden)]
-pub struct OutlineComment {
+pub(crate) struct OutlineComment {
     pub byte_start: usize,
     pub byte_end: usize,
     pub line_start: usize,
     pub line_end: usize,
     /// Index of the owning node in [`LegacyOutline::nodes`].
     pub owner: usize,
-    /// Index of the comment run containing this comment; comments of one run
-    /// share it, and runs are numbered in source order.
-    pub run: usize,
 }
 
 /// A parsed outline.
@@ -92,11 +81,13 @@ pub struct OutlineComment {
 // {impl}`requirements.references.outlines`
 #[doc(hidden)]
 pub struct LegacyOutline {
+    pub(crate) diagnostic: Option<OutlineError>,
     pub profile: &'static Profile,
     /// Nodes in source pre-order; index 0 is the root.
     pub nodes: Vec<OutlineNode>,
     /// Comments in source order.
-    pub comments: Vec<OutlineComment>,
+    pub(crate) comments: Vec<OutlineComment>,
+    pub(crate) annotations: Vec<(usize, std::ops::Range<usize>)>,
 }
 
 /// A selector that does not resolve.
@@ -125,7 +116,6 @@ impl std::error::Error for ResolveError {}
 /// original source.
 // {impl}`requirements.references.outlines`
 // {impl}`requirements.authoring.redaction`
-#[cfg(feature = "default-languages")]
 #[doc(hidden)]
 pub fn parse(path: &std::path::Path, source: &str) -> Result<LegacyOutline, OutlineError> {
     parse_redacted(profile_for_path(path), source, &Redaction::of_text(source))
@@ -134,16 +124,17 @@ pub fn parse(path: &std::path::Path, source: &str) -> Result<LegacyOutline, Outl
 /// Parses a source with a given profile, redacting by `secretshape` rules.
 // {impl}`requirements.references.outlines`
 // {impl}`requirements.authoring.redaction`
-#[doc(hidden)]
-pub fn parse_with(profile: &'static Profile, source: &str) -> Result<LegacyOutline, OutlineError> {
+pub(crate) fn parse_with(
+    profile: &'static Profile,
+    source: &str,
+) -> Result<LegacyOutline, OutlineError> {
     parse_redacted(profile, source, &Redaction::of_text(source))
 }
 
 /// Parses the original source with a given profile, hashing each text piece
 /// that overlaps a redacted region in its redacted form.
 // {impl}`requirements.references.structural_hash`
-#[doc(hidden)]
-pub fn parse_redacted(
+fn parse_redacted(
     profile: &'static Profile,
     source: &str,
     redaction: &Redaction,
@@ -165,8 +156,8 @@ fn parse_grammar(
         return markdown::parse(profile, language, source, redaction, &lines);
     }
     let tree = parse_tree(profile, language, source)?;
-    check_errors(&tree, &lines)?;
-    Ok(Builder::new(profile, source, redaction, &tree).finish(&lines))
+    let diagnostic = syntax_diagnostic(&tree, |byte| lines.line(byte));
+    Ok(Builder::new(profile, source, redaction, &tree).finish(&lines, diagnostic))
 }
 
 // {cite}`habeas:util`
@@ -188,43 +179,17 @@ fn parse_tree(
     })
 }
 
-/// Locate comment prose even when an unrelated syntax error prevents outlining.
-/// Recovery nodes do not make string literals or other data into comments.
-// {impl}`requirements.references.reference_contexts`
-#[doc(hidden)]
-pub fn comment_ranges(
-    profile: &'static Profile,
-    source: &str,
-) -> Result<Vec<std::ops::Range<usize>>, OutlineError> {
-    let Some(language) = profile.language else {
-        return Ok(Vec::new());
-    };
-    let tree = parse_tree(profile, language, source)?;
-    let mut pending = vec![tree.root_node()];
-    let mut ranges = Vec::new();
-    while let Some(node) = pending.pop() {
-        if (profile.is_comment)(node, source) {
-            ranges.push(node.byte_range());
-        } else {
-            let mut cursor = node.walk();
-            pending.extend(node.named_children(&mut cursor));
-        }
-    }
-    ranges.sort_by_key(|range| range.start);
-    Ok(ranges)
-}
-
-/// Reports the first syntax error in a tree.
-fn check_errors(tree: &Tree, lines: &LineIndex) -> Result<(), OutlineError> {
+/// Reports the first syntax error using the caller's source coordinates.
+fn syntax_diagnostic(tree: &Tree, line: impl Fn(usize) -> usize) -> Option<OutlineError> {
     let root = tree.root_node();
     if !root.has_error() {
-        return Ok(());
+        return None;
     }
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
         if node.is_error() || node.is_missing() {
-            return Err(OutlineError {
-                line: lines.line(node.start_byte()),
+            return Some(OutlineError {
+                line: line(node.start_byte()),
                 message: if node.is_missing() {
                     format!("syntax error: missing {}", node.kind())
                 } else {
@@ -239,8 +204,8 @@ fn check_errors(tree: &Tree, lines: &LineIndex) -> Result<(), OutlineError> {
             .collect::<Vec<_>>();
         stack.extend(children.into_iter().rev());
     }
-    Err(OutlineError {
-        line: 1,
+    Some(OutlineError {
+        line: line(root.start_byte()),
         message: "syntax error".to_owned(),
     })
 }
@@ -291,6 +256,7 @@ impl LineIndex {
 
 /// The plain-text profile: one anonymous `line` node per non-blank line.
 // {impl}`requirements.references.outline_selectors`
+// {impl}`requirements.sdk.sources.plain-text.attachments`
 fn plain_text(
     profile: &'static Profile,
     source: &str,
@@ -319,6 +285,9 @@ fn plain_text(
         nodes.push(OutlineNode {
             kind: "line",
             name: None,
+            name_span: None,
+            header_span: None,
+            trailer_span: None,
             selector: segment.clone(),
             segment,
             parent: Some(0),
@@ -336,9 +305,11 @@ fn plain_text(
     nodes[0].structural_hash = root_hash.finish();
     nodes[0].identity_hash = Encoder::new().finish();
     LegacyOutline {
+        diagnostic: None,
         profile,
         nodes,
         comments: Vec::new(),
+        annotations: Vec::new(),
     }
 }
 
@@ -353,6 +324,9 @@ fn root_node(
     OutlineNode {
         kind: "",
         name: None,
+        name_span: None,
+        header_span: None,
+        trailer_span: None,
         segment: String::new(),
         selector: String::new(),
         parent: None,
@@ -368,12 +342,50 @@ fn root_node(
     }
 }
 
+// {impl}`requirements.sdk.graph.search.declaration_spans`
+fn declaration_spans(
+    language: &str,
+    node: Node<'_>,
+) -> (Option<crate::outline::Span>, Option<crate::outline::Span>) {
+    use crate::outline::Span;
+    if language != "rust" {
+        return (None, None);
+    }
+    match node.kind() {
+        "function_item" | "impl_item" => {
+            let Some(body) = node.child_by_field_name("body") else {
+                return (None, None);
+            };
+            let open = body.child(0).filter(|n| n.kind() == "{" && !n.is_missing());
+            let close = body
+                .child_count()
+                .checked_sub(1)
+                .and_then(|i| body.child(i))
+                .filter(|n| n.kind() == "}" && !n.is_missing());
+            (
+                open.map(|n| Span::new(node.start_byte(), n.end_byte())),
+                close.map(|n| Span::new(n.start_byte(), n.end_byte())),
+            )
+        }
+        "const_item" | "static_item" => {
+            let equal = node
+                .children(&mut node.walk())
+                .find(|n| n.kind() == "=" && !n.is_missing());
+            (
+                equal.map(|n| Span::new(node.start_byte(), n.end_byte())),
+                None,
+            )
+        }
+        _ => (None, None),
+    }
+}
+
 /// An outline node before hashing and selector assignment.
 // {cite}`habeas:util`
 struct Draft<'tree> {
     kind: &'static str,
     name: Option<Vec<String>>,
-    declaration_byte: usize,
+    name_span: Option<crate::outline::Span>,
     parent: Option<usize>,
     core: Node<'tree>,
     attached: Vec<Node<'tree>>,
@@ -415,7 +427,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
             drafts: vec![Draft {
                 kind: "",
                 name: None,
-                declaration_byte: 0,
+                name_span: None,
                 parent: None,
                 core: root,
                 attached: Vec::new(),
@@ -461,30 +473,6 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         }
     }
 
-    /// Names a mapped node, returning its parts and the byte where the name
-    /// is declared.
-    // {cite}`habeas:util`
-    fn name(&self, rule: NameRule, node: Node<'_>) -> Option<(Vec<String>, usize)> {
-        let named = |child: Node<'_>| {
-            (
-                vec![text(child, self.source).to_owned()],
-                child.start_byte(),
-            )
-        };
-        match rule {
-            NameRule::Anonymous => None,
-            NameRule::Field(field) => node.child_by_field_name(field).map(named),
-            NameRule::FirstChild(kinds) => {
-                let mut cursor = node.walk();
-                let child = node
-                    .named_children(&mut cursor)
-                    .find(|child| kinds.contains(&child.kind()));
-                child.map(named)
-            }
-            NameRule::Custom(rule) => rule(node, self.source),
-        }
-    }
-
     // {cite}`habeas:util`
     fn walk(&mut self, node: Node<'tree>, parent: usize) {
         let mut cursor = node.walk();
@@ -513,17 +501,18 @@ impl<'tree, 'source> Builder<'tree, 'source> {
                 continue;
             }
             if let Some(rule) = self.profile.rule(child) {
-                let (name, declaration_byte) = match self.name(rule.name, child) {
-                    Some((parts, byte)) => (Some(parts), byte),
-                    None => (None, child.start_byte()),
-                };
+                let (name, name_span) = rule
+                    .name
+                    .resolve(child, self.source)
+                    .map(|(parts, range)| (parts, crate::outline::Span::from_range(range)))
+                    .unzip();
                 let attached = children
                     .iter()
                     .zip(&attached_to)
                     .filter(|(_, target)| **target == Some(index))
                     .map(|(sibling, _)| *sibling)
                     .collect::<Vec<_>>();
-                let draft = self.push(rule.kind, name, declaration_byte, parent, child, attached);
+                let draft = self.push(rule.kind, name, name_span, parent, child, attached);
                 self.walk(child, draft);
             } else {
                 // Unmapped grammar nodes are transparent; source in no mapped
@@ -539,7 +528,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         &mut self,
         kind: &'static str,
         name: Option<Vec<String>>,
-        declaration_byte: usize,
+        name_span: Option<crate::outline::Span>,
         parent: usize,
         core: Node<'tree>,
         attached: Vec<Node<'tree>>,
@@ -552,7 +541,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         self.drafts.push(Draft {
             kind,
             name,
-            declaration_byte,
+            name_span,
             parent: Some(parent),
             core,
             attached,
@@ -571,6 +560,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         encoder.finish()
     }
 
+    // {impl}`requirements.sdk.outlines.attachments.fingerprint`
     fn encode(&self, encoder: &mut Encoder, node: Node<'_>, index: usize, identity: bool) {
         if identity
             && self
@@ -625,8 +615,9 @@ impl<'tree, 'source> Builder<'tree, 'source> {
     /// assigns hashes, selectors, line ranges including attached siblings,
     /// and comment owners.
     // {impl}`requirements.references.outline_selectors`
-    fn finish(self, lines: &LineIndex) -> LegacyOutline {
+    fn finish(self, lines: &LineIndex, diagnostic: Option<OutlineError>) -> LegacyOutline {
         let mut nodes = Vec::with_capacity(self.drafts.len());
+        let mut annotations = Vec::new();
         nodes.push(root_node(
             self.source,
             lines,
@@ -634,6 +625,13 @@ impl<'tree, 'source> Builder<'tree, 'source> {
             self.hash(0, true),
         ));
         for (index, draft) in self.drafts.iter().enumerate().skip(1) {
+            annotations.extend(
+                draft
+                    .attached
+                    .iter()
+                    .filter(|node| !self.is_comment(**node))
+                    .map(|node| (index, node.byte_range())),
+            );
             let identity_hash = self.hash(index, true);
             let label = match &draft.name {
                 Some(parts) => Label::Named(parts.clone()),
@@ -650,16 +648,24 @@ impl<'tree, 'source> Builder<'tree, 'source> {
             let (_, line_end) = lines.range(draft.core.start_byte(), draft.core.end_byte());
             let parent = draft.parent.unwrap_or(0);
             nodes[parent].children.push(index);
+            let (header_span, trailer_span) = declaration_spans(self.profile.name, draft.core);
             nodes.push(OutlineNode {
+                header_span,
+                trailer_span,
                 kind: draft.kind,
                 name: draft.name.clone(),
+                name_span: draft.name_span,
                 segment: Segment::base(draft.kind, &label),
                 selector: String::new(),
                 parent: Some(parent),
                 children: Vec::new(),
                 line_start,
                 line_end,
-                declaration_line: lines.line(draft.declaration_byte),
+                declaration_line: lines.line(
+                    draft
+                        .name_span
+                        .map_or(draft.core.start_byte(), |span| span.start),
+                ),
                 byte_start: draft.core.start_byte(),
                 source_start: start,
                 byte_end: if self.profile.trailing_comments_outside {
@@ -674,9 +680,11 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         disambiguate(&mut nodes);
         let comments = assign_comments(&mut nodes, self.comments, self.source, lines);
         LegacyOutline {
+            diagnostic,
             profile: self.profile,
             nodes,
             comments,
+            annotations,
         }
     }
 }
@@ -745,12 +753,6 @@ fn assign_comments(
         .map(|node| (node.line_start, node.line_end))
         .collect::<Vec<_>>();
     let mut owners = vec![0; drafts.len()];
-    let mut run_of = vec![0; drafts.len()];
-    for (run_index, run) in runs.iter().enumerate() {
-        for index in run {
-            run_of[*index] = run_index;
-        }
-    }
     for run in &runs {
         let first = &drafts[run[0]];
         let last = &drafts[*run.last().expect("nonempty run")];
@@ -776,8 +778,7 @@ fn assign_comments(
     drafts
         .into_iter()
         .zip(owners)
-        .zip(run_of)
-        .map(|((comment, owner), run)| {
+        .map(|(comment, owner)| {
             let (line_start, line_end) = lines.range(comment.byte_start, comment.byte_end);
             OutlineComment {
                 byte_start: comment.byte_start,
@@ -785,7 +786,6 @@ fn assign_comments(
                 line_start,
                 line_end,
                 owner,
-                run,
             }
         })
         .collect()
@@ -912,7 +912,7 @@ impl LegacyOutline {
 
     /// The owners of comments touching a line.
     // {cite}`habeas:util`
-    pub fn comment_owners_at_line(&self, line: usize) -> Vec<usize> {
+    fn comment_owners_at_line(&self, line: usize) -> Vec<usize> {
         let mut owners = self
             .comments
             .iter()
@@ -995,9 +995,11 @@ impl LegacyOutline {
     }
 }
 
-#[cfg(all(test, feature = "default-languages"))]
+#[cfg(test)]
 mod markdown_tests;
-#[cfg(all(test, feature = "default-languages"))]
+#[cfg(test)]
+mod redaction_tests;
+#[cfg(test)]
 mod tests;
 
 /// Parse a resolved text snapshot using an explicitly selected provider. The

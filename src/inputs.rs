@@ -7,8 +7,7 @@ use serde_json::{Value, json};
 
 use crate::definition_glob;
 use crate::evidence::Declaration;
-use crate::outline::{self, Outline, ResolveError};
-use crate::redaction::Redaction;
+use crate::outline_items::EvidenceOutline;
 
 // {cite}`habeas:util`
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,7 +33,7 @@ pub(crate) struct ResolvedNode {
     /// Canonical path of the parsed file.
     pub(crate) path: PathBuf,
     pub(crate) index: usize,
-    pub(crate) kind: &'static str,
+    pub(crate) kind: String,
     pub(crate) hash: String,
 }
 
@@ -56,7 +55,7 @@ pub(crate) struct ParsedSource {
     /// The source as models receive it and Habeas displays it, with the same
     /// lines as `source`.
     pub(crate) redacted: String,
-    pub(crate) outline: Outline,
+    pub(crate) outline: EvidenceOutline,
 }
 
 #[cfg(test)]
@@ -69,55 +68,48 @@ mod ownership_tests {
     #[test]
     fn markdown_references_select_the_nearest_directive_or_standalone_paragraph() {
         let source = "# H\nAn ordinary citation.\n\n::::{note}\nOuter citation.\n\n:::{tip}\nInner citation.\n:::\n::::\n";
-        let parsed = ParsedSource {
-            path: PathBuf::from("a.md"),
-            source: source.to_owned(),
-            redacted: source.to_owned(),
-            outline: outline::parse(Path::new("a.md"), source).unwrap(),
-        };
-        let ordinary = parsed.reference_owner_at_line(2);
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.md"), source).unwrap();
+        let cache = OutlineCache::default();
+        let parsed = cache.parse(dir.path(), "a.md");
+        let parsed = parsed.as_ref().as_ref().unwrap();
+        let ordinary = parsed.reference_owner(2, 1);
         assert_eq!(parsed.outline.nodes[ordinary].kind, "paragraph");
-        let outer = parsed.reference_owner_at_line(5);
-        let inner = parsed.reference_owner_at_line(8);
+        let outer = parsed.reference_owner(5, 1);
+        let inner = parsed.reference_owner(8, 1);
         assert_eq!(parsed.outline.nodes[outer].kind, "block");
         assert_eq!(parsed.outline.nodes[inner].kind, "block");
         assert_eq!(parsed.outline.nodes[inner].parent, Some(outer));
         assert_eq!(parsed.outline.nodes[inner].line_start, 7);
         assert_eq!(
-            parsed.outline.nodes[parsed.outline.owner_at_line(8)].kind,
+            parsed.outline.nodes[parsed.outline.ownership.owner_at(8, 1)].kind,
             "paragraph"
         );
         let rust = "fn run() {}\n";
-        let parsed = ParsedSource {
-            path: PathBuf::from("a.rs"),
-            source: rust.to_owned(),
-            redacted: rust.to_owned(),
-            outline: outline::parse(Path::new("a.rs"), rust).unwrap(),
-        };
+        fs::write(dir.path().join("a.rs"), rust).unwrap();
+        let parsed = cache.parse(dir.path(), "a.rs");
+        let parsed = parsed.as_ref().as_ref().unwrap();
         assert_eq!(
-            parsed.reference_owner_at_line(1),
-            parsed.outline.owner_at_line(1)
+            parsed.reference_owner(1, 1),
+            parsed.outline.ownership.owner_at(1, 1)
         );
     }
 }
 
 // {cite}`habeas:util`
+pub(crate) type SourceCache = trust_but_verify::domain::ValidationCache<crate::sdk::HabeasDomain>;
+
 /// Parsed outlines, cached per file for one validation or authoring run.
 /// Clones share entries populated by any caller in that run.
 #[derive(Default)]
 pub(crate) struct OutlineCache {
+    pub(crate) validation: SourceCache,
     files: Arc<Mutex<HashMap<PathBuf, Arc<Result<ParsedSource, String>>>>>,
     /// Content to parse in place of a file's, by project-relative path.
     overrides: Arc<HashMap<String, String>>,
     catalogs: Arc<Mutex<HashMap<PathBuf, Arc<Result<ReferenceCatalog, String>>>>>,
-    access: Arc<
-        Mutex<
-            HashMap<
-                PathBuf,
-                Result<Arc<crate::authoring::access::SourceAccess>, (std::io::ErrorKind, String)>,
-            >,
-        >,
-    >,
+    /// Source visibility for agent reads. Saved evidence uses its recorded-input resolver.
+    project_sources: Option<Arc<crate::authoring::access::SourceAccess>>,
 }
 
 // {cite}`habeas:util`
@@ -130,10 +122,11 @@ impl Clone for OutlineCache {
     // {cite}`habeas:util`
     fn clone(&self) -> Self {
         Self {
+            validation: self.validation.clone(),
             files: self.files.clone(),
             overrides: self.overrides.clone(),
             catalogs: self.catalogs.clone(),
-            access: self.access.clone(),
+            project_sources: self.project_sources.clone(),
         }
     }
 }
@@ -148,23 +141,24 @@ impl OutlineCache {
         }
     }
 
-    /// Git discovery and access rules share the inspection's source snapshot.
-    // {cite}`habeas:util`
-    pub(crate) fn source_access(
+    /// Start a model-facing view sharing the domain's retained SDK outlines.
+    pub(crate) fn for_authoring(
         &self,
-        root: &Path,
-    ) -> std::io::Result<Arc<crate::authoring::access::SourceAccess>> {
-        self.access
-            .lock()
-            .expect("source access cache lock")
-            .entry(root.to_path_buf())
-            .or_insert_with(|| {
-                crate::authoring::access::load_source_access(root)
-                    .map(Arc::new)
-                    .map_err(|error| (error.kind(), error.to_string()))
-            })
-            .clone()
-            .map_err(|(kind, message)| std::io::Error::new(kind, message))
+        access: Arc<crate::authoring::access::SourceAccess>,
+    ) -> Self {
+        Self {
+            project_sources: Some(access),
+            files: Default::default(),
+            ..self.clone()
+        }
+    }
+
+    fn check_project_file(&self, root: &Path, file: &str) -> Result<PathBuf, String> {
+        match &self.project_sources {
+            Some(sources) => sources.file(root, Path::new(file)),
+            None => crate::authoring::access::resolve_evidence_file(root, file),
+        }
+        .map_err(|error| error.to_string())
     }
 
     /// Repository relationships share one discovery snapshot per inspection.
@@ -181,6 +175,7 @@ impl OutlineCache {
         let mut failures = Vec::new();
         let files = crate::evidence::discovered_files(root, &mut failures);
         let references = crate::evidence::collect_references_with_progress(
+            &self.validation,
             root,
             &files,
             &mut failures,
@@ -199,30 +194,79 @@ impl OutlineCache {
             .clone()
     }
 
-    // {impl}`requirements.authoring.outline_tool`
+    pub(crate) fn source_node(
+        &self,
+        root: &Path,
+        file: &str,
+        selector: &str,
+    ) -> std::io::Result<trust_but_verify::outline::OutlineContent> {
+        use trust_but_verify::outline::OutlineContent;
+        let path = self
+            .check_project_file(root, file)
+            .map_err(std::io::Error::other)?;
+        let outline = match self
+            .overrides
+            .get(file)
+            .filter(|_| self.project_sources.is_none())
+        {
+            Some(text) => OutlineContent::from_source(&self.validation, path, text.as_str().into()),
+            None => OutlineContent::from_path(&self.validation, path),
+        };
+        outline
+            .and_then(|root| root.select(selector))
+            .map_err(std::io::Error::other)
+    }
+
+    /// The retained SDK outline for a permitted file or supplied refactoring snapshot.
+    pub(crate) fn snapshot(
+        &self,
+        root: &Path,
+        file: &str,
+    ) -> Result<trust_but_verify::outline::OutlineContent, String> {
+        use trust_but_verify::outline::OutlineContent;
+        let snapshot = if let Some(sources) = &self.project_sources {
+            let (path, file) = sources
+                .read(root, Path::new(file))
+                .map_err(|error| error.to_string())?;
+            OutlineContent::from_source(
+                &self.validation,
+                path,
+                file.text().map_err(|error| error.to_string())?.into(),
+            )
+        } else {
+            let path = self.check_project_file(root, file)?;
+            match self.overrides.get(file) {
+                Some(text) => {
+                    OutlineContent::from_source(&self.validation, &path, text.as_str().into())
+                }
+                None => OutlineContent::from_path(&self.validation, &path),
+            }
+        }
+        .map_err(|error| format!("cannot read {file}: {error}"))?;
+        if let Some(error) = &snapshot.outline().diagnostic {
+            let language = snapshot.language();
+            return Err(format!("{file}: cannot parse {language} source: {error}"));
+        }
+        Ok(snapshot)
+    }
+
     /// Reads and parses a permitted file, or returns the cached result.
     pub(crate) fn parse(&self, root: &Path, file: &str) -> Arc<Result<ParsedSource, String>> {
         let key = root.join(file);
         if let Some(parsed) = self.files.lock().expect("outline cache lock").get(&key) {
             return parsed.clone();
         }
-        let read = match self.overrides.get(file) {
-            Some(content) => check_project_file(root, file).map(|path| (path, content.clone())),
-            None => read_project_file(root, file),
-        };
-        let parsed = Arc::new(read.and_then(|(path, source)| {
-            let redaction = Redaction::of_file_with_config(
-                &path,
-                &source,
-                crate::config::user_config_path().ok().as_deref(),
-            );
-            let profile = outline::profile_for_path(&path);
-            let outline =
-                outline::parse_redacted(profile, &source, &redaction).map_err(|error| {
-                    format!("{file}: cannot parse {} source: {error}", profile.name)
-                })?;
+        let parsed = Arc::new(self.snapshot(root, file).and_then(|snapshot| {
+            let path = snapshot.id().path.clone();
+            let source = snapshot.text().to_owned();
+            let public = snapshot.outline();
+            let items = crate::outline_items::OutlineItems::new(public, &source);
+            let outline = EvidenceOutline::new(public, items, snapshot.language(), &source);
             Ok(ParsedSource {
-                redacted: redaction.apply(&source).into_owned(),
+                redacted: snapshot
+                    .source_span_redacted(public.items[0].span)
+                    .expect("validated file-root span")
+                    .into_owned(),
                 path: fs::canonicalize(&path).unwrap_or(path),
                 source,
                 outline,
@@ -240,7 +284,147 @@ impl OutlineCache {
 mod tests {
     use super::*;
 
-    // {test}`requirements.authoring.outline_tool`
+    // {test}`requirements.references.outline_comments`
+    #[test]
+    fn evidence_preserves_attachment_lines_and_declaration_positions() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = "/// Docs.\n#[derive(Debug)]\nstruct One; struct Two;\n";
+        fs::write(dir.path().join("a.rs"), source).unwrap();
+        let cache = OutlineCache::default();
+        let parsed = cache.parse(dir.path(), "a.rs");
+        let parsed = parsed.as_ref().as_ref().unwrap();
+        let first = parsed.resolve("a.rs", "struct[One]").unwrap();
+        let second = parsed.resolve("a.rs", "struct[Two]").unwrap();
+        let node = &parsed.outline.nodes[first];
+        assert_eq!(
+            (node.line_start, node.declaration_line, node.line_end),
+            (1, 3, 3)
+        );
+        assert_eq!(parsed.reference_owner(3, 13), second);
+        assert_eq!(parsed.nodes_for_range(3, 3, false), [first, second]);
+        assert_eq!(parsed.reference_owner(1, 1), first);
+    }
+
+    // {test}`requirements.references.outline_comments`
+    #[test]
+    fn references_in_sibling_comments_on_one_line_use_their_byte_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = "/// docs\r\nstruct Café; /* {impl}`one` */ struct Two; /* :::{cite} two\r\n * body\r\n * ::: */\r\n";
+        let file = dir.path().join("a.rs");
+        fs::write(&file, source).unwrap();
+        let cache = OutlineCache::default();
+        let references = crate::evidence::file_references(&cache.validation, &file, source, false);
+        let parsed = cache.parse(dir.path(), "a.rs");
+        let parsed = parsed.as_ref().as_ref().unwrap();
+        let line = source.lines().nth(1).unwrap();
+        assert_eq!(references.len(), 2);
+        for (reference, (marker, selector)) in
+            references.iter().zip([("{impl}", "Café"), (":::", "Two")])
+        {
+            assert_eq!(
+                (reference.line, reference.column),
+                (2, line.find(marker).unwrap() + 1)
+            );
+            let owner = parsed.reference_owner(reference.line, reference.column);
+            assert_eq!(
+                crate::outline_items::display_name(&parsed.outline.nodes[owner].selector)
+                    .as_deref(),
+                Some(selector)
+            );
+            assert!(reference.closed);
+        }
+    }
+
+    // {test}`requirements.ci.outline_inputs`
+    #[test]
+    fn an_empty_file_root_covers_line_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = "empty.yaml";
+        fs::write(dir.path().join(file), "").unwrap();
+        let parsed = OutlineCache::default().parse(dir.path(), file);
+        let parsed = parsed.as_ref().as_ref().unwrap();
+        let root = parsed.resolve(file, "").unwrap();
+        let (range, lines) = parsed.node_range(file, root);
+        assert_eq!((range.line_start, range.line_end), (1, 1));
+        assert!(lines.is_empty());
+    }
+
+    // {test}`requirements.ci.outline_inputs`
+    // {test}`requirements.references.outline_comments`
+    #[test]
+    fn yaml_evidence_ranges_follow_comment_ownership_between_sibling_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = "jobs.yml";
+        let source =
+            "jobs:\n  first:\n    run: a # inline\n  # for second\n  second: b\n# file note\n";
+        fs::write(dir.path().join(file), source).unwrap();
+        let parsed = OutlineCache::default().parse(dir.path(), file);
+        let parsed = parsed.as_ref().as_ref().unwrap();
+        let first = parsed.resolve(file, "pair[jobs]/pair[first]").unwrap();
+        let second = parsed.resolve(file, "pair[jobs]/pair[second]").unwrap();
+        let (range, lines) = parsed.node_range(file, first);
+        assert_eq!((range.line_start, range.line_end), (2, 3));
+        assert_eq!(lines, ["  first:", "    run: a # inline"]);
+        let (range, lines) = parsed.node_range(file, second);
+        assert_eq!((range.line_start, range.line_end), (4, 5));
+        assert_eq!(lines, ["  # for second", "  second: b"]);
+        assert_eq!(parsed.nodes_for_range(4, 4, false), [second]);
+        assert_eq!(parsed.reference_owner(4, 3), second);
+        assert_eq!(parsed.reference_owner(6, 1), 0);
+    }
+
+    // {test}`requirements.references.outline_comments`
+    // {test}`requirements.cli.fixme_issues`
+    #[test]
+    fn yaml_sequence_entry_reports_its_dash_as_the_declaration_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = "steps.yaml";
+        fs::write(
+            dir.path().join(file),
+            "steps:\n  # first note\n  # second note\n  - build\n",
+        )
+        .unwrap();
+        let parsed = OutlineCache::default().parse(dir.path(), file);
+        let parsed = parsed.as_ref().as_ref().unwrap();
+        let owner = parsed.reference_owner(2, 3);
+        let item = &parsed.outline.nodes[owner];
+        assert_eq!(item.kind, "item");
+        assert_eq!(
+            (item.line_start, item.declaration_line, item.line_end),
+            (2, 4, 4)
+        );
+    }
+
+    // {test}`requirements.authoring.credentials`
+    // {test}`requirements.references.structural_hash`
+    #[test]
+    // {test}`requirements.authoring.redaction`
+    fn configuration_source_uses_sdk_redaction_for_text_and_hashes() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("fixtures")).unwrap();
+        let observations = |value: &str| {
+            let source = format!("[authoring.configs.local]\napi_key = '{value}'\n");
+            fs::write(dir.path().join("fixtures/habeas.toml"), &source).unwrap();
+            let parsed = OutlineCache::default().parse(dir.path(), "fixtures/habeas.toml");
+            let parsed = parsed.as_ref().as_ref().unwrap();
+            assert_eq!(parsed.redacted, crate::redaction::redact_text(&source));
+            parsed
+                .outline
+                .nodes
+                .iter()
+                .map(|node| (node.selector.clone(), node.structural_hash.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_ne!(observations("first"), observations("a longer value"));
+        let token = crate::redaction::tests::github_token();
+        assert_eq!(
+            observations(&token),
+            observations(&token.replace("16C7", "43D9"))
+        );
+    }
+
+    // {test}`requirements.sdk.habeas.graph_discovery`
+    // {test}`requirements.sdk.outlines.snapshot`
     #[test]
     fn clones_share_sources_loaded_after_cloning_but_new_runs_read_changes() {
         let temp = tempfile::tempdir().unwrap();
@@ -248,13 +432,17 @@ mod tests {
         fs::write(&file, "fn original() {}\n").unwrap();
         let outlines = OutlineCache::default();
         let clone = outlines.clone();
+        let snapshot =
+            trust_but_verify::outline::OutlineContent::from_path(&outlines.validation, &file)
+                .unwrap();
+        assert_eq!(snapshot.text(), "fn original() {}\n");
+        fs::write(&file, "fn changed() {}\n").unwrap();
         let original = clone.parse(temp.path(), "a.rs");
         assert_eq!(
             original.as_ref().as_ref().unwrap().source,
             "fn original() {}\n"
         );
 
-        fs::write(&file, "fn changed() {}\n").unwrap();
         let cached = outlines.parse(temp.path(), "a.rs");
         assert_eq!(
             cached.as_ref().as_ref().unwrap().source,
@@ -266,7 +454,7 @@ mod tests {
         assert_eq!(fresh.as_ref().as_ref().unwrap().source, "fn changed() {}\n");
     }
 
-    // {test}`requirements.authoring.outline_tool`
+    // {test}`requirements.sdk.habeas.graph_discovery`
     #[test]
     fn clones_share_overrides_and_failed_reads() {
         let temp = tempfile::tempdir().unwrap();
@@ -303,9 +491,9 @@ impl ParsedSource {
     /// their paragraph outside directives. SDK line selection still exposes
     /// the innermost paragraph.
     // {impl}`requirements.references.outline_comments`
-    pub(crate) fn reference_owner_at_line(&self, line: usize) -> usize {
-        let owner = self.outline.owner_at_line(line);
-        if self.outline.profile.name != "markdown" {
+    pub(crate) fn reference_owner(&self, line: usize, column: usize) -> usize {
+        let owner = self.outline.ownership.owner_at(line, column);
+        if self.outline.language != "markdown" {
             return owner;
         }
         let mut current = Some(owner);
@@ -326,22 +514,9 @@ impl ParsedSource {
     /// Resolves a selector to exactly one node.
     // {impl}`requirements.references.outline_selectors`
     pub(crate) fn resolve(&self, file: &str, item: &str) -> Result<usize, String> {
-        match self.outline.resolve(item) {
-            Ok(index) => Ok(index),
-            Err(ResolveError::Invalid(error)) => Err(format!(
-                "{file}: invalid outline selector {item:?}: {error}"
-            )),
-            Err(ResolveError::NotFound(_))
-                if self.outline.resolve(&format!("{item}#1")).is_ok() =>
-            {
-                Err(format!(
-                    "{file}: outline selector {item:?} is ambiguous; add a #N disambiguator"
-                ))
-            }
-            Err(ResolveError::NotFound(_)) => {
-                Err(format!("{file}: no outline node matches {item:?}"))
-            }
-        }
+        self.outline
+            .resolve(item)
+            .map_err(|error| format!("{file}: {error}"))
     }
 
     /// The innermost nodes covering the requested lines of an inclusive
@@ -387,7 +562,12 @@ impl ParsedSource {
                 line_end: node.line_end.max(node.line_start),
                 name: None,
             },
-            self.outline.node_lines(&self.redacted, index),
+            self.redacted
+                .lines()
+                .skip(node.line_start - 1)
+                .take(node.line_end + 1 - node.line_start)
+                .map(|line| line.strip_suffix('\r').unwrap_or(line).to_owned())
+                .collect(),
         )
     }
 }
@@ -468,7 +648,11 @@ impl InputSelector {
                     node: Some(ResolvedNode {
                         path: parsed.path.clone(),
                         index,
-                        kind: if index == 0 { "file" } else { node.kind },
+                        kind: if index == 0 {
+                            "file".to_owned()
+                        } else {
+                            node.kind.clone()
+                        },
                         hash: node.structural_hash.clone(),
                     }),
                 })
@@ -478,7 +662,7 @@ impl InputSelector {
                     .get(definition)
                     .filter(|d| d.kind == crate::DefinitionKind::Term)
                     .ok_or_else(|| format!("{definition}: no matching named definition"))?;
-                check_project_file(root, &target.file)?;
+                outlines.check_project_file(root, &target.file)?;
                 Ok(ResolvedInput {
                     ranges: vec![SourceRange {
                         file: target.file.clone(),
@@ -503,7 +687,7 @@ impl InputSelector {
                     {
                         continue;
                     }
-                    check_project_file(root, &definition.file)?;
+                    outlines.check_project_file(root, &definition.file)?;
                     if !text.is_empty() {
                         text.push(String::new());
                     }
@@ -576,33 +760,32 @@ pub(crate) fn project_relative(root: &Path, file: &str) -> String {
     }
 }
 
-// {cite}`habeas:util`
-fn check_project_file(root: &Path, file: &str) -> Result<PathBuf, String> {
-    crate::authoring::access::resolve_evidence_file(root, file).map_err(|error| error.to_string())
-}
-
-pub(crate) fn read_project_file(root: &Path, file: &str) -> Result<(PathBuf, String), String> {
-    let path = check_project_file(root, file)?;
-    let bytes = fs::read(&path).map_err(|error| format!("cannot read {file}: {error}"))?;
-    let content = std::str::from_utf8(&bytes)
-        .map_err(|error| format!("cannot read {file}: {error}"))?
-        .to_owned();
-    Ok((path, content))
-}
-
 /// Resolves the outline node `item` in `file`, relative to the project
 /// `root`, and returns the evidence input recording it: `{file, item, hash}`.
 /// The empty selector selects the whole file. Intended for tools and tests
 /// that construct evidence records.
 // {impl}`requirements.ci.schema`
 pub fn outline_input(root: &Path, file: &str, item: &str) -> std::io::Result<Value> {
-    let root = fs::canonicalize(root)?;
+    cached_outline_input(
+        &OutlineCache::default(),
+        &fs::canonicalize(root)?,
+        file,
+        item,
+    )
+}
+
+fn cached_outline_input(
+    outlines: &OutlineCache,
+    root: &Path,
+    file: &str,
+    item: &str,
+) -> std::io::Result<Value> {
     let selector = InputSelector::Outline {
         file: file.to_owned(),
         item: item.to_owned(),
     };
     let resolved = selector
-        .resolve(&root, &BTreeMap::new(), &OutlineCache::default())
+        .resolve(root, &BTreeMap::new(), outlines)
         .map_err(std::io::Error::other)?;
     Ok(selector.to_input(&resolved))
 }
@@ -628,6 +811,13 @@ pub fn outline_inputs_for_lines(
     parsed
         .nodes_for_range(line_start, line_end, false)
         .into_iter()
-        .map(|index| outline_input(&root, file, &parsed.outline.nodes[index].selector))
+        .map(|index| {
+            cached_outline_input(
+                &outlines,
+                &root,
+                file,
+                &parsed.outline.nodes[index].selector,
+            )
+        })
         .collect()
 }

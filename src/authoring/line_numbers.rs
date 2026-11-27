@@ -13,8 +13,8 @@ static LINE_NUMBERS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
         // A file path's extension starts with a letter, so a version
         // such as `0.1:9` is not one.
-        r"(?:[\w.-]+/)*[\w-]+\.[A-Za-z][A-Za-z0-9]*:\d",
-        r"|(?i:\blines?)\s+\d",
+        r"(?:[\w.-]+/)*[\w-]+\.[A-Za-z][A-Za-z0-9]*:\d+",
+        r"|(?i:\blines?)\s+\d+",
         r"|\(\s*\d+\s*[-–]\s*\d+\s*\)",
     ))
     .expect("line-number pattern")
@@ -176,7 +176,8 @@ mod tests {
         ] {
             assert_eq!(cited(text), None, "{text}");
         }
-        assert_eq!(cited("at src/a.rs:5 and line 3"), Some("src/a.rs:5"));
+        assert_eq!(cited("at src/a.rs:12 and line 3"), Some("src/a.rs:12"));
+        assert_eq!(cited("see line 132"), Some("line 132"));
     }
 
     // {test}`requirements.authoring.no_line_numbers`
@@ -220,12 +221,12 @@ mod tests {
         let mut rejection = Rejection::default();
         let clean = json!({"determination": true, "rationale": "`src/lib.rs#fn[a]` is fine."});
         assert!(matches!(
-            rejection.decide("submit_judgment", &clean, "- guidance"),
+            rejection.decide("submit_result", &clean, "- guidance"),
             Outcome::Accept
         ));
         let cited = json!({"determination": false, "rationale": "src/lib.rs:3 panics."});
         assert!(rejection.resubmitted(&cited).is_none());
-        let Outcome::Reject(message) = rejection.decide("submit_judgment", &cited, "- guidance")
+        let Outcome::Reject(message) = rejection.decide("submit_result", &cited, "- guidance")
         else {
             panic!("expected a rejection");
         };
@@ -236,7 +237,7 @@ mod tests {
             .find_map(|word| uuid::Uuid::parse_str(word).ok())
             .expect("a UUID")
             .to_string();
-        assert!(message.contains(&format!("Call submit_judgment once more, either with a rationale that gives no line numbers, or with rationale set to exactly {uuid} to keep the submission you just made as it was.")), "{message}");
+        assert!(message.contains(&format!("Call submit_result once more, either with a rationale that gives no line numbers, or with rationale set to exactly {uuid} to keep the submission you just made as it was.")), "{message}");
         // Exactly the UUID keeps the rejected submission unchanged.
         let keep = json!({"determination": true, "rationale": uuid});
         assert_eq!(rejection.resubmitted(&keep), Some(cited.clone()));
@@ -244,17 +245,17 @@ mod tests {
         assert_eq!(rejection.resubmitted(&other), None);
         // A clean resubmission is accepted; another citing one fails.
         assert!(matches!(
-            rejection.decide("submit_judgment", &clean, "- guidance"),
+            rejection.decide("submit_result", &clean, "- guidance"),
             Outcome::Accept
         ));
         assert!(matches!(
-            rejection.decide("submit_judgment", &cited, "- guidance"),
+            rejection.decide("submit_result", &cited, "- guidance"),
             Outcome::Fail(message) if message.contains("after a rejection")
         ));
         // Each rejection gives a fresh UUID.
         let mut again = Rejection::default();
         let Outcome::Reject(second) = again.decide(
-            "submit_judgment",
+            "submit_result",
             &json!({"rationale": "line 4"}),
             "- guidance",
         ) else {

@@ -3,7 +3,7 @@
 This appendix collects the items introduced throughout the SDK chapters.
 
 :::{req} exports
-With its default features, `trust-but-verify` exposes the crate and module items
+`trust-but-verify` exposes the crate and module items
 listed below under {cite}`requirements.sdk.public_api`. Each declaration link opens
 the requirement that owns the item. The index names its public fields, methods,
 and associated types. The linked requirement gives their signatures and bounds,
@@ -13,14 +13,22 @@ Changes to those interfaces require a change to the owning requirement.
 Trait methods are listed on their trait. Signatures use Rustdoc’s short type
 names. Rustdoc’s automatic and blanket implementations are outside the inventory.
 
-The internal `habeas-integration` feature supports Habeas interoperability; its
-hidden items are outside this supported interface.
+The `trust-but-verify` crate defines no Cargo features. Habeas uses only the
+documented TBV public API.
 
 - `crate trust_but_verify` — [SDK public interface](../sdk.md)
-  - `mod agent` — [Configure the validator’s agent](graph/agent-harness.md#configure-the-validators-agent)
-    - `enum AgentConfig` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.agent_config) · [Configure the validator’s agent](graph/agent-harness.md#configure-the-validators-agent)
+  - `mod agent` — [Choose an agent backend](graph/agent-harness.md#choose-an-agent-backend)
+    - `trait AgentSettings` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.AgentSettings)
+    - `struct AgentWithTools` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.AgentWithTools)
+      - `with_tool()`
+    - `trait Tool` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.Tool)
+      - `name()`
+      - `description()`
+      - `execute()`
+    - `enum AgentConfig` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.agent_config) · [Choose an agent backend](graph/agent-harness.md#choose-an-agent-backend)
+      - `with_tool()` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.with_tool)
     - `enum OptionValue` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.OptionValue) · [Backend settings and credentials](graph/agent-harness.md#backend-settings-and-credentials)
-    - `struct BedrockConfig` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.BedrockConfig) · [Configure the validator’s agent](graph/agent-harness.md#configure-the-validators-agent) · [Backend settings and credentials](graph/agent-harness.md#backend-settings-and-credentials)
+    - `struct BedrockConfig` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.BedrockConfig) · [Choose an agent backend](graph/agent-harness.md#choose-an-agent-backend) · [Backend settings and credentials](graph/agent-harness.md#backend-settings-and-credentials)
       - `model`
       - `aws_profile`
       - `region`
@@ -37,7 +45,7 @@ hidden items are outside this supported interface.
       - `session_token`
       - `new()`
       - `session_token()`
-    - `struct OllamaConfig` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.OllamaConfig) · [Configure the validator’s agent](graph/agent-harness.md#configure-the-validators-agent) · [Backend settings and credentials](graph/agent-harness.md#backend-settings-and-credentials)
+    - `struct OllamaConfig` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.OllamaConfig) · [Choose an agent backend](graph/agent-harness.md#choose-an-agent-backend) · [Backend settings and credentials](graph/agent-harness.md#backend-settings-and-credentials)
       - `model`
       - `endpoint`
       - `api_key_env`
@@ -48,7 +56,7 @@ hidden items are outside this supported interface.
       - `api_key_env()`
       - `api_key()`
       - `option()`
-    - `struct OpenAiConfig` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.OpenAiConfig) · [Configure the validator’s agent](graph/agent-harness.md#configure-the-validators-agent) · [Backend settings and credentials](graph/agent-harness.md#backend-settings-and-credentials)
+    - `struct OpenAiConfig` — [Declaration](graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.OpenAiConfig) · [Choose an agent backend](graph/agent-harness.md#choose-an-agent-backend) · [Backend settings and credentials](graph/agent-harness.md#backend-settings-and-credentials)
       - `model`
       - `endpoint`
       - `api_key_env`
@@ -65,19 +73,30 @@ hidden items are outside this supported interface.
   - `mod domain` — [Define the application domain](../sdk.md#defining-the-application-domain)
     - `trait Domain` — [Declaration](../sdk.md#habeas-req-requirements.sdk.domain) · [Define the application domain](../sdk.md#defining-the-application-domain)
       - `Error`
-      - `NodeId`
+      - `NodeData` — [Declaration](graph.md#habeas-req-requirements.sdk.graph.NodeData)
       - `NodeContent`
       - `EdgeLabel`
+      - `source_address()`
+      - `source_node()`
+      - `project_sources()`
+      - `cache()`
       - `node_path()`
       - `node_content()`
       - `outgoing_edges()`
       - `load_evidence()`
       - `store_evidence()`
+    - `struct NodeId` — [Declaration](graph.md#habeas-req-requirements.sdk.graph.NodeId)
     - `trait NodeContents` — [Declaration](graph.md#habeas-req-requirements.sdk.graph.NodeContents) · [Read node contents](graph.md#read-node-contents) · [Format contents for an agent](graph.md#format-node-contents-for-an-agent)
       - `fingerprint()`
       - `format()`
-    - `trait SourceNodes` — [Declaration](sources.md#habeas-req-requirements.sdk.sources.source_nodes) · [Map source items to graph nodes](sources.md#connect-source-items-to-graph-nodes)
-      - `source_node()`
+    - `struct ValidationCache` — [Declaration](validation-cache.md#habeas-req-requirements.sdk.validation-cache.ValidationCache)
+      - `new()` — [Declaration](validation-cache.md#habeas-req-requirements.sdk.validation-cache.new)
+      - `usage()` — [Declaration](validation-cache.md#habeas-req-requirements.sdk.validation-cache.usage)
+      - `with_sources()` — [Declaration](validation-cache.md#habeas-req-requirements.sdk.validation-cache.with_sources)
+      - `intern_node()` — [Declaration](validation-cache.md#habeas-req-requirements.sdk.validation-cache.intern_node)
+      - `node_data()` — [Declaration](validation-cache.md#habeas-req-requirements.sdk.validation-cache.node_data)
+      - `set_agent()` — [Declaration](validation-cache.md#habeas-req-requirements.sdk.validation-cache.set_agent)
+      - `with_agent()` — [Declaration](validation-cache.md#habeas-req-requirements.sdk.validation-cache.with_agent)
   - `mod graph` — [Graph nodes](graph.md) · [Graph edges](graph-edges.md)
     - `trait Criterion` — [Declaration](graph/criteria.md#habeas-req-requirements.sdk.graph.criteria.criterion_trait) · [Define a criterion](graph/criteria.md#define-a-criterion)
       - `Ok`
@@ -118,21 +137,43 @@ hidden items are outside this supported interface.
       - `fingerprint`
       - `new()`
     - `enum Dependency` — [Declaration](graph/evidence.md#habeas-req-requirements.sdk.graph.evidence.dependencies) · [Record input dependencies](graph/evidence.md#remember-what-a-procedure-actually-reads)
-    - `enum ValidationError` — [Declaration](graph/validators.md#habeas-req-requirements.sdk.graph.validators.ValidationError) · [Validation failures](graph/validators.md#run-criteria-with-a-validator)
+    - `enum ValidationError` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.ValidationError) · [Execute a criterion](graph/running-criteria.md#execute-a-criterion)
     - `fn edge_fingerprint` — [Declaration](graph/validation-context.md#habeas-req-requirements.sdk.graph.validation-context.snapshot) · [Target-set fingerprint rules](graph/validation-context.md#selecting-a-nodes-outgoing-edges)
-    - `mod validator` — [Run criteria with a validator](graph/validators.md#run-criteria-with-a-validator)
-      - `struct Validator` — [Declaration](graph/validators.md#habeas-req-requirements.sdk.graph.validators.validator) · [Run criteria with a validator](graph/validators.md#run-criteria-with-a-validator)
-        - `new()` — [Declaration](graph/validators.md#habeas-req-requirements.sdk.graph.validators.validator.new)
-        - `with_agent()` — [Declaration](graph/validators.md#habeas-req-requirements.sdk.graph.validators.validator.with_agent)
-        - `refresh_evidence()` — [Declaration](graph/validators.md#habeas-req-requirements.sdk.graph.validators.validator.refresh_evidence)
-        - `load_evidence()` — [Declaration](graph/validators.md#habeas-req-requirements.sdk.graph.validators.validator.load_evidence)
-        - `check_inputs()` — [Declaration](graph/validators.md#habeas-req-requirements.sdk.graph.validators.validator.check_inputs)
-        - `verify()` — [Declaration](graph/validators.md#habeas-req-requirements.sdk.graph.validators.validator.verify)
-        - `store_evidence()` — [Declaration](graph/validators.md#habeas-req-requirements.sdk.graph.validators.validator.store_evidence)
-        - `with_sources()` — [Declaration](graph/validators.md#habeas-req-requirements.sdk.graph.validators.validator.with_sources)
+    - `struct Validator` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.Validator)
+      - `new()` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.Validator.new)
+      - `usage()` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.Validator.usage)
+      - `refresh_evidence()` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.refresh_evidence)
+      - `verify()` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.verify)
+      - `store_evidence()` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.store_evidence)
+      - `load_evidence()` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.load_evidence)
+      - `check_inputs()` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.check_inputs)
+    - `struct UsageStats` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.UsageStats)
+      - `attempts`
+      - `retries`
+      - `failed_attempts`
+      - `prepared_inputs`
+      - `delivered_inputs`
+      - `tools`
+      - `input_tokens`
+      - `output_tokens`
+      - `cached_input_tokens`
+      - `cache_creation_input_tokens`
+      - `reasoning_tokens`
+    - `struct ToolUsage` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.ToolUsage)
+      - `calls`
+      - `result_bytes`
+    - `struct TokenCount` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.TokenCount)
+      - `reported`
+      - `missing_attempts`
   - `mod outline` — [Source outlines](outlines.md)
+    - `enum AttachmentKind` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.AttachmentKind) · [Inspect attachments](outlines.md#inspect-attachments)
     - `struct Outline` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.Outline) · [Inspect selectable items](outlines.md#inspect-selectable-items)
+      - `diagnostic`
       - `items`
+      - `new()`
+    - `struct OutlineAttachment` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.OutlineAttachment) · [Inspect attachments](outlines.md#inspect-attachments)
+      - `kind`
+      - `span`
       - `new()`
     - `struct OutlineContent` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.parser) · [Load outline contents](outlines.md#load-outline-contents) · [Select another item from the same snapshot](outlines.md#select-another-item-from-the-same-snapshot)
       - `from_path()`
@@ -144,13 +185,16 @@ hidden items are outside this supported interface.
       - `id()`
       - `text()`
       - `outline()`
+      - `source_span()`
+      - `source_span_redacted()`
+      - `language()`
       - `structural_hash()`
       - `fingerprint_scheme()`
     - `struct OutlineError` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.OutlineError) · [Load outline contents](outlines.md#load-outline-contents)
       - `line`
       - `message`
       - `new()`
-    - `struct OutlineId` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.address_identity) · [Identify a file and item](outlines.md#identify-a-file-and-item)
+    - `struct OutlineData` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.address_identity) · [Identify a file and item](outlines.md#identify-a-file-and-item)
       - `path`
       - `selector`
       - `root()`
@@ -160,15 +204,29 @@ hidden items are outside this supported interface.
       - `selector`
       - `kind`
       - `span`
+      - `header_span`
+      - `trailer_span`
+      - `name_span`
       - `structural_hash`
+      - `attachments`
       - `new()`
+      - `with_name_span()`
+      - `with_header_span()`
+      - `with_trailer_span()`
+      - `with_own_hash()`
+      - `with_attachments()`
     - `trait OutlineLang` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.language_provider) · [Choose an outline language](outlines.md#choose-an-outline-language)
       - `name()`
       - `extensions()`
       - `outline()`
       - `fingerprint_scheme()`
       - `search_structure()`
+    - `struct Span` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.Span) · [Inspect selectable items](outlines.md#inspect-selectable-items)
+      - `start`
+      - `end`
+      - `new()`
     - `mod languages` — [Language-specific rules](outlines.md#language-specific-rules)
+      - `fn name_for_path` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.name_for_path)
       - `struct Css` — [Declaration](sources/css.md#habeas-req-requirements.sdk.sources.css.Css) · [CSS outlines](sources/css.md)
       - `struct Markdown` — [Declaration](sources/markdown.md#habeas-req-requirements.sdk.sources.markdown.Markdown) · [Markdown outlines](sources/markdown.md)
       - `struct PlainText` — [Declaration](sources/plain-text.md#habeas-req-requirements.sdk.sources.plain-text.PlainText) · [Plain-text outlines](sources/plain-text.md)
@@ -196,8 +254,12 @@ hidden items are outside this supported interface.
   - `mod request` — [Agent calls](graph/agent-calls.md)
     - `struct Ask` — [Declaration](graph/agent-calls.md#habeas-req-requirements.sdk.graph.agent-calls.Ask) · [Build a request](graph/agent-calls.md#build-a-request)
       - `context()`
+      - `message()`
+      - `contents_of_node()`
+      - `vet_answer()`
       - `contents_of_current_node()`
       - `contents_of_successors()`
+    - `enum VetResult` — [Declaration](graph/agent-calls.md#habeas-req-requirements.sdk.graph.agent-calls.VetResult) · [Vet a submitted answer](graph/agent-calls.md#vet-a-submitted-answer)
     - `struct ContextPhase` — [Declaration](graph/agent-calls.md#habeas-req-requirements.sdk.graph.agent-calls.ContextPhase) · [Build a request](graph/agent-calls.md#build-a-request)
     - `struct NodePhase` — [Declaration](graph/agent-calls.md#habeas-req-requirements.sdk.graph.agent-calls.NodePhase) · [Build a request](graph/agent-calls.md#build-a-request)
     - `struct ValidationContext` — [Declaration](graph/validation-context.md#habeas-req-requirements.sdk.graph.validation-context.ValidationContext)
@@ -215,6 +277,7 @@ hidden items are outside this supported interface.
     - `trait Context` — [Declaration](graph/agent-calls.md#habeas-req-requirements.sdk.graph.agent-calls.agent_context) · [Compose reusable context](graph/agent-calls.md#compose-reusable-context)
       - `contents()`
   - `mod sources` — [Select the project directory](sources.md#select-the-project-directory)
+    - `fn redact_text` — [Declaration](sources.md#habeas-req-requirements.sdk.sources.redact_text)
     - `struct SearchResults` — [Declaration](graph/search.md#habeas-req-requirements.sdk.graph.search.SearchResults) · [Search source text](graph/search.md#searching-source-text) · [Search source structure](graph/search.md#searching-source-structure)
       - `matches`
       - `complete`
@@ -228,6 +291,15 @@ hidden items are outside this supported interface.
     - `struct SourceScope` — [Declaration](graph/search.md#habeas-req-requirements.sdk.graph.search.source_scope) · [Choose a source scope](graph/search.md#choosing-a-source-scope)
       - `all()`
       - `under()`
+    - `struct SearchHit` — [Declaration](graph/search.md#habeas-req-requirements.sdk.graph.search.occurrence)
+      - `new()`
+      - `node`
+      - `span`
+      - `text`
+    - `struct SourceProject` — [Declaration](sources.md#habeas-req-requirements.sdk.sources.SourceProject)
+      - `new()`
+      - `search_text()`
+      - `search_structure()`
     - `struct Sources` — [Declaration](sources.md#habeas-req-requirements.sdk.sources.Sources) · [Select the project directory](sources.md#select-the-project-directory)
       - `new()`
       - `list()`
@@ -239,6 +311,11 @@ hidden items are outside this supported interface.
       - `node`
       - `excerpt`
       - `new()`
+    - `struct StructuralRule` — [Declaration](graph/search.md#habeas-req-requirements.sdk.graph.search.StructuralRule)
+      - `languages()`
+      - `compile()`
+      - `extensions()`
+      - `matches()`
     - `struct StructuralQuery` — [Declaration](graph/search.md#habeas-req-requirements.sdk.graph.search.StructuralQuery) · [Search source structure](graph/search.md#searching-source-structure)
       - `scope`
       - `language`

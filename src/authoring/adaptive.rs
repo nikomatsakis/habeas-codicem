@@ -12,6 +12,7 @@ pub(super) async fn assess(
     usage: &mut UsageLog,
     policy: AssessmentPolicy,
 ) -> io::Result<(Judgment, Value)> {
+    let domain = sources.domain.clone();
     let first = route(root, subject, config, sources, usage).await?;
     if policy == AssessmentPolicy::Once || first.0 == Judgment::False {
         return Ok(first);
@@ -20,7 +21,7 @@ pub(super) async fn assess(
     let mut log = followup_log(&state, root, subject, usage, "adaptive confirmation")?;
     usage.record.attempts.push(log.path.clone());
     usage.save()?;
-    let result = match subject.sources(root) {
+    let result = match subject.domain_sources(domain.clone()) {
         Ok(sources) => route(root, subject, config, sources, &mut log).await,
         Err(error) => Err(error),
     };
@@ -45,15 +46,14 @@ pub(super) async fn assess(
         unreachable!()
     };
     openai.model = Some("gpt-6.1-sol".into());
-    let provider = RigProvider::connect(&backend).await?;
     let mut log = followup_log(&state, root, subject, usage, "adaptive verification")?;
     log.record.model = Some("gpt-6.1-sol".into());
     usage.record.attempts.push(log.path.clone());
     usage.save()?;
-    let result = match followup_sources(root, subject, &mut log) {
+    let result = match followup_sources(&domain, subject, &mut log) {
         Ok(mut sources) => {
             verify(
-                &provider,
+                &backend,
                 &mut sources,
                 &mut log,
                 &less.0,
@@ -91,6 +91,7 @@ async fn route(
         usage.save()?;
         return attempt(root, subject, config, sources, usage, &state, "gpt-6.1-sol").await?;
     }
+    let domain = sources.domain.clone();
     let first = attempt(
         root,
         subject,
@@ -113,7 +114,7 @@ async fn route(
             if error.kind() != io::ErrorKind::Other
                 || error.raw_os_error().is_some()
                 || error.get_ref().is_some_and(|source| {
-                    source.is::<rig_core::error::ProviderError>()
+                    source.is::<trust_but_verify::graph::ValidationError<io::Error>>()
                         || source.is::<serde_json::Error>()
                 }) =>
         {
@@ -123,7 +124,7 @@ async fn route(
     };
     usage.record.routing_reason = Some(reason);
     usage.save()?;
-    let sources = subject.sources(root)?;
+    let sources = subject.domain_sources(domain.clone())?;
     attempt(root, subject, config, sources, usage, &state, "gpt-6.1-sol").await?
 }
 
@@ -143,14 +144,13 @@ async fn attempt(
     };
     openai.model = Some(model.to_owned());
     // Both tiers use the same endpoint, credential source and explicit options.
-    let provider = RigProvider::connect(&backend).await?;
     let mut log = followup_log(state, root, subject, parent, model)?;
     log.record.model = Some(model.to_owned());
-    parent.handoff_first_request(&mut log);
+    parent.handoff_first_conversation(&mut log);
     parent.record.attempts.push(log.path.clone());
     parent.save()?;
     let result = assess_subject(
-        &provider,
+        &backend,
         root,
         state,
         subject,

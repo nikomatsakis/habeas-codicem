@@ -46,9 +46,8 @@ pub(crate) struct SiteItem {
     pub(crate) file: String,
     /// Outline selector; empty for the root node.
     pub(crate) item: String,
-    /// Inclusive lines of the site's node.
-    pub(crate) line_start: usize,
-    pub(crate) line_end: usize,
+    /// Half-open source range, in one-based lines and byte columns.
+    pub(crate) range: std::ops::Range<(usize, usize)>,
     /// The matches at the site, in query declaration and source order.
     pub(crate) matches: Vec<SiteMatch>,
 }
@@ -110,8 +109,7 @@ impl SiteItem {
     /// Whether a reference lies inside the site's node.
     pub(crate) fn contains(&self, root: &Path, reference: &SourceReference) -> bool {
         display_path(root, &reference.file) == self.file
-            && self.line_start <= reference.line
-            && reference.line <= self.line_end
+            && self.range.contains(&(reference.line, reference.column))
     }
 
     // {impl}`requirements.references.site_review`
@@ -190,53 +188,32 @@ pub(crate) fn requirement_sites(
             .map_err(|error| format!("{name}: query {}: {error}", query.name))?;
         matches.push((query, found));
     }
-    Ok(collect_sites(root, name, outlines, matches))
+    Ok(collect_sites(name, matches))
 }
 
 /// Groups query matches by site, in path and selector order.
 fn collect_sites(
-    root: &Path,
     name: &str,
-    outlines: &OutlineCache,
     matches: Vec<(&DeclaredQuery, Vec<crate::structural::QueryMatch>)>,
 ) -> Vec<SiteItem> {
     let mut sites = BTreeMap::<(String, String), SiteItem>::new();
     for (query, found) in matches {
         for found in found {
-            let parsed = outlines.parse(root, &found.site.file);
-            let parsed = parsed.as_ref().as_ref().ok();
-            let item = parsed.map_or_else(
-                || found.site.item.clone(),
-                |parsed| {
-                    let index = parsed.outline.owner_at_line(found.line_start);
-                    parsed.outline.nodes[index].selector.clone()
-                },
-            );
             let site = sites
                 .entry((found.site.file.clone(), found.site.item.clone()))
-                .or_insert_with(|| {
-                    let (line_start, line_end) = parsed
-                        .and_then(|parsed| {
-                            let index = parsed.outline.resolve(&found.site.item).ok()?;
-                            let node = &parsed.outline.nodes[index];
-                            Some((node.line_start, node.line_end))
-                        })
-                        .unwrap_or((found.line_start, found.line_end));
-                    SiteItem {
-                        requirement: name.to_owned(),
-                        file: found.site.file.clone(),
-                        item: found.site.item.clone(),
-                        line_start,
-                        line_end,
-                        matches: Vec::new(),
-                    }
+                .or_insert_with(|| SiteItem {
+                    requirement: name.to_owned(),
+                    file: found.site.file,
+                    item: found.site.item,
+                    range: found.site_range,
+                    matches: Vec::new(),
                 });
             site.matches.push(SiteMatch {
                 kind: query.kind,
                 query: query.name.clone(),
                 line_start: found.line_start,
                 line_end: found.line_end,
-                item,
+                item: found.item,
                 text: found.text,
             });
         }
@@ -265,7 +242,7 @@ pub(crate) fn discover(
         }
         let (queries, problems) = crate::structural::parse_queries(declaration);
         errors.extend(problems);
-        let runnable = validate_queries(name, declaration, &queries, errors);
+        let runnable = validate_queries(&outlines.validation, name, declaration, &queries, errors);
         // Evaluate dependencies first, even when a violation is declared
         // before its site query. Report results in declaration order below.
         let mut site_results = BTreeMap::new();
@@ -318,7 +295,7 @@ pub(crate) fn discover(
                 }
             }
         }
-        sites.insert(name.clone(), collect_sites(root, name, outlines, matches));
+        sites.insert(name.clone(), collect_sites(name, matches));
     }
     sites
 }
@@ -330,6 +307,7 @@ pub(crate) fn discover(
 /// `no_match` snippet none.
 // {impl}`requirements.ci.errors`
 fn validate_queries<'a>(
+    cache: &crate::inputs::SourceCache,
     name: &str,
     declaration: &Declaration,
     queries: &'a [DeclaredQuery],
@@ -338,6 +316,7 @@ fn validate_queries<'a>(
     let mut valid = BTreeSet::new();
     let mut seen = BTreeSet::new();
     let mut runnable = Vec::new();
+    let mut examples = Vec::new();
     let has_sites = queries.iter().any(|query| query.kind == QueryKind::Sites);
     for query in queries {
         let location = format!("{}:{}", declaration.file, query.line);
@@ -361,16 +340,33 @@ fn validate_queries<'a>(
         }
         // With no site queries, the diagnostic above already explains why
         // a supplied target cannot resolve. Missing `within` is independent.
-        if !(query.kind == QueryKind::Violations && !has_sites && query.body.within.is_some()) {
-            if let Err(error) = crate::structural::within_query(queries, query) {
-                problems.push(error);
-            }
+        let within = crate::structural::within_query(queries, query);
+        if let Err(error) = &within
+            && !(query.kind == QueryKind::Violations && !has_sites && query.body.within.is_some())
+        {
+            problems.push(error.clone());
         }
-        if let Err(error) = crate::structural::StructuralRule::compile(
+        let rule = trust_but_verify::sources::StructuralRule::compile(
             &query.body.language,
             &query.body.rule_core(),
-        ) {
-            problems.push(error);
+        );
+        match (rule, within) {
+            (Err(error), _) => problems.push(error.to_string()),
+            (Ok(rule), Ok(target)) => {
+                // A target's compilation error is reported at its declaration.
+                let site_rule = target
+                    .map(|target| {
+                        trust_but_verify::sources::StructuralRule::compile(
+                            &target.body.language,
+                            &target.body.rule_core(),
+                        )
+                    })
+                    .transpose();
+                if let Ok(site_rule) = site_rule {
+                    examples.push((query, rule, site_rule));
+                }
+            }
+            (Ok(_), Err(_)) => {}
         }
         for (field, snippets) in [
             ("match", &query.body.matches),
@@ -399,14 +395,20 @@ fn validate_queries<'a>(
             .as_ref()
             .is_none_or(|within| valid.contains(within))
     });
-    for query in &runnable {
+    for (query, rule, site_rule) in examples {
         let location = format!("{}:{}", declaration.file, query.line);
         for (field, snippets, expect_match) in [
             ("match", &query.body.matches, true),
             ("no_match", &query.body.no_match, false),
         ] {
             for (index, snippet) in snippets.iter().enumerate() {
-                let problem = match crate::structural::snippet_matches(queries, query, snippet) {
+                let problem = match crate::structural::snippet_matches(
+                    cache,
+                    &query.body.language,
+                    &rule,
+                    site_rule.as_ref(),
+                    snippet,
+                ) {
                     Err(error) => Some(error),
                     Ok(0) if expect_match => Some("contains no match of the query".to_owned()),
                     Ok(count) if !expect_match && count > 0 => {
@@ -529,9 +531,9 @@ pub(crate) fn site_fixmes(
                 .as_ref()
                 .as_ref()
                 .ok()
-                .filter(|parsed| parsed.outline.profile.language.is_some())
+                .filter(|parsed| parsed.outline.language != "plain-text")
                 .map(|parsed| {
-                    parsed.outline.nodes[parsed.reference_owner_at_line(reference.line)]
+                    parsed.outline.nodes[parsed.reference_owner(reference.line, reference.column)]
                         .selector
                         .clone()
                 })
@@ -561,15 +563,14 @@ fn same_fixmes(recorded: &[SiteFixme], current: &[SiteFixme]) -> bool {
 #[allow(clippy::too_many_arguments)]
 // {impl}`requirements.references.site_review`
 pub(crate) fn validate(
-    root: &Path,
-    definitions: &BTreeMap<String, Declaration>,
+    domain: &crate::sdk::HabeasDomain,
     references: &[SourceReference],
     sites: &Sites,
-    outlines: &OutlineCache,
     files: &[PathBuf],
     errors: &mut Vec<String>,
     progress: &mut impl FnMut(InspectionProgress),
 ) {
+    let root = domain.root.as_ref();
     let total = sites.values().map(Vec::len).sum::<usize>() + files.len();
     let mut completed = 0;
     let mut advance = |progress: &mut dyn FnMut(InspectionProgress)| {
@@ -586,7 +587,7 @@ pub(crate) fn validate(
         let path = site.review_path();
         expected.insert(root.join(&path));
         if root.join(&path).exists() {
-            validate_review(root, &path, site, definitions, references, outlines, errors);
+            validate_review(domain, &path, site, references, errors);
         } else {
             errors.push(format!(
                 "{path}: missing site review of {} for {} {} at {}:{}",
@@ -594,7 +595,7 @@ pub(crate) fn validate(
                 site.file,
                 site.selector_label(),
                 site.file,
-                site.line_start
+                site.range.start.0
             ));
         }
         advance(progress);
@@ -614,14 +615,15 @@ pub(crate) fn validate(
 // {impl}`requirements.ci.errors`
 // {impl}`requirements.references.site_review`
 fn validate_review(
-    root: &Path,
+    domain: &crate::sdk::HabeasDomain,
     label: &str,
     site: &SiteItem,
-    definitions: &BTreeMap<String, Declaration>,
     references: &[SourceReference],
-    outlines: &OutlineCache,
     errors: &mut Vec<String>,
 ) {
+    let root = domain.root.as_ref();
+    let definitions = domain.definitions.as_ref();
+    let outlines = &domain.outlines;
     let content = match fs::read_to_string(root.join(label)) {
         Ok(content) => content,
         Err(error) => {
@@ -642,11 +644,6 @@ fn validate_review(
             file: site.file.clone(),
             item: site.item.clone(),
         });
-    let domain = crate::sdk::HabeasDomain {
-        root,
-        definitions,
-        outlines,
-    };
     let native = value.clone();
     let value = match crate::evidence_format::view(&value) {
         Ok(value) => value,
@@ -896,6 +893,7 @@ no_match:
     // {test}`requirements.authoring.redaction`
     // {test}`requirements.authoring.site_prompt`
     #[test]
+    // {test}`requirements.authoring.site_prompt`
     fn violation_text_reaches_the_model_redacted() {
         let token = ["ghp_", "abcdefghijklmnopqrstuvwxyz0123456789"].concat();
         let found = |kind, text: &str| SiteMatch {
@@ -910,8 +908,7 @@ no_match:
             requirement: "requirements.rule".to_owned(),
             file: "src/lib.rs".to_owned(),
             item: "fn[check]".to_owned(),
-            line_start: 1,
-            line_end: 1,
+            range: (1, 1)..(2, 1),
             matches: vec![
                 found(QueryKind::Sites, "fn check() {}"),
                 found(QueryKind::Violations, &format!("connect(\"{token}\")")),
@@ -1020,15 +1017,18 @@ no_match: ["fn check() { let other = 1; }"]
             "{errors:?}"
         );
         let found = &sites["requirements.rule"];
-        assert_eq!(found.len(), 1, "{found:#?}");
-        assert_eq!(found[0].file, "src/lib.rs");
-        assert_eq!(found[0].item, "fn[check]");
-        assert_eq!(found[0].queries(), ["sentinels"]);
+        let files: Vec<_> = found.iter().map(|site| site.file.as_str()).collect();
+        assert_eq!(files, ["src/lib.rs", "src/untracked.rs"]);
+        for site in found {
+            assert_eq!(site.item, "fn[check]");
+            assert_eq!(site.queries(), ["sentinels"]);
+        }
     }
 
     // {test}`requirements.references.distributed`
     #[test]
     // {test}`requirements.authoring.no_line_numbers`
+    // {test}`requirements.authoring.site_prompt`
     fn sites_are_the_innermost_nodes_of_site_matches_and_violations_within_them() {
         let temp = project(RULE, SOURCE);
         let (errors, sites) = inspect(temp.path());
@@ -1052,7 +1052,7 @@ no_match: ["fn check() { let other = 1; }"]
             ]
         );
         let nested = &sites[2];
-        assert_eq!((nested.line_start, nested.line_end), (5, 7));
+        assert_eq!(nested.range, (5, 5)..(7, 6));
         let violation = nested
             .matches
             .iter()
@@ -1082,6 +1082,33 @@ no_match: ["fn check() { let other = 1; }"]
                 "{item}: {errors:?}"
             );
         }
+    }
+
+    // {test}`requirements.references.distributed`
+    #[test]
+    fn query_paths_include_named_files_and_directory_descendants_and_apply_exclude() {
+        let rule = RULE.replace(
+            "paths: [src]",
+            "paths: [src, single.rs]\nexclude: [src/skipped.rs]",
+        );
+        let temp = project(&rule, "fn check_lib() {}");
+        for file in [
+            "src/nested/child.rs",
+            "src/skipped.rs",
+            "single.rs",
+            "outside.rs",
+        ] {
+            let path = temp.path().join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "fn check_file() {}").unwrap();
+        }
+        let (_, sites) = inspect(temp.path());
+        let mut files: Vec<_> = sites["requirements.rule"]
+            .iter()
+            .map(|s| s.file.as_str())
+            .collect();
+        files.sort();
+        assert_eq!(files, ["single.rs", "src/lib.rs", "src/nested/child.rs"]);
     }
 
     // {test}`requirements.references.distributed`
@@ -1317,6 +1344,7 @@ no_match: ["struct S;"]
             );
         };
         expect(4, "single identifier segment");
+        expect(4, "no_match[0] snippet contains 1 matches");
         // The first matching snippet has no match, the no_match snippet does
         // not parse, and nothing in the project matches.
         expect(13, "match[0] snippet contains no match");

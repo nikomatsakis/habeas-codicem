@@ -1,8 +1,8 @@
 {
-  "requirement": "Usage MUST record each provider request's outcome and available input/output\ntoken counts, including retries, with cached or reasoning-token counts when\nprovided, and for a failed request the failure under\n{cite}`requirements.authoring.usage_requests.failures`. Missing measurements MUST be recorded as unavailable, not zero.\nRun totals MUST include request and tool-call counts by tool, elapsed time, and\navailable token usage, identifying incomplete totals without double counting\nprovider counters that overlap.",
+  "requirement": "HC MUST use one {term}`requirements.sdk.graph.running-criteria.validator` per assessment. Its usage record MUST report that validator’s attempt and token totals under {cite}`requirements.sdk.graph.running-criteria.Validator.usage` and its failure and retry counts under {cite}`requirements.authoring.usage_requests.failures`. The record MUST distinguish partial or unavailable token measurements from complete totals and preserve the available cache and reasoning breakdowns. The assessment MUST also report elapsed time.",
   "determination": true,
-  "rationale": "The reviewed tests adequately check `requirements.authoring.usage_requests`. Each obligation maps to a test with assertions that enforce it.\n\n**Per-request outcome and input/output tokens, including retries**\n- `src/authoring/mod.rs#mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]` forces 5 throttled failures and then a success. It asserts `request_count` is 6, the first five outcomes are `failed`, and the sixth is `completed`.\n- `unanswered_requests_are_abandoned_and_retried` asserts an abandoned request is recorded as `failed` and its retry as `completed`.\n- `success_resets_backoff_and_retries_keep_history_without_repeating_tools` asserts 4 requests and one `habeas` tool call across retries.\n- `crates/trust-but-verify/src/agent/providers.rs#mod[tests]/fn[bedrock_sdk_retries_are_disabled]` asserts `max_attempts` is 1. This keeps every provider attempt visible as its own recorded request.\n- The CLI tests `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` and `bedrock_cli_uses_selected_profile_region_and_converse_tools` assert end-to-end token totals (33/21 and 38/10) and `request_count`.\n\n**Cached and reasoning tokens when provided**\n- `token_totals_keep_subsets_separate_and_missing_counters_unknown` asserts per-request and total cached, cache-creation and reasoning counts.\n- `claude_requests_carry_cache_checkpoints_and_record_cache_usage` asserts cached and cache-creation counts per request and in total.\n- `openai_responses_replays_tool_calls_and_records_usage` asserts cached (6) and reasoning (4) totals.\n\n**Missing measurements recorded as unavailable, not zero**\n- `token_totals_keep_subsets_separate_and_missing_counters_unknown` asserts a failed request's per-request `input` is null.\n- `partial_failure_retains_available_totals_and_optional_measurements` asserts an unreported `cached_input` is null while an explicit `cached_input_tokens(0)` stays 0. It also asserts an unmeasured `reasoning` total is null.\n- `tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text` asserts the run `tokens.input` is null when no request exists.\n\n**Failed-request failure details**\n- This is delegated to the cited `requirements.authoring.usage_requests.failures`, so I did not reassess it. The throttled test and `failed_submission_can_be_confirmed_on_a_later_attempt` nonetheless assert the failure object and its `retried` flag.\n\n**Run totals**\n- Request counts are asserted in the tests above.\n- Tool-call counts by tool, plus failures and skips, are asserted in `tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text`. The CLI test asserts them end to end.\n- Elapsed time is covered by `completed_requests_and_the_run_record_elapsed_time`. It asserts the per-request value (20 ms), the run's `elapsed_ms` of at least 50 ms mid-run and after `finish`, and that the run value is at least the request value. `cancelled_request_persists_elapsed_time_and_incomplete_totals` asserts a cancelled request's elapsed time.\n- Incomplete totals are identified through the `tokens.complete` flag. `token_totals_keep_subsets_separate_and_missing_counters_unknown` asserts it is false while a request is in flight and true once all requests finish. The partial-failure, cancelled and failed-run tests assert it is false.\n\n**No double counting of overlapping counters**\n- In `token_totals_keep_subsets_separate_and_missing_counters_unknown`, two requests each report input 100 with cached 30. The test asserts total input is 200 and cached is 60, so cached tokens are not added into input.\n- The OpenAI CLI test asserts input stays 22 while cached is 6.\n\nI found no obligation without a test.",
-  "references": "c8b7f08a50b337f9c70d879cbd592e2a60fe6fe78afeca02c2feb559ecfbf2dc",
+  "rationale": "I mapped each clause of `requirements.authoring.usage_requests` to a test and found no gap. The cited `Validator.usage` and `usage_requests.failures` supply context, and I did not reassess their own tests.\n\n- **One validator per assessment, with attempt and token totals.**\n  - `tests/authoring_cli.rs#fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]` runs a three-turn assessment. It asserts `provider_usage.attempts == 3` and reported input and output tokens of 33 and 21 with `missing_attempts == 0`. That shows one accumulating record across turns, and it shows a complete total.\n  - `fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]` asserts attempts of 2 and token sums of 38 and 10 across two requests.\n  - `fn[openai_responses_replays_tool_calls_and_records_usage]` asserts attempts of 2 and token sums of 22 and 14.\n  - Call-level aggregation does not need a separate test, because those totals are summed across turns.\n- **Failure and retry counts, including a recovered failure.** `fn[a_successful_retry_reports_partial_token_measurements]` returns a 503 and then a success. It asserts `attempts == 2`, `failed_attempts == 1` and `retries == 1`.\n- **A terminal failure keeps the accumulated counts.** `fn[terminal_provider_failure_retains_the_retry_and_undelivered_inputs]` returns a 503 and then a 400. It asserts `outcome == failed`, `attempts == 2`, `failed_attempts == 2` and `retries == 1`. The counts survive the `Err` path. `fn[bedrock_sdk_retries_are_disabled]` in `crates/trust-but-verify/src/agent/providers.rs` checks that the SDK makes one attempt, so provider attempts are counted by the harness and not hidden by the SDK.\n- **Partial or unavailable tokens are distinguished from complete totals.**\n  - The retry test omits `eval_count` on the accepted reply. It asserts `input_tokens == {reported:11, missing_attempts:1}` and `output_tokens == {reported:0, missing_attempts:2}`.\n  - The terminal-failure test asserts `input_tokens.missing_attempts == 2`, which covers the fully unavailable case.\n  - The Ollama test asserts `missing_attempts == 0` for the complete case.\n- **Cache and reasoning breakdowns are preserved.**\n  - `fn[openai_responses_replays_tool_calls_and_records_usage]` asserts `cached_input_tokens.reported == 6` and `reasoning_tokens.reported == 4`.\n  - `fn[claude_requests_carry_cache_checkpoints_and_record_cache_usage]` asserts cache-read tokens of 1000 and cache-creation tokens of 1200.\n  - No test combines a partial measurement with a cache breakdown. The requirement does not name that combination, and it shares the same reported/missing mechanism that the retry test checks for input and output tokens.\n- **Elapsed time is reported.** The retry test and the terminal-failure test both assert `elapsed_ms > 0`. The terminal-failure test covers the failed path.\n\nAll the relevant tests carry `{test}` references to the subject. The assertions check the required values and not just execution. No `{fixme}` acknowledgments apply.",
+  "references": "070a972d5ff833ad0a753cd1ad42e1a6ebbef1a0801f498d39b9bf661c0510c3",
   "inputs": [
     {
       "requirements": "requirements.authoring.usage_requests",
@@ -11,13 +11,27 @@
       ],
       "text": [
         ":::{req} usage_requests",
-        "Usage MUST record each provider request's outcome and available input/output",
-        "token counts, including retries, with cached or reasoning-token counts when",
-        "provided, and for a failed request the failure under",
-        "{cite}`requirements.authoring.usage_requests.failures`. Missing measurements MUST be recorded as unavailable, not zero.",
-        "Run totals MUST include request and tool-call counts by tool, elapsed time, and",
-        "available token usage, identifying incomplete totals without double counting",
-        "provider counters that overlap.",
+        "HC MUST use one {term}`requirements.sdk.graph.running-criteria.validator` per assessment. Its usage record MUST report that validator’s attempt and token totals under {cite}`requirements.sdk.graph.running-criteria.Validator.usage` and its failure and retry counts under {cite}`requirements.authoring.usage_requests.failures`. The record MUST distinguish partial or unavailable token measurements from complete totals and preserve the available cache and reasoning breakdowns. The assessment MUST also report elapsed time.",
+        ":::"
+      ]
+    },
+    {
+      "requirements": "requirements.sdk.graph.running-criteria.Validator.usage",
+      "matches": [
+        "requirements.sdk.graph.running-criteria.Validator.usage"
+      ],
+      "text": [
+        ":::{req} Validator.usage",
+        "",
+        "`usage()` returns the validator’s cumulative usage. Every agent call contributes its usage to the execution that invoked it, including calls that return an error. The validator adds that usage before `verify` or `refresh_evidence` returns, including on `Err`. Reusing current evidence adds no usage. Loading, checking, and storing evidence also leave the counters unchanged.",
+        "",
+        "For totals across validators that share a domain cache, see {cite}`requirements.sdk.validation-cache.usage`.",
+        "",
+        "```rust,ignore",
+        "impl<'d, D: Domain> Validator<'d, D> {",
+        "    pub fn usage(&self) -> &UsageStats;",
+        "}",
+        "```",
         ":::"
       ]
     },
@@ -28,26 +42,9 @@
       ],
       "text": [
         ":::{req} usage_requests.failures",
-        "Usage MUST record, for each failed provider request, its HTTP status and",
-        "provider error code when the provider reports them, and whether the harness",
-        "retried it. It MUST NOT record the failure's message text.",
+        "Each assessment’s usage record MUST include its total failed provider attempts and retries, including failures recovered by a successful retry. A terminal failure MUST retain the accumulated counts.",
         ":::"
       ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]",
-      "hash": "b1d2bf893c3a81aaf83b09c35f22ebd3a36c7670081f4f904e3da4075c24e0ad"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[unanswered_requests_are_abandoned_and_retried]",
-      "hash": "e0a717e1b66fe7bbd67e81884047901ed911f047dd1858a8f79df32b049eb9f6"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[success_resets_backoff_and_retries_keep_history_without_repeating_tools]",
-      "hash": "38575731249476c84c37337b2befc86fe84ffda02823bc3769b50c08e7776c30"
     },
     {
       "file": "crates/trust-but-verify/src/agent/providers.rs",
@@ -55,94 +52,49 @@
       "hash": "843d31090f51e321289a9fc32bd4f4a4734f693ee195c896035374308fb2e66f"
     },
     {
-      "file": "src/authoring/usage.rs",
-      "item": "mod[tests]/fn[token_totals_keep_subsets_separate_and_missing_counters_unknown]",
-      "hash": "5fca4db806b5b1d67ff048ba06c225bc65f2504782e9d94dbbc970385c5a6060"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "mod[tests]/fn[partial_failure_retains_available_totals_and_optional_measurements]",
-      "hash": "80752fd0c6551caa5ebda1ef9eef0e678fd25d72e7b3961381313faccc35437c"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "mod[tests]/fn[cancelled_request_persists_elapsed_time_and_incomplete_totals]",
-      "hash": "543d25a3569825bed5a345fc629e4bd2c0dc860e844bd61dac1eff36309fb8cb"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "mod[tests]/fn[completed_requests_and_the_run_record_elapsed_time]",
-      "hash": "f4762c3ae110838e776281deca0775d9b2b4bc557a9eebdd88870318d4ad8ab3"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "mod[tests]/fn[tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text]",
-      "hash": "1fe174e669a960b594539f9439ae08128fde9ad55f75b4b2b02fcb4cc7052a29"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "mod[tests]/fn[failed_submission_can_be_confirmed_on_a_later_attempt]",
-      "hash": "e2bc10dd2de55edbf962870c9ccab8f0f579028360aff091eaaac2af8955acf6"
-    },
-    {
       "file": "tests/authoring_cli.rs",
       "item": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]",
-      "hash": "431b1b1c6f0c314531419dd15112e2dcf2e9ce29d8132e062160032c0a3059d5"
+      "hash": "c710fed6606490c4a6b84a2b0282971e28c960c35b8ac9e50a10f1d8bcc73257"
     },
     {
       "file": "tests/authoring_cli.rs",
-      "item": "fn[explicit_untracked_reads_return_an_untracked_error_and_the_assessment_continues]",
-      "hash": "76f117cf290b86ac5cc1ee499e79aecb88448198f81e1645da804cf164a94229"
+      "item": "fn[explicit_ignored_reads_return_an_error_and_the_assessment_continues]",
+      "hash": "e23e69d338b53eb86248e16c5f55bef898732a78d61a90464861ac3cb1986742"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[a_successful_retry_reports_partial_token_measurements]",
+      "hash": "55815fc106216191a6be4f5652ae8fecac6f60e3694ee76ace34cfe2d0a87396"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[terminal_provider_failure_retains_the_retry_and_undelivered_inputs]",
+      "hash": "09a600088fc2d40fb63fddd44475715207f54e3a50e68509452a125b52d28792"
     },
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]",
-      "hash": "2e2a791c290c4f45eb18114ffc8fa09f28adb412175ccb6f9f778c957bf969ca"
+      "hash": "0c0217a969462f34a207b95f6c51ce626f62487ea2a24b75751f4aaab352d09d"
     },
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[claude_requests_carry_cache_checkpoints_and_record_cache_usage]",
-      "hash": "fcc040320986b468979b19528211cffdd8c894ce64fe1d5fc122210a0400aa57"
+      "hash": "52a6aa50c1f18412230dd27bedaef51a1a3f257cf2362d167b4091556317fbd1"
     },
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[openai_responses_replays_tool_calls_and_records_usage]",
-      "hash": "36b85b2a7c7ba03ebfe94418424f9b709a095eb2755fcf7b532f5fb5654ff346"
+      "hash": "46c612b31c950aa93ff1fa70ba2369b28b1869a33d2d987e56d856db48dd6c89"
     },
     {
-      "file": "src/authoring/usage.rs",
-      "item": "impl[UsageLog]/fn[end_request]",
-      "hash": "c8c24e43409f1c7aff6305ff0e4cc8d368450501a4ea70eddca4d5181d330780"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "impl[TokenCounts]/fn[sum]",
-      "hash": "8453341618c4bba571b16e2163dfea6c32a735b591b805b4137d9dace78cb034"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "impl[TokenCounts]/fn[sum_counter]",
-      "hash": "b32787c28a8e66db4390bc9d0552d9b294dfb99df1bf50485fd37171517006f7"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "impl[UsageLog]/fn[finish]",
-      "hash": "3e6cbcdde4e58eb9825dadcd3d6e6a186a9fa3df4b1e88d542691db4663f70f0"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/providers.rs",
-      "item": "fn[bedrock_sdk_loader]",
-      "hash": "00149b3270a8dd337fa000357dd3b4d553b3cc65fc102a921444757205b85be3"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[permanent_provider_failure_returns_without_waiting_or_retrying]",
-      "hash": "0a70b9ad3464bef1556db5c54c1946b0c8d0baeef29a5f6c6c1d6cc4a2d943f7"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/providers.rs",
-      "item": "mod[tests]/fn[failure_codes_are_the_status_and_code_a_provider_reports]",
-      "hash": "411c6076f15a532e6e5b9d54eab336d27b773bae67cde1bdd5f26d09dd93c288"
+      "definition": "requirements.sdk.graph.running-criteria.validator",
+      "text": [
+        ":::{definition} validator",
+        ":phrase: validator",
+        "",
+        "A *validator* runs criteria against one borrowed domain and accumulates agent usage for the caller's operation. The caller chooses the operation's scope by creating a validator and using it for one or more criteria.",
+        ":::"
+      ]
     }
   ],
   "format_version": 1,
@@ -155,7 +107,19 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "c8b7f08a50b337f9c70d879cbd592e2a60fe6fe78afeca02c2feb559ecfbf2dc"
+          "value": "070a972d5ff833ad0a753cd1ad42e1a6ebbef1a0801f498d39b9bf661c0510c3"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.authoring.usage_requests"
+        },
+        "Mandatory",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "a2c901124eb92b90ca6b46cd4853132a5cc89b4ba4b0dff5e70b93b5f839c9cf"
         }
       ]
     },
@@ -166,7 +130,18 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "4a582070c276eb4236d52b176b5964a40baef728333720b68c05527ef458b2ed"
+          "value": "34c4ff8b9a0b685ebe84fa9977ea05229707a9232d6e4610f9dc6dd54229f10c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.sdk.graph.running-criteria.Validator.usage"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "18b7497e2bbb9b551446ecc95ce681171f9d5ccd9f6b5b8f9355c21c876de805"
         }
       ]
     },
@@ -177,58 +152,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "4923a5ca1a5a1ad63e32fbdd16ea8bfbaa34ca68904e8025387621061741ab52"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/mod.rs"
-            },
-            "selector": "mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "ba0231c64afb42b91077c96994a63a5b91ec4d53e78c3e02e452b93b16f47f8c"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/mod.rs"
-            },
-            "selector": "mod[tests]/fn[unanswered_requests_are_abandoned_and_retried]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "05fec60cfa108b79f9cc8a1b30e77e8868ef1b998bfcd83982f7b91d8f72da69"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/mod.rs"
-            },
-            "selector": "mod[tests]/fn[success_resets_backoff_and_retries_keep_history_without_repeating_tools]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "c61e66c4f6cb9c593b44f2fe8d492ef4dbcd6e96826c0fb78b4d08728b0f40a2"
+          "value": "f2957a53814509e1320c167f1edb5f415b464002fc2d54ddec29a3361e9d171f"
         }
       ]
     },
@@ -244,110 +168,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "40e28997102492c81578a789614660dbcf3615f98f98883c0f0a00ae0d53c20c"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/usage.rs"
-            },
-            "selector": "mod[tests]/fn[token_totals_keep_subsets_separate_and_missing_counters_unknown]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "33af1dd651f8ed5428e918ae99e90d610b702e4a4471468a99f111ce4d0ba863"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/usage.rs"
-            },
-            "selector": "mod[tests]/fn[partial_failure_retains_available_totals_and_optional_measurements]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "c87cef650936eb7d809a70770c2f08bbce89745e66b3f59edf36e1d402b969a7"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/usage.rs"
-            },
-            "selector": "mod[tests]/fn[cancelled_request_persists_elapsed_time_and_incomplete_totals]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "13f4a85c402868234d1fbc155f921edd50ccaf0e8d2d1a4d535282c94aec002b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/usage.rs"
-            },
-            "selector": "mod[tests]/fn[completed_requests_and_the_run_record_elapsed_time]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "fed6d7905bc8751e9481afdd4955d3b0d6af2c4ead3e9f59ded633f1c0e5fd74"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/usage.rs"
-            },
-            "selector": "mod[tests]/fn[tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "ee64b8fb07fcdb919719406fee5958be2684e32823554e4136933a6a9eaec0c0"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/usage.rs"
-            },
-            "selector": "mod[tests]/fn[failed_submission_can_be_confirmed_on_a_later_attempt]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "98860f8701681af1853cdf2066c9bcb62a8d22af4acc7792d30b6e5fc4ebb33a"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "843d31090f51e321289a9fc32bd4f4a4734f693ee195c896035374308fb2e66f"
         }
       ]
     },
@@ -363,8 +185,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "11c82d7b9346bfb24542e10b6851069926343cfea0dc76f3a7ec5baf71a854a9"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "c710fed6606490c4a6b84a2b0282971e28c960c35b8ac9e50a10f1d8bcc73257"
         }
       ]
     },
@@ -376,12 +198,46 @@
               "scheme": "repo",
               "location": "tests/authoring_cli.rs"
             },
-            "selector": "fn[explicit_untracked_reads_return_an_untracked_error_and_the_assessment_continues]"
+            "selector": "fn[explicit_ignored_reads_return_an_error_and_the_assessment_continues]"
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "9440f56134869dd482e28ff0d6a2e5155024f6db2d33f128e1fa0de1cc8c08e6"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "e23e69d338b53eb86248e16c5f55bef898732a78d61a90464861ac3cb1986742"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/authoring_cli.rs"
+            },
+            "selector": "fn[a_successful_retry_reports_partial_token_measurements]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "55815fc106216191a6be4f5652ae8fecac6f60e3694ee76ace34cfe2d0a87396"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/authoring_cli.rs"
+            },
+            "selector": "fn[terminal_provider_failure_retains_the_retry_and_undelivered_inputs]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "09a600088fc2d40fb63fddd44475715207f54e3a50e68509452a125b52d28792"
         }
       ]
     },
@@ -397,8 +253,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "2820318d5efef52b310da05a9786ac2cfe5fe8e36b1abbefd2dce4923c5d31db"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "0c0217a969462f34a207b95f6c51ce626f62487ea2a24b75751f4aaab352d09d"
         }
       ]
     },
@@ -414,8 +270,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "a85e2a3af2f50fd3e86d13a050174be041799305458a9fcf780bac45029279a4"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "52a6aa50c1f18412230dd27bedaef51a1a3f257cf2362d167b4091556317fbd1"
         }
       ]
     },
@@ -431,127 +287,19 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "e50dd67c6c198e8d09dcd3d098598cd3eb3bf43e0f016b5f45d2d560e6a7e980"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "347fdefb124cf2381b02b9c4f39c142fe345b958e3a87c239ccae6115fa98531"
         }
       ]
     },
     {
       "Node": [
         {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/usage.rs"
-            },
-            "selector": "impl[UsageLog]/fn[end_request]"
-          }
+          "Definition": "requirements.sdk.graph.running-criteria.validator"
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "79e049d4deb1a24be320e1194207776129955a2076035c04d565d9406849b376"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/usage.rs"
-            },
-            "selector": "impl[TokenCounts]/fn[sum]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "910262441bc1c9db1a347f44b2b693aec5445e08b981642577f9c525927f98b5"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/usage.rs"
-            },
-            "selector": "impl[TokenCounts]/fn[sum_counter]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "b5885f1c857764baea475e69be9d209d11e4f6f5d41760e13b9d27907cca44d2"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/usage.rs"
-            },
-            "selector": "impl[UsageLog]/fn[finish]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "1e1b730b55c6b70d68823697c6eddde88737736c39f07cb674c9aba7e22a37e7"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/providers.rs"
-            },
-            "selector": "fn[bedrock_sdk_loader]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "a408a98a1e759bf39dd55059f278c05c1d7c72f40f4c63afdd7119d15f496b73"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/mod.rs"
-            },
-            "selector": "mod[tests]/fn[permanent_provider_failure_returns_without_waiting_or_retrying]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "f6785bd7dbcebada1b242135d75438de774f7bf04a9992b34c8cf8adb899b467"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/providers.rs"
-            },
-            "selector": "mod[tests]/fn[failure_codes_are_the_status_and_code_a_provider_reports]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "c357008bc28a407fdbe6978290e1ce9181512fa1e6118c89536ef9c6154d44aa"
+          "value": "fccf7e4f4b7ad677067e7080c8396e547eb9e4b73d0a9455f6c5df4648d200a6"
         }
       ]
     }

@@ -1,16 +1,21 @@
-#[cfg(not(feature = "default-languages"))]
-use crate::outline_engine::language::Registry;
+mod hits;
 use crate::resource::ResourceId;
 use crate::source_engine::LocalSources;
 use crate::source_engine::SourceAnalysis;
 use crate::source_engine::SourceProvider;
-use crate::source_engine::project_path_visible;
 use crate::source_engine::project_resource;
+
 use serde_json::{Map, Value};
 use std::{
     path::{Component, Path, PathBuf},
     sync::Arc,
 };
+
+/// Redact recognized credentials in standalone text, preserving line breaks.
+// {impl}`requirements.sdk.sources.redact_text`
+pub fn redact_text(text: &str) -> std::borrow::Cow<'_, str> {
+    crate::redaction::Redaction::of_text(text).apply(text)
+}
 
 /// The name used to look up an outline language for source inspection.
 // {impl}`requirements.sdk.sources.language_id`
@@ -178,6 +183,40 @@ impl TextMatch {
         }
     }
 }
+/// A reusable structural search rule for source text in a bundled language.
+// {impl}`requirements.sdk.graph.search.StructuralRule`
+pub struct StructuralRule {
+    inner: crate::structural::StructuralRule,
+}
+
+impl StructuralRule {
+    /// Names accepted by the structural rule compiler.
+    pub fn languages() -> Vec<&'static str> {
+        crate::structural::QueryLanguage::names()
+    }
+
+    /// Compile an ast-grep rule core before searching any source.
+    pub fn compile(language: &str, rule: &Map<String, Value>) -> Result<Self, SourceError> {
+        let inner = crate::structural::StructuralRule::compile(language, rule)
+            .map_err(SourceError::Invalid)?;
+        Ok(Self { inner })
+    }
+
+    /// Filename extensions of the rule's language, without the leading dot.
+    pub fn extensions(&self) -> &[&str] {
+        self.inner.language().extensions()
+    }
+
+    /// Distinct half-open byte spans in the supplied text, in source order.
+    pub fn matches(&self, source: &str) -> Vec<crate::outline::Span> {
+        self.inner
+            .matches(source)
+            .into_iter()
+            .map(crate::outline::Span::from_range)
+            .collect()
+    }
+}
+
 // {cite}`habeas:util`
 #[non_exhaustive]
 pub struct StructuralQuery {
@@ -210,12 +249,12 @@ impl StructuralQuery {
 // {cite}`habeas:util`
 #[non_exhaustive]
 pub struct StructuralMatch {
-    pub node: crate::outline::OutlineId,
+    pub node: crate::outline::OutlineData,
     pub excerpt: String,
 }
 
 impl StructuralMatch {
-    pub fn new(node: crate::outline::OutlineId, excerpt: String) -> Self {
+    pub fn new(node: crate::outline::OutlineData, excerpt: String) -> Self {
         Self { node, excerpt }
     }
 }
@@ -244,27 +283,10 @@ pub struct Sources {
 }
 
 impl Sources {
-    pub(crate) fn check_path(&self, path: &Path) -> Result<(), SourceError> {
-        let root = self.analysis.provider.project_directory()?;
-        let requested = path
-            .to_str()
-            .ok_or_else(|| SourceError::Invalid("source path is not UTF-8".into()))?;
-        let target = self.analysis.provider.path(requested)?;
-        let original = root.join(path);
-        if !project_path_visible(&root, &original)? || !project_path_visible(&root, &target)? {
-            return Err(SourceError::Invalid(
-                "source path is excluded from the project".into(),
-            ));
-        }
-        Ok(())
-    }
     // {impl}`requirements.sdk.sources.provider`
     /// Inspect the project directory with the SDK's built-in defaults.
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        #[cfg(feature = "default-languages")]
         let languages = crate::outline_engine::languages::registry();
-        #[cfg(not(feature = "default-languages"))]
-        let languages = Registry::new([]);
         Self {
             analysis: SourceAnalysis::new(LocalSources::new(root), languages),
         }
@@ -301,7 +323,7 @@ impl Sources {
     ) -> Result<crate::outline::OutlineContent, SourceError> {
         let path = path.as_ref();
         let file = self.read(path).await?;
-        crate::outline::OutlineContent::from_source(path, Arc::from(file.text()?))
+        crate::outline::OutlineContent::parse_source(path, Arc::from(file.text()?))
             .map_err(|error| SourceError::Invalid(error.to_string()))
     }
 
@@ -318,5 +340,60 @@ impl Sources {
         query: &StructuralQuery,
     ) -> Result<StructuralMatches, SourceError> {
         self.analysis.search_structure(query).await
+    }
+}
+
+/// Project files and the domain mapping used by agent inspection tools.
+// {impl}`requirements.sdk.sources.SourceProject`
+pub struct SourceProject<D: crate::domain::Domain> {
+    pub(crate) sources: Arc<Sources>,
+    pub(crate) domain: std::sync::Arc<D>,
+}
+
+impl<D: crate::domain::Domain> SourceProject<D> {
+    pub fn new(domain: D, sources: Sources) -> Self {
+        Self {
+            domain: Arc::new(domain),
+            sources: Arc::new(sources),
+        }
+    }
+}
+
+impl From<SourceError> for std::io::Error {
+    fn from(error: SourceError) -> Self {
+        match error {
+            SourceError::Io(e) => e,
+            other => Self::other(other),
+        }
+    }
+}
+
+/// One occurrence in a retained project source snapshot.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct SearchHit<N> {
+    pub node: N,
+    pub span: crate::outline::Span,
+    pub text: String,
+    pub(crate) item: crate::outline::OutlineContent,
+}
+
+impl<N> SearchHit<N> {
+    /// Capture the matched bytes at a file-relative span in the retained outline.
+    pub fn new(
+        node: N,
+        span: crate::outline::Span,
+        item: crate::outline::OutlineContent,
+    ) -> Result<Self, SourceError> {
+        let text = item
+            .source_span(span)
+            .ok_or_else(|| SourceError::Invalid("invalid match span".into()))?
+            .to_owned();
+        Ok(Self {
+            node,
+            span,
+            text,
+            item,
+        })
     }
 }

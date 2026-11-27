@@ -14,6 +14,7 @@ const KINDS: &[KindRule] = &[
 
 // {impl}`requirements.references.outline_comments`
 // {impl}`requirements.references.structural_hash`
+// {impl}`requirements.sdk.sources.yaml.attachments`
 pub static PROFILE: Profile = Profile {
     name: "yaml",
     expando_char: '$',

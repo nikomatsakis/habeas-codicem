@@ -16,10 +16,10 @@ through `ValidationContext`. Criterion code can read graph nodes and source item
 and call `ask` to dispatch an agent with a prompt. The agent can search project
 files and use the same tracked reads as criterion code.
 
-`Validator::verify` creates a context for one execution. Each tracked read adds
+`verify` creates a context for one execution. Each tracked read adds
 the input’s identity and a fingerprint of its contents to the dependency list.
-The validator returns these dependencies with the answer so it can detect changed
-inputs and rerun the criterion. [Searching project sources](search.md) explains
+`verify` returns these dependencies with the answer. `refresh_evidence` uses
+them to decide whether to rerun the criterion. [Searching project sources](search.md) explains
 how the agent chooses which search excerpts to record.
 
 ```rust,ignore
@@ -30,11 +30,11 @@ pub struct ValidationContext<'d, D: Domain> { /* private fields */ }
 :::{req} ValidationContext.new
 :test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
 
-Construct a context for a source node with an empty dependency list. `Validator::verify` does this for each execution.
+Construct a context for a source node with an empty dependency list. `verify` does this for each execution.
 
 ```rust,ignore
 impl<'d, D: Domain> ValidationContext<'d, D> {
-    pub fn new(graph: &'d D, node: D::NodeId) -> Self;
+    pub fn new(graph: &'d D, node: NodeId<D>) -> Self;
 }
 ```
 :::
@@ -63,7 +63,7 @@ Borrow the identity of the source node being checked.
 
 ```rust,ignore
 impl<'d, D: Domain> ValidationContext<'d, D> {
-    pub fn node_id(&self) -> &D::NodeId;
+    pub fn node_id(&self) -> &NodeId<D>;
 }
 ```
 :::
@@ -78,7 +78,7 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
     pub fn successors(
         &self,
         label: &D::EdgeLabel,
-    ) -> Result<Vec<D::NodeId>, D::Error>
+    ) -> Result<Vec<NodeId<D>>, D::Error>
     where
         D::EdgeLabel: PartialEq;
 }
@@ -118,7 +118,7 @@ The SDK's graph tools call the same inspection operations as criterion code.
 The shared context prepares reads and records observations.
 
 :::{req} shared_context
-During one call to `Validator::verify`, direct reads by the criterion and
+During one call to `verify`, direct reads by the criterion and
 reads served by the SDK's agent tools record inputs in the same
 `ValidationContext`. For example, if criterion code reads a test and the agent
 then reads its helper, both node fingerprints accompany the returned answer.
@@ -136,28 +136,45 @@ flowchart TD
 
 Source discovery uses the project files and outline module
 described in [Sources and inspection](../sources.md). The application maps
-source addresses into its graph and resolves their contents. The SDK's
-`read_source` tool uses that mapping, then performs the same tracked node read
-as criterion code.
+source addresses into its graph and resolves their contents. The agent passes the resulting node reference to `read_node` for a tracked read.
 
 For each operation, `.fn` identifies the Rust method and `.mcp` gives the
 agent tool's name, JSON arguments, result shape, and the description sent to
 the model in Rig's `ToolDefinition`. `.behavior` describes what
 the caller receives, and `.inputs` specifies which observations enter evidence.
 In the signatures, `?` marks an optional
-field, `T[]` is an array, and `NodePath` is `{"segments": string[]}`. A `next` field holds a continuation UUID issued by the current conversation.
+field and `T[]` is an array. A `next` field holds a continuation UUID issued by the current conversation.
+
+## Passing node identities to an agent
+
+:::{req} node_reference
+The harness represents a `NodeId<D>` as an unsigned integer. Each built-in tool that accepts a node accepts the same top-level address fields, alongside its own arguments (such as an edge `label`). `NodeAddress` in tool signatures denotes these alternatives:
+
+| Address fields | Resolution |
+| --- | --- |
+| `node` | Look up the assigned ID in the domain's cache. |
+| `path`, optional `location` | Resolve the project-relative file within the domain's visible sources. `location` is its outline selector and defaults to the empty selector for the file root. Resolve the item, map its `OutlineData` through `Domain::source_node`, and intern the resulting identity. |
+| `data` | Deserialize the JSON value as `D::NodeData` and intern it in the domain's cache. |
+
+For domains using the agent harness, the tool schema describes `data` using the domain’s JSON schema for `D::NodeData`. The harness uses the same JSON representation when returning and accepting an identity.
+
+Resolving an address is discovery. The requested operation determines which observations enter evidence. Invalid addresses, unavailable files, and unknown selectors produce tool errors before the requested operation runs.
+:::
+
+:::{req} node_reference.consistency
+A tool MUST also accept `node` and `data` together. Look up the existing ID and compare its stored identity with the deserialized `data` using `D::NodeData` equality. Use that ID on a match. An unassigned ID, malformed data, or a mismatch produces a tool error, even if the supplied data would be valid on its own. A `path` address may include `location` and must be used separately from `node` and `data`.
+:::
+
+:::{example} file_node_arguments
+{cite}`requirements.sdk.graph.validation-context.node_reference`
+{cite}`requirements.sdk.graph.validation-context.node_reference.consistency`
+
+Suppose `list_sources` returns `{"node":7,"data":{"file":"src/parser.rs"}}`. The agent can pass that entry unchanged to `read_node`. It can also pass `{"node":7}`, `{"data":{"file":"src/parser.rs"}}`, or `{"path":"src/parser.rs"}` to read the same root. On its first call it can read a method directly with `{"path":"src/parser.rs","location":"impl[Parser]/fn[parse]"}`. Supplying `{"node":7,"data":{"file":"src/other.rs"}}` yields an identity mismatch.
+:::
 
 ## Reading the contents of a graph node
 
-Use a node's identity to obtain its application-defined
-[contents](../graph.md#read-node-contents).
-
-Rust callers pass the application's `D::NodeId`. The agent sends a `NodePath`
-because `Domain` lets each application choose its own ID type and requires only
-the [forward conversion from ID to path](../graph.md#habeas-req-requirements.sdk.graph.node_path_method).
-The harness starts each conversation with the IDs of the current node and the
-nodes supplied as inputs. When the agent sends a path, the harness finds the
-known ID whose `Domain::node_path` equals it. An unknown path gives a tool error.
+Rust callers pass a cached `NodeId<D>` to read its [contents](../graph.md#read-node-contents). The agent passes the node reference under {cite}`requirements.sdk.graph.validation-context.node_reference`.
 
 :::{req} ValidationContext.read
 :test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
@@ -166,7 +183,7 @@ Read a graph node and record the fingerprint of the returned contents under {cit
 
 ```rust,ignore
 impl<'d, D: Domain> ValidationContext<'d, D> {
-    pub fn read(&self, node: &D::NodeId) -> Result<D::NodeContent, D::Error>;
+    pub fn read(&self, node: &NodeId<D>) -> Result<D::NodeContent, D::Error>;
 }
 ```
 :::
@@ -180,7 +197,7 @@ Read a node once and return both its contents and their fingerprint. Record the 
 impl<'d, D: Domain> ValidationContext<'d, D> {
     pub fn read_snapshot(
         &self,
-        node: &D::NodeId,
+        node: &NodeId<D>,
     ) -> Result<Snapshot<D::NodeContent>, D::Error>;
 }
 ```
@@ -191,23 +208,25 @@ Criterion code uses {cite}`requirements.sdk.graph.validation-context.ValidationC
 :::
 
 :::{req} read_node.mcp
-Give `read_node` the path of a known node. The result contains the node’s text. If more
+Give `read_node` a node address under {cite}`requirements.sdk.graph.validation-context.node_reference`. The result contains the node’s text. If more
 text remains, pass `next` to `get_next_page`.
 
 ```text
-read_node({path: NodePath}) -> {text: string, next?: UUID}
+read_node(NodeAddress) -> {text: string, next?: UUID}
+// For a source node the result has these additional fields:
+{file: string, selector: string, children: {node: NodeId, file: string, selector: string, header?: string}[]}
 ```
 :::
 
 :::{req} read_node.mcp.description
-> `Read a known graph node. Returns text and, when more remains, a next UUID. A
+> `Read a graph node by ID, source address, or node data. Returns text and, when more remains, a next UUID. A
 > delivered page records its enclosing node.`
 :::
 
 :::{req} read_node.behavior
 The Rust caller receives the node's complete `D::NodeContent` or the domain's read error.
 
-The tool reads a known node, such as the current node or a target from `outgoing_edges`.
+The tool asks the domain to read the supplied node ID, including when an assigned ID first appears in the `read_node` call.
 Each page’s `text` contains the next portion of the node’s formatted contents. Formatting follows
 {cite}`requirements.sdk.graph.agent-calls.judge.rendering`.
 :::
@@ -230,6 +249,38 @@ records the fingerprint it computed from that version. Reading the function
 again at this point would record a fingerprint for code the model never saw.
 :::
 
+:::{req} read_node.source_children
+For a source node, `read_node` includes the project-relative `file`, its `selector`, and `children` in the result. Each child entry contains `{node, file, selector}` for one immediate outline child in source order. When the language defines a declaration header for the child, its entry also includes `header`, the text of that span under {cite}`requirements.sdk.outlines.source_spans` with credential redaction. A leaf has an empty child list. Render the selected item's own source under {cite}`requirements.sdk.outlines.node_contents`. Listing a child records no dependency on its contents or on the set of children. Reading that child records its own fingerprint.
+:::
+
+:::{example} reading_an_outline_parent
+{cite}`requirements.sdk.graph.validation-context.read_node.source_children`
+
+The file `parser.rs` contains:
+
+```rust,ignore
+impl Parser { fn parse(&self) -> bool { true } }
+```
+
+The agent calls `read_node({"path":"parser.rs","location":"impl[Parser]"})`. With node ID `2` assigned to `parse`, the tool returns:
+
+```json
+{
+  "file": "parser.rs",
+  "selector": "impl[Parser]",
+  "text": "impl Parser { … }",
+  "children": [{
+    "node": 2,
+    "file": "parser.rs",
+    "selector": "impl[Parser]/fn[parse]",
+    "header": "fn parse(&self) -> bool {"
+  }]
+}
+```
+
+Changing `true` to `false` preserves the fingerprint recorded for the impl. The agent can call `read_node({"node":2})` to see the method body and record the method's fingerprint.
+:::
+
 ## Selecting a node's outgoing edges
 
 Select relationships by their label. A criterion can use the returned node
@@ -244,9 +295,9 @@ Select targets from any supplied node by label, returning the target IDs and the
 impl<'d, D: Domain> ValidationContext<'d, D> {
     pub fn outgoing_edges(
         &self,
-        node: &D::NodeId,
+        node: &NodeId<D>,
         label: D::EdgeLabel,
-    ) -> Result<Snapshot<Vec<D::NodeId>>, D::Error>
+    ) -> Result<Snapshot<Vec<NodeId<D>>>, D::Error>
     where
         D::EdgeLabel: PartialEq;
 }
@@ -258,11 +309,11 @@ Criterion code uses {cite}`requirements.sdk.graph.validation-context.ValidationC
 :::
 
 :::{req} outgoing_edges.mcp
-Give `outgoing_edges` a known source path and a label of the application’s
-edge-label type. Each path in `targets` can be used in a subsequent graph tool call.
+Give `outgoing_edges` a node address and a label of the application’s
+edge-label type. Each reference in `targets` can be used in a subsequent graph tool call.
 
 ```text
-outgoing_edges({path: NodePath, label: EdgeLabel}) -> {targets: NodePath[]}
+outgoing_edges({…NodeAddress, label: EdgeLabel}) -> {targets: NodeId[]}
 ```
 :::
 
@@ -275,11 +326,8 @@ outgoing_edges({path: NodePath, label: EdgeLabel}) -> {targets: NodePath[]}
 The returned vector preserves order and duplicates. The fingerprint describes
 the set of stable target paths under {cite}`requirements.sdk.graph.validation-context.snapshot`.
 
-Follow edges with `label` from the known source at `path`. The application's
-`D::EdgeLabel` supplies the JSON schema for `label`. The harness retains each
-target's `D::NodeId` and returns its `NodePath` to the agent. The agent can pass
-any path in `targets` directly to `read_node` or `outgoing_edges` in the same
-conversation.
+Follow edges with `label` from the addressed node. The application's
+`D::EdgeLabel` supplies the JSON schema for `label`. Each entry in `targets` is a node reference under {cite}`requirements.sdk.graph.validation-context.node_reference` that the agent can pass directly to `read_node` or `outgoing_edges`.
 :::
 
 :::{req} outgoing_edges.inputs
@@ -306,10 +354,10 @@ their target-set fingerprint, without another query.
 
 The public `trust_but_verify::graph::edge_fingerprint(graph, targets)` helper
 computes this `Fingerprint` from the domain and a slice of target node IDs.
-It sorts and deduplicates the targets' `NodePath`s and hashes an unambiguous
-encoding under a versioned scheme, including when the set is empty. Changing
+It fingerprints the set of distinct stable paths obtained from `Domain::node_path` under a versioned
+scheme, including when the set is empty. Changing
 order, duplicate edges, or another label's relationships leaves this fingerprint
-unchanged. Reading target contents is a separate observation;
+unchanged. Assigning different integers to the same targets in a fresh cache preserves the fingerprint. Reading target contents is a separate observation;
 `NodeContents::fingerprint` describes those contents under
 {cite}`requirements.sdk.graph.node_content.fingerprint`.
 
@@ -318,7 +366,7 @@ The returned vector preserves the graph's ordering and duplicates.
 ```rust,ignore
 pub fn edge_fingerprint<D: Domain>(
     graph: &D,
-    targets: &[D::NodeId],
+    targets: &[NodeId<D>],
 ) -> Fingerprint;
 ```
 :::
@@ -335,8 +383,11 @@ within a file. Discovery identifies files through
 Resolve an outline item to its graph node, read the contents, and record the observation under {cite}`requirements.sdk.graph.validation-context.read_source.inputs`.
 
 ```rust,ignore
-impl<D: SourceNodes> ValidationContext<'_, D> {
-    pub fn read_source(&self, item: &OutlineId) -> Result<D::NodeContent, D::Error>;
+impl<D: Domain> ValidationContext<'_, D> where D::Error: From<SourceError> {
+    pub fn read_source(
+        &self,
+        item: &OutlineData,
+    ) -> Result<D::NodeContent, D::Error>;
 }
 ```
 :::
@@ -345,28 +396,8 @@ impl<D: SourceNodes> ValidationContext<'_, D> {
 Criterion code uses {cite}`requirements.sdk.graph.validation-context.ValidationContext.read_source` for this operation.
 :::
 
-:::{req} read_source.mcp
-Give `read_source` a project-relative file path. Supply `selector` to read one
-outline item. Each page identifies the item alongside its text.
-
-```text
-read_source({path: string, selector?: string})
-  -> {node: OutlineId, text: string, next?: UUID}
-```
-:::
-
-:::{req} read_source.mcp.description
-> `Read a selected source node and record its exact observation.`
-:::
-
 :::{req} read_source.behavior
-`SourceNodes` maps the `OutlineId` into the graph. `Domain::node_content`
-returns that node’s `D::NodeContent`. Mapping and read failures return errors.
-
-Read a project-relative file or an item within it. An omitted or empty selector
-chooses the whole file. `node` contains the path and selector, and `text` is the
-mapped node's `NodeContents::format` output. For long reads, [continue with `next`](#continuing-a-paged-result). Project access follows
-{cite}`requirements.sdk.sources.local_provider`.
+The SDK interns the node data returned by `Domain::source_node` for the `OutlineData`. `Domain::node_content` returns that node’s contents. Mapping and read failures return errors. Agents use the node reference from discovery with `read_node`.
 :::
 
 :::{req} read_source.inputs
@@ -400,23 +431,19 @@ impl Sources {
 :::
 
 :::{req} list_sources.mcp
-Call `list_sources` with an empty object to list the project, or supply
-`prefix` to select a file or directory. Each page contains a `files` array of complete paths.
+List visible file-root node references under {cite}`requirements.sdk.graph.validation-context.node_reference`.
 
 ```text
-list_sources({prefix?: string})
-  -> {files: string[], next?: UUID}
+list_sources({}) -> {files: {node: NodeId, data: NodeData}[], next?: UUID}
 ```
 :::
 
 :::{req} list_sources.mcp.description
-> `List available project files.`
+> `List available project file nodes.`
 :::
 
 :::{req} list_sources.behavior
-List project-relative file paths in the [selected scope](search.md#choosing-a-source-scope).
-Omitting `prefix` lists all visible project files. If more paths remain, follow `next` as shown in
-[Continuing a paged result](#continuing-a-paged-result).
+Each file entry pairs its assigned root ID with the domain identity serialized as a JSON value. The whole entry is a valid node argument under {cite}`requirements.sdk.graph.validation-context.node_reference.consistency`. Follow `next` to retrieve further pages.
 :::
 
 :::{req} list_sources.inputs
@@ -449,25 +476,19 @@ impl Sources {
 :::
 
 :::{req} outline_source.mcp
-Give `outline_source` a project-relative file path. The outline pairs each
-item’s selector with its kind. Every page names the file and carries complete outline items.
+Pass a file-root address to obtain its selectable nodes. The tool accepts an address on the first call as well as one obtained from a listing.
 
 ```text
-outline_source({path: string})
-  -> {path: string, items: {selector: string, kind: string}[], next?: UUID}
+outline_source(NodeAddress) -> {node: NodeId, items: {node: NodeId, file: string, selector: string, kind: string}[], next?: UUID}
 ```
 :::
 
 :::{req} outline_source.mcp.description
-> `Inspect selectable items in a project file.`
+> `Inspect the outline of a file node.`
 :::
 
 :::{req} outline_source.behavior
-`Sources::parse` reads a single file snapshot. `OutlineContent` retains its
-identity and parsed contents under {cite}`requirements.sdk.sources.provider_results.parse_snapshot`.
-
-Inspect the selectable items in a visible project file. Pass a returned selector
-and the same `path` to `read_source` to read that item. Follow [`next`](#continuing-a-paged-result) to see more items.
+The outline uses the file snapshot retained by the domain’s cache. Each item includes its kind and a reference the agent can pass to `read_node`. Follow `next` to see more items.
 :::
 
 :::{req} outline_source.inputs
@@ -479,14 +500,14 @@ of a selected item records that item's contents and fingerprint.
 ## Continuing a paged result
 
 Read each page as soon as it arrives. For example, suppose `list_sources` has
-one more page of file names. This example shows one path from each page.
+one more page of file nodes. This example shows one reference from each page.
 
 ```text
-list_sources({"prefix":"src"})
-→ {"files":["src/a.rs"], "next":"71d27a0b-f65f-47e5-9aa2-750335b78897"}
+list_sources({})
+→ {"files":[{"node":1,"data":{"file":"src/lib.rs"}}], "next":"71d27a0b-f65f-47e5-9aa2-750335b78897"}
 
 get_next_page({"uuid":"71d27a0b-f65f-47e5-9aa2-750335b78897"})
-→ {"files":["src/z.rs"]}
+→ {"files":[{"node":2,"data":{"file":"src/parser.rs"}}]}
 ```
 
 The second page has no `next`, so the listing is complete. The same call
@@ -539,7 +560,7 @@ Return a snapshot of the observations collected so far. Later reads continue to 
 
 ```rust,ignore
 impl<'d, D: Domain> ValidationContext<'d, D> {
-    pub fn dependencies(&self) -> Vec<Dependency<D::NodeId, D::EdgeLabel>>;
+    pub fn dependencies(&self) -> Vec<Dependency<NodeId<D>, D::EdgeLabel>>;
 }
 ```
 :::
@@ -547,7 +568,7 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
 :::{req} ValidationContext.finish
 :test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
 
-Build a storage record from the supplied criterion version, serialized output, and the dependencies collected so far. The caller can pass the record to its storage backend.
+Build a storage record from the supplied criterion version, serialized output, and the dependencies collected so far. Resolve their handles to durable node data under {cite}`requirements.sdk.graph.evidence.persisted_dependencies`. The caller can pass the record to its storage backend.
 
 ```rust,ignore
 impl<'d, D: Domain> ValidationContext<'d, D> {
@@ -555,7 +576,7 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
         &self,
         version: CriterionVersion,
         output: impl Serialize,
-    ) -> Result<Record<D::NodeId, D::EdgeLabel>, serde_json::Error>;
+    ) -> Result<Record<D::NodeData, D::EdgeLabel>, serde_json::Error>;
 }
 ```
 :::

@@ -1,8 +1,8 @@
 {
-  "requirement": "An application supporting tracked source inspection maps `OutlineId` to its\ngraph's `NodeId`. The mapped node represents the requested path and selector;\nan unsupported or invalid address returns an error. The SDK reads the mapped\nnode through the application's `Domain` interface.\n\n```rust,ignore\npub trait SourceNodes: Domain {\n    fn source_node(&self, item: &OutlineId) -> Result<Self::NodeId, Self::Error>;\n}\n```",
+  "requirement": "An application supporting tracked source inspection returns `Self::NodeData` for the requested path and selector. The SDK interns that data in the domain's cache to obtain `NodeId<Self>`. An unsupported or invalid address returns an error. The cache retains the address when the SDK maps a source item. For source identities the application can supply independently, implement `source_address` to recover the project-relative outline address from the domain identity. Other identities return `None`.\n\n```rust,ignore\npub trait Domain: Clone + Send + Sync {\n    // ...\n    fn source_node(\n        &self,\n        item: &OutlineData,\n    ) -> Result<Self::NodeData, SourceError> { ... }\n    fn source_address(&self, _data: &Self::NodeData) -> Option<OutlineData> { ... }\n}\n```",
   "determination": true,
-  "rationale": "The reviewed tests cover each testable obligation in `requirements.sdk.sources.source_nodes`.\n\n**Obligations.** The SDK must:\n1. Map an `OutlineId` to the application's `NodeId` through `SourceNodes::source_node`.\n2. Treat the mapped node as the one for the requested path and selector.\n3. Surface an error for an unsupported or invalid address.\n4. Read the mapped node through the `Domain` interface.\n\n**Mapping and reading.**\n- `direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns` (in `agent/project_sources.rs`) calls `ValidationContext::read_source` on a supported `OutlineId`. Its test `Project` domain maps `source.txt` to `\"source-node\"`.\n- The test asserts that the domain read exactly that node (`read_nodes == [\"source-node\", \"source-node\"]`).\n- It asserts that the returned content and the recorded `Dependency::Node(\"source-node\", fingerprint)` come from that read. The `.is_current` check after the domain text changes also goes through the domain.\n- `fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies` repeats this through the `read_source` tool. The tool returns the domain's \"prepared domain contents\", not the disk text. Its dependency is the mapped node, and `read_nodes` is `[\"source-node\"]`.\n- `supplied_agent_uses_attached_project_tools_in_both_configuration_orders` (in `agent/configured.rs`) uses a `TestDomain::source_node` that records every requested `OutlineId`. It asserts that the id seen for `visible/selected.txt` is exactly `OutlineId::new(\"visible/selected.txt\", \"\")`. That shows the requested path and selector reach the application unchanged. It also asserts that the dependencies carry the mapped node ids (1, 7, 8, 9) in both configuration orders.\n\n**Errors.**\n- The direct test requests an unknown path (`unknown.txt`) and an unknown selector (`line[unknown]`). It asserts that the application's \"unsupported source item\" error is returned. It also asserts that no dependency is recorded and that no domain read happens (`reads == 0`).\n- The same test makes the domain's read fail and asserts that the error is returned and no dependency is recorded. Only the successful read is recorded.\n- The tool-level test checks that `read_source` returns an error for an ignored path, for `../source.txt`, for a `line[unknown]` selector and for a malformed selector `fn[unclosed`. It asserts that the domain read count stays at 1.\n- A SDK that dropped the selector would map `source.txt` with the empty selector and succeed. These tests would catch that.\n\n**Out of scope.** Whether an application's own mapping represents the path and selector correctly belongs to that application's implementation. The SDK-side obligations are fully exercised.\n\n`public_api::public_exports_match_the_appendix` only checks public-surface inventory. It is not needed for adequacy here.\n\nI found no untested obligation and no unacknowledged gap.",
-  "references": "a14034a218390862f28d740f5d15ba9d3b7ba246394e0594db45508530809377",
+  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.sources.source_nodes`.\n\nI did not request any implementation source, because the test inputs and assertions were enough to judge.\n\n- **`source_node` returns `Self::NodeData` for a supported path and selector.**\n  - `src/sdk.rs#mod[tests]/fn[habeas_paths_preserve_opaque_segments_and_separate_all_node_kinds]` maps the valid address `src/parser.rs#impl[Parser]/fn[parse]` with `source_node`.\n  - `crates/trust-but-verify/src/agent/project_sources.rs#mod[tests]/fn[direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns]` maps `source.txt` through the test domain. It then asserts that the read succeeds and returns the prepared contents.\n- **The SDK interns the data to obtain `NodeId<Self>`.**\n  - `crates/trust-but-verify/src/agent/project_sources.rs#mod[tests]/fn[agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads]` reads a listed entry by `node`, by `data` and by `path`. All three give identical dependencies.\n  - The dependencies are asserted against nodes interned from the same address, such as `parser.rs#impl[Parser]/fn[parse]`.\n  - `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` asserts the interned `TestNode` ids and fingerprints in the answer's dependencies. It also runs two independent executions.\n- **An unsupported or invalid address returns an error.**\n  - In the Habeas test, `../outside.rs`, `/absolute.rs`, the malformed selector `fn[` and the empty path each make `source_node` return an error.\n  - In the `direct_source_reads...` test, an unknown file and an unknown selector (`line[unknown]`) produce the \"unsupported source item\" error. No dependency is recorded and no read happens.\n  - `crates/trust-but-verify/tests/contracts.rs#fn[domain_without_project_sources_leaves_source_tools_disabled]` asserts that the default `source_node` returns `SourceError::Invalid`.\n  - The `agent_node_addresses_round_trip...` test rejects `fn[absent]` and `absent.rs` before any read, and asserts that the read count is unchanged.\n- **The cache retains the address when the SDK maps a source item.**\n  - The `agent_node_addresses_round_trip...` test reads the listed entry and child nodes by `{\"node\":...}` alone. The address must be recovered from the cache for that to work, and the result is asserted equal to the path/location reads.\n  - It also rejects a `node` that conflicts with the `data`, a bogus node `10000` and a negative node.\n  - The configured-agent test reads a listed node id and asserts the mapped text.\n- **`source_address` recovers the project-relative outline address for identities the application can supply independently.**\n  - The Habeas test asserts that `source_address(source_node(method))` equals the original address.\n  - It also asserts that `source_address` returns `None` for malformed or invalid selector data.\n- **Other identities return `None`.**\n  - The Habeas test asserts `source_address == None` for all six non-outline node kinds (requirement, references, selection, definition, source, site review).\n  - The default-domain test asserts `source_address(&Node(1)) == None`.\n\nI found no obligation without a test that asserts its outcome.",
+  "references": "8c4c396e8c49a6ace48a76549c421443948dfb1565500ca1dc4f5a5ff632e3c1",
   "inputs": [
     {
       "requirements": "requirements.sdk.sources.source_nodes",
@@ -12,14 +12,16 @@
       "text": [
         ":::{req} source_nodes",
         "",
-        "An application supporting tracked source inspection maps `OutlineId` to its",
-        "graph's `NodeId`. The mapped node represents the requested path and selector;",
-        "an unsupported or invalid address returns an error. The SDK reads the mapped",
-        "node through the application's `Domain` interface.",
+        "An application supporting tracked source inspection returns `Self::NodeData` for the requested path and selector. The SDK interns that data in the domain's cache to obtain `NodeId<Self>`. An unsupported or invalid address returns an error. The cache retains the address when the SDK maps a source item. For source identities the application can supply independently, implement `source_address` to recover the project-relative outline address from the domain identity. Other identities return `None`.",
         "",
         "```rust,ignore",
-        "pub trait SourceNodes: Domain {",
-        "    fn source_node(&self, item: &OutlineId) -> Result<Self::NodeId, Self::Error>;",
+        "pub trait Domain: Clone + Send + Sync {",
+        "    // ...",
+        "    fn source_node(",
+        "        &self,",
+        "        item: &OutlineData,",
+        "    ) -> Result<Self::NodeData, SourceError> { ... }",
+        "    fn source_address(&self, _data: &Self::NodeData) -> Option<OutlineData> { ... }",
         "}",
         "```",
         ":::"
@@ -27,48 +29,33 @@
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
-      "item": "mod[tests]/fn[supplied_agent_uses_attached_project_tools_in_both_configuration_orders]",
-      "hash": "e6ecd2d9b1420224c8370ee1ea1a9e103148a8a605d3a8648afdc02bcaf44e22"
+      "item": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]",
+      "hash": "1a1a252964872efc8573135d5fb391176e8a78b08c0d975f77b8072c6591f9e8"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
-      "item": "mod[tests]/fn[fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies]",
-      "hash": "0643b397550aaf4ad2cb88164f43a54f6bf96b8866d6cd557aa5758827925d6a"
+      "item": "mod[tests]/fn[agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads]",
+      "hash": "f0f0ad4ee4435cb0e1aa1eeab746c8954ec2cabfd829a2ad27d0d1fad406000b"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns]",
-      "hash": "9ea0efbfffa092a472d2e96ed0f37c2d2ef38796edd753901205942ac72e3986"
+      "hash": "6d4d5c3ecff21114d8a3664f6636e1d11c6cc468e31c61e5d6a9ac4dd5c4b3cf"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "fn[domain_without_project_sources_leaves_source_tools_disabled]",
+      "hash": "959312509064c36bad0d18da8d0ba1d7ca31316690528ddc3704f468443c7a56"
+    },
+    {
+      "file": "src/sdk.rs",
+      "item": "mod[tests]/fn[habeas_paths_preserve_opaque_segments_and_separate_all_node_kinds]",
+      "hash": "882a0ff1bea54ee207f7654a0e2abeea4a4eed0b79c2ae555b418860fc0a05b2"
     },
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[public_exports_match_the_appendix]",
-      "hash": "4d6ce6161754fb9e88ad84ef64f9bb131b308298104915179b2c5d573ed2b087"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/configured.rs",
-      "item": "mod[tests]/impl[TestDomain/crate::domain::SourceNodes]/fn[source_node]",
-      "hash": "6c25420f877f50be8c090348eadb8e3d923324f9ed29ff122f10505fe7c5e30b"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
-      "item": "mod[tests]/impl[Project/SourceNodes]/fn[source_node]",
-      "hash": "b3667472e9482b7e3cfb42a68c51288c115528c49bad54e80144933733ce56aa"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
-      "item": "mod[tests]/impl[Project/SourceNodes]",
-      "hash": "64be89197a0b1c30e13c155139d133ad46fd23d58f48cda605b54b6a00eb199c"
-    },
-    {
-      "file": "crates/trust-but-verify/src/domain.rs",
-      "item": "trait[SourceNodes]",
-      "hash": "9958005a366313ba68a602351317ff87aeae2a86b24f7bc589ecbf1d9052e945"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[ValidationContext<'_,%20D>]",
-      "hash": "bb5081f40061a67e439f19116cb9bfc47e2663518edd315b87f1defcca65d7cc"
+      "hash": "85236d57663dd61cc1cfc8c4a81672e5c5591e6d9dfaf865943d051c38e8bb2a"
     }
   ],
   "format_version": 1,
@@ -81,7 +68,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "a14034a218390862f28d740f5d15ba9d3b7ba246394e0594db45508530809377"
+          "value": "8c4c396e8c49a6ace48a76549c421443948dfb1565500ca1dc4f5a5ff632e3c1"
         }
       ]
     },
@@ -93,7 +80,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "3c70c992f58990743f9e2cd79399b64f94aaae3dbe0b27c092407e70a106d73f"
+          "value": "52b1e80c2d23ae6e77f717132ea324ddd2eeb8f9668972c50a9a03ed124fad76"
         }
       ]
     },
@@ -104,7 +91,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c9c4a5fbdaa44dd3dcc6e207ef573474cae37a3c767d083e09ae09fbc1e7eb6f"
+          "value": "8e6346502a38d35769ac9ca222239063ec8f7cd6ca436c2e180b3c8c3b81ac61"
         }
       ]
     },
@@ -116,12 +103,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/configured.rs"
             },
-            "selector": "mod[tests]/fn[supplied_agent_uses_attached_project_tools_in_both_configuration_orders]"
+            "selector": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]"
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "467913c7cc66e32119d121058d00ba59f2117e5869e13e10d57a1c60b6aeda9b"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "f9d8fbc31acd81ef8aa636e21fe02910790b3ec81c15b618e8fdb2b93a7a50de"
         }
       ]
     },
@@ -133,12 +120,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/project_sources.rs"
             },
-            "selector": "mod[tests]/fn[fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies]"
+            "selector": "mod[tests]/fn[agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads]"
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "c7c275851d98585a88c64f53d66e01f1008e02e2f779473f49dd7a545e217224"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "f0f0ad4ee4435cb0e1aa1eeab746c8954ec2cabfd829a2ad27d0d1fad406000b"
         }
       ]
     },
@@ -154,8 +141,42 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "abb74f6cd38690e11ccfd92cb7575e853c729fece5c8b2ab7b2bf6a2aa8a6699"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "6d4d5c3ecff21114d8a3664f6636e1d11c6cc468e31c61e5d6a9ac4dd5c4b3cf"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/contracts.rs"
+            },
+            "selector": "fn[domain_without_project_sources_leaves_source_tools_disabled]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "959312509064c36bad0d18da8d0ba1d7ca31316690528ddc3704f468443c7a56"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/sdk.rs"
+            },
+            "selector": "mod[tests]/fn[habeas_paths_preserve_opaque_segments_and_separate_all_node_kinds]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "882a0ff1bea54ee207f7654a0e2abeea4a4eed0b79c2ae555b418860fc0a05b2"
         }
       ]
     },
@@ -171,93 +192,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "ae4819b6e5ac9cd22992cc4254e7868f438e101dbd53f1bd7d443a33ee96f61d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/configured.rs"
-            },
-            "selector": "mod[tests]/impl[TestDomain/crate::domain::SourceNodes]/fn[source_node]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "5f7c098245ac863de919cc508a18979cca833c259ac573ffc02cad678e8518ec"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
-            },
-            "selector": "mod[tests]/impl[Project/SourceNodes]/fn[source_node]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "051f8cda2b9b3ff2304265fddb97009b306a39302cffef960fd66b54aaf34bf7"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
-            },
-            "selector": "mod[tests]/impl[Project/SourceNodes]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "8e42d09493c57b6d662892f586b4601fa1da4f739d90012c755e0a3b275e763c"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/domain.rs"
-            },
-            "selector": "trait[SourceNodes]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "58fd2f6bbfb1ebe8cea35b944985c0bfd97c22295d36c9c69b3f9dc4771c557e"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "impl[ValidationContext<'_,%20D>]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "5487a9a5d7e8ff88cf522358feba2343f6e991cc58f3f865f3780fcbdde4b9ea"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "85236d57663dd61cc1cfc8c4a81672e5c5591e6d9dfaf865943d051c38e8bb2a"
         }
       ]
     }

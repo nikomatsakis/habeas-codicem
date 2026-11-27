@@ -59,7 +59,7 @@ fenced declaration, including its phrase option. Definitions referenced by those
 definitions MUST also be included transitively, without duplicates or
 nontermination on cycles.
 
-When an additional source read introduces a terminology dependency, the same
-complete, transitive definition set MUST be supplied to the model and recorded
-before accepting a submission.
+When an additional source read refers to a terminology definition, the agent can
+read its declaration with `read_node` using the definition's domain identity.
+The SDK records each definition the agent reads.
 :::

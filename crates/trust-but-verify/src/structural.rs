@@ -5,6 +5,7 @@
 
 use std::borrow::Cow;
 use std::ops::Range;
+#[cfg(test)]
 use std::path::Path;
 
 use ast_grep_config::{DeserializeEnv, RuleCore, SerializableRuleCore};
@@ -20,14 +21,13 @@ use crate::outline_engine::Profile;
 /// An outline profile with a grammar, as an ast-grep language.
 #[derive(Clone, Copy, Debug)]
 pub struct QueryLanguage {
-    pub profile: &'static Profile,
+    profile: &'static Profile,
     grammar: fn() -> tree_sitter::Language,
 }
 
 impl QueryLanguage {
     // {impl}`requirements.references.distributed`
     /// The language named by an outline profile with a grammar.
-    #[cfg(feature = "default-languages")]
     pub fn named(name: &str) -> Result<Self, String> {
         crate::outline_engine::profile::profiles()
             .into_iter()
@@ -43,7 +43,6 @@ impl QueryLanguage {
 
     // {cite}`habeas:util`
     /// The names of the outline profiles with a grammar.
-    #[cfg(feature = "default-languages")]
     pub fn names() -> Vec<&'static str> {
         crate::outline_engine::profile::profiles()
             .into_iter()
@@ -53,13 +52,9 @@ impl QueryLanguage {
     }
 
     // {impl}`requirements.references.distributed`
-    /// Whether a file is a source of this language.
-    pub fn covers(&self, path: &Path) -> bool {
-        path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
-            self.profile
-                .extensions
-                .contains(&e.to_ascii_lowercase().as_str())
-        })
+    /// Extensions accepted by this rule's language.
+    pub fn extensions(&self) -> &[&str] {
+        self.profile.extensions
     }
 }
 
@@ -132,7 +127,6 @@ pub struct StructuralRule {
 impl StructuralRule {
     /// Compiles a rule core: an object holding `rule` and optional `utils`
     /// and `constraints`, in the syntax of the pinned `ast-grep-config`.
-    #[cfg(feature = "default-languages")]
     // {cite}`habeas:util`
     pub fn compile(language: &str, rule: &Map<String, Value>) -> Result<Self, String> {
         Self::compile_language(QueryLanguage::named(language)?, rule)
@@ -173,8 +167,8 @@ impl StructuralRule {
     }
 
     // {cite}`habeas:util`
-    pub fn language(&self) -> QueryLanguage {
-        self.language
+    pub fn language(&self) -> &QueryLanguage {
+        &self.language
     }
 
     /// The byte ranges of every match in a source, in source order.
@@ -210,7 +204,11 @@ fn error_chain(error: &dyn std::error::Error) -> String {
 /// outline was parsed from. A match within a comment belongs to the
 /// comment's owner; a node contains the lines attached before it.
 // {impl}`requirements.references.outline_comments`
-pub fn innermost_node(outline: &LegacyOutline, _source: &str, range: &Range<usize>) -> usize {
+pub(crate) fn innermost_node(
+    outline: &LegacyOutline,
+    _source: &str,
+    range: &Range<usize>,
+) -> usize {
     if let Some(comment) = outline
         .comments
         .iter()
@@ -234,15 +232,18 @@ pub fn innermost_node(outline: &LegacyOutline, _source: &str, range: &Range<usiz
     current
 }
 
-#[cfg(all(test, feature = "default-languages"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
+    // {test}`requirements.sdk.graph.search.StructuralRule`
     // {test}`requirements.authoring.structural_search`
     // {test}`requirements.references.distributed`
     #[test]
     fn rules_compile_for_every_grammar_and_report_invalid_input() {
+        use crate::sources::StructuralRule;
+        let mut tested = Vec::new();
         for (language, rule, source, expected) in [
             (
                 "rust",
@@ -296,6 +297,8 @@ mod tests {
             let rule =
                 StructuralRule::compile(language, json!({"rule": rule}).as_object().unwrap())
                     .unwrap_or_else(|error| panic!("{language}: {error}"));
+            tested.push(language);
+            assert!(!rule.extensions().is_empty());
             let found = rule
                 .matches(source)
                 .into_iter()
@@ -303,6 +306,7 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(found, [expected], "{language}");
         }
+        assert_eq!(tested, StructuralRule::languages());
         for (language, rule, message) in [
             (
                 "cobol",
@@ -334,7 +338,7 @@ mod tests {
             let error = StructuralRule::compile(language, rule.as_object().unwrap())
                 .err()
                 .unwrap();
-            assert!(error.contains(message), "{rule}: {error}");
+            assert!(error.to_string().contains(message), "{rule}: {error}");
         }
     }
 

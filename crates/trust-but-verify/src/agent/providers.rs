@@ -550,11 +550,17 @@ mod tests {
     fn jittered_backoff_grows_to_a_ceiling() {
         let error = io::Error::other(provider_error(Some(429), Some("ThrottlingException")));
         let mut backoff = ProviderBackoff::default();
+        fastrand::seed(37);
+        let mut capped_draws = std::collections::BTreeSet::new();
         for attempt in 0..100 {
             let window = Duration::from_secs(1_u64 << attempt.min(6)).min(Duration::from_secs(60));
             let delay = backoff.next_delay(&error).unwrap();
             assert!((window / 2..=window).contains(&delay));
+            if window == Duration::from_secs(60) {
+                capped_draws.insert(delay);
+            }
         }
+        assert!(capped_draws.len() > 1);
     }
 
     // {test}`requirements.authoring.provider_backoff`
@@ -684,6 +690,20 @@ mod tests {
         assert_eq!(credentials.access_key_id(), "TEST_ACCESS");
         assert_eq!(credentials.secret_access_key(), "test-secret");
         assert_eq!(credentials.session_token(), Some("test-session"));
+        let permanent: BedrockConfig = toml::from_str(
+            "model='test'\n[credentials]\naccess_key_id='ID'\nsecret_access_key='secret'\n",
+        )
+        .unwrap();
+        let sdk_permanent = bedrock_sdk_config(&permanent).await;
+        let credentials = sdk_permanent
+            .credentials_provider()
+            .unwrap()
+            .provide_credentials()
+            .await
+            .unwrap();
+        assert_eq!(credentials.access_key_id(), "ID");
+        assert_eq!(credentials.secret_access_key(), "secret");
+        assert_eq!(credentials.session_token(), None);
         assert_eq!(sdk.region().unwrap().as_ref(), "us-west-2");
         assert_eq!(variables.map(std::env::var_os), before_environment);
         assert_eq!(std::fs::read(root.join("config")).unwrap(), config_before);

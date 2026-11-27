@@ -163,7 +163,7 @@ fn check_shape(value: &Value, subject: &HabeasNode) -> io::Result<()> {
             "references",
             "inputs",
         ],
-        HabeasNode::CitationReview(_) => &[
+        HabeasNode::Source(_) => &[
             "file",
             "item",
             "citations",
@@ -331,7 +331,7 @@ pub(crate) fn convert_file(path: &Path, subject: &HabeasNode) -> io::Result<()> 
 pub(crate) fn check_native(
     value: &Value,
     subject: &HabeasNode,
-    domain: &HabeasDomain<'_>,
+    domain: &HabeasDomain,
     label: &str,
     errors: &mut Vec<String>,
 ) {
@@ -367,15 +367,20 @@ pub(crate) fn check_native(
                 {
                     record.output["references"].as_str() != Some(&fingerprint.value)
                 }
-                Dependency::Node(node, fingerprint) => !record.output["inputs"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .any(|input| {
-                        crate::inputs::InputSelector::from_input(input).is_some_and(|selector| {
-                            node.selector().ok().as_ref() == Some(&selector)
-                        }) && input_fingerprint(input) == *fingerprint
-                    }),
+                Dependency::Node(node, fingerprint) => {
+                    let Ok(selector) = node.selector() else { return true };
+                    if record.output["inputs"].as_array().into_iter().flatten().any(|input| {
+                        crate::inputs::InputSelector::from_input(input).as_ref() == Some(&selector)
+                            && input_fingerprint(input) == *fingerprint
+                    }) { return false; }
+                    // Historical source reads hashed the full evidence input. Compare those
+                    // digests using their original representation, even without a matching input field.
+                    if matches!(node, HabeasNode::Source(_)) && fingerprint.scheme == "habeas-input-v1" {
+                        return !selector.resolve(&domain.root, &domain.definitions, &domain.outlines)
+                            .is_ok_and(|resolved| input_fingerprint(&selector.to_input(&resolved)) == *fingerprint);
+                    }
+                    true
+                }
                 Dependency::OutgoingEdges(node, _label, fingerprint) => {
                     !(node == subject
                         && matches!(subject, HabeasNode::Requirement(_))
@@ -583,13 +588,12 @@ mod tests {
         let before = std::fs::read(&path).unwrap();
         let definitions = BTreeMap::new();
         let outlines = OutlineCache::default();
-        let graph = HabeasDomain {
-            root: root.path(),
-            definitions: &definitions,
-            outlines: &outlines,
-        };
+        let graph = HabeasDomain::new(root.path(), &definitions, &outlines);
         let record = graph
-            .load_evidence(&node, &crate::sdk::review_criterion())
+            .load_evidence(
+                &graph.cache().intern_node(node.clone()),
+                &crate::sdk::review_criterion(),
+            )
             .await
             .unwrap()
             .unwrap();
@@ -615,7 +619,10 @@ mod tests {
         let missing = HabeasNode::Requirement(crate::sdk::RequirementId("missing".into()));
         assert!(
             graph
-                .load_evidence(&missing, &crate::sdk::review_criterion())
+                .load_evidence(
+                    &graph.cache().intern_node(missing.clone()),
+                    &crate::sdk::review_criterion()
+                )
                 .await
                 .unwrap()
                 .is_none()
@@ -637,16 +644,14 @@ mod tests {
         .unwrap();
         let definitions = crate::evidence::load_definitions(root.path()).unwrap();
         let outlines = OutlineCache::default();
-        let graph = HabeasDomain {
-            root: root.path(),
-            definitions: &definitions,
-            outlines: &outlines,
-        };
+        let graph = HabeasDomain::new(root.path(), &definitions, &outlines);
         let node = HabeasNode::Requirement(crate::sdk::RequirementId("rules.ready".into()));
-        let input = node
-            .selector()
-            .unwrap()
-            .to_input(&graph.node_content(&node).unwrap().resolved);
+        let selector = node.selector().unwrap();
+        let input = selector.to_input(
+            &selector
+                .resolve(root.path(), &definitions, &outlines)
+                .unwrap(),
+        );
         let metadata = json!({"requirement":"Ready MUST work.","references":"b".repeat(64),
             "determination":false,"rationale":"Still negative.","inputs":[input]});
         let mut record = decode(&metadata, &node).unwrap();
@@ -672,10 +677,7 @@ mod tests {
         )
         .unwrap();
         let changed_definitions = crate::evidence::load_definitions(root.path()).unwrap();
-        let changed = HabeasDomain {
-            definitions: &changed_definitions,
-            ..graph
-        };
+        let changed = HabeasDomain::new(&graph.root, &changed_definitions, &graph.outlines);
         assert!(
             !record
                 .is_current(&changed, &CriterionVersion::new("any"))

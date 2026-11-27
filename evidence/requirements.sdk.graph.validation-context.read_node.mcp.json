@@ -1,8 +1,8 @@
 {
-  "requirement": "Give `read_node` the path of a known node. The result contains the node’s text. If more\ntext remains, pass `next` to `get_next_page`.\n\n```text\nread_node({path: NodePath}) -> {text: string, next?: UUID}\n```",
+  "requirement": "Give `read_node` a node address under {cite}`requirements.sdk.graph.validation-context.node_reference`. The result contains the node’s text. If more\ntext remains, pass `next` to `get_next_page`.\n\n```text\nread_node(NodeAddress) -> {text: string, next?: UUID}\n// For a source node the result has these additional fields:\n{file: string, selector: string, children: {node: NodeId, file: string, selector: string, header?: string}[]}\n```",
   "determination": true,
-  "rationale": "The tests adequately check `read_node.mcp`. I did not read the implementation.\n\n**Obligations derived from the text**\n- `read_node` accepts `{path: NodePath}` for a known node.\n- The result contains the node's text.\n- When more text remains, the result also carries a `next` UUID. That `next` is passed to `get_next_page`.\n- When no more text remains, `next` is absent. The signature marks `next` optional.\n\n**Test mapping**\n- `a_complete_node_read_has_text_and_no_continuation` covers the short-node case. It calls `read_node` with `{\"path\":{\"segments\":[\"1\"]}}` and asserts the tool result is exactly `{\"text\":\"short text\"}`. That shows text is present and `next` is absent when nothing remains.\n- `application_tools_preserve_graph_tools_in_the_same_conversation` covers an 18,000-character node.\n  - The first `read_node` result is exactly `{\"text\": <8192 chars>, \"next\": <uuid>}`.\n  - The helper `returned_node_page` parses that `next` as a UUID.\n  - The model then calls `get_next_page` with `use_next`, and the following page returns more text.\n  - The test also asserts that `read_node` is advertised in every request, so the tool is exposed.\n- `graph_read_pages_retain_the_prepared_snapshot_after_contents_change` covers a multi-byte, two-page node.\n  - The first page has `next` and the second does not. This is asserted through `page.get(\"next\").is_some() == (index == 0)`.\n  - The pages concatenate back to the original text.\n  - The graph is read only once.\n\n**Gaps**\nNone. Together the tests cover the input shape, the text output, the `next` UUID when text remains, its absence when the read is complete, and continuation through `get_next_page`. The requirement does not specify behavior for unknown nodes, so a missing test for that is not a gap.",
-  "references": "2adc22e0694c114ff3ebe0b8b31d7e938ab188549959fe8340bb833361608432",
+  "rationale": "I judge the tests adequate for `requirements.sdk.graph.validation-context.read_node.mcp`. I did not request implementation source. The existing tests cover each obligation below.\n\n**Obligations derived from the requirement:**\n1. `read_node` accepts a `NodeAddress` in the three forms from `node_reference`: `node`, `path` with optional `location`, and `data`.\n2. The result contains the node's `text`.\n3. If more text remains, the result carries `next` (a UUID), and passing it to `get_next_page` continues the read. If no text remains, there is no `next`.\n4. For a source node the result also has `file`, `selector` and `children`. Each child has `node`, `file`, `selector` and an optional `header`.\n\n**Coverage:**\n- **Tool signature and non-source nodes.**\n  - `agent/configured.rs#mod[tests]/fn[read_node_advertises_and_reads_every_domain_id_variant]` checks that the advertised `read_node` schema has an integer `node` property.\n  - It reads two different domain node variants by `node` id.\n  - It asserts that the delivered JSON is exactly `{\"text\": ...}`, with no extra fields for non-source nodes.\n  - It also asserts the recorded dependencies.\n- **Complete read.** `agent/tests.rs#fn[a_complete_node_read_has_text_and_no_continuation]` asserts the exact reply `{\"text\":\"short text\"}`, so there is no `next` when nothing remains.\n- **Paging.**\n  - `agent/tests.rs#fn[application_tools_preserve_graph_tools_in_the_same_conversation]` reads 18,000 characters. The first page is 8,192 characters with a `next` equal to the page id the test extracts from the following request.\n  - That test continues via `get_next_page`. The following page has a new `next` that parses as a UUID.\n  - `agent/tests.rs#fn[graph_read_pages_retain_the_prepared_snapshot_after_contents_change]` follows `next` to completion and checks that the concatenated text equals the original. It also checks that only the first page has `next`.\n- **Source-node fields and children.**\n  - `agent/project_sources.rs#mod[tests]/fn[agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads]` asserts the full JSON for an `impl` node: `file`, `selector`, `text`, and `children` with `node`, `file`, `selector` and `header`.\n  - It asserts an empty `children` array for a leaf function.\n  - It asserts the root page's children.\n- **Address forms.**\n  - The same test reads the same node by `data`, by `path` plus `location`, and by `node`, and expects equal dependencies and text.\n  - It checks that an invalid or inconsistent address fails and does no read. The invalid cases are: empty, conflicting combinations, a negative node, an absent selector, and an absent file.\n  - These cases apply the cited `node_reference` obligations to `read_node`.\n- **Paged source node.** `agent/project_sources.rs#mod[tests]/fn[outline_continuations_keep_the_file_and_complete_ordered_items]` reads a large root source node. Each page keeps `file` and `selector`. The concatenated text equals the original, and children aggregated across pages equal the outline items in order. It follows `next` through `get_next_page`.\n\n**Remaining observations:** The optional `header` field is asserted when present, and no test targets the case where it is absent. The requirement states no condition for omitting it, so I do not count that as a gap. No acknowledgments or `{fixme}` references apply.",
+  "references": "905d8973eb3d9a7936d948a0d1e180c273dce36e1b0505c10da67c008037bb22",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.validation-context.read_node.mcp",
@@ -11,34 +11,67 @@
       ],
       "text": [
         ":::{req} read_node.mcp",
-        "Give `read_node` the path of a known node. The result contains the node’s text. If more",
+        "Give `read_node` a node address under {cite}`requirements.sdk.graph.validation-context.node_reference`. The result contains the node’s text. If more",
         "text remains, pass `next` to `get_next_page`.",
         "",
         "```text",
-        "read_node({path: NodePath}) -> {text: string, next?: UUID}",
+        "read_node(NodeAddress) -> {text: string, next?: UUID}",
+        "// For a source node the result has these additional fields:",
+        "{file: string, selector: string, children: {node: NodeId, file: string, selector: string, header?: string}[]}",
         "```",
         ":::"
       ]
     },
     {
+      "requirements": "requirements.sdk.graph.validation-context.node_reference",
+      "matches": [
+        "requirements.sdk.graph.validation-context.node_reference"
+      ],
+      "text": [
+        ":::{req} node_reference",
+        "The harness represents a `NodeId<D>` as an unsigned integer. Each built-in tool that accepts a node accepts the same top-level address fields, alongside its own arguments (such as an edge `label`). `NodeAddress` in tool signatures denotes these alternatives:",
+        "",
+        "| Address fields | Resolution |",
+        "| --- | --- |",
+        "| `node` | Look up the assigned ID in the domain's cache. |",
+        "| `path`, optional `location` | Resolve the project-relative file within the domain's visible sources. `location` is its outline selector and defaults to the empty selector for the file root. Resolve the item, map its `OutlineData` through `Domain::source_node`, and intern the resulting identity. |",
+        "| `data` | Deserialize the JSON value as `D::NodeData` and intern it in the domain's cache. |",
+        "",
+        "For domains using the agent harness, the tool schema describes `data` using the domain’s JSON schema for `D::NodeData`. The harness uses the same JSON representation when returning and accepting an identity.",
+        "",
+        "Resolving an address is discovery. The requested operation determines which observations enter evidence. Invalid addresses, unavailable files, and unknown selectors produce tool errors before the requested operation runs.",
+        ":::"
+      ]
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/fn[read_node_advertises_and_reads_every_domain_id_variant]",
+      "hash": "d76706157b81ae4b02a8305b4bed53631bc9c11eb8c97e370cae77fa6eed0e19"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "mod[tests]/fn[agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads]",
+      "hash": "f0f0ad4ee4435cb0e1aa1eeab746c8954ec2cabfd829a2ad27d0d1fad406000b"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "mod[tests]/fn[outline_continuations_keep_the_file_and_complete_ordered_items]",
+      "hash": "2bfd26b489fbc7df4d807d09d6d4f95915b8d8defe17f50370820a2c7acbb484"
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[application_tools_preserve_graph_tools_in_the_same_conversation]",
-      "hash": "b9f42ea8d7dd1e8409f20f585db98f0f46ebf0bc1b3d6fd095e75bc0076de60e"
+      "hash": "9e2ad11eb5530b7198e7344026fc2eec3b661d8c01978caa4163c0001d9cf120"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[a_complete_node_read_has_text_and_no_continuation]",
-      "hash": "f4a43c4ca70455385ff3b3d2446a469a0046941c3f8cb36f0c8bc30a0632a20e"
+      "hash": "39647791e96662abd11df078899587559dfad26c37c86cea189c0ced55f8154c"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[graph_read_pages_retain_the_prepared_snapshot_after_contents_change]",
-      "hash": "a7d54e9019477a4f744b57a495ff107597f0e75c3033942fd41587db28a6ad71"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "fn[returned_node_page]",
-      "hash": "a3e6224f654e2ba517b3d2c8274d6aafa1d47373cec9d6a810cbfb7f89842d16"
+      "hash": "a78d90654acea5890ba8eabe9024bc2722130b9affb7fab8e94b8b62f03a6623"
     }
   ],
   "format_version": 1,
@@ -51,7 +84,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "2adc22e0694c114ff3ebe0b8b31d7e938ab188549959fe8340bb833361608432"
+          "value": "905d8973eb3d9a7936d948a0d1e180c273dce36e1b0505c10da67c008037bb22"
         }
       ]
     },
@@ -63,7 +96,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "cd4223674ea5a4dbc07d06a5ff022a55fd8c4a7a4b52f717f3d8a673c8af891c"
+          "value": "0b21d1389d7148033caa90852269207e857b427bea5dfcc83861cf4f1739504b"
         }
       ]
     },
@@ -74,7 +107,69 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "bca08a76d64014331e8ae4dd3b6344a01f7c131b9ef4ab41b42f418a9331cce8"
+          "value": "fdb87a9526f350fd0ea94f05274eda899c75829be2f1d2d34471e349ef37328f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.sdk.graph.validation-context.node_reference"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "c620d2dfecfa08991060b45c3970a5375bf7d3f87bd288f41705003578ec3546"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
+            },
+            "selector": "mod[tests]/fn[read_node_advertises_and_reads_every_domain_id_variant]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "752d03d89ec2d196d05be8a92df499b31e39d5b92eabf89962e17337ff306a6d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "mod[tests]/fn[agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "4abe39a8ff129b78fd18530ca0f1837a343e7aa5a318b5ffdc702ec92a0451b6"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "mod[tests]/fn[outline_continuations_keep_the_file_and_complete_ordered_items]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "d9b239bf58e8ef763dbee045335f380d55b982bbf07c0df86939afd9162cd700"
         }
       ]
     },
@@ -91,7 +186,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "d8ef1d0002ccaf47c7d19b96bd03c0804babf453bbe590b66b49bdeb6f074908"
+          "value": "a3b022c2a129bc8eed2b6be4e97d50e1dc0d0b65a442a20dd5969185ac386846"
         }
       ]
     },
@@ -108,7 +203,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1f2db3df3570fe54b1114e6696984a29bbd5ce3282c50650332e6ec565259979"
+          "value": "e53ecb86304b01988cebcc8981d6f0339706db7ee4397f2b2e92740b37a69502"
         }
       ]
     },
@@ -125,24 +220,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "8689077035362e104821ce08f2bec4723ed42ffdff77e0e529ed2ce9c8cf5974"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "fn[returned_node_page]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "241b08f64f7ac5dc904e8e74165207e72b524888dd4d3bc7f81fe9ca03450678"
+          "value": "6f410a48adb926a373cae511cb76189b7b8d97316caa510e1ee2447776a7001f"
         }
       ]
     }

@@ -51,9 +51,9 @@ pub trait Domain: Clone + Send + Sync {
     /// Return the target node identities for this source and label.
     fn outgoing_edges(
         &self,
-        source_node: &Self::NodeId,
+        source_node: &NodeId<Self>,
         label: Self::EdgeLabel,
-    ) -> Result<Vec<Self::NodeId>, Self::Error>;
+    ) -> Result<Vec<NodeId<Self>>, Self::Error>;
 
     // ...
 }
@@ -75,8 +75,7 @@ enum HabeasEdge {
 }
 ```
 
-When outgoing edges of type `Test` are requested from requirement `R`, HC looks
-for `#[test]` functions tagged with `R`:
+When discovery finds the following test, HC adds its node ID to the `Test` edges of requirement `R`. A subsequent query for those edges returns the stored targets.
 
 ```rust,ignore
 // {test}`R`

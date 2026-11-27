@@ -1,7 +1,7 @@
 {
   "requirement": "{cite}`requirements.sdk.domain`\n\nThe {term}`requirements.sdk.application_domain` defines its central `Error`\nassociated type on `Domain`. Node reads, edge queries, and evidence persistence\nuse it to report internal errors:\n\n```rust,ignore\n// Defined in trust_but_verify::domain.\npub trait Domain: Clone + Send + Sync {\n    // ...\n\n    /// Application-defined errors from domain operations.\n    type Error: Send;\n\n    // ...\n}\n```",
   "determination": true,
-  "rationale": "`requirements.sdk.errors` has one testable obligation. `Domain` must declare an associated `type Error: Send`. Node reads, edge queries and evidence persistence must report their internal errors through it. The requirement has no runtime behavior beyond that.\n\nThe marked test is `crates/trust-but-verify/tests/contracts.rs#fn[domain_relationships_accept_opaque_types_and_send_only_errors]`. It covers the obligation as follows:\n\n- **Minimal bound.** The fixture `GraphError(Cell<u8>)` is `Send` but not `Sync`, `Debug`, `Clone` or `std::error::Error`, and it implements `Domain` as `type Error`. If the trait demanded more than `Send`, the fixture would not compile.\n- **Bound is not loosened.** The generic `check_bounds::<G: Domain>` calls `error::<G::Error>()` with `T: Send`. If `Send` were dropped from the declaration, this would fail to compile.\n- **Error type reaches every operation.** The fixture implements `node_content`, `outgoing_edges`, `load_evidence` and `store_evidence` with `Self::Error`, and all four must compile against the trait signatures. The `Result<_, Self::Error>` signatures for these operations are specified in `requirements.sdk.domain`.\n- **Runtime error path.** `outgoing_edges` on `Identity(255)` returns `Err(GraphError(..))`. The test checks that the error comes back as the application-defined type, passes it through `send(error)`, and asserts the payload is 255.\n- **Send futures with a non-Sync error.** `load_evidence` and `store_evidence` are awaited through `send(...)`. This checks that the returned futures stay `Send` when the error type is not `Sync`, which the `+ Send` future signatures rely on.\n\nThe test does not trigger an error from `node_content`, `load_evidence` or `store_evidence` at runtime. The requirement does not need that. It says only that the operations use the central `Error` type, and the compile-time signature checks enforce this. I found no obligation left untested.",
+  "rationale": "The tests adequately check `requirements.sdk.errors`.\n\n**Obligations derived from the text:**\n1. `Domain` defines an associated `Error` type bounded by `Send` only.\n2. Node reads (`node_content`), edge queries (`outgoing_edges`) and evidence persistence (`load_evidence`, `store_evidence`) report internal errors through that type.\n\n**Coverage in `crates/trust-but-verify/tests/contracts.rs#fn[domain_relationships_accept_opaque_types_and_send_only_errors]`**, which carries `{test}` for `requirements.sdk.errors`:\n- **Bound is exactly `Send`.** The fixture error `GraphError(Cell<u8>)` is `Send` but not `Sync`, `Debug`, `Clone` or `std::error::Error`. It compiles, so the trait does not demand any of those bounds. The generic `check_bounds` function calls `error::<G::Error>()` with `T: Send`. Dropping the `Send` bound from the trait would therefore fail to compile.\n- **Persistence futures stay `Send`.** The `send(graph.load_evidence(..))` and `send(graph.store_evidence(..))` calls compile against the non-`Sync` error type. The test awaits them and asserts the results.\n- **Edge-query errors use `Self::Error`.** The test calls `outgoing_edges` on `Identity(255)`. That returns `Err(GraphError)`, and the test asserts `send(error).0.get() == 255`, so the error value passes through and is `Send`.\n- **Node reads and persistence use `Self::Error`.** `node_content`, `load_evidence` and `store_evidence` are implemented with `Result<_, Self::Error>` signatures, which the compiler enforces. Their error paths are not run at runtime. That is not a gap, because the obligation is a type-level one. Only the type use matters, not a runtime branch.\n\nThe requirement text states no other conditions or failure cases.",
   "references": "37477f4de491970121748796bccaa7c0084a3678b681c8adfd5ae8bd6ba38733",
   "inputs": [
     {
@@ -47,31 +47,39 @@
         "```rust,ignore",
         "pub trait Domain: Clone + Send + Sync {",
         "    type Error: Send;",
-        "    type NodeId: Clone + Eq + Send + Sync;",
+        "    type NodeData: Clone + Eq + Hash + Send + Sync;",
         "    type NodeContent: NodeContents;",
         "    type EdgeLabel: Clone + Send + Sync;",
         "",
-        "    fn node_path(&self, node: &Self::NodeId) -> NodePath;",
+        "    fn cache(&self) -> &ValidationCache<Self>;",
+        "    fn node_path(&self, node: &NodeId<Self>) -> NodePath;",
         "    fn node_content(",
         "        &self,",
-        "        node: &Self::NodeId,",
+        "        node: &NodeId<Self>,",
         "    ) -> Result<Self::NodeContent, Self::Error>;",
         "    fn outgoing_edges(",
         "        &self,",
-        "        node: &Self::NodeId,",
+        "        node: &NodeId<Self>,",
         "        label: Self::EdgeLabel,",
-        "    ) -> Result<Vec<Self::NodeId>, Self::Error>;",
+        "    ) -> Result<Vec<NodeId<Self>>, Self::Error>;",
         "    fn load_evidence(",
         "        &self,",
-        "        node: &Self::NodeId,",
+        "        node: &NodeId<Self>,",
         "        criterion: &CriterionPath,",
-        "    ) -> impl Future<Output = Result<Option<Record<Self::NodeId, Self::EdgeLabel>>, Self::Error>> + Send;",
+        "    ) -> impl Future<Output = Result<Option<Record<Self::NodeData, Self::EdgeLabel>>, Self::Error>> + Send;",
         "    fn store_evidence(",
         "        &self,",
-        "        node: &Self::NodeId,",
+        "        node: &NodeId<Self>,",
         "        criterion: &CriterionPath,",
-        "        record: &Record<Self::NodeId, Self::EdgeLabel>,",
+        "        record: &Record<Self::NodeData, Self::EdgeLabel>,",
         "    ) -> impl Future<Output = Result<(), Self::Error>> + Send;",
+        "",
+        "    fn project_sources(&self) -> Option<SourceProject<Self>> { ... }",
+        "    fn source_node(",
+        "        &self,",
+        "        item: &OutlineData,",
+        "    ) -> Result<Self::NodeData, SourceError> { ... }",
+        "    fn source_address(&self, _data: &Self::NodeData) -> Option<OutlineData> { ... }",
         "}",
         "```",
         ":::"
@@ -80,7 +88,7 @@
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]",
-      "hash": "08c301667d5351dbec856e9e4a7ca5ea28ea55e2f5751c178725bce30822803e"
+      "hash": "e46366c5a0de1a3dcbb7370d737f808366b44a3118471cff53135b299943401f"
     },
     {
       "definition": "requirements.sdk.application_domain",
@@ -142,7 +150,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "877152da04beedf84fa17e2badad2ebaf956b8433bc2005fe585986cf7d0f146"
+          "value": "2e0a36b62ec75626b47edc2d133582146b235b039c605e398ae3dcc838c69532"
         }
       ]
     },
@@ -159,7 +167,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "82ea2b0a09f948766d729aba68721bac4156039e9ce4e715745c953541934eb9"
+          "value": "a7126df2582fdb2ea3ec536fdb6958e12e9cc217504ebc04488581f41f4bc723"
         }
       ]
     },

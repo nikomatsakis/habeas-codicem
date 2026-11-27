@@ -1,6 +1,4 @@
-use trust_but_verify::outline::OutlineId;
-#[cfg(feature = "habeas-integration")]
-use trust_but_verify::search::RegexSearch;
+use trust_but_verify::outline::OutlineData;
 
 // {test}`requirements.sdk.graph.search.TextMatch`
 // {test}`requirements.sdk.graph.search.SearchResults`
@@ -20,7 +18,7 @@ fn callers_can_construct_complete_and_partial_search_results() {
     assert_eq!(found.line, 7);
     assert_eq!(found.excerpt, "fn example() {}");
 
-    let address = OutlineId::new(path, "fn[example]".into()).unwrap();
+    let address = OutlineData::new(path, "fn[example]".into()).unwrap();
     let found = StructuralMatch::new(address.clone(), "example".into());
     let complete = SearchResults::new(vec![found], true);
     assert!(complete.complete);
@@ -35,35 +33,64 @@ fn callers_can_construct_complete_and_partial_search_results() {
 fn outline_addresses_validate_selectors_without_reading_paths() {
     let path = std::path::PathBuf::from("opaque/../é?key");
     for selector in ["", "fn[kept]", "mod[a%2Fb]/fn[kept]"] {
-        let address = OutlineId::new(path.clone(), selector.into()).unwrap();
+        let address = OutlineData::new(path.clone(), selector.into()).unwrap();
         assert_eq!(address.path, path);
         assert_eq!(address.selector, selector);
     }
     for selector in ["fn[missing", "fn[bad%ZZ]", "/fn[kept]"] {
         assert!(
-            OutlineId::new(path.clone(), selector.into()).is_err(),
+            OutlineData::new(path.clone(), selector.into()).is_err(),
             "{selector}"
         );
     }
 }
 
-// {test}`requirements.authoring.source_tools`
+// {test}`requirements.sdk.graph.search.StructuralRule`
 #[test]
-#[cfg(feature = "habeas-integration")]
-fn path_and_byte_search_agree_on_case_sensitive_one_based_matching_lines() {
-    let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("sample.txt");
-    let text = "Hit\nhit hit\nabsent\né hit\n";
-    std::fs::write(&path, text).unwrap();
-    let search = RegexSearch::compile("hit").unwrap();
-    assert_eq!(search.search_path(&path).unwrap(), [2, 4]);
-    assert_eq!(search.search_bytes(text.as_bytes()).unwrap(), [2, 4]);
-    std::fs::write(&path, b"\0hit\nhit\n").unwrap();
-    assert!(search.search_path(&path).unwrap().is_empty());
-    assert!(search.search_bytes(b"\0hit\nhit\n").unwrap().is_empty());
-    assert!(RegexSearch::compile("[").is_err());
-    std::fs::remove_file(&path).unwrap();
-    let error = search.search_path(&path).unwrap_err();
-    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
-    assert!(error.to_string().contains(path.to_str().unwrap()));
+fn compile_once_and_search_supplied_source() {
+    use trust_but_verify::sources::{SourceError, StructuralRule};
+    let core = serde_json::json!({"rule": {"kind": "call_expression"}});
+    let core = core.as_object().unwrap();
+    let rule = StructuralRule::compile("rust", core).unwrap();
+    assert!(StructuralRule::languages().contains(&"rust"));
+    assert!(rule.extensions().contains(&"rs"));
+    for (text, expected) in [
+        ("fn é() { f(g()); h(); }", &["f(g())", "g()", "h()"][..]),
+        ("fn next() { g(); }", &["g()"][..]),
+        ("fn chain() { f()(); }", &["f()", "f()()"][..]),
+    ] {
+        let matches = rule
+            .matches(text)
+            .into_iter()
+            .map(|span| &text[span])
+            .collect::<Vec<_>>();
+        assert_eq!(matches, expected);
+    }
+    assert!(rule.matches("").is_empty());
+    assert!(matches!(
+        StructuralRule::compile("plain-text", core),
+        Err(SourceError::Invalid(_))
+    ));
+    assert!(matches!(
+        StructuralRule::compile("rust", &Default::default()),
+        Err(SourceError::Invalid(_))
+    ));
+}
+
+// {test}`requirements.sdk.graph.search.StructuralRule`
+#[test]
+fn nodes_covering_the_same_source_produce_one_span() {
+    use trust_but_verify::outline::Span;
+    use trust_but_verify::sources::StructuralRule;
+    let text = "fn f() {}";
+    // With no trailing newline, the file and its only function occupy identical bytes.
+    for kinds in [
+        serde_json::json!([{"kind":"source_file"}]),
+        serde_json::json!([{"kind":"function_item"}]),
+        serde_json::json!([{"kind":"source_file"}, {"kind":"function_item"}]),
+    ] {
+        let core = serde_json::json!({"rule": {"any": kinds}});
+        let rule = StructuralRule::compile("rust", core.as_object().unwrap()).unwrap();
+        assert_eq!(rule.matches(text), [Span::new(0, text.len())]);
+    }
 }

@@ -21,6 +21,7 @@ const KINDS: &[KindRule] = &[
 
 // {impl}`requirements.references.outline_comments`
 // {impl}`requirements.references.structural_hash`
+// {impl}`requirements.sdk.sources.python.attachments`
 pub static PROFILE: Profile = Profile {
     name: "python",
     expando_char: 'µ',

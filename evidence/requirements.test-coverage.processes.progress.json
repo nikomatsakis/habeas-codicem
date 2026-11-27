@@ -1,7 +1,7 @@
 {
   "requirement": "During report conversion, on a terminal enabled under\n{cite}`requirements.test-coverage.processes.progress.terminal`, Habeas MUST\ndisplay updating progress with elapsed time and completed and total\ntest-attempt counts. The total MUST count the recorded attempts selected for\nconversion. An attempt MUST advance the completed count only after its\nconversion has finished or reported a collection failure, including processing\nits associated child-process profiles. These counts MUST measure conversion\nwork regardless of the attempt's test outcome.",
   "determination": true,
-  "rationale": "The reviewed tests adequately check `requirements.test-coverage.processes.progress`. The terminal-enablement and clearing obligations belong to the cited `...progress.terminal` requirement. I treated them as context, and the PTY test covers their application anyway.\n\n**Obligations and the tests that cover them**\n\n- **Updating progress with elapsed time and completed/total counts.**\n  - `src/execution_coverage/progress.rs#mod[tests]/fn[stage_and_conversion_counts_are_visible_then_cleared]` drives `Progress::with_target` with totals 0 and 2.\n  - After each `completed()` call it asserts that `bar.position()` equals the expected count.\n  - It asserts that the drawn text contains `\"{expected}/{total} attempts\"` and the elapsed-time marker `[00:00:`.\n  - It asserts that the display is monochrome.\n  - It asserts that the display is cleared on drop, including for the empty-work case.\n  - `tests/execution_coverage.rs#fn[coverage_progress_on_a_pty_preserves_reports_and_plain_output_policy]` runs the real binary on a PTY and asserts `Converting coverage`, `1/1 attempts` and `[00:`. It also asserts that in-place update escape sequences appear and that `NO_COLOR` suppresses color.\n- **Total counts the recorded attempts selected for conversion.**\n  - The PTY test uses filters that each select one attempt. The `child_process` filter yields an attempt with 2 processes, and the output still shows `1/1 attempts`. That rules out a total counted per process.\n  - The store holds earlier runs by the time later PTY runs execute, so a total counted over all stored attempts would not read `1/1`.\n  - No end-to-end test uses more than one attempt, and none combines progress with pending attempts. In `runner.rs#fn[finish]` the total is `attempts.len()`, the same vector passed to `parallel_collect`. A total that diverged from the converted set would need a separate, unlikely bug. I do not count this as a gap.\n- **Advance only after conversion has finished or reported a collection failure.**\n  - `src/execution_coverage/runner.rs#mod[tests]/fn[parallel_conversion_is_bounded_and_retains_every_result_in_order]` asserts inside the completion callback that `finished[index]` is already true. This fails if progress advances before the work completes.\n  - It also asserts that `completed == total`, even though index 3 returns `Err(\"unreadable profile\")`.\n  - `fn[empty_conversion_starts_no_work_and_reports_no_completions]` covers empty work.\n  - In `fn[finish]` the completion callback is `|_| progress.completed()`, and the conversion closure runs `finish_attempt`, which includes child-process profiles. The PTY `child_process` case exercises that path and shows `1/1`.\n- **Counts measure conversion work regardless of test outcome.**\n  - The PTY test covers a successful attempt, a failed test (`deliberate_failure`, outcome `failed`) and a passing test with a missing profile (`missing_profile`, a collection failure).\n  - For each of these it asserts `1/1 attempts` via `assert_conversion_cleared`. It also asserts that the conversion line is cleared before the final output.\n  - For the missing-profile case it additionally asserts that the diagnostic and the \"partial profiles and reports have been retained\" message are present.\n\nNo gap was found.",
+  "rationale": "The reviewed tests cover every obligation in `requirements.test-coverage.processes.progress`. The terminal-enabling rules belong to the cited `requirements.test-coverage.processes.progress.terminal` and are not reassessed here.\n\n**Updating progress with elapsed time and completed/total counts**\n- `src/execution_coverage/progress.rs#mod[tests]/fn[stage_and_conversion_counts_are_visible_then_cleared]` builds a conversion `Progress` for totals 0 and 2.\n- It asserts the bar position is 0 at the start and equals the expected count after each `completed()` call.\n- It asserts the drawn text contains `\"{expected}/{total} attempts\"` and `\"[00:00:\"`, the elapsed-time field. It also asserts the text has no color sequences.\n- It asserts the display is cleared on drop, for the empty case too.\n- `tests/execution_coverage.rs#fn[coverage_progress_on_a_pty_preserves_reports_and_plain_output_policy]` runs the real binary on a PTY with `TERM=xterm`. It asserts the output contains \"Converting coverage\", \"1/1 attempts\", \"[00:\", and in-place update escape sequences. It also asserts that `\\x1b[2K` clears the display before \"Coverage retained in\".\n\n**Total counts the recorded attempts selected for conversion**\n- In `src/execution_coverage/runner.rs#fn[finish]`, the total is `attempts.len()`. The attempts are filtered to the current run and exclude pending ones.\n- The PTY test reuses one fixture across many runs. `assert_conversion_cleared` does an `rfind(\"1/1 attempts\").unwrap()`, so it would panic if the total included earlier runs' attempts.\n- The unit test checks total 2 and total 0.\n- Nothing tests that pending attempts are excluded. The requirement does not spell out that exclusion, so I don't count it as a gap.\n\n**Completion advances only after conversion finishes or reports a collection failure**\n- `src/execution_coverage/runner.rs#mod[tests]/fn[parallel_conversion_is_bounded_and_retains_every_result_in_order]` drives `parallel_collect` with a work closure that sets a `finished[index]` flag. The completion callback asserts that flag, with the message \"progress advanced before conversion finished\".\n- The same test makes index 3 return `Err(\"unreadable profile\")` and asserts `completed == total`, so a failed conversion still advances the count.\n- It runs with 2 and 8 workers and asserts every item is visited exactly once.\n- In `fn[finish]`, `finish_attempt` runs inside the work closure and `progress.completed()` runs in the completion callback, so child-process profile processing happens before the count advances.\n- The PTY test covers `test(child_process)` with 2 processes and expects a \"1/1 attempts\" display that is then cleared.\n\n**Counts measure conversion work regardless of test outcome**\n- The PTY test runs a passing test, `deliberate_failure` (outcome \"failed\", exit failure) and `missing_profile` (a collection failure with 0 processes). Each case runs `assert_conversion_cleared`, which requires the \"1/1 attempts\" count.\n- The `missing_profile` case also asserts the \"partial profiles and reports have been retained\" diagnostic.\n- The runner test's `Err` case covers the same point at the helper level.\n\nThe remaining wiring, `Progress::conversion(attempts.len())` and `|_| progress.completed()`, is pass-through. The PTY end-to-end runs exercise it anyway.\n\nI found no unacknowledged gap.",
   "references": "a2d3079e1080f0864bb6a5436382d4b8462d013675276f1006e479144f70d5d3",
   "inputs": [
     {
@@ -68,13 +68,8 @@
     },
     {
       "file": "src/execution_coverage/runner.rs",
-      "item": "mod[tests]/fn[empty_conversion_starts_no_work_and_reports_no_completions]",
-      "hash": "c47b786180fefe6ddc0c5c2e6eb858802de65956169b230afba93e0879fee1db"
-    },
-    {
-      "file": "src/execution_coverage/progress.rs",
-      "item": "mod[tests]/fn[terminal_policy_and_hidden_progress_emit_no_display]",
-      "hash": "d6bcf779eb3337c36c8d1f8d8ff6804e0bce1b85aa4577150adc8f4d0e036a57"
+      "item": "fn[run]",
+      "hash": "6f7b49212d5756b245550399f3a6895dd432fa803419f541915029d484855462"
     }
   ],
   "format_version": 1,
@@ -218,29 +213,12 @@
               "scheme": "repo",
               "location": "src/execution_coverage/runner.rs"
             },
-            "selector": "mod[tests]/fn[empty_conversion_starts_no_work_and_reports_no_completions]"
+            "selector": "fn[run]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "14cf42cfe5529e468162e34cf2797c64b67a06ff9f4c8ee7b647ead18e89f80d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/execution_coverage/progress.rs"
-            },
-            "selector": "mod[tests]/fn[terminal_policy_and_hidden_progress_emit_no_display]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "251cd0c824e2c34859cc903b912af9c72bfffc44bd85a9c97aedfbc64443fe98"
+          "value": "df890c1209b62fd545ebe74125dedd202104f0c1a7339dfa543666cedb7e38e8"
         }
       ]
     }

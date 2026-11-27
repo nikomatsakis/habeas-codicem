@@ -100,13 +100,12 @@ Habeas MUST find the references of {cite}`requirements.references.roles`
 in project source files, where {cite}`requirements.references.reference_contexts`
 says they count, and MUST fail with the source file and line if a
 name has no matching `{req}` or `{example}` definition. In Markdown, escaped
-roles and roles in code examples MUST remain literal. Reference discovery MUST
-consider exactly the project sources that source-access policy permits under
-{cite}`requirements.authoring.source_tools`: in a Git worktree, files present in
-the Git index, including staged new files; outside Git, all project files; in
-both cases excluding the project-root `book` and `evidence` directories, `.git`
-and `target` directories at any depth, and paths disallowed by
-{cite}`requirements.configuration.evidence_paths`. Evidence snapshots and
+roles and roles in code examples MUST remain literal. Reference discovery MUST scan current files under the project directory, including
+new files as soon as they are created. It MUST respect `.gitignore` files in the
+project, including nested rules and exceptions, in projects with or without Git.
+It MUST skip the project-root `book` and `evidence` directories, `.git` and `target`
+at any depth, and paths disallowed by {cite}`requirements.configuration.evidence_paths`.
+Evidence snapshots and
 generated build output MUST therefore not be counted as source references.
 :::
 
@@ -385,8 +384,8 @@ spelling MUST be documented.
 :::{req} outlines
 Habeas MUST parse Rust, Python, TypeScript, CSS, Markdown, TOML, and YAML
 sources with pinned tree-sitter grammars, selected by file extension compared
-case-insensitively. A source with any syntax error MUST fail to parse, reporting
-the line of its first error. Every
+case-insensitively. When validating outline evidence inputs, Habeas MUST report
+the line of the first syntax error in a recovered outline. Every
 other text file MUST use a plain-text profile in which each line that is not
 blank is an anonymous outline node of kind `line`. Each supported language MUST
 have an outline profile that maps grammar node kinds to short outline kind names
@@ -447,7 +446,11 @@ no such node, the run MUST belong to the container, which is the root node at to
 level. A profile MAY bind a comment kind to its container
 instead: such a run MUST belong to the smallest node containing it. The Rust
 profile MUST bind inner doc comments (`//!`, `/*!`) to their container, so a
-file-level inner doc comment belongs to the root node. A reference in a comment MUST count for the node its run belongs to under
+file-level inner doc comment belongs to the root node. Habeas MUST retain the
+one-based line and UTF-8 byte column of each inline role’s opening brace or
+fenced reference’s first opening colon. When siblings share a line, the
+reference belongs to the item owning the comment at that position. A reference
+in a comment MUST count for the node its run belongs to under
 {cite}`requirements.references.coverage.tests` and
 {cite}`requirements.references.authoring_inputs`.
 :::

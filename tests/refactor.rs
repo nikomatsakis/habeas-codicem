@@ -190,6 +190,7 @@ fn a_moved_function_keeps_its_evidence_current() {
         stale.iter().any(|error| error.contains("fn[load]")),
         "{stale:#?}"
     );
+    let mut expected = snapshot(root);
     let unaffected = fs::read(root.join("evidence/rules.check.json")).unwrap();
 
     let output = refactor(
@@ -225,6 +226,10 @@ fn a_moved_function_keeps_its_evidence_current() {
         record["rationale"],
         "`src/config/load.rs#fn[load]` loads it, as `rules.load` asks; `verify` tests it in `src/config.rs`."
     );
+    let mut actual = snapshot(root);
+    actual.remove("evidence/rules.load.json");
+    expected.remove("evidence/rules.load.json");
+    assert_eq!(actual, expected);
     // Running it again changes nothing.
     let again = refactor(
         root,
@@ -552,13 +557,23 @@ fn versioned_records_preserve_sdk_dependencies_across_verified_moves() {
 // {test}`requirements.refactor.rationale.paths`
 // {test}`requirements.refactor.equivalence`
 // {test}`requirements.refactor.mappings`
+// {test}`requirements.refactor.command`
 #[test]
 fn a_moved_file_rewrites_anchors_and_paths() {
     let temp = project();
     let root = temp.path();
     author(root);
     fs::rename(root.join("data.txt"), root.join("info.txt")).unwrap();
+    let mut expected = snapshot(root);
+    let updated = String::from_utf8(expected["md/rules.md"].clone())
+        .unwrap()
+        .replace(":impl: data.txt", ":impl: info.txt");
+    expected.insert("md/rules.md".into(), updated.into_bytes());
     let output = refactor(root, &["--map", "data.txt=info.txt"]);
+    let mut actual = snapshot(root);
+    actual.remove("evidence/rules.check.json");
+    expected.remove("evidence/rules.check.json");
+    assert_eq!(actual, expected);
     assert!(output.status.success(), "{output:?}");
     let book = fs::read_to_string(root.join("md/rules.md")).unwrap();
     assert!(book.contains(":impl: info.txt\n"), "{book}");
@@ -928,11 +943,24 @@ fn a_move_onto_a_record_whose_own_move_is_refused_is_refused_too() {
 
 // {test}`requirements.refactor.subject_text`
 // {test}`requirements.refactor.whole_record`
+// {test}`requirements.refactor.definition_inputs`
 #[test]
 fn a_requirement_edited_while_moving_keeps_its_old_record() {
     let temp = project();
     let root = temp.path();
     author(root);
+    let dependent = root.join("evidence/rules.check.json");
+    write_evidence(
+        root,
+        "rules.check",
+        "Relies on rules.load.",
+        vec![requirements_input(
+            "rules.load",
+            &["rules.load"],
+            &LOAD_TEXT,
+        )],
+    );
+    let dependent_before = fs::read(&dependent).unwrap();
     move_load_requirement(root, "Configuration MUST load quickly.");
     let before = fs::read(root.join("evidence/rules.load.json")).unwrap();
     let output = refactor(root, &["--map", "rules.load=core.load"]);
@@ -947,6 +975,13 @@ fn a_requirement_edited_while_moving_keeps_its_old_record() {
         before
     );
     assert!(!root.join("evidence/core.load.json").exists());
+    assert!(
+        report.contains(
+            "evidence/rules.check.json: inputs[0]: core.load no longer selects what it recorded"
+        ),
+        "{report}"
+    );
+    assert_eq!(fs::read(&dependent).unwrap(), dependent_before);
 }
 
 // {test}`requirements.refactor.reference_digest`
@@ -1177,6 +1212,33 @@ fn a_moved_chapter_rewrites_glob_selections_and_their_matches() {
         json!(["core.check", "core.load"])
     );
     assert_eq!(errors(root), Vec::<String>::new());
+}
+
+// {test}`requirements.refactor.definition_inputs`
+#[test]
+fn a_moved_chapter_with_a_new_glob_match_leaves_the_record_stale() {
+    let temp = project();
+    let root = temp.path();
+    author(root);
+    let original = fs::read(root.join("evidence/rules.check.json")).unwrap();
+    let chapter = fs::read_to_string(root.join("md/rules.md")).unwrap();
+    fs::rename(root.join("md/rules.md"), root.join("md/core.md")).unwrap();
+    fs::write(
+        root.join("md/core.md"),
+        format!("{chapter}\n:::{{req}} added\nAn additional requirement.\n:::\n"),
+    )
+    .unwrap();
+    let output = refactor(root, &["--map", "rules=core"]);
+    assert!(output.status.success(), "{output:?}");
+    let report = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        report.contains("no longer selects what it recorded"),
+        "{report}"
+    );
+    assert_eq!(
+        fs::read(root.join("evidence/rules.check.json")).unwrap(),
+        original
+    );
 }
 
 // {test}`requirements.refactor.record_fields`

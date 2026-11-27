@@ -57,6 +57,14 @@ This source contains `table[auth]/pair[expires]`:
 expires = true
 ```
 
+## Inspect attachments
+
+:::{req} attachments
+TOML reports only `Comment` attachments. Each `#` comment is one attachment,
+including a comment following a value on the same line. A `#` inside a quoted
+string belongs to the string.
+:::
+
 ## Fingerprint the contents
 
 :::{req} fingerprints

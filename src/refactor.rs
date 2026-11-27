@@ -116,7 +116,7 @@ impl Mappings {
                 *value = mapped;
             }
         };
-        let source = |value: &mut trust_but_verify::resource::OutlineId| {
+        let source = |value: &mut crate::sdk::OutlineId| {
             if value.resource.scheme == "repo" {
                 let mapped = if back {
                     self.node_back(&value.resource.location, &value.selector)
@@ -133,7 +133,7 @@ impl Mappings {
         match &mut mapped {
             HabeasNode::Requirement(id) | HabeasNode::ReferenceSet(id) => name(&mut id.0),
             HabeasNode::RequirementSelection(value) | HabeasNode::Definition(value) => name(value),
-            HabeasNode::Source(value) | HabeasNode::CitationReview(value) => source(value),
+            HabeasNode::Source(value) => source(value),
             HabeasNode::SiteReview {
                 requirement,
                 source: value,
@@ -316,9 +316,9 @@ fn rewrite_source(mappings: &Mappings, path: &Path, content: &str) -> (String, u
     let mut edits = Vec::new();
     // Only roles that count as references are rewritten; a role in a string
     // literal is literal text.
-    let contexts = crate::evidence::reference_contexts(path, content);
+    let contexts = crate::evidence::ReferenceContexts::parse(&Default::default(), path, content);
     for role in crate::reference_roles(content, markdown) {
-        if !crate::evidence::in_reference_context(contexts.as_deref(), role.start) {
+        if !contexts.allows(role.start) {
             continue;
         }
         if !matches!(
@@ -339,7 +339,7 @@ fn rewrite_source(mappings: &Mappings, path: &Path, content: &str) -> (String, u
     let line_starts = std::iter::once(0)
         .chain(content.match_indices('\n').map(|(index, _)| index + 1))
         .collect::<Vec<_>>();
-    for fence in crate::fenced::source_fences(path, content) {
+    for fence in contexts.fences(content) {
         let Some(new) = mappings.name(&fence.name) else {
             continue;
         };
@@ -442,6 +442,7 @@ impl States {
         let mut failures = Vec::new();
         let files = crate::evidence::discovered_files(root, &mut failures);
         let references = crate::evidence::collect_references_with_progress(
+            &Default::default(),
             root,
             &files,
             &mut failures,
@@ -846,30 +847,45 @@ fn rewrite_sdk_dependencies(
             dependency
         {
             let node = HabeasNode::Requirement(id.clone());
-            let before = HabeasDomain {
-                root: &states.root,
-                definitions: &states.definitions_back,
-                outlines: &states.outlines_back,
-            };
+            let before = HabeasDomain::new(
+                &states.root,
+                &states.definitions_back,
+                &states.outlines_back,
+            );
             let targets = before
-                .outgoing_edges(&node, label.clone())
+                .outgoing_edges(&before.cache().intern_node(node.clone()), label.clone())
                 .map_err(|error| error.to_string())?
                 .iter()
-                .map(|target| states.mappings.sdk_node(target, true))
+                .map(|target| {
+                    states
+                        .mappings
+                        .sdk_node(&before.cache().node_data(*target).unwrap(), true)
+                })
                 .collect::<Vec<_>>();
-            if trust_but_verify::graph::edge_fingerprint(&before, &targets) != *fingerprint {
+            if trust_but_verify::graph::edge_fingerprint(
+                &before,
+                &targets
+                    .iter()
+                    .map(|t| before.cache().intern_node(t.clone()))
+                    .collect::<Vec<_>>(),
+            ) != *fingerprint
+            {
                 return Err(format!("SDK edge observation for {node:?} changed"));
             }
             let mapped_id =
                 RequirementId(states.mappings.name(&id.0).unwrap_or_else(|| id.0.clone()));
-            let after = HabeasDomain {
-                root: &states.root,
-                definitions: &states.definitions_post,
-                outlines: &states.outlines_post,
-            };
+            let after = HabeasDomain::new(
+                &states.root,
+                &states.definitions_post,
+                &states.outlines_post,
+            );
             let targets = targets
                 .iter()
-                .map(|target| states.mappings.sdk_node(target, false))
+                .map(|target| {
+                    after
+                        .cache()
+                        .intern_node(states.mappings.sdk_node(target, false))
+                })
                 .collect::<Vec<_>>();
             *fingerprint = trust_but_verify::graph::edge_fingerprint(&after, &targets);
             *id = mapped_id;

@@ -2,26 +2,21 @@
 //!
 //! The filename-based constructors select these languages by extension.
 
-#[cfg(feature = "default-languages")]
 pub(crate) mod css;
-#[cfg(feature = "default-languages")]
 pub(crate) mod markdown;
-#[cfg(feature = "default-languages")]
 pub(crate) mod python;
-#[cfg(all(feature = "default-languages", feature = "habeas-integration"))]
-#[doc(hidden)]
-pub mod rust;
-#[cfg(all(feature = "default-languages", not(feature = "habeas-integration")))]
 pub(crate) mod rust;
-#[cfg(feature = "default-languages")]
 pub(crate) mod toml;
-#[cfg(feature = "default-languages")]
 pub(crate) mod typescript;
-#[cfg(feature = "default-languages")]
 pub(crate) mod yaml;
 
+/// Name of the bundled outline language selected by the filename alone.
+// {impl}`requirements.sdk.outlines.name_for_path`
+pub fn name_for_path(path: &std::path::Path) -> &'static str {
+    crate::outline_engine::profile::profile_for_path(path).name
+}
+
 // {cite}`habeas:util`
-#[cfg(feature = "default-languages")]
 pub(crate) fn registry() -> crate::outline_engine::language::Registry {
     crate::outline_engine::language::Registry::new([
         &rust::Provider as &dyn crate::outline_engine::language::LanguageProvider,
@@ -36,7 +31,6 @@ pub(crate) fn registry() -> crate::outline_engine::language::Registry {
 }
 
 // {cite}`habeas:util`
-#[cfg(feature = "default-languages")]
 pub(crate) fn profiles() -> [&'static crate::outline_engine::language::Profile; 8] {
     [
         &rust::PROFILE,
@@ -66,8 +60,7 @@ macro_rules! language {
             }
 
             fn outline(&self, source: &str) -> Result<super::Outline, super::OutlineError> {
-                super::parse_with(&$profile, source)
-                    .map(|outline| super::Outline::from_legacy(&outline))
+                super::parse_with(&$profile, source).map(super::Outline::from_legacy)
             }
 
             fn fingerprint_scheme(&self) -> &str {
@@ -76,15 +69,20 @@ macro_rules! language {
 
             fn search_structure(
                 &self,
-                _source: &str,
-                _rule: &serde_json::Map<String, serde_json::Value>,
-            ) -> Result<Vec<std::ops::Range<usize>>, super::OutlineError> {
-                #[cfg(feature = "default-languages")]
+                source: &str,
+                rule: &serde_json::Map<String, serde_json::Value>,
+            ) -> Result<Vec<super::Span>, super::OutlineError> {
                 if $profile.language.is_some() {
-                    super::parse_with(&$profile, _source)?;
-                    let rule = crate::structural::StructuralRule::compile($profile.name, _rule)
+                    if let Some(error) = super::parse_with(&$profile, source)?.diagnostic {
+                        return Err(error);
+                    }
+                    let compiled = crate::structural::StructuralRule::compile($profile.name, rule)
                         .map_err(|message| super::OutlineError { line: 1, message })?;
-                    return Ok(rule.matches(_source));
+                    return Ok(compiled
+                        .matches(source)
+                        .into_iter()
+                        .map(super::Span::from_range)
+                        .collect());
                 }
                 Err(super::unsupported_search(self.name()))
             }
@@ -94,27 +92,19 @@ macro_rules! language {
 
 // {impl}`requirements.sdk.sources.plain-text.language`
 language!(PlainText, super::plain::PROFILE, "plain-text-structural-v1");
-#[cfg(feature = "default-languages")]
 // {impl}`requirements.sdk.sources.rust.language`
 language!(Rust, rust::PROFILE, "rust-structural-v1");
-#[cfg(feature = "default-languages")]
 // {impl}`requirements.sdk.sources.python.language`
 language!(Python, python::PROFILE, "python-structural-v1");
-#[cfg(feature = "default-languages")]
 // {impl}`requirements.sdk.sources.typescript.language`
 language!(TypeScript, typescript::PROFILE, "typescript-structural-v1");
-#[cfg(feature = "default-languages")]
 // {impl}`requirements.sdk.sources.typescript.language`
 language!(Tsx, typescript::TSX_PROFILE, "tsx-structural-v1");
-#[cfg(feature = "default-languages")]
 // {impl}`requirements.sdk.sources.markdown.language`
 language!(Markdown, markdown::PROFILE, "markdown-structural-v1");
-#[cfg(feature = "default-languages")]
 // {impl}`requirements.sdk.sources.css.language`
 language!(Css, css::PROFILE, "css-structural-v1");
-#[cfg(feature = "default-languages")]
 // {impl}`requirements.sdk.sources.toml.language`
 language!(Toml, toml::PROFILE, "toml-structural-v1");
-#[cfg(feature = "default-languages")]
 // {impl}`requirements.sdk.sources.yaml.language`
 language!(Yaml, yaml::PROFILE, "yaml-structural-v1");

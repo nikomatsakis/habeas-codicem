@@ -109,8 +109,11 @@ no_match:
 ````
 
 Each site-query match makes a site: the innermost outline node containing the
-match, such as the enclosing function. A violation match is reported to the site
-that contains it.
+match, such as the enclosing function. Matches from several queries on the same
+node produce one site. A violation belongs to the innermost containing site of
+its `within` query. Queries search the original text of files included in
+reference discovery. Review changes to matches when upgrading `ast-grep-config`.
+The rendered book shows a badge with each query's kind and name above its code block.
 
 ## Do
 

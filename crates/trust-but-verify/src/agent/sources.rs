@@ -2,6 +2,7 @@
 
 use super::{Pages, ToolDelivery, ToolFactory, ToolSession};
 use crate::domain::Domain;
+use crate::domain::NodeId;
 use crate::graph::Dependency;
 use crate::resource::OutlineId;
 use crate::resource::ResourceId;
@@ -29,14 +30,14 @@ where
     D: Domain,
     P: SourceProvider,
     P::Error: std::fmt::Display,
-    F: Fn(&OutlineId, &ParsedSource) -> Result<Option<Dependency<D::NodeId, D::EdgeLabel>>, String>
+    F: Fn(&OutlineId, &ParsedSource) -> Result<Option<Dependency<NodeId<D>, D::EdgeLabel>>, String>
         + Send
         + Sync,
 {
     // {cite}`habeas:util`
     fn session<'a>(&'a self) -> Box<dyn ToolSession<D> + 'a>
     where
-        D::NodeId: 'a,
+        NodeId<D>: 'a,
         D::EdgeLabel: 'a,
     {
         Box::new(SourceSession { tools: self })
@@ -53,7 +54,7 @@ where
     D: Domain,
     P: SourceProvider,
     P::Error: std::fmt::Display,
-    F: Fn(&OutlineId, &ParsedSource) -> Result<Option<Dependency<D::NodeId, D::EdgeLabel>>, String>
+    F: Fn(&OutlineId, &ParsedSource) -> Result<Option<Dependency<NodeId<D>, D::EdgeLabel>>, String>
         + Send
         + Sync,
 {
@@ -90,8 +91,8 @@ where
         &'a mut self,
         name: &'a str,
         arguments: &'a Value,
-        pages: &'a mut Pages<D::NodeId, D::EdgeLabel>,
-    ) -> BoxFuture<'a, io::Result<ToolDelivery<D::NodeId, D::EdgeLabel>>> {
+        pages: &'a mut Pages<NodeId<D>, D::EdgeLabel>,
+    ) -> BoxFuture<'a, io::Result<ToolDelivery<NodeId<D>, D::EdgeLabel>>> {
         Box::pin(async move {
             let invalid = |error: String| io::Error::other(error);
             let scope = SourceScope::under(

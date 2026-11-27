@@ -355,7 +355,8 @@ fn selections_match_requirements_and_examples_but_never_named_definitions() {
     fs::write(
         root.join("md/rules.md"),
         ":::{req} ready\nUse {term}`glossary.a`.\n:::\n\n\
-         :::{example} case\nA ready case. {cite}`rules.ready`\n:::\n\n\
+         :::{example} case\nA ready case. {cite}`rules.ready` and {term}`rules.example_word`.\n:::\n\n\
+         :::{definition} example_word\n:phrase: example word\nOnly the selected example refers to this.\n:::\n\n\
          :::{definition} used\n:phrase: used\n\nNot referenced by the selection.\n:::\n",
     )
     .unwrap();
@@ -363,6 +364,7 @@ fn selections_match_requirements_and_examples_but_never_named_definitions() {
     // whose name it also matches, and that definition is not a dependency.
     let selected = vec![
         requirements(root, "rules.*", &["rules.case", "rules.ready"]),
+        definition(root, "rules.example_word"),
         definition(root, "glossary.a"),
         definition(root, "glossary.b"),
     ];
@@ -376,6 +378,16 @@ fn selections_match_requirements_and_examples_but_never_named_definitions() {
         "{errors:?}"
     );
 
+    let mut without_example_term = selected.clone();
+    without_example_term.retain(|i| i["definition"] != "rules.example_word");
+    approve(&record(root, "rules.ready", without_example_term));
+    assert!(
+        validate_repository(root)
+            .unwrap()
+            .errors
+            .iter()
+            .any(|e| e.contains("rules.example_word") && e.contains("expected exactly one"))
+    );
     // A named definition's exact name selects nothing.
     let exact = requirements(root, "rules.used", &["rules.used"]);
     record(

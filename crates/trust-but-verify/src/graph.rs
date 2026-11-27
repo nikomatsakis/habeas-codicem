@@ -2,12 +2,11 @@
 
 use crate::domain::Domain;
 use crate::domain::NodeContents;
+use crate::domain::NodeId;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::future::Future;
 
-#[path = "graph/runtime.rs"]
-pub mod validator;
 use crate::request::ValidationContext;
 
 // {impl}`requirements.sdk.graph.fingerprint`
@@ -189,12 +188,12 @@ impl<N, L> Record<N, L> {
     // {impl}`requirements.sdk.graph.evidence.checking_records`
     pub fn is_current<D>(&self, graph: &D, version: &CriterionVersion) -> Result<bool, D::Error>
     where
-        D: Domain<NodeId = N, EdgeLabel = L>,
+        D: Domain<NodeData = N, EdgeLabel = L>,
     {
         if !version.is_compatible_with(self.version.as_ref()) {
             return Ok(false);
         }
-        dependencies_are_current(graph, &self.dependencies)
+        dependencies_are_current(graph, &restore_dependencies(graph, &self.dependencies))
     }
 }
 
@@ -211,7 +210,7 @@ impl<N, L> Record<N, L> {
 ///
 /// ```compile_fail,E0616
 /// use trust_but_verify::{domain::Domain, graph::{CriterionPath, Fingerprinted}};
-/// fn change_source<D: Domain>(answer: &mut Fingerprinted<D, bool>, source: D::NodeId) {
+/// fn change_source<D: Domain>(answer: &mut Fingerprinted<D, bool>, source: trust_but_verify::domain::NodeId<D>) {
 ///     answer.source = source;
 /// }
 /// ```
@@ -239,17 +238,17 @@ impl<N, L> Record<N, L> {
 // {test}`requirements.sdk.graph.evidence.inputs`
 // {impl}`requirements.sdk.graph.evidence.inputs`
 pub struct Fingerprinted<D: Domain, O> {
-    source: D::NodeId,
+    source: NodeId<D>,
     criterion: CriterionPath,
     version: Option<CriterionVersion>,
-    dependencies: Vec<Dependency<D::NodeId, D::EdgeLabel>>,
+    dependencies: Vec<Dependency<NodeId<D>, D::EdgeLabel>>,
     output: O,
 }
 
 // {impl}`requirements.sdk.graph.evidence.inputs`
 impl<D: Domain, O> Fingerprinted<D, O> {
     /// The source node this answer concerns.
-    pub fn source_node_id(&self) -> &D::NodeId {
+    pub fn source_node_id(&self) -> &NodeId<D> {
         &self.source
     }
 
@@ -264,7 +263,7 @@ impl<D: Domain, O> Fingerprinted<D, O> {
     }
 
     /// Recorded node-content and successor-set observations.
-    pub fn dependencies(&self) -> &[Dependency<D::NodeId, D::EdgeLabel>] {
+    pub fn dependencies(&self) -> &[Dependency<NodeId<D>, D::EdgeLabel>] {
         &self.dependencies
     }
 
@@ -279,43 +278,13 @@ impl<D: Domain, O> Fingerprinted<D, O> {
     }
 }
 
-// {cite}`habeas:util`
-/// An ordered, deduplicated log for adapters retaining their own wire inputs.
-#[derive(Clone, Debug)]
-#[doc(hidden)]
-#[cfg(feature = "habeas-integration")]
-pub struct Trace<T> {
-    observations: Vec<T>,
-}
-#[cfg(feature = "habeas-integration")]
-impl<T> Default for Trace<T> {
-    // {cite}`habeas:util`
-    fn default() -> Self {
-        Self {
-            observations: Vec::new(),
-        }
-    }
-}
-#[cfg(feature = "habeas-integration")]
-impl<T: PartialEq> Trace<T> {
-    // {cite}`habeas:util`
-    pub fn observe(&mut self, value: T) {
-        if !self.observations.contains(&value) {
-            self.observations.push(value);
-        }
-    }
-    // {cite}`habeas:util`
-    pub fn observations(&self) -> &[T] {
-        &self.observations
-    }
-}
-
 // {impl}`requirements.sdk.graph.criteria.execute`
 #[derive(Debug)]
 pub enum ValidationError<E> {
     Graph(E),
     NoAgentConfigured,
     Agent(String),
+    Provider(std::io::Error),
     Output(serde_json::Error),
 }
 
@@ -325,6 +294,7 @@ impl<E: std::fmt::Display> std::fmt::Display for ValidationError<E> {
         match self {
             Self::Graph(error) => error.fmt(f),
             Self::NoAgentConfigured => f.write_str("no agent is configured"),
+            Self::Provider(error) => error.fmt(f),
             Self::Agent(error) => write!(f, "agent: {error}"),
             Self::Output(error) => write!(f, "output: {error}"),
         }
@@ -335,6 +305,7 @@ impl<E: std::error::Error + 'static> std::error::Error for ValidationError<E> {
     // {cite}`habeas:util`
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Provider(error) => Some(error),
             Self::Graph(error) => Some(error),
             Self::Output(error) => Some(error),
             Self::Agent(_) | Self::NoAgentConfigured => None,
@@ -350,7 +321,7 @@ pub trait Criterion<D: Domain>: Send + Sized {
 
     /// The node this question is about.
     // {impl}`requirements.sdk.graph.criteria.criterion_trait.source_node_id`
-    fn source_node_id(&self) -> D::NodeId;
+    fn source_node_id(&self) -> NodeId<D>;
     /// Identify this question within the source node's saved evidence.
     // {impl}`requirements.sdk.graph.criteria.criterion_path`
     fn criterion_path(&self) -> CriterionPath;
@@ -367,9 +338,290 @@ pub trait Criterion<D: Domain>: Send + Sized {
     ) -> impl Future<Output = Result<Self::Ok, ValidationError<D::Error>>> + Send;
 }
 
+/// Provider, input, and tool usage accumulated during validation.
+// {impl}`requirements.sdk.graph.running-criteria.UsageStats`
+#[derive(Clone, Debug, Default, Serialize)]
+#[non_exhaustive]
+pub struct UsageStats {
+    pub attempts: u64,
+    pub retries: u64,
+    pub failed_attempts: u64,
+    pub prepared_inputs: u64,
+    pub delivered_inputs: u64,
+    pub tools: std::collections::BTreeMap<String, ToolUsage>,
+    pub input_tokens: TokenCount,
+    pub output_tokens: TokenCount,
+    pub cached_input_tokens: TokenCount,
+    pub cache_creation_input_tokens: TokenCount,
+    pub reasoning_tokens: TokenCount,
+}
+
+impl UsageStats {
+    pub(crate) fn attempt(
+        retry: bool,
+        failed: bool,
+        usage: Option<&rig_core::completion::Usage>,
+    ) -> Self {
+        Self {
+            attempts: 1,
+            prepared_inputs: 0,
+            delivered_inputs: 0,
+            tools: Default::default(),
+            retries: u64::from(retry),
+            failed_attempts: u64::from(failed),
+            input_tokens: TokenCount::measurement(usage.and_then(|u| u.input_tokens)),
+            output_tokens: TokenCount::measurement(usage.and_then(|u| u.output_tokens)),
+            cached_input_tokens: TokenCount::measurement(usage.and_then(|u| u.cached_input_tokens)),
+            cache_creation_input_tokens: TokenCount::measurement(
+                usage.and_then(|u| u.cache_creation_input_tokens),
+            ),
+            reasoning_tokens: TokenCount::measurement(usage.and_then(|u| u.reasoning_tokens)),
+        }
+    }
+
+    pub(crate) fn accumulate(&mut self, other: &Self) {
+        for (name, delta) in &other.tools {
+            let tool = self.tools.entry(name.clone()).or_default();
+            tool.calls += delta.calls;
+            tool.result_bytes += delta.result_bytes;
+        }
+        self.attempts += other.attempts;
+        self.retries += other.retries;
+        self.prepared_inputs += other.prepared_inputs;
+        self.delivered_inputs += other.delivered_inputs;
+        self.failed_attempts += other.failed_attempts;
+        self.input_tokens.accumulate(other.input_tokens);
+        self.output_tokens.accumulate(other.output_tokens);
+        self.cached_input_tokens
+            .accumulate(other.cached_input_tokens);
+        self.cache_creation_input_tokens
+            .accumulate(other.cache_creation_input_tokens);
+        self.reasoning_tokens.accumulate(other.reasoning_tokens);
+    }
+}
+
+/// Invocations and UTF-8 result bytes accumulated for one tool.
+// {impl}`requirements.sdk.graph.running-criteria.ToolUsage`
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+#[non_exhaustive]
+pub struct ToolUsage {
+    pub calls: u64,
+    pub result_bytes: u64,
+}
+
+/// Measured tokens and the number of attempts without a measurement for this category.
+// {impl}`requirements.sdk.graph.running-criteria.TokenCount`
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+#[non_exhaustive]
+pub struct TokenCount {
+    pub reported: u64,
+    pub missing_attempts: u64,
+}
+
+impl TokenCount {
+    fn measurement(value: Option<u64>) -> Self {
+        Self {
+            reported: value.unwrap_or_default(),
+            missing_attempts: u64::from(value.is_none()),
+        }
+    }
+
+    fn accumulate(&mut self, other: Self) {
+        self.reported += other.reported;
+        self.missing_attempts += other.missing_attempts;
+    }
+}
+
+/// Executes criteria on a borrowed domain and counts the provider usage of this operation.
+// {impl}`requirements.sdk.graph.running-criteria.Validator`
+pub struct Validator<'d, D: Domain> {
+    domain: &'d D,
+    usage: UsageStats,
+}
+
+impl<'d, D: Domain> Validator<'d, D> {
+    // {impl}`requirements.sdk.graph.running-criteria.Validator.new`
+    pub fn new(domain: &'d D) -> Self {
+        Self {
+            domain,
+            usage: UsageStats::default(),
+        }
+    }
+
+    // {impl}`requirements.sdk.graph.running-criteria.Validator.usage`
+    pub fn usage(&self) -> &UsageStats {
+        &self.usage
+    }
+    // {impl}`requirements.sdk.graph.evidence.refresh_evidence`
+    /// Reuse compatible, current evidence, or evaluate and save a new answer.
+    /// Errors from loading, decoding, checking, execution, or saving propagate.
+    // {impl}`requirements.sdk.graph.running-criteria.refresh_evidence`
+    pub fn refresh_evidence<V: Criterion<D>>(
+        &mut self,
+        criterion: V,
+    ) -> impl Future<Output = Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>>> + Send
+    {
+        async move {
+            if let Some(saved) = self.load_evidence(&criterion).await? {
+                if criterion.version().is_compatible_with(saved.version())
+                    && self.check_inputs(&saved).map_err(ValidationError::Graph)?
+                {
+                    return Ok(saved);
+                }
+            }
+
+            let inputs = self.verify(criterion).await?;
+            self.store_evidence(&inputs).await?;
+            Ok(inputs)
+        }
+    }
+
+    // {impl}`requirements.sdk.graph.evidence.check_node`
+    // {impl}`requirements.sdk.graph.evidence.procedure_identity`
+    // {impl}`requirements.sdk.graph.evidence.record.output`
+    // {impl}`requirements.sdk.graph.evidence.inputs`
+    /// Load this criterion's evidence and decode its answer.
+    // {impl}`requirements.sdk.graph.running-criteria.load_evidence`
+    pub fn load_evidence<V: Criterion<D>>(
+        &self,
+        criterion: &V,
+    ) -> impl Future<Output = Result<Option<Fingerprinted<D, V::Ok>>, ValidationError<D::Error>>> + Send
+    {
+        // Read the descriptor before constructing the future: V needs no Sync.
+        let node = criterion.source_node_id();
+        let criterion_path = criterion.criterion_path();
+        async move {
+            let Some(record) = self
+                .domain
+                .load_evidence(&node, &criterion_path)
+                .await
+                .map_err(ValidationError::Graph)?
+            else {
+                return Ok(None);
+            };
+            let output = serde_json::from_value(record.output).map_err(ValidationError::Output)?;
+            Ok(Some(Fingerprinted {
+                source: node,
+                criterion: criterion_path,
+                version: record.version,
+                dependencies: restore_dependencies(self.domain, &record.dependencies),
+                output,
+            }))
+        }
+    }
+
+    // {impl}`requirements.sdk.graph.evidence.checking_records`
+    /// Compare recorded input fingerprints with the current domain state.
+    // {impl}`requirements.sdk.graph.running-criteria.check_inputs`
+    pub fn check_inputs<O>(&self, inputs: &Fingerprinted<D, O>) -> Result<bool, D::Error> {
+        dependencies_are_current(self.domain, &inputs.dependencies)
+    }
+
+    // {impl}`requirements.sdk.graph.evidence.procedure_identity`
+    // {impl}`requirements.sdk.graph.evidence.inputs`
+    /// Execute the criterion and return its completed answer and observed inputs.
+    // {impl}`requirements.sdk.graph.running-criteria.verify`
+    // {impl}`requirements.sdk.graph.running-criteria.verify.concurrent`
+    // {impl}`requirements.sdk.graph.validation-context.shared_context`
+    pub fn verify<V: Criterion<D>>(
+        &mut self,
+        criterion: V,
+    ) -> impl Future<Output = Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>>> + Send
+    {
+        self.execute(criterion, None)
+    }
+
+    // {impl}`requirements.sdk.graph.running-criteria.validate_node`
+    // {impl}`requirements.sdk.graph.running-criteria.validate_node.errors`
+    // {impl}`requirements.sdk.graph.running-criteria.Validator.usage`
+    pub(crate) async fn execute<V: Criterion<D>>(
+        &mut self,
+        criterion: V,
+        agent: Option<&dyn crate::request::Agent<D>>,
+    ) -> Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>> {
+        let node = criterion.source_node_id();
+        let mut ctx = ValidationContext::configured(self.domain, node, agent);
+        ctx.usage = Some(std::sync::Mutex::new(&mut self.usage));
+        let criterion_path = criterion.criterion_path();
+        let version = criterion.version();
+
+        let answer = criterion.execute(&mut ctx).await?;
+        Ok(Fingerprinted {
+            source: node,
+            criterion: criterion_path,
+            version: Some(version),
+            dependencies: ctx.dependencies(),
+            output: answer,
+        })
+    }
+
+    // {impl}`requirements.sdk.graph.evidence.store_evidence`
+    // {impl}`requirements.sdk.graph.evidence.record.output`
+    /// Encode the answer and atomically replace its source/criterion record.
+    // {impl}`requirements.sdk.graph.running-criteria.store_evidence`
+    pub fn store_evidence<O: Serialize>(
+        &self,
+        inputs: &Fingerprinted<D, O>,
+    ) -> impl Future<Output = Result<(), ValidationError<D::Error>>> + Send {
+        // Encode before constructing the future: O needs no Sync or Clone.
+        let encoded = serde_json::to_value(&inputs.output).map(|output| Record {
+            version: inputs.version.clone(),
+            dependencies: persist_dependencies(self.domain, &inputs.dependencies),
+            output,
+        });
+        let node = inputs.source;
+        let criterion_path = inputs.criterion.clone();
+        async move {
+            let record = encoded.map_err(ValidationError::Output)?;
+            self.domain
+                .store_evidence(&node, &criterion_path, &record)
+                .await
+                .map_err(ValidationError::Graph)
+        }
+    }
+}
+
+// {impl}`requirements.sdk.graph.evidence.persisted_dependencies`
+fn map_dependencies<N, M, L: Clone>(
+    dependencies: &[Dependency<N, L>],
+    mut map: impl FnMut(&N) -> M,
+) -> Vec<Dependency<M, L>> {
+    dependencies
+        .iter()
+        .map(|dependency| match dependency {
+            Dependency::Node(node, fingerprint) => Dependency::Node(map(node), fingerprint.clone()),
+            Dependency::OutgoingEdges(node, label, fingerprint) => {
+                Dependency::OutgoingEdges(map(node), label.clone(), fingerprint.clone())
+            }
+        })
+        .collect()
+}
+
+fn restore_dependencies<D: Domain>(
+    domain: &D,
+    dependencies: &[Dependency<D::NodeData, D::EdgeLabel>],
+) -> Vec<Dependency<NodeId<D>, D::EdgeLabel>> {
+    map_dependencies(dependencies, |data| {
+        domain.cache().intern_node(data.clone())
+    })
+}
+
+pub(crate) fn persist_dependencies<D: Domain>(
+    domain: &D,
+    dependencies: &[Dependency<NodeId<D>, D::EdgeLabel>],
+) -> Vec<Dependency<D::NodeData, D::EdgeLabel>> {
+    map_dependencies(dependencies, |id| {
+        (*domain
+            .cache()
+            .node_data(*id)
+            .expect("dependency belongs to this cache"))
+        .clone()
+    })
+}
+
 fn dependencies_are_current<D: Domain>(
     graph: &D,
-    dependencies: &[Dependency<D::NodeId, D::EdgeLabel>],
+    dependencies: &[Dependency<NodeId<D>, D::EdgeLabel>],
 ) -> Result<bool, D::Error> {
     for dependency in dependencies {
         let (current, previous) = match dependency {
@@ -393,7 +645,7 @@ fn dependencies_are_current<D: Domain>(
 /// JSON encodes segment boundaries and Unicode unambiguously; ordering and
 /// duplicate edges do not affect membership. Empty selections have a digest too.
 // {impl}`requirements.sdk.graph.validation-context.snapshot`
-pub fn edge_fingerprint<D: Domain>(graph: &D, targets: &[D::NodeId]) -> Fingerprint {
+pub fn edge_fingerprint<D: Domain>(graph: &D, targets: &[NodeId<D>]) -> Fingerprint {
     let mut paths = targets
         .iter()
         .map(|node| graph.node_path(node).segments)
@@ -409,3 +661,6 @@ pub fn edge_fingerprint<D: Domain>(graph: &D, targets: &[D::NodeId]) -> Fingerpr
             .collect(),
     }
 }
+
+#[cfg(test)]
+mod validation_tests;

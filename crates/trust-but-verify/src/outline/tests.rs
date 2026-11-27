@@ -173,12 +173,14 @@ fn every_profile_mapping_is_documented() {
 
 // {test}`requirements.references.outlines`
 #[test]
-fn grammar_dependencies_are_pinned_to_exact_versions() {
+// {test}`requirements.authoring.redaction`
+fn grammar_and_redaction_dependencies_are_pinned_to_exact_versions() {
     let version = regex::Regex::new(r"^=\d+\.\d+\.\d+$").unwrap();
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     let manifest: toml::Table = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     let dependencies = manifest["dependencies"].as_table().unwrap();
     for name in [
+        "secretshape",
         "tree-sitter",
         "tree-sitter-css",
         "tree-sitter-md",
@@ -368,6 +370,7 @@ fn anonymous_selectors_use_identity_hashes() {
 // {test}`requirements.references.selector_raw_lines`
 // {test}`requirements.references.outlines`
 // {test}`requirements.sdk.sources.rust.fingerprints`
+// {test}`requirements.sdk.outlines.attachments.fingerprint`
 #[test]
 fn hashes_skip_whitespace_and_plain_comments_but_not_doc_comments() {
     let base = concat!(
@@ -507,6 +510,7 @@ fn reflowing_markdown_paragraphs_keeps_the_hash() {
 
 // {test}`requirements.references.structural_hash`
 // {test}`requirements.sdk.sources.rust.fingerprints`
+// {test}`requirements.sdk.outlines.attachments.fingerprint`
 #[test]
 fn reflowing_inner_and_block_doc_comments_keeps_the_hash() {
     let module = |source: &str| {
@@ -693,12 +697,24 @@ fn plain_text_lines_are_interchangeable_anonymous_nodes() {
 }
 
 // {test}`requirements.references.outlines`
+// {test}`requirements.sdk.outlines.Outline`
 #[test]
-fn reports_parse_failures_with_lines() {
-    let error = parse(Path::new("src/lib.rs"), "fn ok() {}\nfn broken( {\n").unwrap_err();
+fn reports_recovered_syntax_errors_with_lines() {
+    let error = parse(Path::new("src/lib.rs"), "fn ok() {}\nfn broken( {\n")
+        .unwrap()
+        .diagnostic
+        .unwrap();
     assert_eq!(error.line, 2, "{error}");
-    assert!(parse(Path::new("a.py"), "def f(:\n").is_err());
-    let late = parse(Path::new("a.toml"), "a = 1\nb = 2\nc = = 3\nd = [\n").unwrap_err();
+    assert!(
+        parse(Path::new("a.py"), "def f(:\n")
+            .unwrap()
+            .diagnostic
+            .is_some()
+    );
+    let late = parse(Path::new("a.toml"), "a = 1\nb = 2\nc = = 3\nd = [\n")
+        .unwrap()
+        .diagnostic
+        .unwrap();
     assert_eq!(late.line, 3, "the first error is reported: {late}");
     assert!(late.to_string().starts_with("line 3: "), "{late}");
 }
@@ -1333,6 +1349,7 @@ fn comments_are_excluded_from_hashes_in_every_other_profile() {
 // {test}`requirements.references.structural_hash`
 // {test}`requirements.sdk.sources.python.items`
 // {test}`requirements.sdk.sources.python.fingerprints`
+// {test}`requirements.sdk.outlines.attachments.fingerprint`
 #[test]
 fn python_decorators_attach_to_the_decorated_definition_for_hashing() {
     let source = "@cache\ndef f():\n    pass\n";
@@ -1437,6 +1454,7 @@ fn custom_provider_handles_generated_content_and_structural_search() {
     let rule = serde_json::json!({"rule": {"pattern": "fn $NAME() {}"}});
     let rule = StructuralRule::compile_with(provider, rule.as_object().unwrap()).unwrap();
     assert_eq!(rule.matches(source), vec![0..source.len()]);
-    assert!(rule.language().covers(Path::new("generated.APP")));
-    assert!(!rule.language().covers(Path::new("other.rs")));
+    assert_eq!(rule.language().extensions(), ["app"]);
+    assert!(registry.for_path(Path::new("generated.APP")).is_some());
+    assert!(registry.for_path(Path::new("other.rs")).is_none());
 }

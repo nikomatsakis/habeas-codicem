@@ -1,4 +1,5 @@
-use super::{Redaction, redact_text};
+use super::Redaction;
+use crate::sources::redact_text;
 
 // Credential-shaped values are assembled at run time so this source holds
 // no literal match of a `secretshape` rule.
@@ -76,6 +77,7 @@ fn heuristic_findings_alone_are_not_redacted() {
 }
 
 // {test}`requirements.sdk.sources.redaction`
+// {test}`requirements.sdk.sources.redact_text`
 #[test]
 fn configuration_keys_do_not_add_sdk_specific_secret_rules() {
     let text = "version = 1\n[authoring.configs.local]\napi_key = 'plain-key'\n";
@@ -149,4 +151,16 @@ fn regions_extend_both_ways_keep_crlf_and_scan_past_a_mebibyte() {
     assert!(redacted.contains("\r\n"), "{redacted:?}");
     let large = format!("{}\n{token}\n", "x ".repeat(1 << 20));
     assert!(redact_text(&large).ends_with("\n[REDACTED:GitHub Token]\n"));
+}
+
+// {test}`requirements.sdk.outlines.source_spans`
+#[test]
+fn adjacent_redacted_slices_preserve_a_split_crlf() {
+    let source = private_key().replace('\n', "\r\n");
+    let split = source.find('\n').unwrap();
+    let scan = Redaction::of_text(&source);
+    let before = scan.slice(&source, 0..split);
+    let after = scan.slice(&source, split..source.len());
+    assert!(before.ends_with('\r'));
+    assert_eq!(format!("{before}{after}"), redact_text(&source));
 }

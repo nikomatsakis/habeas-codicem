@@ -279,6 +279,7 @@ mod tests {
     // {test}`requirements.sdk.outlines.parse_selector`
     // {test}`requirements.sdk.outlines.Segment`
     // {test}`requirements.sdk.outlines.SelectorError`
+    // {test}`requirements.sdk.public_api`
     #[test]
     fn parses_named_anonymous_and_ordinal_segments() {
         assert!(parse_selector("").unwrap().is_empty());
@@ -287,6 +288,12 @@ mod tests {
         assert_eq!(
             segments[0].label,
             Label::Named(vec!["Thing".into(), "Trait<T>".into()])
+        );
+        let label = Label::Named(vec!["a/b".into(), "c d".into()]);
+        assert_eq!(Segment::base("impl", &label), "impl[a%2Fb/c%20d]");
+        assert_eq!(
+            segments[2].clone().ordinal(3).to_string(),
+            "use@0123456789ab#3"
         );
         assert_eq!(segments[1].ordinal, Some(2));
         let plain = Segment::new("fn".into(), Label::Named(vec!["run".into()]));

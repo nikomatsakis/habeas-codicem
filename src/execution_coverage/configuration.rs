@@ -316,7 +316,18 @@ mod tests {
             "{inherited_conflict}\n[[profile.local.scripts]]\nfilter = 'all()'\nrun-wrapper = 'habeas-coverage'\n"
         );
         check(&child_override, &path, "local").unwrap();
+        let collector =
+            "\n[[profile.local.scripts]]\nfilter = 'all()'\nrun-wrapper = 'habeas-coverage'\n";
+        let other = "\n[[profile.local.scripts]]\nfilter = 'test(x)'\nrun-wrapper = 'other'\n";
+        check(&format!("{inherited}{collector}{other}"), &path, "local").unwrap();
+        assert!(
+            check(&format!("{inherited}{other}{collector}"), &path, "local")
+                .unwrap_err()
+                .to_string()
+                .contains("profile.local.scripts")
+        );
         for extra in [
+            "\n[[profile.local.scripts]]\nfilter = 'test(x)'\nrun-wrapper = 'habeas-coverage'\n",
             "\n[[profile.local.scripts]]\nfilter = 'test(x)'\nrun-wrapper = 'other'\n",
             "\n[[profile.local.scripts]]\nfilter = 'all()'\nplatform = 'cfg(unix)'\nrun-wrapper = 'habeas-coverage'\n",
             "\n[profile.local]\ninherits = 'local'\n",

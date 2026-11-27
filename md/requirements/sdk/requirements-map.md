@@ -21,15 +21,13 @@ live under `requirements.sdk.graph`, `requirements.sdk.sources`, and
 The identifiers in this table are abbreviated: each begins with `requirements.`.
 The shared search policy requires the agent to close every delivered search
 page and select the excerpts it relied on under
-{cite}`requirements.sdk.graph.search.finish_search.behavior`. HC already enforces
-this policy in its assessment adapter. The SDK tool implementation still needs
-to adopt it.
+{cite}`requirements.sdk.graph.search.finish_search.behavior`. The SDK records selected excerpts in the validation trace. Habeas stores their source identities in evidence.
 
 ## Individual outline definitions
 
 The [language chapters](outlines.md#language-specific-rules) define each
 language's selectable items, selectors, comment rules, and hashing algorithms.
-The shared outline interface introduces `OutlineId`, `OutlineContent`, and
+The shared outline interface introduces `OutlineData`, `OutlineContent`, and
 `OutlineLang` without exposing parser grammars.
 
 ## Habeas Codicem application contracts
@@ -47,26 +45,21 @@ conversation, provider, filesystem, and search machinery private.
 
 | Capability | SDK interface | HC responsibility |
 | --- | --- | --- |
-| Agent configuration | Serializable `AgentConfig` and `Validator::with_agent`; backend initialization happens when an ask is awaited. | Configuration loading, paths, environment overrides, and review instructions. |
-| File inspection | `Sources::new` and `Validator::with_sources`, using the project directory and `.gitignore`. | HC's configuration and tracked-file rules. |
-| Source-node mapping | `SourceNodes::source_node` and tracked reads through `Domain`; every delivered source read records its node snapshot. | Source addresses, node identities, and reference relationships. |
+| Agent configuration | Serializable `AgentConfig` and `ValidationCache::with_agent`; backend initialization happens when an ask is awaited. | Configuration loading, paths, environment overrides, and review instructions. |
+| File inspection | `Sources::new` selects the project directory for inspection and respects `.gitignore`. | Selecting project sources for reference discovery and applying configured exclusions. |
+| Source-node mapping | Interning the data supplied by `Domain::source_node` and tracking reads through `Domain`; every delivered source read records its node snapshot. | Source addresses, node identities, and reference relationships. |
 | Source outlines | Filename-based language selection, cheaply cloneable `OutlineLang`, and owned `OutlineContent` implementing `NodeContents`. | Choosing the source nodes needed for a review. |
 | Structural search | Optional `OutlineLang::search_structure`; outline-only languages return an unsupported-language error. | Choosing search rules for the question under review. |
-| Redaction | Fixed credential recognition in model-visible text and bundled structural hashes. | Explicit credential fields in Habeas configuration. |
+| Redaction | Fixed credential recognition in model-visible text and bundled structural hashes. | Reporting explicit credentials in tracked Habeas configuration files. |
 
 Domains without source-node mapping can still use graph inspection and
-deterministic criteria. Configured agent tools accept serializable edge labels
-with a JSON schema and report domain errors through `Display`; the exact bounds
-appear with `with_agent` and `with_sources`.
+deterministic criteria. Awaiting an agent request requires edge labels that implement
+`DeserializeOwned`, `JsonSchema`, and `PartialEq`, and domain errors that
+implement `Display`. See [agent calls](graph/agent-calls.md).
 
 ## HC integration work
 
-HC retains an internal assessment adapter for its review protocol and evidence
-accounting. Further integration should preserve
-`requirements.authoring.initial_prompt`, the authoring tool contracts, and
-complete selected-excerpt accounting under `requirements.authoring.text_search`,
-`requirements.authoring.structural_search`, and
-`requirements.authoring.finish_search`.
+HC uses the configured SDK agent for every review. Its criteria supply the task message, mandatory nodes, typed answer, and rationale checks. The SDK owns the conversation and collects usage. HC registers requirement lookup, named queries, and GitHub issue inspection through `AgentConfig::with_tool`.
 
 External issue nodes need HC policy for unavailable observations and offline
 freshness. That policy must reconcile `requirements.authoring.github_reads`,

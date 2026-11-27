@@ -2,7 +2,7 @@
 
 Use an outline to select a function, requirement, configuration entry, or other
 item from a file.
-[`OutlineId`](../../rustdocs/trust_but_verify/outline/struct.OutlineId.html)
+`OutlineData`
 identifies the item;
 [`OutlineContent`](../../rustdocs/trust_but_verify/outline/struct.OutlineContent.html) loads its
 contents and supplies the text and structural fingerprint used in a review.
@@ -34,14 +34,14 @@ items and how they are named and nested.
 An *item selector* identifies an item within a
 {term}`requirements.sdk.outlines.outline`, such as `mod[auth]/fn[check_token]`.
 The empty selector identifies the file root.
-[`OutlineId`](../../rustdocs/trust_but_verify/outline/struct.OutlineId.html) pairs the
+`OutlineData` pairs the
 selector with the file's path.
 :::
 
 :::{req} address_identity
 :test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
 
-`OutlineId` identifies a file and an item within it. Its path and selector
+`OutlineData` identifies a file and an item within it. Its path and selector
 alone determine its identity; equivalent addresses compare equally when
 reconstructed in another process. Constructing an address performs no file read. `root(path)` selects the whole
 file. Both `new(path, selector)` and the `selector` builder validate the selector
@@ -50,12 +50,12 @@ Selectors follow {cite}`requirements.sdk.outlines.selector_syntax`.
 
 ```rust,ignore
 #[non_exhaustive]
-pub struct OutlineId {
+pub struct OutlineData {
     pub path: PathBuf,
     pub selector: String,
 }
 
-impl OutlineId {
+impl OutlineData {
     pub fn root(path: impl Into<PathBuf>) -> Self;
     pub fn selector(self, selector: String) -> Result<Self, OutlineError>;
     pub fn new(
@@ -68,17 +68,18 @@ impl OutlineId {
 Trait implementations
 
 ```rust,ignore
-impl Clone for OutlineId;
-impl Debug for OutlineId;
-impl<'de> Deserialize<'de> for OutlineId;
-impl PartialEq for OutlineId;
-impl Serialize for OutlineId;
-impl Eq for OutlineId;
+impl Clone for OutlineData;
+impl Debug for OutlineData;
+impl<'de> Deserialize<'de> for OutlineData;
+impl PartialEq for OutlineData;
+impl Serialize for OutlineData;
+impl Eq for OutlineData;
+impl Hash for OutlineData;
 ```
 :::
 
 ```rust,ignore
-let function_id = OutlineId::root("src/auth.rs").selector("mod[auth]/fn[check_token]".into())?;
+let function_id = OutlineData::root("src/auth.rs").selector("mod[auth]/fn[check_token]".into())?;
 ```
 
 ## Parse an outline selector
@@ -228,8 +229,9 @@ observation.
 :::{req} parser
 :test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
 
-`OutlineContent::from_path` reads a file and returns its root contents.
-`from_id` reads the addressed file and selects the addressed item. Both infer
+`OutlineContent::from_path` returns the root contents for a file using the
+supplied [validation cache](validation-cache.md). `from_id` uses the same
+cached file and selects the addressed item. Both infer
 the language from the filename under
 {cite}`requirements.sdk.outlines.defaults`.
 
@@ -237,25 +239,37 @@ the language from the filename under
 pub struct OutlineContent { /* private fields */ }
 
 impl OutlineContent {
-    pub fn from_path(path: impl AsRef<Path>) -> Result<Self, OutlineError>;
-    pub fn from_id(id: &OutlineId) -> Result<Self, OutlineError>;
+    pub fn from_path(
+        cache: &ValidationCache<impl Domain>,
+        path: impl AsRef<Path>,
+    ) -> Result<Self, OutlineError>;
+    pub fn from_id(
+        cache: &ValidationCache<impl Domain>,
+        id: &OutlineData,
+    ) -> Result<Self, OutlineError>;
     pub fn from_source(
+        cache: &ValidationCache<impl Domain>,
         filename: impl AsRef<Path>,
         source: Arc<str>,
     ) -> Result<Self, OutlineError>;
     pub fn from_path_with<L: OutlineLang>(
+        cache: &ValidationCache<impl Domain>,
         language: &L,
         path: impl AsRef<Path>,
     ) -> Result<Self, OutlineError>;
     pub fn from_source_with<L: OutlineLang>(
+        cache: &ValidationCache<impl Domain>,
         language: &L,
         filename: impl AsRef<Path>,
         source: Arc<str>,
     ) -> Result<Self, OutlineError>;
     pub fn select(&self, selector: &str) -> Result<Self, OutlineError>;
-    pub fn id(&self) -> &OutlineId;
+    pub fn id(&self) -> &OutlineData;
     pub fn text(&self) -> &str;
+    pub fn source_span(&self, span: Span) -> Option<&str>;
+    pub fn source_span_redacted(&self, span: Span) -> Option<Cow<'_, str>>;
     pub fn outline(&self) -> &Outline;
+    pub fn language(&self) -> &str;
     pub fn structural_hash(&self) -> &str;
     pub fn fingerprint_scheme(&self) -> &str;
 }
@@ -271,8 +285,9 @@ impl NodeContents for OutlineContent;
 :::
 
 ```rust,ignore
-let file = OutlineContent::from_path("src/auth.rs")?;
-let function = OutlineContent::from_id(&function_id)?;
+let cache = ValidationCache::<AppDomain>::new();
+let file = OutlineContent::from_path(&cache, "src/auth.rs")?;
+let function = OutlineContent::from_id(&cache, &function_id)?;
 ```
 
 :::{req} parser.supplied_source
@@ -287,6 +302,7 @@ use std::sync::Arc;
 impl OutlineContent {
     /// Outline supplied text without reading the named file.
     pub fn from_source(
+        cache: &ValidationCache<impl Domain>,
         filename: impl AsRef<Path>,
         source: Arc<str>,
     ) -> Result<Self, OutlineError>;
@@ -295,9 +311,10 @@ impl OutlineContent {
 :::
 
 :::{req} errors
-File-read and parsing failures return errors, distinct from successful contents
-for an empty file. Selecting a language commits to that language's parsing
-rules; a parse failure is reported rather than interpreted as plain text.
+The outline API makes a best effort to recover from parse errors.
+File-read and unrecoverable parsing failures return errors, distinct from
+successful contents for an empty file. Selecting a language commits to that
+language's parsing rules.
 A malformed selector, a missing item, or an ambiguity not permitted by
 {cite}`requirements.sdk.outlines.selector_syntax` also returns an error.
 :::
@@ -331,6 +348,38 @@ impl Eq for OutlineError;
 ```
 :::
 
+## Cache file outlines
+
+:::{req} outline_file
+
+`OutlineContent::from_path(cache, path)` obtains the file's root outline
+through the supplied cache. On the first lookup it reads the file and applies
+the default language selection and parse recovery rules.
+:::
+
+:::{req} outline_cache
+
+After the first successful lookup of a path, calls through the same cache or
+one of its clones return the retained snapshot without checking the file.
+:::
+
+:::{req} outline_cache.fresh
+
+A newly constructed validation cache reads the current file on its first lookup.
+:::
+
+:::{req} outline_cache.retry
+
+If the lookup fails, a later call for the same path retries it.
+:::
+
+:::{req} outline_file.lifetime
+
+The returned `OutlineContent` and its clones remain usable after the cache
+has been dropped. They share the snapshot described in
+{cite}`requirements.sdk.outlines.snapshot`.
+:::
+
 ## Select another item from the same snapshot
 
 :::{req} selection
@@ -349,7 +398,7 @@ impl OutlineContent {
     pub fn select(&self, selector: &str) -> Result<Self, OutlineError>;
 
     /// Address of the selected item.
-    pub fn id(&self) -> &OutlineId;
+    pub fn id(&self) -> &OutlineData;
 
     /// Original selected text, including attached source, before redaction.
     pub fn text(&self) -> &str;
@@ -358,7 +407,7 @@ impl OutlineContent {
 :::
 
 ```rust,ignore
-let file = OutlineContent::from_path("src/auth.rs")?;
+let file = OutlineContent::from_path(cache, "src/auth.rs")?;
 let function = file.select("mod[auth]/fn[check_token]")?;
 let module = file.select("mod[auth]")?;
 ```
@@ -368,6 +417,25 @@ An `OutlineContent` retains the source text, outline, and selected language's
 fingerprinting scheme describing that same snapshot. Its item spans, selected
 text, and structural hashes are derived from those bytes. A cached value keeps
 these parts together; later file edits do not change the loaded value.
+:::
+
+:::{req} source_spans
+`source_span` returns the original text at a file-relative `Span`, including when
+called on a selected item. `source_span_redacted` accepts the same coordinates
+and applies {cite}`requirements.sdk.sources.redaction` using the whole snapshot.
+A span containing the first byte of a recognized credential receives its marker.
+Each span preserves the line breaks in its portion of the credential. Joining
+adjacent redacted spans produces the redacted text of their union.
+
+Both methods return `None` for reversed bounds, out-of-file offsets, or offsets
+inside a UTF-8 character. An empty span at a valid boundary returns empty text.
+:::
+
+:::{req} language
+`OutlineContent::language()` returns the name of the `OutlineLang` that produced
+the snapshot. The root and each selected item report the same name. An explicit
+provider supplies its own name, including when the filename would select a
+different language by default.
 :::
 
 ## Inspect selectable items
@@ -384,21 +452,57 @@ impl OutlineContent {
 }
 ```
 
-Each span uses byte offsets into the supplied source snapshot, with an exclusive
-end and boundaries valid for slicing that text. It includes the item's attached
-source under the language's rules. The root has an empty selector and span
-`0..source.len()`.
+The root has an empty selector and covers the entire source snapshot.
+:::
+
+:::{req} Span
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+`trust_but_verify::outline::Span` locates text by byte offsets from the start
+of the original source snapshot, including when a caller selects a nested item.
+`start` is inclusive and `end` is exclusive. A valid span satisfies
+`start <= end <= source.len()` and both offsets are UTF-8 character boundaries.
+For `source: &str`, `&source[span]` yields the same slice as
+`&source[span.start..span.end]`, with the same bounds and boundary checks.
+
+```rust,ignore
+#[non_exhaustive]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+}
+
+impl Span {
+    pub fn new(start: usize, end: usize) -> Self;
+}
+```
+
+Trait implementations
+
+```rust,ignore
+impl Clone for Span;
+impl Copy for Span;
+impl Eq for Span;
+impl PartialEq for Span;
+impl Debug for Span;
+impl Index<Span> for str {
+    type Output = str;
+}
+```
 :::
 
 :::{req} Outline
 :test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
 
 Lists the selectable items from a single parse, including the root for the whole file.
+`diagnostic` holds the first syntax error reported during recovery, or `None` for a clean parse.
+`Outline::new` initializes it to `None`.
 
 ```rust,ignore
 #[non_exhaustive]
 pub struct Outline {
     pub items: Vec<OutlineItem>,
+    pub diagnostic: Option<OutlineError>,
 }
 
 impl Outline {
@@ -417,24 +521,39 @@ impl Debug for Outline;
 :::{req} OutlineItem
 :test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
 
-`selector` addresses the item and `kind` describes it. `span` is a half-open byte range in the retained source. `structural_hash` identifies the item’s outline-relevant contents.
+`selector` addresses the item and `kind` describes it. `span` locates the whole item under {cite}`requirements.sdk.outlines.Span`.
+`name_span` locates the name under {cite}`requirements.sdk.outlines.name_span`.
+`structural_hash` identifies the item’s outline-relevant contents. A language supplies the digest excluding descendants with `with_own_hash` when it differs from the structural hash.
+`attachments` lists the source constructs assigned to this item under
+{cite}`requirements.sdk.outlines.attachments`. `OutlineItem::new` initializes
+the list to empty. `with_attachments` sets it to the supplied list.
 
 ```rust,ignore
 #[non_exhaustive]
 pub struct OutlineItem {
     pub selector: String,
     pub kind: String,
-    pub span: Range<usize>,
+    pub span: Span,
+    pub name_span: Option<Span>,
+    pub header_span: Option<Span>,
+    pub trailer_span: Option<Span>,
     pub structural_hash: String,
+    pub attachments: Vec<OutlineAttachment>,
+    /* private fields */
 }
 
 impl OutlineItem {
     pub fn new(
         selector: String,
         kind: String,
-        span: Range<usize>,
+        span: Span,
         structural_hash: String,
     ) -> Self;
+    pub fn with_name_span(self, span: Span) -> Self;
+    pub fn with_header_span(self, span: Span) -> Self;
+    pub fn with_trailer_span(self, span: Span) -> Self;
+    pub fn with_own_hash(self, hash: String) -> Self;
+    pub fn with_attachments(self, attachments: Vec<OutlineAttachment>) -> Self;
 }
 ```
 
@@ -447,11 +566,124 @@ impl Debug for OutlineItem;
 :::
 
 ```rust,ignore
-let file = OutlineContent::from_path("src/auth.rs")?;
+let file = OutlineContent::from_path(cache, "src/auth.rs")?;
 for item in &file.outline().items {
     println!("{}: {}", item.kind, item.selector);
 }
 ```
+
+:::{req} name_span
+A named item's `name_span` is `Some` with the span to highlight for its name
+in the original source snapshot. The highlighted text may differ from the
+name in the selector. Use `selector` to address the item. The file root and
+anonymous items have `name_span` set to `None`. `OutlineItem::new` starts with
+`None`. Language providers use `with_name_span` to set the highlight within
+the item’s own span.
+:::
+
+## Inspect attachments
+
+:::{definition} attachment
+:phrase: attachment
+
+An *attachment* is a source construct that an outline language associates
+with an outline item. A documentation comment on a Rust function and a
+decorator on a Python method are examples.
+:::
+
+:::{req} attachments
+The outline language assigns each {term}`requirements.sdk.outlines.attachment`
+to one owning item, which may be the file root. Each item lists the
+attachments it owns.
+:::
+
+:::{req} attachments.order
+Each item's attachments appear in source order.
+:::
+
+:::{req} attachments.empty
+An item with no attachments has an empty list. A language may return empty
+lists for every item.
+:::
+
+:::{req} attachments.span
+Each attachment's `span` is a half-open byte range in the original file
+snapshot, even when the caller has selected a nested item. Slicing that
+snapshot at the span yields the complete source construct, including its
+delimiters. Repeated occurrences have their own spans.
+:::
+
+:::{req} attachments.item_span
+`OutlineItem::span` covers the item and every attachment it owns, including
+leading and trailing attachments. Selecting the item returns the contiguous
+source slice covered by that span.
+:::
+
+:::{req} attachments.comments
+The bundled languages report each recognized source comment as `Comment` on
+the item that owns it under {cite}`requirements.references.outline_comments`.
+Each comment in a run has its own span and the run's owner. Consumers interpret
+the comment text.
+:::
+
+:::{req} attachments.fingerprint
+Each language's fingerprint rules determine which attachments
+contribute to the owning item's structural hash.
+:::
+
+:::{req} OutlineAttachment
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+`kind` classifies the construct and `span` locates it under
+{cite}`requirements.sdk.outlines.attachments.span`. Language providers can
+construct an attachment from these two fields.
+
+```rust,ignore
+#[non_exhaustive]
+pub struct OutlineAttachment {
+    pub kind: AttachmentKind,
+    pub span: Span,
+}
+
+impl OutlineAttachment {
+    pub fn new(kind: AttachmentKind, span: Span) -> Self;
+}
+```
+
+Trait implementations
+
+```rust,ignore
+impl Clone for OutlineAttachment;
+impl Debug for OutlineAttachment;
+```
+:::
+
+:::{req} AttachmentKind
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+`Comment` covers source comments, including documentation comments.
+`Annotation` covers language constructs such as attributes and decorators
+that annotate a declaration. Providers use the common kind when it applies
+and `Other` with a language-defined name for additional kinds.
+
+```rust,ignore
+#[non_exhaustive]
+pub enum AttachmentKind {
+    Comment,
+    Annotation,
+    Other(String),
+}
+```
+
+Trait implementations
+
+```rust,ignore
+impl Clone for AttachmentKind;
+impl Debug for AttachmentKind;
+impl PartialEq for AttachmentKind;
+impl Eq for AttachmentKind;
+```
+:::
 
 ## Choose an outline language
 
@@ -488,7 +720,7 @@ pub trait OutlineLang:
         &self,
         _source: &str,
         _rule: &Map<String, Value>,
-    ) -> Result<Vec<Range<usize>>, OutlineError> { ... }
+    ) -> Result<Vec<Span>, OutlineError> { ... }
 }
 ```
 :::
@@ -503,6 +735,16 @@ A filename without a claimed extension uses the
 nonblank line.
 :::
 
+:::{req} name_for_path
+`languages::name_for_path` returns the name that the SDK's filename-based
+constructors would select under {cite}`requirements.sdk.outlines.defaults`.
+The lookup uses only the path and works for files that do not exist.
+
+```rust,ignore
+pub fn name_for_path(path: &Path) -> &'static str;
+```
+:::
+
 :::{req} additional_languages
 The caller can supply an `OutlineLang` explicitly when loading a file or
 outlining supplied text. These constructors use that language regardless of
@@ -513,11 +755,13 @@ language's fingerprinting rules under
 ```rust,ignore
 impl OutlineContent {
     pub fn from_path_with<L: OutlineLang>(
+        cache: &ValidationCache<impl Domain>,
         language: &L,
         path: impl AsRef<Path>,
     ) -> Result<Self, OutlineError>;
 
     pub fn from_source_with<L: OutlineLang>(
+        cache: &ValidationCache<impl Domain>,
         language: &L,
         filename: impl AsRef<Path>,
         source: Arc<str>,
@@ -530,7 +774,7 @@ impl OutlineContent {
 use trust_but_verify::outline::languages::Rust;
 
 let language = Rust::default();
-let file = OutlineContent::from_path_with(&language, "generated.txt")?;
+let file = OutlineContent::from_path_with(cache, &language, "generated.txt")?;
 let function = file.select("fn[check_token]")?;
 ```
 
@@ -568,10 +812,8 @@ impl OutlineContent {
 `Domain::NodeContent` under
 {cite}`requirements.sdk.graph.node_content`.
 
-Its `fingerprint()` returns the selected item's retained structural hash and
-scheme under {cite}`requirements.sdk.graph.node_content.fingerprint`.
-Its `format()` returns the selected source text with recognized credentials
-redacted under {cite}`requirements.sdk.sources.redaction` and
+Its `fingerprint()` identifies the selected item's own outline-relevant contents under {cite}`requirements.sdk.graph.node_content.fingerprint`. Apply the language's fingerprinting rules to the item's own source, excluding its outline descendants and their attached source. Adding, removing, or editing a child alone preserves the parent's read fingerprint. A digest supplied through `with_own_hash` uses the language's structural scheme with the suffix `:own-v1` for read evidence.
+Its `format()` renders the item's own source, omitting descendant source and redacting recognized credentials under {cite}`requirements.sdk.sources.redaction` and
 {cite}`requirements.sdk.graph.node_content.format`.
 Both operations describe the source snapshot retained by the value.
 `text()` retains the original selected bytes for source inspection.
@@ -580,7 +822,7 @@ Both operations describe the source snapshot retained by the value.
 ```rust,ignore
 use trust_but_verify::domain::NodeContents;
 
-let contents = OutlineContent::from_id(&function_id)?;
+let contents = OutlineContent::from_id(cache, &function_id)?;
 let fingerprint = contents.fingerprint();
 let prompt_text = contents.format();
 ```
@@ -620,7 +862,7 @@ pub trait OutlineLang: Clone + Send + Sync {
         &self,
         source: &str,
         rule: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<Vec<std::ops::Range<usize>>, OutlineError>;
+    ) -> Result<Vec<Span>, OutlineError>;
 
     // ...
 }

@@ -1,8 +1,8 @@
 {
-  "requirement": "During one call to `Validator::verify`, direct reads by the criterion and\nreads served by the SDK's agent tools record inputs in the same\n`ValidationContext`. For example, if criterion code reads a test and the agent\nthen reads its helper, both node fingerprints accompany the returned answer.\nA subsequent verification starts with an empty dependency list.",
+  "requirement": "During one call to `verify`, direct reads by the criterion and\nreads served by the SDK's agent tools record inputs in the same\n`ValidationContext`. For example, if criterion code reads a test and the agent\nthen reads its helper, both node fingerprints accompany the returned answer.\nA subsequent verification starts with an empty dependency list.",
   "determination": true,
-  "rationale": "**Structural obligations.** `shared_context` requires three things:\n1. Direct reads by the criterion and reads served by the agent tools record into the same `ValidationContext` during one `Validator::verify` call.\n2. The returned answer carries those fingerprints.\n3. A later verification starts with an empty dependency list.\n\n**Single context per verify call.**\n- `crates/trust-but-verify/src/graph/runtime.rs#impl[Validator<D>]#1/fn[verify]` builds one `ValidationContext::configured(...)` per call and passes it to `criterion.execute`.\n- `crates/trust-but-verify/src/procedure.rs#impl[ValidationContext<'d, D>]#1/fn[configured]` initialises `observations` with `Default::default()`, so each verification starts empty.\n- Because a fresh context is built on every `verify` call, nothing carries over to a later verification.\n- `verify` returns `ctx.dependencies()` in `Fingerprinted`, so every recorded fingerprint accompanies the answer.\n\n**Direct reads.**\n- In `crates/trust-but-verify/src/procedure.rs#impl[ValidationContext<'d, D>]#2`, `read_snapshot` calls `prepare_read` and then `record_read`.\n- `outgoing_edges` calls `observe_edges`.\n- Both write into the context's single `observations` mutex-guarded vector.\n\n**Agent-tool reads use the same context.**\n- `crates/trust-but-verify/src/procedure.rs#impl[Ask<'a, 'd, D, R, P>]#2/fn[execute]` passes `self.ctx` to `agent.run(request, self.ctx)`.\n- The `Agent::run` trait method takes `&ValidationContext`. `crates/trust-but-verify/src/agent/configured.rs#impl[ConfiguredAgent<D>/Agent<D>]/fn[run]` forwards the same `inspection` to `ToolAgent::run`.\n- `crates/trust-but-verify/src/agent/tools.rs#impl[ToolAgent<P, T>/Agent<D>]/fn[run]` stores that reference in `GraphSession.inspection`. It also queues the prepared input fingerprints as pending dependencies.\n- `GraphSession#impl[Conversation]/fn[dispatch]` serves `read_node` and `outgoing_edges` through `inspection.prepare_read` and `inspection.prepare_edges`. It queues the observations, and it also queues dependencies from delegated tool deliveries.\n- `GraphSession#impl[Conversation]/fn[delivered]` drains the pending list into `inspection.record_read` and `inspection.observe_edges`. These are the same recording methods the direct reads use, so the observations land in the shared context.\n\n**Other checks.**\n- Reading a test and then its helper yields two `Dependency::Node` entries. `record_read` only deduplicates entries with an identical node and fingerprint.\n- I found no structural gap and no conflicting element.\n- There are no `{fixme}` acknowledgments.\n- I did not assess runtime behavior or tests, because this review is structural only.",
-  "references": "2c35862fa48dbc05e8825f322f614b0f35937ab779b0239d61752080a67691e4",
+  "rationale": "Obligations from `requirements.sdk.graph.validation-context.shared_context`: (1) during one `verify`, direct reads by the criterion and reads served by agent tools record into the same `ValidationContext`. The example is that criterion code reads a node, the agent then reads another, and both fingerprints accompany the answer. (2) A subsequent verification starts with an empty dependency list.\n\nCoverage of (1):\n- `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[verify_returns_direct_and_tool_reads_in_one_trace]` is the direct match to the example. Its `ReadThenAsk` criterion calls `cx.read` on node 42, then `cx.ask`. The mock agent backend calls `read_node` on node 0, which is node 7, then `submit_result`. The test asserts that `answer.dependencies()` is exactly `[Node(42), Node(7)]` with content fingerprints, so both direct and tool reads appear in order in one trace. It also asserts that the server saw 2 requests.\n- `configured_agent_uses_domain_source_tools_in_independent_executions` asserts the full dependency list. It combines the opening node, tool-read nodes and search-excerpt nodes, and it also checks that rejected calls and listings add nothing. This adds coverage of tool reads recorded in the verify result.\n- `crates/trust-but-verify/src/agent/tests.rs#fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]` shows that concurrent agent calls share one context's reads. It asserts that the dependencies are a union of both calls' reads and equal the finished result's dependencies.\n\nCoverage of (2): `crates/trust-but-verify/src/graph/validation_tests.rs#fn[a_second_verification_starts_with_an_empty_trace]` reuses one `Validator` for two verifications. The first returns only `[Node(1)]`. The second, on a different node, returns exactly `[Node(2, \"other\")]` and has no carry-over from the first. In `configured_agent_uses_domain_source_tools_in_independent_executions`, both loop iterations assert the identical full dependency list. That covers a repeat with tool reads, though each iteration makes a new validator.\n\nNo requirement-violating behavior is left undetected. A split context would fail the exact two-entry assertion, and leaked state would fail the second-verify equality assertion. No acknowledgments apply.",
+  "references": "39d480764fd0ae801a215f343637bb2966790fb61de3430afb83b7b29c13bd75",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.validation-context.shared_context",
@@ -11,7 +11,7 @@
       ],
       "text": [
         ":::{req} shared_context",
-        "During one call to `Validator::verify`, direct reads by the criterion and",
+        "During one call to `verify`, direct reads by the criterion and",
         "reads served by the SDK's agent tools record inputs in the same",
         "`ValidationContext`. For example, if criterion code reads a test and the agent",
         "then reads its helper, both node fingerprints accompany the returned answer.",
@@ -20,94 +20,59 @@
       ]
     },
     {
-      "file": "crates/trust-but-verify/src/agent/tools.rs",
-      "item": "impl[ToolAgent<P,%20T>/Agent<D>]/fn[run]",
-      "hash": "879c341bc75b6c461057076497f9acc8d606f8f9f99a6200871d409da3ee219d"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tools.rs",
-      "item": "struct[GraphSession]",
-      "hash": "4d7941e7739d338eb7c1806aeeef425c011b64d850facca2d52c98b2851ce867"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tools.rs",
-      "item": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[dispatch]",
-      "hash": "104fd5a20dd3f9fbd585ffe05fd0d12053dbba1c62a990fbacc215d18a0523df"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tools.rs",
-      "item": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[delivered]",
-      "hash": "c5fc2757743fbf411ad3c510ec80c2bbb1e1a1dc1fde6f2ccfaa234fd476a8ef"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]",
-      "hash": "bd24d1ce9391cb04161ad3588a77ef2cf2f7247e4f0d3d7277c99dacf5b130fc"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph/runtime.rs",
-      "item": "impl[Validator<D>]#1/fn[verify]",
-      "hash": "138489bf21da9da389076672689763449d194427776cac70ab560f0523770ea1"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[ValidationContext<'d,%20D>]#2",
-      "hash": "e1f302f5542f81727298004815dac94a9e88081675c70a269a9eac2dedacfd1b"
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/fn[verify_returns_direct_and_tool_reads_in_one_trace]",
+      "hash": "a138c903aa4405e14956cda4031f41d877235119c9dfbdfaf9becfeffba7ee6a"
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
-      "item": "impl[ConfiguredAgent<D>/Agent<D>]/fn[run]",
-      "hash": "0422ed43d3d2d9c1de6bb06b381ca8c1073f2ec8bb79a1f08fa627fd06125c6e"
+      "item": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]",
+      "hash": "1a1a252964872efc8573135d5fb391176e8a78b08c0d975f77b8072c6591f9e8"
     },
     {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "struct[ValidationContext]",
-      "hash": "9d355b83e9bc0b5a558e976bea7da08adbf4814c522b8cac7c9149b0d868cbfb"
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]",
+      "hash": "ce5910db3f51c79716eacd6ed0e14047a6cc9620e87298ed573bacdddbd27216"
     },
     {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[ValidationContext<'d,%20D>]#2/fn[prepare_read]",
-      "hash": "687fad2cbcc73a94b5668dd09d23e8c908f6828996a7559b3dd8598e27ff215b"
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "fn[a_second_verification_starts_with_an_empty_trace]",
+      "hash": "cc0b8dd425036cff99840cee35ec73ce9eedc9e16f462d8e16c4e7116ea6ca80"
     },
     {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[ValidationContext<'d,%20D>]#2/fn[record_read]",
-      "hash": "decc9fc2168f398781906a9ce38be3ffda02b723b45b951c6e809d4f37b3d781"
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/fn[verify_returns_direct_and_tool_reads_in_one_trace]/struct[ReadThenAsk]",
+      "hash": "e34e36f24f7154f2cb1017b29a4557b3e0a94b42e11806ce872cfd3cb2dcbee1"
     },
     {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[ValidationContext<'d,%20D>]#2/fn[observe_edges]",
-      "hash": "1af03da3b0f1d3a0a726b2acf64040eac91ea4ab8d8e3d222a420e18c4f40d4d"
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/fn[verify_returns_direct_and_tool_reads_in_one_trace]/impl[ReadThenAsk/Criterion<TestDomain>]",
+      "hash": "5451cf90a5b1d3c9d3975cef574cd40405ab788c6b9a1c594bc676d24b73663f"
     },
     {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[ValidationContext<'d,%20D>]#2/fn[observe_edges_by]",
-      "hash": "9917246b52bedf6eb43a62f6b3cd3febd6c567aea802e98f18140a94871af48e"
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/fn[verify_returns_direct_and_tool_reads_in_one_trace]/impl[ReadThenAsk/Criterion<TestDomain>]/fn[execute]",
+      "hash": "2e034602d87923396388e013781aa7156f430e274aed4314ea53fe08ccc69f6a"
     },
     {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[ValidationContext<'d,%20D>]#1/fn[configured]",
-      "hash": "6a3f6ed38a96c36f0244d9284be4eb810c5ca729c2e55e4dd4839d0c684ec3ac"
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/fn[verify_returns_direct_and_tool_reads_in_one_trace]/impl[ReadThenAsk/Criterion<TestDomain>]/fn[version]",
+      "hash": "39ba91029e394681371eb2fec0710b0912350a1a5a0f1fbfa5d75db0348cddf1"
     },
     {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "trait[Agent]",
-      "hash": "767b4d14961f521fd09161fa9355f0d769069ab23c377fcab9a37572e1801978"
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/fn[verify_returns_direct_and_tool_reads_in_one_trace]/impl[ReadThenAsk/Criterion<TestDomain>]/fn[criterion_path]",
+      "hash": "00532b0588a05b799176174e84adf1882efa40b718404377262581b7055c2bf3"
     },
     {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "trait[Agent]/fn[run]",
-      "hash": "555b98a32b9ab028dc5a6b462a82b96d1009dc2c38fb086732a62748284ac8a4"
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/fn[verify_returns_direct_and_tool_reads_in_one_trace]/impl[ReadThenAsk/Criterion<TestDomain>]/fn[source_node_id]",
+      "hash": "6dc626bd3e590dde8e37bce0e030a49e9669e1df6388b02e08f174f3ab40c7f2"
     },
     {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[ValidationContext<'d,%20D>]#1",
-      "hash": "9f1218ecad7f3f8c1c35096eab9f011dc72f8b118bf4111075a1c267e94adb1b"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent.rs",
-      "item": "fn[converse]",
-      "hash": "75e462b4b2442c23025ee51e786f3befc47db80211d03e434f97f67f77754567"
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/fn[verify_returns_direct_and_tool_reads_in_one_trace]/impl[ReadThenAsk/Criterion<TestDomain>]/type[Ok]",
+      "hash": "213940d67b0e63866d0f2cbf24c0efde0b8abd278d454d5225c1dd26e489a248"
     }
   ],
   "format_version": 1,
@@ -120,7 +85,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "2c35862fa48dbc05e8825f322f614b0f35937ab779b0239d61752080a67691e4"
+          "value": "39d480764fd0ae801a215f343637bb2966790fb61de3430afb83b7b29c13bd75"
         }
       ]
     },
@@ -132,7 +97,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "b6ca66f71815b20a288fa8825c665d45fd87714e0232abad5e53f5c9c8e5aaf3"
+          "value": "3b0ab68ca04211fbbaa8744cdfcfebd2e876d054dac0d5fe1a6703ffca71af5e"
         }
       ]
     },
@@ -143,126 +108,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "cfe983ca151c67b509b24ab9b8847a7f1a7af39f2814f764e9cb744be8cd5855"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tools.rs"
-            },
-            "selector": "impl[ToolAgent<P,%20T>/Agent<D>]/fn[run]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "370fa655c64e0ca82f185536e602af3ef45d11abe0579d6b786dbe03e3ff2fa4"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tools.rs"
-            },
-            "selector": "struct[GraphSession]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "67b2111623dd10577b2aa025af4603e367a766f6ae1d9b149e4ff90884662a7a"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tools.rs"
-            },
-            "selector": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[dispatch]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "e56a8eff0659f17e18210e758d1639b52748b9f7a7df5aa0cb91adc8137142b6"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tools.rs"
-            },
-            "selector": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[delivered]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "e00b41a7cc3cdd5814748017129c708affd2eee04dcb4a0a7a00ca31931ce82e"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "f873a363ac5ac5f29546bb5369f8d3f70ece9db078d8ee20ca48dc13db6a9bcd"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph/runtime.rs"
-            },
-            "selector": "impl[Validator<D>]#1/fn[verify]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "b68cdbc160d883603c80beb2553f2bb323b5962ac9ade121bb7bc193afe1f144"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "impl[ValidationContext<'d,%20D>]#2"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "f6bfe9f1678fe730dec04a0806061e5a98225314b463c40fba9c8c6eb3245790"
+          "value": "d17de17066d12395878891daf1c1401f0729f668382a7e2d79f7432e5a20fd67"
         }
       ]
     },
@@ -274,12 +120,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/configured.rs"
             },
-            "selector": "impl[ConfiguredAgent<D>/Agent<D>]/fn[run]"
+            "selector": "mod[tests]/fn[verify_returns_direct_and_tool_reads_in_one_trace]"
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "3b939f24803b00384c0716492b48bbd07b1d3b260d3cd151c1a5aa340e4fe80a"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "546bb05a8df9f6abaf7d1255897d12bac60dd17b486b426ec0d1fa1164d6fab4"
         }
       ]
     },
@@ -289,14 +135,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
             },
-            "selector": "struct[ValidationContext]"
+            "selector": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]"
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "e979ed6dc32e218a66579aac2795f81e48b260a103140cd19f71dff51a8c1281"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "f9d8fbc31acd81ef8aa636e21fe02910790b3ec81c15b618e8fdb2b93a7a50de"
         }
       ]
     },
@@ -306,14 +152,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
-            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[prepare_read]"
+            "selector": "fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]"
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "8e41b2d08666d29f7fbce197aefb7b2269dfeca018937d2b98a4dd7285497cf5"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "07f3a94cd585fd150e0944575c24f6d3538f7ec6c1f07277c24bb2f20ee7fd87"
         }
       ]
     },
@@ -323,14 +169,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
             },
-            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[record_read]"
+            "selector": "fn[a_second_verification_starts_with_an_empty_trace]"
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "223f38b96401bcc0fc4d42866aff262bad6e91ca5ee4582c0a968df3bfffb920"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "cc0b8dd425036cff99840cee35ec73ce9eedc9e16f462d8e16c4e7116ea6ca80"
         }
       ]
     },
@@ -340,14 +186,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
             },
-            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[observe_edges]"
+            "selector": "mod[tests]/fn[verify_returns_direct_and_tool_reads_in_one_trace]/struct[ReadThenAsk]"
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "9308ef7d44eeac58c0c07976854b0ebdafe65612a73e67e5e9a0e1a1d6a45a62"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "e34e36f24f7154f2cb1017b29a4557b3e0a94b42e11806ce872cfd3cb2dcbee1"
         }
       ]
     },
@@ -357,14 +203,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
             },
-            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[observe_edges_by]"
+            "selector": "mod[tests]/fn[verify_returns_direct_and_tool_reads_in_one_trace]/impl[ReadThenAsk/Criterion<TestDomain>]"
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "ce0c94cb5518c3616f0c5254c2cf2f599084e35865cdebb408521c9242065987"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "ed74f020f42d8f4c1054615193ee9638a0521b86c9de36772923844f42146d17"
         }
       ]
     },
@@ -374,14 +220,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
             },
-            "selector": "impl[ValidationContext<'d,%20D>]#1/fn[configured]"
+            "selector": "mod[tests]/fn[verify_returns_direct_and_tool_reads_in_one_trace]/impl[ReadThenAsk/Criterion<TestDomain>]/fn[execute]"
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "7331586e4cab50117dce41f0a57846480ae92e4e14ea951a9dc6ef983b97fc88"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "2e034602d87923396388e013781aa7156f430e274aed4314ea53fe08ccc69f6a"
         }
       ]
     },
@@ -391,14 +237,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
             },
-            "selector": "trait[Agent]"
+            "selector": "mod[tests]/fn[verify_returns_direct_and_tool_reads_in_one_trace]/impl[ReadThenAsk/Criterion<TestDomain>]/fn[version]"
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "d5760280680713f409a260ddb98f8e8e46ba58278ba861de0584bcade52fbdfc"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "39ba91029e394681371eb2fec0710b0912350a1a5a0f1fbfa5d75db0348cddf1"
         }
       ]
     },
@@ -408,14 +254,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
             },
-            "selector": "trait[Agent]/fn[run]"
+            "selector": "mod[tests]/fn[verify_returns_direct_and_tool_reads_in_one_trace]/impl[ReadThenAsk/Criterion<TestDomain>]/fn[criterion_path]"
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "e1401cee37b7867b6b119ef96d50a3dfa5d4aa24b4a0ba88b686ee91a999a4f5"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "00532b0588a05b799176174e84adf1882efa40b718404377262581b7055c2bf3"
         }
       ]
     },
@@ -425,14 +271,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
             },
-            "selector": "impl[ValidationContext<'d,%20D>]#1"
+            "selector": "mod[tests]/fn[verify_returns_direct_and_tool_reads_in_one_trace]/impl[ReadThenAsk/Criterion<TestDomain>]/fn[source_node_id]"
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "85379bb0cf486acbf9877d5c5249fbb3f906ce03a2456e0fbaae7c7f9b9b504c"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "6dc626bd3e590dde8e37bce0e030a49e9669e1df6388b02e08f174f3ab40c7f2"
         }
       ]
     },
@@ -442,14 +288,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent.rs"
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
             },
-            "selector": "fn[converse]"
+            "selector": "mod[tests]/fn[verify_returns_direct_and_tool_reads_in_one_trace]/impl[ReadThenAsk/Criterion<TestDomain>]/type[Ok]"
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "c53d34568baee1fb59d682964b7784559e61ffb18dbcf32a880e7d38b636db7f"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "213940d67b0e63866d0f2cbf24c0efde0b8abd278d454d5225c1dd26e489a248"
         }
       ]
     }

@@ -61,6 +61,11 @@ Item selectors, percent encoding, anonymous identities, and duplicate-name
 suffixes follow {cite}`requirements.references.outline_selectors`.
 :::
 
+For `impl<T> Trait for Wrapper<T>`, the selector is `impl[Wrapper<T>/Trait]`
+and the {cite}`requirements.sdk.outlines.name_span` highlights `Trait for Wrapper<T>`.
+For a bare `extern { … }` block, the selector is `extern[Rust]` and the span
+highlights the `extern` keyword.
+
 This source contains `mod[auth]/fn[check_token]`:
 
 ```rust
@@ -69,6 +74,17 @@ mod auth {
     pub fn check_token() -> bool { true }
 }
 ```
+
+## Inspect attachments
+
+:::{req} attachments
+Rust reports line and block comments, including outer and inner documentation
+comments, as `Comment`. An outer attribute (`#[…]`) attached to an outline
+item is an `Annotation` on that item. These are the two kinds Rust reports.
+For example, a function preceded by `/// Verify the token.` and `#[inline]`
+owns a `Comment` followed by an `Annotation`. A file-level `//!` comment
+belongs to the file root.
+:::
 
 ## Fingerprint the contents
 
@@ -89,8 +105,9 @@ Attributes attached to an item participate in that item's hash.
 use trust_but_verify::domain::NodeContents;
 use trust_but_verify::outline::OutlineContent;
 
+let cache = trust_but_verify::domain::ValidationCache::<AppDomain>::new();
 let select = |source: &str| {
-    OutlineContent::from_source("auth.rs", source.into())?
+    OutlineContent::from_source(&cache, "auth.rs", source.into())?
         .select("fn[check_token]")
 };
 

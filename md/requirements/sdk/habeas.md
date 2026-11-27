@@ -7,16 +7,29 @@ records the inputs used to compute each answer.
 
 ## Supply data and validation policy
 
-HC's domain defines its `NodeId`, labeled relationships, `NodeContent`, and
-evidence storage. A simplified application model has these shapes; the
-particular variants and fields are illustrative:
+:::{req} graph_discovery
+HC creates one `HabeasDomain` with an empty graph and a validation cache. It scans source snapshots through that cache, discovers declarations and references, and populates the domain's graph. Reviews query the populated domain using the same cache. A reference and its declaration resolve to the same node in either discovery order.
+:::
+
+:::{example} implementation-edge
+{cite}`requirements.sdk.habeas.graph_discovery`
+
+When discovery finds ``// {impl}`requirements.auth.expiration` `` on `fn[check_token]` in `src/auth.rs`, it interns the requirement name and the source item's identity. HC adds the source node's handle to the requirement's implementation edges. Asking for those edges returns the handle that the criterion can pass to `read`.
+:::
+
+HC supplies durable node data, labeled relationships, node contents, and evidence storage. For example:
 
 ```rust,ignore
-enum HcNodeId {
-    Requirement(RequirementId),
+enum HabeasNodeData {
+    Requirement(String),
     Fixme(FixmeId),
-    Source(OutlineId),
+    Source(OutlineData),
     GithubIssue(IssueId),
+}
+
+struct RequirementData {
+    impl_edges: Vec<NodeId<HabeasDomain>>,
+    test_edges: Vec<NodeId<HabeasDomain>>,
 }
 
 enum HcNodeContent {
@@ -69,19 +82,27 @@ The SDK supplies these operations for `OutlineContent` under
 {cite}`requirements.sdk.outlines.node_contents`. HC supplies them for its issue
 data and other application-defined values.
 
+:::{req} citation_criterion
+HC runs the `citation-review` criterion on the source node for the reviewed file and outline selector. Its evidence records the source node and its content fingerprint. HC loads and saves the result at the citation review’s existing evidence path.
+:::
+
 HC's criterion types specify the questions. Its `Context` implementations
 supply the review instructions and conventions. HC loads SDK agent
 configuration through its own [configuration policy](../configuration.md),
-then constructs a validator:
+then installs the assessment’s configured agent and tools on a clone of the discovery cache under {cite}`requirements.sdk.validation-cache.set_agent`. Each assessment creates its own validator and reads its usage before handling the result under {cite}`requirements.authoring.usage_requests`.
 
 ```rust,ignore
-let validator = Validator::new(hc_domain).with_agent(agent_config);
-let result = validator.verify(review_criterion).await?;
+use trust_but_verify::graph::Validator;
 
-// HC interprets result.output() according to its validation policy.
+let mut validator = Validator::new(&hc_domain);
+let result = validator.verify(review_criterion).await;
+let usage = validator.usage(); // Available on success and failure.
+let assessment = result?;
+
+// HC interprets assessment.output() according to its validation policy.
 ```
 
-The SDK supplies the agent, fixed tools, paging,
+The SDK supplies the agent, built-in tools, paging,
 and structured submission. HC performs confirmation, assesses rationales, and
 combines answers inside its criteria and command policy. Those computations can
 make further `ask` requests with additional `Context` and tracked inputs.

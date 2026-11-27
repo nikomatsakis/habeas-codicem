@@ -25,7 +25,6 @@ impl PathPolicy {
     }
 
     // {impl}`requirements.configuration.evidence_paths`
-    // {impl}`requirements.authoring.tool_descriptions.special_cases`
     pub fn check_disallow(&self, requested: &Path, target: &Path) -> io::Result<()> {
         if self.disallow.is_empty() {
             return Ok(());
@@ -52,317 +51,105 @@ impl PathPolicy {
     }
 }
 
-// {impl}`requirements.authoring.generated_inputs`
+/// The SDK source provider used by Habeas authoring.
+// {impl}`requirements.authoring.source_tools`
 pub struct SourceAccess {
-    tracked: Option<BTreeSet<PathBuf>>,
-    policy: PathPolicy,
-    generated: Vec<PathBuf>,
-    /// The book's build directory and the project-root `target` directory.
-    build_output: Vec<PathBuf>,
+    sources: trust_but_verify::sources::Sources,
 }
 
 impl SourceAccess {
-    // {impl}`requirements.configuration.evidence_paths`
-    // {impl}`requirements.authoring.generated_inputs`
-    pub fn load(root: &Path, policy: impl FnOnce() -> io::Result<PathPolicy>) -> io::Result<Self> {
-        Ok(Self {
-            tracked: tracked_sources(root)?,
-            policy: policy()?,
-            generated: generated_roots(root),
-            build_output: build_output_dirs(root),
-        })
+    pub fn new(root: &Path) -> Self {
+        Self {
+            sources: trust_but_verify::sources::Sources::new(root),
+        }
     }
 
-    // {impl}`requirements.authoring.file_discovery`
-    // {impl}`requirements.configuration.evidence_paths`
-    // {impl}`requirements.authoring.generated_inputs`
-    // {impl}`requirements.authoring.read_denial.untracked`
-    // {impl}`requirements.authoring.read_denial.build_output`
+    // The SDK resolves parent components lexically before resolving symlinks.
+    pub(crate) fn relative(root: &Path, path: &Path) -> io::Result<PathBuf> {
+        let path = path.strip_prefix(root).unwrap_or(path);
+        let mut relative = PathBuf::new();
+        for component in path.components() {
+            match component {
+                Component::Normal(name) => relative.push(name),
+                Component::CurDir => {}
+                Component::ParentDir if relative.pop() => {}
+                _ => return Err(denied(format!("{} is outside the project", path.display()))),
+            }
+        }
+        Ok(relative)
+    }
+
+    // {impl}`requirements.authoring.source_tools`
+    // {impl}`requirements.authoring.mandatory_inputs`
     // {impl}`requirements.authoring.tool_descriptions.special_cases`
-    pub fn path(&self, root: &Path, relative: &Path) -> io::Result<PathBuf> {
-        let (requested, target) = resolve(root, relative)?;
-        self.policy.check_disallow(&root.join(relative), &target)?;
-        if self.policy.allowed(&requested, &target) {
-            return Ok(target);
-        }
-        if generated_evidence_path(root, &requested) {
-            return Err(denied(format!(
-                "{}: generated evidence is output, not assessment source; an explicit habeas.toml allow rule is required",
-                relative.display()
-            )));
-        }
-        if self
-            .generated
-            .iter()
-            .any(|directory| requested.starts_with(directory) && target.starts_with(directory))
-        {
-            return Ok(target);
-        }
-        let lexical_request = normalize(&root.join(relative));
-        // Build output is not source; a directory holding permitted
-        // generated output stays listable.
-        if self
-            .build_output
-            .iter()
-            .any(|directory| lexical_request.starts_with(directory))
-            && !self
-                .extra_roots()
-                .any(|extra| extra.starts_with(&lexical_request) || extra.starts_with(&target))
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                OutsideProject(format!(
-                    "{} holds build output; the sources it is built from are elsewhere in the project, so read those instead",
-                    relative.display()
-                )),
-            ));
-        }
-        if !lexical_request.starts_with(root) {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                OutsideProject(format!(
-                    "{} is outside the project and no habeas.toml rule permits it; only project sources and explicitly allowed paths can be read",
-                    relative.display()
-                )),
-            ));
-        }
-        if !target.starts_with(root) {
-            return Err(denied(format!(
-                "{} resolves outside the project; add an explicit habeas.toml allow rule before retrying",
-                relative.display()
-            )));
-        }
-        if let Some(tracked) = &self.tracked {
-            if target.is_dir() {
-                if !self.has_source_under(root, &requested) || !self.has_source_under(root, &target)
-                {
-                    return Err(denied(format!(
-                        "{} contains no tracked sources: its files are untracked, so they cannot be read; the caller can stage them with `git add` or permit them with a workspace habeas.toml allow rule",
-                        relative.display()
-                    )));
-                }
-            } else {
-                for path in [&lexical_request, &target] {
-                    if !tracked.contains(path) {
-                        return Err(denied(format!(
-                            "{} is untracked: it is not in the Git index, so it cannot be read; the caller can stage it with `git add` or permit it with a workspace habeas.toml allow rule",
-                            path.strip_prefix(root).unwrap_or(path).display()
-                        )));
-                    }
-                }
-            }
-        }
-        Ok(target)
+    pub fn read(
+        &self,
+        root: &Path,
+        path: &Path,
+    ) -> io::Result<(PathBuf, trust_but_verify::sources::SourceFile)> {
+        use trust_but_verify::sources::SourceError;
+        let relative = Self::relative(root, path)?;
+        let file =
+            futures_executor::block_on(self.sources.read(&relative)).map_err(
+                |error| match error {
+                    SourceError::Io(error) => io::Error::new(
+                        error.kind(),
+                        format!("cannot read {}: {error}", path.display()),
+                    ),
+                    error => denied(format!("cannot read {}: {error}", path.display())),
+                },
+            )?;
+        Ok((root.join(relative), file))
     }
 
-    // {impl}`requirements.authoring.mandatory_inputs`
-    pub fn file(&self, root: &Path, relative: &Path) -> io::Result<PathBuf> {
-        let target = self.path(root, relative)?;
-        if !target.is_file() {
-            return Err(io::Error::other(format!(
-                "{} is not a source file",
-                relative.display()
-            )));
-        }
-        Ok(target)
-    }
-
-    // {impl}`requirements.authoring.mandatory_inputs`
-    // {impl}`requirements.configuration.evidence_paths`
-    pub fn omit_generated_evidence(&self, root: &Path, path: &Path) -> bool {
-        let joined = root.join(path);
-        let requested = requested_location(&joined).unwrap_or_else(|_| joined.clone());
-        let target = fs::canonicalize(&joined).unwrap_or_else(|_| joined.clone());
-        if !generated_evidence_path(root, &requested) {
-            return false;
-        }
-        self.policy.check_disallow(&joined, &target).is_ok()
-            && !self.policy.allowed(&requested, &target)
-    }
-
-    // {impl}`requirements.authoring.file_discovery`
-    // {impl}`requirements.authoring.generated_inputs`
-    // {impl}`requirements.configuration.evidence_paths`
-    fn has_source_under(&self, root: &Path, directory: &Path) -> bool {
-        self.extra_roots().any(|path| {
-            let target = fs::canonicalize(path).unwrap_or_else(|_| path.clone());
-            target != directory
-                && (path.starts_with(directory) || target.starts_with(directory))
-                && self.policy.check_disallow(path, &target).is_ok()
-        }) || self.tracked.as_ref().is_some_and(|tracked| {
-            tracked.iter().any(|path| {
-                path != directory && path.starts_with(directory) && self.file(root, path).is_ok()
-            })
-        })
-    }
-
-    // {impl}`requirements.authoring.generated_inputs`
-    // {impl}`requirements.configuration.evidence_paths`
-    // {impl}`requirements.authoring.file_discovery`
-    pub fn extra_roots(&self) -> impl Iterator<Item = &PathBuf> {
-        self.policy.allow.iter().chain(self.generated.iter())
+    pub fn file(&self, root: &Path, path: &Path) -> io::Result<PathBuf> {
+        self.read(root, path).map(|(path, _)| path)
     }
 }
 
-/// The project files reference discovery and Rust item coverage consider: the
-/// sources [`SourceAccess`] would let authoring read by default, found without
-/// authoring configuration or Cargo metadata.
 // {impl}`requirements.authoring.deterministic_validation`
-pub struct DiscoverySources {
-    root: PathBuf,
-    tracked: Option<BTreeSet<PathBuf>>,
+// {impl}`requirements.references.discovery`
+// {impl}`requirements.ci.errors`
+pub(super) fn discover_files(
+    root: &Path,
     policy: PathPolicy,
-}
-
-impl DiscoverySources {
-    /// Loads the Git index, then asks the consumer for discovery rules.
-    // {impl}`requirements.authoring.deterministic_validation`
-    pub fn load(root: &Path, policy: impl FnOnce() -> PathPolicy) -> io::Result<Self> {
-        Ok(Self {
-            root: root.to_owned(),
-            tracked: tracked_sources(root)?,
-            policy: policy(),
-        })
-    }
-
-    /// Every considered file, sorted. In a Git worktree these are the indexed
-    /// files; outside Git, every file under the project root. Symlinks are not
-    /// followed, so no source is counted twice through an alias.
-    // {impl}`requirements.ci.errors`
-    pub fn files(&self, errors: &mut Vec<String>) -> Vec<PathBuf> {
-        let mut files: Vec<PathBuf> = match &self.tracked {
-            Some(tracked) => tracked
-                .iter()
-                .filter(|path| {
-                    // An indexed file deleted from the worktree has no
-                    // content to scan; an uninspectable one is kept so that
-                    // reading it reports the failure.
-                    fs::symlink_metadata(path).map_or_else(
-                        |error| error.kind() != io::ErrorKind::NotFound,
-                        |metadata| metadata.is_file(),
-                    )
-                })
-                .filter(|path| self.considers(path, false))
-                .cloned()
-                .collect(),
-            None => self.walk(errors),
-        };
-        files.sort();
-        files
-    }
-
-    /// The files in the Git index, including staged and deleted ones; `None`
-    /// outside Git.
-    // {cite}`habeas:util`
-    pub fn indexed(&self) -> Option<&BTreeSet<PathBuf>> {
-        self.tracked.as_ref()
-    }
-
-    /// Untracked files a Git worktree's ignore rules do not exclude, with the
-    /// same exclusions as [`Self::files`]; empty outside Git.
-    // {cite}`habeas:util`
-    pub fn untracked(&self) -> io::Result<Vec<PathBuf>> {
-        if self.tracked.is_none() {
-            return Ok(Vec::new());
-        }
-        let output = Command::new("git")
-            .current_dir(&self.root)
-            .args([
-                "ls-files",
-                "--others",
-                "--exclude-standard",
-                "-z",
-                "--",
-                ".",
-            ])
-            .output()?;
-        if !output.status.success() {
-            return Err(io::Error::other(format!(
-                "cannot list untracked files: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
-        }
-        let mut files: Vec<PathBuf> = output
-            .stdout
-            .split(|byte| *byte == 0)
-            .filter(|path| !path.is_empty())
-            .filter_map(|path| std::str::from_utf8(path).ok())
-            .map(|path| self.root.join(path))
-            .filter(|path| fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file()))
-            .filter(|path| self.considers(path, false))
-            .collect();
-        files.sort();
-        Ok(files)
-    }
-
-    /// Whether a project file outside the fixed exclusions is permitted by the
-    /// workspace rules: not disallowed.
-    // {impl}`requirements.configuration.evidence_paths`
-    pub fn considers(&self, path: &Path, directory: bool) -> bool {
-        if excluded_from_discovery(&self.root, path, directory) {
-            return false;
-        }
-        let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
-        self.policy.check_disallow(path, &target).is_ok()
-    }
-
-    /// Lists every file outside Git, skipping excluded and disallowed
-    /// directories without descending into them.
-    // {impl}`requirements.ci.errors`
-    fn walk(&self, errors: &mut Vec<String>) -> Vec<PathBuf> {
-        let root = &self.root;
-        let label = |path: &Path| {
-            path.strip_prefix(root)
-                .unwrap_or(path)
-                .display()
-                .to_string()
-        };
-        let mut stack = vec![root.clone()];
-        let mut files = Vec::new();
-        while let Some(directory) = stack.pop() {
-            let entries = match fs::read_dir(&directory) {
-                Ok(entries) => entries,
-                Err(error) => {
-                    errors.push(format!(
-                        "{}: cannot scan references: {error}",
-                        label(&directory)
-                    ));
-                    continue;
+    errors: &mut Vec<String>,
+) -> Vec<PathBuf> {
+    let mut walk = ignore::WalkBuilder::new(root);
+    let project = root.to_owned();
+    walk.standard_filters(false)
+        .git_ignore(true)
+        .require_git(false)
+        .filter_entry(move |entry| {
+            entry.depth() == 0
+                || considers(
+                    &project,
+                    &policy,
+                    entry.path(),
+                    entry.file_type().is_some_and(|kind| kind.is_dir()),
+                )
+        });
+    let mut files = Vec::new();
+    for entry in walk.build() {
+        match entry {
+            Ok(entry) => {
+                if let Some(error) = entry.error() {
+                    errors.push(format!("cannot discover reference sources: {error}"));
                 }
-            };
-            for entry in entries {
-                let entry = match entry {
-                    Ok(entry) => entry,
-                    Err(error) => {
-                        errors.push(format!(
-                            "{}: cannot scan directory entry: {error}",
-                            label(&directory)
-                        ));
-                        continue;
-                    }
-                };
-                let path = entry.path();
-                let kind = match entry.file_type() {
-                    Ok(kind) => kind,
-                    Err(error) => {
-                        errors.push(format!(
-                            "{}: cannot inspect reference source: {error}",
-                            label(&path)
-                        ));
-                        continue;
-                    }
-                };
-                if kind.is_dir() {
-                    if self.considers(&path, true) {
-                        stack.push(path);
-                    }
-                } else if kind.is_file() && self.considers(&path, false) {
-                    files.push(path);
+                if entry.file_type().is_some_and(|kind| kind.is_file()) {
+                    files.push(entry.into_path());
                 }
             }
+            Err(error) => errors.push(format!("cannot discover reference sources: {error}")),
         }
-        files
     }
+    files.sort();
+    files
+}
+
+// {impl}`requirements.configuration.evidence_paths`
+pub(crate) fn considers(root: &Path, policy: &PathPolicy, path: &Path, directory: bool) -> bool {
+    !excluded_from_discovery(root, path, directory) && policy.check_disallow(path, path).is_ok()
 }
 
 /// Whether a file, or a directory when `directory` is set, lies in a `.git`
@@ -373,6 +160,9 @@ fn excluded_from_discovery(root: &Path, path: &Path, directory: bool) -> bool {
     let Ok(relative) = path.strip_prefix(root) else {
         return true;
     };
+    if relative.file_name().is_some_and(|name| name == ".git") {
+        return true;
+    }
     let directories = if directory {
         Some(relative)
     } else {
@@ -401,56 +191,8 @@ fn requested_location(path: &Path) -> io::Result<PathBuf> {
     }
 }
 
-// {impl}`requirements.configuration.evidence_paths`
-pub fn normalize(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            other => normalized.push(other.as_os_str()),
-        }
-    }
-    normalized
-}
-
-/// A denial of a request that names a path outside the project and is not
-/// permitted by workspace or generated-output policy, or of a path holding
-/// build output. Mandatory inputs abort on it; a model's dispatched request
-/// receives it as a recoverable tool error.
 // {cite}`habeas:util`
-#[derive(Debug)]
-pub struct OutsideProject(String);
-
-impl std::fmt::Display for OutsideProject {
-    // {impl}`requirements.authoring.read_denial`
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for OutsideProject {}
-
-/// Turns a denial of a path outside the project into an ordinary read failure,
-/// leaving every other error unchanged.
-// {impl}`requirements.authoring.file_discovery`
-// {impl}`requirements.authoring.outline_tool`
-pub fn recoverable_outside_request(error: io::Error) -> io::Error {
-    if error
-        .get_ref()
-        .is_some_and(|inner| inner.is::<OutsideProject>())
-    {
-        io::Error::other(error.to_string())
-    } else {
-        error
-    }
-}
-
-// {cite}`habeas:util`
-/// A source-access policy denial. Only these, and [`OutsideProject`] denials
-/// of mandatory inputs, abort an assessment; an operating-system permission
+/// A source-access policy denial. A denied mandatory input aborts its assessment; an operating-system permission
 /// failure is an ordinary read failure.
 #[derive(Debug)]
 struct PolicyDenial(String);
@@ -464,22 +206,6 @@ impl std::fmt::Display for PolicyDenial {
 
 impl std::error::Error for PolicyDenial {}
 
-/// Turns a permission error that did not come from source-access policy, such
-/// as an operating-system `EACCES`, into an ordinary read failure, leaving
-/// policy denials and every other error unchanged.
-// {impl}`requirements.authoring.read_denial`
-pub fn recoverable_os_denial(error: io::Error) -> io::Error {
-    if error.kind() == io::ErrorKind::PermissionDenied
-        && !error
-            .get_ref()
-            .is_some_and(|inner| inner.is::<PolicyDenial>() || inner.is::<OutsideProject>())
-    {
-        io::Error::other(error.to_string())
-    } else {
-        error
-    }
-}
-
 // {cite}`habeas:util`
 fn denied(message: impl Into<String>) -> io::Error {
     io::Error::new(
@@ -488,7 +214,6 @@ fn denied(message: impl Into<String>) -> io::Error {
     )
 }
 
-// {impl}`requirements.authoring.file_discovery`
 // {impl}`requirements.configuration.evidence_paths`
 fn resolve(root: &Path, relative: &Path) -> io::Result<(PathBuf, PathBuf)> {
     if relative.as_os_str().is_empty() {
@@ -508,7 +233,7 @@ fn resolve(root: &Path, relative: &Path) -> io::Result<(PathBuf, PathBuf)> {
     Ok((requested, target))
 }
 
-fn tracked_sources(root: &Path) -> io::Result<Option<BTreeSet<PathBuf>>> {
+pub(crate) fn tracked_sources(root: &Path) -> io::Result<Option<BTreeSet<PathBuf>>> {
     let mut has_git_marker = false;
     for directory in root.ancestors() {
         match fs::symlink_metadata(directory.join(".git")) {
@@ -572,24 +297,6 @@ fn tracked_sources(root: &Path) -> io::Result<Option<BTreeSet<PathBuf>>> {
         })
         .collect::<io::Result<_>>()?;
     Ok(Some(tracked))
-}
-
-/// The directories holding the project's build output: the book's build
-/// directory, `book` unless `book.toml` sets `[build] build-dir`, and the
-/// project-root `target` directory.
-// {cite}`habeas:util`
-fn build_output_dirs(root: &Path) -> Vec<PathBuf> {
-    let book = fs::read_to_string(root.join("book.toml"))
-        .ok()
-        .and_then(|text| text.parse::<toml_edit::DocumentMut>().ok())
-        .and_then(|book| {
-            book.get("build")?
-                .get("build-dir")?
-                .as_str()
-                .map(str::to_owned)
-        })
-        .unwrap_or_else(|| "book".to_owned());
-    vec![normalize(&root.join(book)), root.join("target")]
 }
 
 // {impl}`requirements.authoring.generated_inputs`
@@ -721,14 +428,4 @@ mod tests {
         fs::write(fake.join("root-output"), unrelated.path().to_str().unwrap()).unwrap();
         assert_eq!(discover_generated_roots(root.path()), vec![out, cross]);
     }
-}
-
-// {impl}`requirements.authoring.mandatory_inputs`
-// {impl}`requirements.authoring.file_discovery`
-pub fn generated_evidence_path(root: &Path, path: &Path) -> bool {
-    let path = root.join(path);
-    let evidence = root.join("evidence");
-    path.starts_with(&evidence)
-        || fs::canonicalize(&path)
-            .is_ok_and(|path| path.starts_with(fs::canonicalize(&evidence).unwrap_or(evidence)))
 }

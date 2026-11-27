@@ -245,6 +245,10 @@ pub(super) fn load_saved(project: &Path, target: Option<PathBuf>) -> SavedCovera
     let mut records = Vec::new();
     let loaded = (|| -> io::Result<_> {
         let root = workspace_root(project)?;
+        let mut errors = Vec::new();
+        crate::evidence::discovered_files(&root, &mut errors);
+        invalid_store = !errors.is_empty();
+        diagnostics.extend(errors);
         let target = target
             .map(Ok)
             .unwrap_or_else(|| target_directory(project))?;
@@ -260,12 +264,6 @@ pub(super) fn load_saved(project: &Path, target: Option<PathBuf>) -> SavedCovera
         }
         Ok((root, target, storage, snapshot)) => {
             let active_configuration = snapshot.configuration;
-            let mut errors = Vec::new();
-            let _ = crate::evidence::discovered_files(&root, &mut errors);
-            if !errors.is_empty() {
-                invalid_store = true;
-            }
-            diagnostics.extend(errors);
             let runs: BTreeMap<_, _> = snapshot
                 .runs
                 .into_iter()
@@ -331,9 +329,10 @@ pub(super) fn populate_in(
     let discovered = crate::evidence::discovered_files(&root, &mut diagnostics);
     // Deleted indexed sources cannot reveal their annotations. Report them
     // here without changing the discovery used by status and author.
-    if let Ok(sources) = crate::authoring::access::load_discovery_sources(&root) {
-        for file in sources.indexed().into_iter().flatten() {
-            if sources.considers(file, false)
+    if let Ok(Some(indexed)) = crate::authoring::access::tracked_sources(&root) {
+        let policy = crate::authoring::access::load_policy(&root).unwrap_or_default();
+        for file in &indexed {
+            if crate::authoring::access::considers(&root, &policy, file, false)
                 && fs::symlink_metadata(file)
                     .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
             {
@@ -1212,8 +1211,15 @@ mod tests {
         record(temp.path(), "one", 1, "a", &[(1, 1)]);
         let storage = temp.path().join("target/habeas/coverage");
         fs::set_permissions(&storage, fs::Permissions::from_mode(0o000)).unwrap();
+        fs::write(temp.path().join(".gitignore"), "[z-a]").unwrap();
         let selected = saved_coverage(temp.path());
         fs::set_permissions(storage, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            selected
+                .diagnostics
+                .iter()
+                .any(|error| error.contains("cannot discover reference sources"))
+        );
         assert!(
             selected
                 .diagnostics
@@ -1529,8 +1535,7 @@ mod tests {
                 .any(|chapter| chapter.name == "File notes: broken.rs")
         );
         fs::remove_file(root.join("broken.rs")).unwrap();
-        git2::Repository::init(root).unwrap();
-        fs::write(root.join(".git/index"), "not an index").unwrap();
+        fs::write(root.join(".gitignore"), "[z-a]").unwrap();
         let mut failure = book;
         populate(&mut failure, root).unwrap();
         let content = &failure.chapters().next().unwrap().content;

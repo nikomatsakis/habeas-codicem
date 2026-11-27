@@ -61,7 +61,18 @@ fn locations_use_absolute_xdg_values_and_platform_fallbacks() {
         state_root_from(ConfigPlatform::Windows, windows).unwrap(),
         state.join("habeas/state")
     );
-    assert!(user_config_path_from(ConfigPlatform::Unix, |_| None).is_err());
+    let home_only = |key: &str| (key == "HOME").then(|| home.as_os_str().to_owned());
+    assert_eq!(
+        user_config_path_from(ConfigPlatform::Unix, home_only).unwrap(),
+        home.join(".config/habeas/config.toml")
+    );
+    for (platform, variable) in [
+        (ConfigPlatform::Unix, "HOME"),
+        (ConfigPlatform::Windows, "APPDATA"),
+    ] {
+        let error = user_config_path_from(platform, |_| None).unwrap_err();
+        assert!(error.to_string().contains(variable), "{error}");
+    }
     assert!(state_root_from(ConfigPlatform::Windows, |_| None).is_err());
 }
 
@@ -154,6 +165,22 @@ model = "tiny:latest"
     assert!(!serialized.contains("http://localhost"));
     assert!(!serialized.contains("concurrency"));
     assert_eq!(UserConfig::parse(&serialized, path).unwrap(), config);
+}
+
+// {test}`requirements.configuration.serialization`
+#[test]
+fn explicit_connection_settings_survive_serialization() {
+    let path = Path::new("settings.toml");
+    for backend in ["openai", "ollama"] {
+        let source = format!(
+            "version = 1\n[authoring.configs.test]\nbackend = '{backend}'\nmodel = 'fixture'\nendpoint = 'https://fixture.invalid'\napi_key_env = 'FIXTURE_KEY'\n"
+        );
+        let config = UserConfig::parse(&source, path).unwrap();
+        let serialized = config.to_toml().unwrap();
+        assert!(serialized.contains("https://fixture.invalid"));
+        assert!(serialized.contains("FIXTURE_KEY"));
+        assert_eq!(UserConfig::parse(&serialized, path).unwrap(), config);
+    }
 }
 
 // {test}`requirements.authoring.concurrency`
@@ -706,6 +733,17 @@ fn explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them() {
     let path = Path::new("habeas.toml");
     let source = "version = 1\n[authoring.configs.cloud]\nbackend = 'bedrock'\nmodel = 'm'\n[authoring.configs.cloud.credentials]\naccess_key_id = 'PRIVATE_ACCESS_KEY'\nsecret_access_key = 'PRIVATE_SECRET_KEY'\nsession_token = 'PRIVATE_SESSION'\n[authoring.configs.local]\nbackend = 'ollama'\nmodel = 'm'\napi_key = 'PRIVATE_OLLAMA_KEY'\n[authoring.configs.openai]\nbackend = 'openai'\napi_key = 'PRIVATE_OPENAI_KEY'\n";
     let config = WorkspaceConfig::parse(source, path).unwrap();
+    let permanent = source.replace("session_token = 'PRIVATE_SESSION'\n", "");
+    let permanent = WorkspaceConfig::parse(&permanent, path).unwrap();
+    let encoded = permanent.to_toml().unwrap();
+    assert!(!encoded.contains("session_token"));
+    assert_eq!(WorkspaceConfig::parse(&encoded, path).unwrap(), permanent);
+    for required in [
+        "access_key_id = 'PRIVATE_ACCESS_KEY'",
+        "secret_access_key = 'PRIVATE_SECRET_KEY'",
+    ] {
+        assert!(WorkspaceConfig::parse(&source.replace(required, ""), path).is_err());
+    }
     let debug = format!("{config:?}");
     for secret in [
         "PRIVATE_ACCESS_KEY",
@@ -1287,10 +1325,10 @@ fn configuration_documentation_covers_locations_structure_editing_and_removal() 
         "Selection order is `--config`, the user's per-project selection, workspace default, then user default",
         "omitted settings use their documented defaults",
         "Relative paths in this file use its directory as their base",
-        "An allow overrides all defaults; disallow wins if both match",
+        "When checking saved evidence inputs, disallow wins if both rules match",
         "Paths name literal files or directory subtrees, not globs",
         "An omitted `allow` or `disallow` means an empty list",
-        "delete the whole `[evidence]` table to restore the default source-access rules",
+        "delete the whole `[evidence]` table to restore the default evidence validation rules",
         "$XDG_STATE_HOME/habeas/authoring/usage",
         "$HOME/.local/state/habeas/authoring/usage",
         "%LOCALAPPDATA%/habeas/state/authoring/usage",
@@ -1396,10 +1434,10 @@ fn credential_documentation_warns_about_committed_and_explicitly_read_workspace_
     for required in [
         "not recommended, especially in a workspace file that might be committed",
         "Prefer AWS profiles (`aws_profile`) or environment-variable references (`api_key_env`)",
-        "Workspace files may be committed or read as source when explicitly allowed",
+        "Workspace files may be committed or read as source when visible",
         "replace every uppercase placeholder with your own value",
         "keep the resulting file out of version control",
-        "credential values are replaced with `[REDACTED:<field>]`",
+        "can see literal values that the SDK’s built-in credential rules do not recognize",
     ] {
         assert!(
             guidance.contains(required),

@@ -11,25 +11,26 @@ their fingerprints and the text used in
 :phrase: graph node
 
 A *graph node* is a thing identified in the application's graph, such as a
-requirement, a function, a test, or an issue. The application's
-[`Domain::NodeId`](../../rustdocs/trust_but_verify/domain/trait.Domain.html#associatedtype.NodeId)
-identifies it; its contents and the criteria evaluated on it are separate from
-that identity.
+requirement, a function, a test, or an issue. `Domain::NodeData` identifies the same node across runs. For example, a requirement's qualified name can identify it as its text and implementation edges change.
 :::
 
 :::{req} domain_types
 {cite}`requirements.sdk.domain`
 
-The {term}`requirements.sdk.application_domain` implements
-`trust_but_verify::domain::Domain` to define its node-identity type. Its
-error type is introduced in {cite}`requirements.sdk.errors`:
+Each application domain defines what identifies a node across runs. Changes to a node's contents or outgoing edges preserve its identity.
+:::
+
+:::{req} NodeData
+{cite}`requirements.sdk.graph.domain_types`
+
+`Domain::NodeData` is the application-defined type that identifies a graph node across runs. Two `NodeData` values compare equal exactly when they identify the same node.
 
 ```rust,ignore
 pub trait Domain: Clone + Send + Sync {
     // ...
 
-    /// The *identifier* identifies a particular node in the graph.
-    type NodeId: Clone + Eq + Send + Sync;
+    /// Durable identity used to intern this node.
+    type NodeData: Clone + Eq + Hash + Send + Sync;
 
     // ...
 }
@@ -37,14 +38,14 @@ pub trait Domain: Clone + Send + Sync {
 :::
 
 :::{example} node-kinds
-{cite}`requirements.sdk.graph.domain_types`
+{cite}`requirements.sdk.graph.NodeData`
 
 An application that reviews requirements and source code can distinguish both
 kinds of node with one enum:
 
 ```rust
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ReviewNodeId {
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ReviewNodeData {
     Requirement(Vec<String>),
     Source {
         file: String,
@@ -53,16 +54,38 @@ pub enum ReviewNodeId {
 }
 ```
 
-Its `Domain` implementation sets `type NodeId = ReviewNodeId;`. For example,
-`ReviewNodeId::Requirement(vec!["sdk".into(), "errors".into()])` identifies a
-requirement, while `ReviewNodeId::Source { file: "src/lib.rs".into(),
+Its `Domain` implementation sets `type NodeData = ReviewNodeData;`. For example,
+`ReviewNodeData::Requirement(vec!["sdk".into(), "errors".into()])` identifies a
+requirement, while `ReviewNodeData::Source { file: "src/lib.rs".into(),
 selector: "fn[validate]".into() }` identifies a function.
+:::
+
+:::{req} NodeId
+`trust_but_verify::domain::NodeId<D>` is an opaque, `Copy` integer handle for a node interned in a `ValidationCache<D>`. Its meaning is scoped to that cache and its clones. The domain type distinguishes handles belonging to different domain types.
+
+```rust,ignore
+pub struct NodeId<D: Domain> { /* private fields */ }
+```
+
+`NodeId<D>` serializes as an unsigned integer. These implementations apply to every domain.
+
+```rust,ignore
+impl<D: Domain> Copy for NodeId<D>;
+impl<D: Domain> Clone for NodeId<D>;
+impl<D: Domain> Debug for NodeId<D>;
+impl<D: Domain> Eq for NodeId<D>;
+impl<D: Domain> PartialEq for NodeId<D>;
+impl<D: Domain> Hash for NodeId<D>;
+impl<D: Domain> Serialize for NodeId<D>;
+impl<'de, D: Domain> Deserialize<'de> for NodeId<D>;
+impl<D: Domain> JsonSchema for NodeId<D>;
+```
 :::
 
 ## Give nodes a stable path
 
-The application chooses its `NodeId` type. The SDK uses a
-{term}`requirements.sdk.graph.node_path` to display node identities in diagnostics.
+Filesystem evidence storage uses the
+{term}`requirements.sdk.graph.node_path` to construct the path to saved evidence.
 
 :::{definition} node_path
 :phrase: node path
@@ -72,10 +95,7 @@ node's identity.
 In the SDK, [`NodePath`](../../rustdocs/trust_but_verify/graph/struct.NodePath.html)
 represents this path.
 [`Domain::node_path`](../../rustdocs/trust_but_verify/domain/trait.Domain.html#tymethod.node_path)
-maps each application-defined
-[`NodeId`](../../rustdocs/trust_but_verify/domain/trait.Domain.html#associatedtype.NodeId)
-to a distinct path that stays stable across runs and changes to the node's
-contents.
+maps each handle to the stable path for its node data. The path stays the same across runs and changes to the node's contents.
 :::
 
 :::{req} node_path_struct
@@ -116,11 +136,9 @@ pub trait Domain: Clone + Send + Sync {
 
     /// Convert a `NodeId` into its `NodePath`.
     ///
-    /// The relationship between a `NodeId` and its `NodePath` must be 1:1.
-    /// That is: converting the same `NodeId` twice gives the same `NodePath` each time.
-    /// And distinct `NodeId`s get distinct `NodePath`s.
-    /// The mapping stays stable across runs and changes to node contents.
-    fn node_path(&self, node: &Self::NodeId) -> NodePath;
+    /// Equal node data yields the same path across caches and runs.
+    /// Distinct node data yields distinct paths.
+    fn node_path(&self, node: &NodeId<Self>) -> NodePath;
 
     // ...
 }
@@ -130,8 +148,8 @@ pub trait Domain: Clone + Send + Sync {
 :::{example} hierarchical-paths
 {cite}`requirements.sdk.graph.node_path_method`
 
-For the `ReviewNodeId` enum above, a requirement with the dotted name `a.b.c` is
-represented by `ReviewNodeId::Requirement(vec!["a".into(), "b".into(), "c".into()])`.
+For the `ReviewNodeData` enum above, a requirement with the dotted name `a.b.c` is
+represented by `ReviewNodeData::Requirement(vec!["a".into(), "b".into(), "c".into()])`.
 Its `node_path` implementation maps that identity to
 `["requirement", "a", "b", "c"]`.
 :::
@@ -171,7 +189,7 @@ pub trait Domain: Clone + Send + Sync {
     type NodeContent: NodeContents;
 
     /// Load and prepare this node's contents.
-    fn node_content(&self, node: &Self::NodeId) -> Result<Self::NodeContent, Self::Error>;
+    fn node_content(&self, node: &NodeId<Self>) -> Result<Self::NodeContent, Self::Error>;
 
     // ...
 }
@@ -347,8 +365,9 @@ fingerprint and source text ready for the agent:
 use trust_but_verify::domain::NodeContents;
 use trust_but_verify::outline::OutlineContent;
 
+let cache = trust_but_verify::domain::ValidationCache::<AppDomain>::new();
 let select = |source: &str| {
-    OutlineContent::from_source("auth.rs", source.into())
+    OutlineContent::from_source(&cache, "auth.rs", source.into())
         .unwrap()
         .select("fn[check_token]")
         .unwrap()
@@ -370,12 +389,12 @@ assert!(original.format().contains("fn check_token()"));
 implements `NodeContents`. An application can use it directly
 as `Domain::NodeContent`, or include it in a content enum alongside issue data
 and other node kinds. The selection retains its source snapshot and supplies
-both its structural fingerprint and formatted excerpt.
+both its formatted contents and the fingerprint of its own source under {cite}`requirements.sdk.outlines.node_contents`. Outline descendants have their own read fingerprints.
 
 | Selected contents | Fingerprinting rules |
 | --- | --- |
-| A Rust function such as `check_token` | The selected function's [Rust outline](sources/rust.md) hash. |
-| A requirement written in Markdown | The selected directive's [Markdown outline](sources/markdown.md) hash, including its body. |
+| A Rust function such as `check_token` | The function's own source under the [Rust outline](sources/rust.md) rules. |
+| A requirement written in Markdown | The directive's own body text under the [Markdown outline](sources/markdown.md) rules. |
 | Unstructured text | The [plain-text outline](sources/plain-text.md), with hashes for individual nonblank lines and the resource root. |
 
 Markdown structural hashing ignores ordinary whitespace, so reflowing a

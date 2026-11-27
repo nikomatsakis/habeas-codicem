@@ -1,5 +1,14 @@
 //! Configuration of the SDK's supported model backends.
 
+#[path = "domain_tools.rs"]
+mod domain_tools;
+use crate::{domain::Domain, request::ValidationContext};
+pub(crate) use domain_tools::RegisteredTool;
+use domain_tools::{TypedTool, sealed};
+use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
+use std::{future::Future, marker::PhantomData, sync::Arc};
+
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, ffi::OsString, fmt, io};
 
@@ -15,6 +24,66 @@ pub enum AgentConfig {
     OpenAi(OpenAiConfig),
     Ollama(OllamaConfig),
 }
+
+/// A domain operation offered to a model during a criterion's request.
+// {impl}`requirements.sdk.graph.agent-harness.Tool`
+pub trait Tool<D: Domain, A, R>: Send + Sync {
+    fn name(&self) -> &str;
+    fn description(&self) -> &str;
+    fn execute(&self, cx: &ValidationContext<'_, D>, args: A) -> impl Future<Output = R> + Send;
+}
+
+/// Backend settings and the Rust tools registered for one agent.
+// {impl}`requirements.sdk.graph.agent-harness.AgentWithTools`
+pub struct AgentWithTools<D: Domain> {
+    backend: AgentConfig,
+    tools: Vec<Arc<dyn RegisteredTool<D>>>,
+}
+
+impl AgentConfig {
+    // {impl}`requirements.sdk.graph.agent-harness.with_tool`
+    pub fn with_tool<
+        D: Domain,
+        A: DeserializeOwned + JsonSchema + 'static,
+        R: Serialize + 'static,
+    >(
+        self,
+        tool: Arc<impl Tool<D, A, R> + 'static>,
+    ) -> AgentWithTools<D> {
+        AgentWithTools {
+            backend: self,
+            tools: Vec::new(),
+        }
+        .with_tool(tool)
+    }
+}
+
+impl<D: Domain> AgentWithTools<D> {
+    // {impl}`requirements.sdk.graph.agent-harness.with_tool`
+    pub fn with_tool<A: DeserializeOwned + JsonSchema + 'static, R: Serialize + 'static>(
+        mut self,
+        tool: Arc<impl Tool<D, A, R> + 'static>,
+    ) -> Self {
+        self.tools.push(Arc::new(TypedTool {
+            tool,
+            signature: PhantomData,
+        }));
+        self
+    }
+}
+
+/// Agent configurations accepted by a domain's cache.
+///
+/// ```compile_fail
+/// use trust_but_verify::{agent::AgentSettings, domain::Domain};
+/// struct ThirdPartyConfig;
+/// impl<D: Domain> AgentSettings<D> for ThirdPartyConfig {}
+/// ```
+// {test}`requirements.sdk.graph.agent-harness.AgentSettings`
+// {impl}`requirements.sdk.graph.agent-harness.AgentSettings`
+pub trait AgentSettings<D: Domain>: sealed::Settings<D> {}
+impl<D: Domain> AgentSettings<D> for AgentConfig {}
+impl<D: Domain> AgentSettings<D> for AgentWithTools<D> {}
 
 // {impl}`requirements.sdk.graph.agent-harness.agent_config.settings`
 /// A credential whose Debug representation hides its value.
@@ -340,6 +409,7 @@ mod tests {
     // {test}`requirements.sdk.graph.agent-harness.OpenAiConfig`
     // {test}`requirements.sdk.graph.agent-harness.agent_config.settings`
     #[test]
+    // {test}`requirements.authoring.openai_defaults`
     fn openai_inference_options_only_fill_missing_defaults() {
         let minimal: AgentConfig = serde_json::from_value(json!({"backend":"openai"})).unwrap();
         assert_eq!(minimal, AgentConfig::OpenAi(OpenAiConfig::new()));
@@ -406,6 +476,12 @@ mod tests {
     #[test]
     fn backend_builders_set_only_the_requested_fields() {
         let bedrock = BedrockConfig::new("bedrock-model".into());
+        let minimum: BedrockConfig =
+            serde_json::from_value(json!({"model":"bedrock-model"})).unwrap();
+        assert_eq!(
+            serde_json::to_value(minimum).unwrap(),
+            serde_json::to_value(&bedrock).unwrap()
+        );
         let openai = OpenAiConfig::new();
         let ollama = OllamaConfig::new("ollama-model".into());
         assert_eq!(
@@ -447,11 +523,15 @@ mod tests {
             .endpoint("endpoint".into())
             .api_key_env("KEY".into())
             .api_key("key".into())
+            .option("a".into(), OptionValue::Integer(1))
+            .option("b".into(), OptionValue::Boolean(true))
             .option("a".into(), OptionValue::Integer(2));
         let ollama = ollama
             .endpoint("endpoint".into())
             .api_key_env("KEY".into())
             .api_key("key".into())
+            .option("a".into(), OptionValue::Integer(1))
+            .option("b".into(), OptionValue::Boolean(true))
             .option("a".into(), OptionValue::Integer(2));
         for (config, model) in [
             (serde_json::to_value(openai), "model"),
@@ -460,7 +540,7 @@ mod tests {
             assert_eq!(
                 config.unwrap(),
                 json!({
-                    "model": model, "endpoint": "endpoint", "api_key_env": "KEY", "api_key": "key", "options": {"a": 2}
+                    "model": model, "endpoint": "endpoint", "api_key_env": "KEY", "api_key": "key", "options": {"a": 2, "b": true}
                 })
             );
         }

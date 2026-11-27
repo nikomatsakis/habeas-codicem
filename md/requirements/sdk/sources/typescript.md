@@ -82,6 +82,14 @@ This source contains `function[checkToken]`:
 function checkToken(): boolean { return true; }
 ```
 
+## Inspect attachments
+
+:::{req} attachments
+TypeScript and TSX report only `Comment` attachments. Both recognize `//`
+line comments and `/* … */` block comments, including `/** … */`
+documentation comments. Decorators remain part of the parsed source.
+:::
+
 ## Fingerprint the contents
 
 :::{req} fingerprints

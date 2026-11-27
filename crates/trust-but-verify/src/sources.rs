@@ -207,7 +207,7 @@ pub mod defaults {
                 let node = &parsed.outline.nodes[innermost_node(&parsed.outline, text, &range)];
                 matches.push(map(
                     StructuralMatch {
-                        node: crate::outline::OutlineId {
+                        node: crate::outline::OutlineData {
                             path: PathBuf::from(&id.location),
                             selector: node.selector.clone(),
                         },
@@ -254,17 +254,20 @@ impl LocalSources {
                 Component::CurDir => {}
                 Component::ParentDir if relative.pop() => {}
                 _ => {
-                    return Err(SourceError::Invalid(
-                        "source path must be relative to the project directory".into(),
-                    ));
+                    return Err(SourceError::Invalid(format!(
+                        "{location}: source path must be relative to the project directory"
+                    )));
                 }
             }
         }
         let path = root.join(relative);
-        if !path.canonicalize()?.starts_with(&root) {
-            return Err(SourceError::Invalid(
-                "source is outside the selected root".into(),
-            ));
+        let target = path
+            .canonicalize()
+            .map_err(|error| std::io::Error::new(error.kind(), format!("{location}: {error}")))?;
+        if !target.starts_with(&root) {
+            return Err(SourceError::Invalid(format!(
+                "{location}: source is outside the selected root"
+            )));
         }
         Ok(path)
     }
@@ -348,14 +351,8 @@ impl LocalSources {
         Ok(resources)
     }
 
-    pub fn read_sync(&self, id: &ResourceId) -> Result<SourceFile, SourceError> {
-        if id.scheme != "repo" {
-            return Err(SourceError::Invalid(format!(
-                "unsupported resource scheme {:?}",
-                id.scheme
-            )));
-        }
-        let path = self.path(&id.location)?;
+    pub(crate) fn visible_path(&self, location: &str) -> Result<PathBuf, SourceError> {
+        let path = self.path(location)?;
         let root = self.project_directory()?;
         let target = path.canonicalize()?;
         if !project_path_visible(&root, &path)?
@@ -363,9 +360,20 @@ impl LocalSources {
         {
             return Err(SourceError::Invalid(format!(
                 "source is excluded from project inspection: {}",
-                id.location
+                location
             )));
         }
+        Ok(path)
+    }
+
+    pub fn read_sync(&self, id: &ResourceId) -> Result<SourceFile, SourceError> {
+        if id.scheme != "repo" {
+            return Err(SourceError::Invalid(format!(
+                "unsupported resource scheme {:?}",
+                id.scheme
+            )));
+        }
+        let path = self.visible_path(&id.location)?;
         Ok(SourceFile {
             bytes: std::fs::read(path)?.into(),
             language: None,

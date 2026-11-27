@@ -14,7 +14,26 @@ struct DeclarationLink<'a> {
     chapter: &'a str,
     requirement: &'a str,
     members: BTreeSet<String>,
-    linked_methods: Vec<&'a str>,
+    linked_methods: Vec<(&'a str, &'a str, &'a str)>,
+}
+
+fn declaration_target(target: &str) -> (&str, &str) {
+    let (chapter, fragment) = target
+        .split_once('#')
+        .expect("declaration link with an anchor");
+    assert_ne!(
+        chapter, "public-api.md",
+        "declarations belong in narrative chapters"
+    );
+    let chapter_id = chapter.strip_suffix(".md").unwrap();
+    let namespace = match chapter_id {
+        "../sdk" => "requirements.sdk".to_owned(),
+        relative => format!("requirements.sdk.{}", relative.replace('/', ".")),
+    };
+    let requirement = fragment
+        .strip_prefix(&format!("habeas-req-{namespace}."))
+        .unwrap_or_else(|| panic!("Invalid requirement anchor for {target}"));
+    (chapter, requirement)
 }
 
 fn specified_exports() -> (Exports, BTreeMap<String, DeclarationLink<'static>>) {
@@ -70,23 +89,12 @@ fn specified_exports() -> (Exports, BTreeMap<String, DeclarationLink<'static>>) 
             .collect::<Vec<_>>()
             .join("::");
         if !matches!(&captures[2], "mod" | "crate") {
-            let (chapter, fragment) = line
-                .split_once(" — [Declaration](")
-                .and_then(|(_, rest)| rest.split_once(')'))
-                .and_then(|(url, _)| url.split_once('#'))
-                .unwrap_or_else(|| panic!("Missing declaration link for {path}"));
-            assert_ne!(
-                chapter, "public-api.md",
-                "{path} belongs in a narrative chapter"
+            let (chapter, requirement) = declaration_target(
+                line.split_once(" — [Declaration](")
+                    .and_then(|(_, rest)| rest.split_once(')'))
+                    .unwrap_or_else(|| panic!("Missing declaration link for {path}"))
+                    .0,
             );
-            let chapter_id = chapter.strip_suffix(".md").unwrap();
-            let namespace = match chapter_id {
-                "../sdk" => "requirements.sdk".to_owned(),
-                relative => format!("requirements.sdk.{}", relative.replace('/', ".")),
-            };
-            let requirement = fragment
-                .strip_prefix(&format!("habeas-req-{namespace}."))
-                .unwrap_or_else(|| panic!("Invalid requirement anchor for {path}: {fragment}"));
             let mut members = BTreeSet::new();
             let mut linked_methods = Vec::new();
             while let Some(item) = bullets.next_if(|line| member.is_match(line)) {
@@ -98,9 +106,9 @@ fn specified_exports() -> (Exports, BTreeMap<String, DeclarationLink<'static>>) 
                 );
                 let name = item.get(2).unwrap().as_str();
                 if let Some(target) = item.get(3) {
-                    let method = name.strip_suffix("()").expect("linked method name");
-                    assert_eq!(target.as_str(), format!("{chapter}#{fragment}.{method}"));
-                    linked_methods.push(method);
+                    let method = name.strip_suffix("()").unwrap_or(name);
+                    let (chapter, requirement) = declaration_target(target.as_str());
+                    linked_methods.push((method, chapter, requirement));
                 }
                 assert!(
                     members.insert(name.to_owned()),
@@ -376,9 +384,9 @@ fn check_declaration(
         "Indexed members for {id}"
     );
     let mut declaration = declaration.to_owned();
-    // A type may declare individual methods in child requirements in this chapter.
-    for method in &link.linked_methods {
-        let marker = format!(":::{{req}} {}.{method}\n", link.requirement);
+    for (method, chapter, requirement) in &link.linked_methods {
+        let spec = fs::read_to_string(chapters.join(chapter)).unwrap();
+        let marker = format!(":::{{req}} {requirement}\n");
         let (_, section) = spec
             .split_once(&marker)
             .unwrap_or_else(|| panic!("Missing declaration for {id}::{method}"));
@@ -390,7 +398,23 @@ fn check_declaration(
                 .lines()
                 .any(|line| !line.is_empty() && !line.starts_with(':'))
         );
-        assert!(signature.starts_with("impl") && signature.contains(&format!("pub fn {method}")));
+        if link.members.contains(&format!("{method}()")) {
+            assert!(
+                signature.starts_with("impl") && signature.contains(&format!("pub fn {method}"))
+            );
+        } else {
+            let prefix = format!("type {method}:");
+            let associated_type = signature
+                .lines()
+                .map(str::trim)
+                .find(|line| line.starts_with(&prefix))
+                .expect("associated type declaration");
+            assert!(
+                normalize(&declaration).contains(&normalize(associated_type)),
+                "Linked declaration differs for {id}::{method}"
+            );
+            continue;
+        }
         declaration.push('\n');
         declaration.push_str(signature);
     }
@@ -492,6 +516,43 @@ fn public_exports_match_the_appendix() {
         .unwrap()
         .parent()
         .unwrap();
+    let metadata = Command::new(env!("CARGO"))
+        .current_dir(workspace)
+        .args(["metadata", "--no-deps", "--locked", "--format-version=1"])
+        .output()
+        .unwrap();
+    assert!(metadata.status.success());
+    let metadata: serde_json::Value = serde_json::from_slice(&metadata.stdout).unwrap();
+    let sdk = metadata["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "trust-but-verify")
+        .unwrap();
+    assert_eq!(
+        sdk["features"],
+        serde_json::json!({}),
+        "TBV defines no Cargo features"
+    );
+    let consumer = Command::new(env!("CARGO"))
+        .current_dir(workspace)
+        .args([
+            "check",
+            "--locked",
+            "--offline",
+            "--package",
+            "habeas",
+            "--lib",
+        ])
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .output()
+        .expect("check the shipping Habeas consumer against the SDK");
+    assert!(
+        consumer.status.success(),
+        "Habeas must compile using the public SDK: {}",
+        String::from_utf8_lossy(&consumer.stderr)
+    );
     let target = workspace.join("target");
     // Use stable rustdoc's published HTML to check paths and item kinds. Always
     // generate it for this source tree rather than accepting an old book copy.
@@ -533,7 +594,6 @@ fn public_exports_match_the_appendix() {
 }
 
 // {test}`requirements.sdk.public_api`
-#[cfg(feature = "default-languages")]
 #[test]
 fn sdk_has_no_public_reexports() {
     let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");

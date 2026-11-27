@@ -21,7 +21,7 @@ The source tools identify project files with project-relative `PathBuf` values.
 let file = std::path::PathBuf::from("src/auth.rs");
 ```
 
-An item within that file uses the path and selector in `OutlineId` under
+An item within that file uses the path and selector in `OutlineData` under
 {cite}`requirements.sdk.outlines.address_identity`.
 :::
 
@@ -74,26 +74,20 @@ impl Sources {
 :::
 
 :::{req} provider.attachment
-A validator for a source-capable domain uses the supplied project directory
-for its fixed source inspection tools. Attach `Sources` once when constructing
-the validator; the domain supplies the mapping under
-{cite}`requirements.sdk.sources.source_nodes`.
+Configure the domain’s project files with {cite}`requirements.sdk.validation-cache.with_sources`. `Domain::project_sources` binds those files to the domain for Rust searches and agent inspection. Each hit identifies a node under {cite}`requirements.sdk.sources.source_nodes`.
+:::
+
+:::{req} SourceProject
+
+`SourceProject` supplies the project files and domain mapping for a single agent request.
 
 ```rust,ignore
-use trust_but_verify::domain::SourceNodes;
-use trust_but_verify::sources::Sources;
-use trust_but_verify::graph::validator::Validator;
+pub struct SourceProject<D: Domain> { /* private fields */ }
 
-impl<D: SourceNodes + 'static> Validator<D>
-where
-    D::EdgeLabel: serde::de::DeserializeOwned + schemars::JsonSchema + PartialEq,
-    D::Error: std::fmt::Display,
-{
-    // ...
-
-    pub fn with_sources(self, sources: Sources) -> Self;
-
-    // ...
+impl<D: Domain> SourceProject<D> {
+    pub fn new(domain: D, sources: Sources) -> Self;
+    pub async fn search_text(&self, query: &TextQuery,) -> Result<SearchResults<SearchHit<NodeId<D>>>, SourceError>;
+    pub async fn search_structure(&self, query: &StructuralQuery,) -> Result<SearchResults<SearchHit<NodeId<D>>>, SourceError>;
 }
 ```
 :::
@@ -133,6 +127,7 @@ impl Debug for SourceError;
 impl Display for SourceError;
 impl Error for SourceError;
 impl From<std::io::Error> for SourceError;
+impl From<SourceError> for std::io::Error;
 ```
 :::
 
@@ -247,25 +242,27 @@ The application maps discovered source items to its graph. For HC,
 :::{req} source_nodes
 :test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
 
-An application supporting tracked source inspection maps `OutlineId` to its
-graph's `NodeId`. The mapped node represents the requested path and selector;
-an unsupported or invalid address returns an error. The SDK reads the mapped
-node through the application's `Domain` interface.
+An application supporting tracked source inspection returns `Self::NodeData` for the requested path and selector. The SDK interns that data in the domain's cache to obtain `NodeId<Self>`. An unsupported or invalid address returns an error. The cache retains the address when the SDK maps a source item. For source identities the application can supply independently, implement `source_address` to recover the project-relative outline address from the domain identity. Other identities return `None`.
 
 ```rust,ignore
-pub trait SourceNodes: Domain {
-    fn source_node(&self, item: &OutlineId) -> Result<Self::NodeId, Self::Error>;
+pub trait Domain: Clone + Send + Sync {
+    // ...
+    fn source_node(
+        &self,
+        item: &OutlineData,
+    ) -> Result<Self::NodeData, SourceError> { ... }
+    fn source_address(&self, _data: &Self::NodeData) -> Option<OutlineData> { ... }
 }
 ```
 :::
 
-For a source node, HC's `Domain::node_content` resolves its `OutlineId` and
+For a source node, HC's `Domain::node_content` resolves its `OutlineData` and
 returns an `OutlineContent`. The returned value supplies its fingerprint and
 agent text through `NodeContents` under
 {cite}`requirements.sdk.outlines.node_contents`.
 
 :::{req} provider_observations
-The tracked source-read operation resolves the selected `OutlineId` through
+The tracked source-read operation resolves the selected `OutlineData` through
 the application's source-node mapping and reads that node through `Domain`.
 Successful reads delivered to the caller record that node's identity and the
 fingerprint of its supplied contents.
@@ -289,8 +286,15 @@ Loaded source snapshots retain the original text for selection and spans;
 redaction applies when preparing model-visible text and structural hashes.
 Filesystem evidence storage preserves the supplied record. Applications supply
 their own answer values and remain responsible for what those answers contain.
-Habeas additionally recognizes explicit credentials in its configuration files
-under {cite}`requirements.authoring.credentials`.
+:::
+
+:::{req} redact_text
+`sources::redact_text` applies {cite}`requirements.sdk.sources.redaction` to a
+standalone string. It returns the input text when it contains no recognized credential.
+
+```rust,ignore
+pub fn redact_text(text: &str) -> Cow<'_, str>;
+```
 :::
 
 Deterministic criterion code and SDK agent tools use the same inspection
@@ -302,7 +306,7 @@ pages.
 flowchart TD
     Agent["SDK agent tools"] --> Context["Tracked inspection context"]
     Code["Deterministic criterion"] --> Context
-    Context --> Mapping["Application maps OutlineId to NodeId"]
+    Context --> Mapping["Domain supplies node data; SDK interns it"]
     Mapping --> Domain["Application Domain loads the selected node"]
     Domain --> Trace["SDK records contents and fingerprint"]
 ```
@@ -313,6 +317,6 @@ tracked read records the selected node.
 [Searching project sources](graph/search.md) explains how an agent can record
 an excerpt it used directly.
 
-[Source outlines](outlines.md) introduces `OutlineId`, `OutlineContent`, and
+[Source outlines](outlines.md) introduces `OutlineData`, `OutlineContent`, and
 `OutlineLang`. Its [language chapters](outlines.md#language-specific-rules)
 define the item kinds, selectors, and fingerprints for each language.
