@@ -1,7 +1,7 @@
 {
   "requirement": "`OutlineData` identifies a file and an item within it. Its path and selector\nalone determine its identity; equivalent addresses compare equally when\nreconstructed in another process. Constructing an address performs no file read. `root(path)` selects the whole\nfile. Both `new(path, selector)` and the `selector` builder validate the selector\nand return an error for invalid syntax.\nSelectors follow {cite}`requirements.sdk.outlines.selector_syntax`.\n\n```rust,ignore\n#[non_exhaustive]\npub struct OutlineData {\n    pub path: PathBuf,\n    pub selector: String,\n}\n\nimpl OutlineData {\n    pub fn root(path: impl Into<PathBuf>) -> Self;\n    pub fn selector(self, selector: String) -> Result<Self, OutlineError>;\n    pub fn new(\n        path: impl Into<PathBuf>,\n        selector: String,\n    ) -> Result<Self, OutlineError>;\n}\n```\n\nTrait implementations\n\n```rust,ignore\nimpl Clone for OutlineData;\nimpl Debug for OutlineData;\nimpl<'de> Deserialize<'de> for OutlineData;\nimpl PartialEq for OutlineData;\nimpl Serialize for OutlineData;\nimpl Eq for OutlineData;\nimpl Hash for OutlineData;\n```",
   "determination": true,
-  "rationale": "The tests adequately cover `requirements.sdk.outlines.address_identity`. I judged this from the supplied test sources and did not read any implementation source.\n\n`tests/outline_content.rs#fn[addresses_reconstruct_without_reading_the_file]` covers the obligations as follows:\n\n- **No file read.** Every address uses `not-present.rs`, which does not exist. `new`, `root` and `selector` all succeed, so construction cannot depend on reading the file.\n- **`root(path)` selects the whole file.** The test asserts `root.selector.is_empty()`. The loop over valid selectors includes `\"\"`, which `new` accepts and which equals `root`.\n- **Builder and constructor agree.** `root.selector(id.selector)` equals `new(path, selector)`. This is checked for the main id and for each valid selector in the loop (`\"\"`, `fn[one%20two]#2`, `use@0123456789ab`, `impl[Thing/Trait]/fn[run]`).\n- **Both validate and return an error for invalid syntax.** Ten invalid selectors (`fn`, `fn[x]#0`, `fn[x]#`, `fn[x y]`, `fn[x@]`, `fn[x#]`, `use@123`, `mod[m]//fn[f]`, `12`, `fn[%xx]`) are asserted to fail through both `OutlineData::new` and `root.clone().selector`. A separate `fn[` check also covers `new`.\n- **Path and selector alone determine identity.**\n  - `assert_ne!` checks that a different path with the same selector, and the same path with a different selector, compare unequal.\n  - Reconstructed addresses compare equal.\n  - The `HashSet` check inserts a reconstructed equal address, gets `false` back, and ends with length 2. This exercises `Hash` and `Eq` consistency.\n- **Reconstruction across processes.** A serde JSON round trip returns an address equal to the original. The public fields `path` and `selector` are asserted directly. This is a reasonable proxy for cross-process equality, because equality depends only on the two fields.\n- **Trait implementations.**\n  - `Clone` is used directly.\n  - `Debug` is required by `assert_eq!` and `assert_ne!`.\n  - `Serialize` and `Deserialize` are exercised by the round trip.\n  - `PartialEq`, `Eq` and `Hash` are exercised by the equality and `HashSet` checks.\n- **Public shape.** `tests/public_api.rs#fn[public_exports_match_the_appendix]` checks the exported inventory against the requirement appendix.\n\nSelector grammar details belong to the cited `requirements.sdk.outlines.selector_syntax`, so I did not reassess them. The requirement does not specify path normalization or validation when deserializing, so I treated neither as a gap. I found no plausible requirement-violating behavior that these tests would accept.",
+  "rationale": "The subject is adequately tested by `crates/trust-but-verify/tests/outline_content.rs#fn[addresses_reconstruct_without_reading_the_file]`. I did not read any implementation source.\n\nObligations and the scenarios that cover them:\n- **No file read on construction.** Every address uses `not-present.rs`, which does not exist. `new`, `root` and `selector` all succeed on it.\n- **`root(path)` selects the whole file.** The test asserts `root.selector.is_empty()`.\n- **`new` and the `selector` builder agree.** For each valid selector, `new(path, valid)` equals `root.selector(valid)`. The selectors are the empty one, `fn[one%20two]#2`, `use@0123456789ab`, `impl[Thing/Trait]/fn[run]` and `fn[Thing%2FTrait]`.\n- **Both reject invalid syntax.** Each invalid selector is rejected by both `new` and `selector(...)`. The invalid cases map to `selector_syntax` clauses:\n  - Segment shape: `fn` and `12`. The latter also covers \"line numbers must not form part of a selector\".\n  - `#N` suffix: `#0` and a bare `#`.\n  - Unencoded special characters: whitespace, `@`, `#`, nested `[`, and a stray `]`.\n  - Anonymous hash length: `use@123`.\n  - Empty segments: `mod[m]//fn[f]`.\n  - Bad percent-escapes: `fn[%xx]`.\n- **Selector syntax in the subject's case.** The valid cases show the percent-encoding, `#N`, `kind@hash` (12 hex digits) and multipart `impl[Thing/Trait]` rules. `%2F` inside a name part is accepted, and a bare `/` separates segments and name parts.\n- **Identity from path and selector alone.** The test does the following:\n  - It asserts that equal paths and selectors compare equal.\n  - It asserts that changing the path gives `assert_ne`.\n  - It asserts that changing the selector gives `assert_ne`.\n  - It asserts that the public `path` and `selector` fields hold the given values.\n- **Hash and Eq.** A `HashSet` insert of a reconstructed equal address returns false, and the set length stays 2.\n- **Serialize and Deserialize.** A JSON round trip yields an equal value. This is the available check of equivalence when reconstructed in another process.\n- **Clone and PartialEq.** `clone()` is used throughout.\n\nThe Debug trait implementation is a plain derive with no conditional behaviour, so it needs no test of its own. `public_exports_match_the_appendix` in `public_api.rs` separately checks the exported paths and item kinds. The subject does not require `Deserialize` to validate selectors. I found no unaddressed obligation, and the selector-syntax clauses the subject cites are applied by the test.",
   "references": "93f5894e9b3d438580ab7942474b9428f5015d78bae7b08c28841ce06708a653",
   "inputs": [
     {
@@ -67,29 +67,21 @@
         "identical lines are interchangeable, so a `line` selector MUST resolve when any",
         "line with that content exists in the file. In names, `%`, `[`, `]`, `/`, `#`,",
         "`@`, and whitespace MUST be percent-encoded as UTF-8 bytes, so selectors are",
-        "reversible. Line numbers MUST NOT form part of a selector.",
+        "reversible. In a multipart label such as `impl[Thing/Trait]`, `/` separates",
+        "name parts. A slash within one part is encoded as `%2F`. Line numbers MUST NOT",
+        "form part of a selector.",
         ":::"
       ]
     },
     {
       "file": "crates/trust-but-verify/tests/outline_content.rs",
       "item": "fn[addresses_reconstruct_without_reading_the_file]",
-      "hash": "95bc5a1820b7a60c1876e1e0afaed9d5f3909f5d6abcada3a72fd69e1fbb5eae"
+      "hash": "3027c579f8936ce4fae585f5b69f11c4db638919d6d1cde82d0241f09776bd98"
     },
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[public_exports_match_the_appendix]",
-      "hash": "85236d57663dd61cc1cfc8c4a81672e5c5591e6d9dfaf865943d051c38e8bb2a"
-    },
-    {
-      "file": "evidence/requirements.references.rust_item_selectors.json",
-      "item": "line@a66c2c8b940d",
-      "hash": "a66c2c8b940df68559029c38ba1db4b0a150d8898cc6529dc86c99bfa894a30e"
-    },
-    {
-      "file": "evidence/requirements.references.rust_item_selectors.json",
-      "item": "line@9df601df5bdd",
-      "hash": "9df601df5bddb6dbbcd848ba1febbff5317b397bf0ef559235f370d0e5fd4abc"
+      "hash": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
     }
   ],
   "format_version": 1,
@@ -136,7 +128,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "16b29353592b163d3e2bac3f735a0e6f207197bf29ceb419623fac65d62df8b5"
+          "value": "d4f491f21a4d8156e1bebdc0bea781fbcc9e94634745d15ac6567b710da16d3e"
         }
       ]
     },
@@ -153,7 +145,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "95bc5a1820b7a60c1876e1e0afaed9d5f3909f5d6abcada3a72fd69e1fbb5eae"
+          "value": "3027c579f8936ce4fae585f5b69f11c4db638919d6d1cde82d0241f09776bd98"
         }
       ]
     },
@@ -170,41 +162,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "85236d57663dd61cc1cfc8c4a81672e5c5591e6d9dfaf865943d051c38e8bb2a"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "evidence/requirements.references.rust_item_selectors.json"
-            },
-            "selector": "line@a66c2c8b940d"
-          }
-        },
-        {
-          "scheme": "plain-text-structural-v1:own-v1",
-          "value": "a66c2c8b940df68559029c38ba1db4b0a150d8898cc6529dc86c99bfa894a30e"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "evidence/requirements.references.rust_item_selectors.json"
-            },
-            "selector": "line@9df601df5bdd"
-          }
-        },
-        {
-          "scheme": "plain-text-structural-v1:own-v1",
-          "value": "9df601df5bddb6dbbcd848ba1febbff5317b397bf0ef559235f370d0e5fd4abc"
+          "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
         }
       ]
     }

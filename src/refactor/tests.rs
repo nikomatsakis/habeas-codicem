@@ -201,6 +201,11 @@ fn rationales_rewrite_exact_code_spans_and_list_other_mentions() {
         rewrite_rationale(&map, "`src/older/x.rs`").0,
         "`src/older/x.rs`"
     );
+    let addresses = "`src/a.rs#fn[f]/fn[inner]`, `src/a.rs#fn[g]`, `src/a.rs#fn[f2]`";
+    assert_eq!(
+        rewrite_rationale(&map, addresses).0,
+        "`src/b.rs#fn[f]/fn[inner]`, `src/a.rs#fn[g]`, `src/a.rs#fn[f2]`"
+    );
     let (rewritten, mentions) = rewrite_rationale(
         &map,
         "`rules.cli.check` holds; `src/old/x.rs` and `src/a.rs#fn[f]` do it. \

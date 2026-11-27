@@ -354,6 +354,7 @@ impl OutlineContent {
         Self::parse_source(path, source)
     }
 
+    // {impl}`requirements.sdk.sources.plain-text.language`
     pub(crate) fn parse_source(
         filename: impl AsRef<Path>,
         source: Arc<str>,

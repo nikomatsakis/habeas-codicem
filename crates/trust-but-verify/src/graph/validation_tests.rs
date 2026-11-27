@@ -271,6 +271,7 @@ async fn a_second_verification_starts_with_an_empty_trace() {
 // {test}`requirements.sdk.graph.evidence.checking_records`
 // {test}`requirements.sdk.graph.running-criteria.validate_node`
 #[tokio::test]
+// {test}`requirements.sdk.graph.running-criteria.load_evidence`
 async fn historical_freshness_reads_do_not_enter_the_replacement_trace() {
     let graph = Memory {
         read_in_callback: true,
@@ -301,6 +302,10 @@ async fn historical_freshness_reads_do_not_enter_the_replacement_trace() {
     };
     let mut validator = validation::Validator::new(&graph);
     let old = validator.load_evidence(&review()).await.unwrap().unwrap();
+    assert_eq!(
+        old.dependencies(),
+        &[Dependency::Node(graph.cache().intern_node(2), fp("old"))]
+    );
     assert!(!validator.check_inputs(&old).unwrap());
     let value = validator.verify(review()).await.unwrap();
     validator.store_evidence(&value).await.unwrap();
@@ -1158,6 +1163,7 @@ async fn contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text()
     );
 }
 
+// {test}`requirements.sdk.graph.agent-calls.NodePhase`
 // {test}`requirements.sdk.graph.agent-calls.subject_message`
 // {test}`requirements.sdk.graph.agent-calls.named_input`
 #[tokio::test]
@@ -1617,6 +1623,7 @@ async fn concurrent_single_node_validations_keep_separate_traces() {
     }
 }
 
+// {test}`requirements.sdk.graph.running-criteria.validate_node.errors`
 // {test}`requirements.sdk.graph.agent-calls.judge.submission`
 // {test}`requirements.sdk.graph.criteria.execute`
 // {test}`requirements.sdk.graph.running-criteria.ValidationError`

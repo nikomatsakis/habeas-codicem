@@ -1,7 +1,7 @@
 {
   "requirement": "Each named authoring configuration MUST accept an optional positive integer\n`concurrency` in its configuration table. When omitted, the maximum number of\nsimultaneous assessments MUST default to the number of available logical CPUs\nfor Bedrock and OpenAI, falling back to one when that count is unavailable, and to one for\nOllama. A configured value MUST override the default for each backend; zero\nMUST be rejected as invalid configuration.\n\nBatch authoring MUST use asynchronous tasks on a runtime with a fixed worker\nthread pool. The number of assessments running at once MUST NOT exceed the\nselected concurrency. Each assessment MUST retain its own model conversation and\nusage record. Transient provider failures, including throttling, MUST be\nretried within the affected assessment under\n{cite}`requirements.authoring.provider_backoff`; every other provider error MUST\nbe reported through the ordinary assessment-failure path.",
   "determination": true,
-  "rationale": "I found no test-adequacy gap for `requirements.authoring.concurrency`.\n\n**Configuration obligations**\n- **Optional positive integer, default, override and zero rejection:** `tests/configuration.rs#fn[authoring_concurrency_defaults_overrides_and_invalid_values]` loops over bedrock, ollama and openai.\n  - With `concurrency` omitted, it asserts `resolved.concurrency` is `None`. It asserts `effective_concurrency()` equals `available_parallelism` (falling back to 1) for bedrock and openai, and 1 for ollama.\n  - With `concurrency = 7`, it asserts the override, a TOML round trip and serialization.\n  - It asserts that `0`, `-1`, `1.5` and `'2'` are rejected, with an error naming the path and `concurrency`.\n  - The 'unavailable count falls back to one' case is covered by the same expression. The unavailable branch can't realistically be forced in a test.\n- `tests/configuration.rs#fn[workspace_configurations_accept_validate_and_override_concurrency]` repeats this for workspace configurations. It covers each backend, the override, the default, and rejection of invalid values.\n- `tests/configuration.rs#fn[backend_configuration_round_trips_without_materializing_defaults]` asserts that an omitted `concurrency` is not materialized on serialization.\n\n**Batch obligations**\n- **Cap on simultaneous assessments:**\n  - `tests/authoring_batch.rs#fn[batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs]` uses concurrency 2. It asserts `peak == 2` and that the first pair overlapped. That shows concurrent execution that is bounded by the setting.\n  - `fn[ollama_batches_are_serial_by_default]` asserts `peak == 1` with the Ollama default.\n  - `fn[a_denied_mandatory_input_aborts_only_its_assessment]` runs with concurrency 1.\n  - `fn[interrupted_terminal_progress_keeps_unstarted_work_incomplete]` runs with concurrency 1 and 2.\n- **Each assessment keeps its own conversation and usage record:**\n  - `fn[concurrent_assessments_keep_their_own_continuing_histories]` uses concurrency 4. For each subject, the second request's messages must extend the first request's messages. The continuation must be that subject's own assistant tool call plus its tool result.\n  - The usage records are checked per subject in `fn[throttled_assessment_retries_within_itself_while_others_proceed]` and `fn[failed_assessment_keeps_other_results_and_reports_failure]`.\n- **Transient failures are retried within the affected assessment:** `fn[throttled_assessment_retries_within_itself_while_others_proceed]` throttles one subject once.\n  - That subject is requested twice and ends with a `true` determination.\n  - Its usage shows attempts 2, failed_attempts 1 and retries 1.\n  - The other five assessments have one attempt each, and all six completed.\n  - Peak stays at or below 2.\n  - The retry timing and backoff details belong to `requirements.authoring.provider_backoff`, which is cited here and not reassessed.\n- **Every other provider error goes through the ordinary failure path:**\n  - `fn[failed_assessment_keeps_other_results_and_reports_failure]` has one model rejection. It asserts a non-zero exit, no evidence for that subject, and one failed usage record with attempts 1 and retries 0. The other results are kept and the diagnostic is reported.\n  - `fn[a_denied_mandatory_input_aborts_only_its_assessment]` checks a related failure that stays inside its own assessment.\n\n**Async tasks on a fixed worker pool:** I read `src/main.rs#fn[main]`. It creates the runtime with a plain `tokio::runtime::Runtime::new()`, and `run_batch` spawns the assessments onto a `JoinSet`. That runtime construction is a pass-through default with no conditional or transformation, so it needs no dedicated test. The overlap and peak assertions above exercise asynchronous tasks end to end.\n\nNo acknowledgments apply.",
+  "rationale": "I found no unacknowledged gap. The tests cover each obligation as follows.\n\n**Configuration**\n- `tests/configuration.rs#fn[authoring_concurrency_defaults_overrides_and_invalid_values]` runs for bedrock, ollama and openai.\n  - With `concurrency` omitted, `resolved.concurrency` is `None`. `effective_concurrency()` equals `available_parallelism().unwrap_or(1)` for Bedrock and OpenAI, and 1 for Ollama.\n  - With `concurrency = 7`, the value overrides the default and round-trips through serialization.\n  - `0`, `-1`, `1.5` and `'2'` are rejected, and the error names the file and `concurrency`. This covers the zero-rejected clause and the positive-integer type.\n- `tests/configuration.rs#fn[workspace_configurations_accept_validate_and_override_concurrency]` covers the same defaults, override and invalid values for workspace configurations. It also checks that the workspace config replaces the user config, including its concurrency.\n- `tests/configuration.rs#fn[backend_configuration_round_trips_without_materializing_defaults]` checks that an omitted `concurrency` is not materialized on serialization.\n- The fallback to one when the CPU count is unavailable cannot be forced in a test, because `available_parallelism` is process-wide. The tests do assert the `unwrap_or(1)` expression for the normal case. I treat this as exempt.\n\n**Bound on simultaneous assessments**\n- `tests/authoring_batch.rs#fn[batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs]` uses concurrency 2. It asserts that the server's peak in-flight requests equal 2, so the bound is not exceeded and is actually used. It also asserts `first_pair_overlapped`, which shows that assessments really run concurrently.\n- `tests/authoring_batch.rs#fn[ollama_batches_are_serial_by_default]` asserts a peak of 1 for the Ollama default, running a real batch.\n- `tests/authoring_batch.rs#fn[interrupted_terminal_progress_keeps_unstarted_work_incomplete]` runs with concurrency 1 and 2.\n- `tests/authoring_batch.rs#fn[throttled_assessment_retries_within_itself_while_others_proceed]` asserts a peak of at most 2.\n- `tests/authoring_batch.rs#fn[a_denied_mandatory_input_aborts_only_its_assessment]` runs with concurrency 1.\n\n**Async tasks on a fixed worker pool**\n- This is an internal runtime structure with no distinct observable outcome beyond concurrent execution, which the overlap and peak assertions exercise. I do not count it as a testable gap.\n\n**Own conversation and usage record**\n- `tests/authoring_batch.rs#fn[concurrent_assessments_keep_their_own_continuing_histories]` runs 4 concurrent assessments with tool calls. For each subject, the second request's messages extend that subject's first request, followed by that subject's own assistant tool call and tool result.\n- Usage records are asserted per subject in `fn[throttled_assessment_retries_within_itself_while_others_proceed]` and `fn[failed_assessment_keeps_other_results_and_reports_failure]`.\n\n**Transient failures retried within the affected assessment**\n- `fn[throttled_assessment_retries_within_itself_while_others_proceed]` throttles one subject once with HTTP 429. It asserts that:\n  - the subject is requested twice;\n  - it ends with a true determination;\n  - its usage shows attempts 2, failed_attempts 1 and retries 1;\n  - the other five assessments have 1 attempt each and every outcome is completed.\n- The details of the retry (backoff timing, the other transient codes) belong to `requirements.authoring.provider_backoff`. That requirement is cited here, not reassessed.\n\n**Other provider errors go through the ordinary failure path**\n- `fn[failed_assessment_keeps_other_results_and_reports_failure]` has one subject receive a non-transient error. It asserts the following:\n  - there is no retry (attempts 1, retries 0);\n  - there is a failed usage record and no evidence file for that subject;\n  - the other evidence is kept;\n  - the diagnostic names the subject and the error;\n  - the exit status is a failure.\n- `fn[a_denied_mandatory_input_aborts_only_its_assessment]` additionally checks that one failed assessment does not affect the others.\n\nThe test `fn[drop]` in `impl[Server/Drop]` is a helper.",
   "references": "da5efc360b3776f92b4eab5192cf38f0094d0c29ab6901b00f51eaf11682000e",
   "inputs": [
     {
@@ -121,9 +121,19 @@
       "hash": "8f26077cf1963093fb58bb543ac945427f6513efcaa412ef009d1dcedd6bb34c"
     },
     {
-      "file": "src/main.rs",
-      "item": "fn[main]",
-      "hash": "c8bb0bd2ba7bc0594725702c8ca176ff5a854077c1b930ca7de7018541ad534a"
+      "file": "tests/authoring_batch.rs",
+      "item": "struct[Requests]",
+      "hash": "9f8d1de9fdaaec2a71f85b54ce0ba179aab6fe74d1e8fe787e065a4a7bd3d749"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[serve]",
+      "hash": "484487c4c165a8959345754a04641d146cd811d002c28e9ad2e5dcb7736626f9"
+    },
+    {
+      "file": "benchmarks/assessment/results/adaptive-pilot-2026-11-15.json",
+      "item": "line@79ebdac65a89",
+      "hash": "79ebdac65a89083e2fceff93590cebd946cd0c5738c5110933212bc4d036b22f"
     }
   ],
   "format_version": 1,
@@ -367,14 +377,48 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "src/main.rs"
+              "location": "tests/authoring_batch.rs"
             },
-            "selector": "fn[main]"
+            "selector": "struct[Requests]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "b23a272898d6ef9d383eef0b0ae85522a942c54925a687228325b9d6e10c0b72"
+          "value": "9f8d1de9fdaaec2a71f85b54ce0ba179aab6fe74d1e8fe787e065a4a7bd3d749"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/authoring_batch.rs"
+            },
+            "selector": "fn[serve]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "484487c4c165a8959345754a04641d146cd811d002c28e9ad2e5dcb7736626f9"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "benchmarks/assessment/results/adaptive-pilot-2026-11-15.json"
+            },
+            "selector": "line@79ebdac65a89"
+          }
+        },
+        {
+          "scheme": "plain-text-structural-v1:own-v1",
+          "value": "79ebdac65a89083e2fceff93590cebd946cd0c5738c5110933212bc4d036b22f"
         }
       ]
     }

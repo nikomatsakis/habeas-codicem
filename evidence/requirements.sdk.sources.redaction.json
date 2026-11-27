@@ -1,7 +1,7 @@
 {
   "requirement": "TBV automatically redacts recognized credentials in source excerpts delivered\nby its inspection tools and in node text supplied to its agent requests.\nThe built-in rules replace recognized secret regions with redaction markers\nwhile preserving line breaks. SDK-supplied outline languages use the same redacted\nregions, so changing only a recognized credential does not change its\nstructural fingerprint.\n\nLoaded source snapshots retain the original text for selection and spans;\nredaction applies when preparing model-visible text and structural hashes.\nFilesystem evidence storage preserves the supplied record. Applications supply\ntheir own answer values and remain responsible for what those answers contain.",
   "determination": true,
-  "rationale": "I found no test-adequacy gap for `requirements.sdk.sources.redaction`. Each obligation maps to a marked test with assertions that enforce it.\n\n**Redaction in delivered inspection excerpts**\n- `agent/project_sources.rs#mod[tests]/fn[search_excerpts_redact_credentials_before_serialization_and_paging]` runs both `search_text` and `search_structure` over a file holding a GitHub token and a multi-line RSA private key.\n  - It asserts the exact redacted excerpt, with markers in place and surrounding text intact.\n  - It checks that the excerpt's line count matches the raw text.\n  - It checks that neither the token nor any key-body line appears in the serialized output.\n  - It checks that the file on disk is unchanged.\n  - It checks that the dependency recorded after `finish_search` carries the fingerprint of the unredacted snapshot.\n- `agent/project_sources.rs#mod[tests]/fn[child_headers_use_redacted_source_when_the_language_supplies_a_header]` covers `read_node` child headers. It asserts the header shows `[REDACTED:GitHub Token]` and that the whole page text omits the token.\n\n**Redaction in node text supplied to agent requests**\n- `agent/tests.rs#fn[queued_contents_and_graph_read_tools_redact_credentials_before_delivery]` covers `contents_of_current_node` and the `read_node` tool result. It asserts the secret is absent from every request's chat history and that a redaction marker is present.\n  - The dependency fingerprint and the stored graph contents keep the original text.\n  - The credential is shown as a marker in the supplied listing only because the review tool redacts it. That is not a defect in the test.\n\n**Rules replace recognized regions with markers and preserve line breaks**\n- `redaction/tests.rs` covers the built-in rules directly:\n  - `fn[private_keys_are_redacted_from_header_through_body_keeping_lines]` checks the exact output for a private key block, including line-count equality and an embedding in Rust source.\n  - `fn[tokens_in_code_are_redacted_without_adjacent_code]` checks token redaction in code.\n  - `fn[heuristic_findings_alone_are_not_redacted]` and `fn[configuration_keys_do_not_add_sdk_specific_secret_rules]` check that unrecognized text is left alone.\n  - `fn[regions_extend_both_ways_keep_crlf_and_scan_past_a_mebibyte]` covers CRLF line breaks, region extension and large input.\n  - `fn[slices_concatenate_to_the_redacted_whole]` checks that slices join to the redacted whole.\n\n**SDK outline languages share the redacted regions, so a credential-only change keeps the structural fingerprint**\n- `outline/redaction_tests.rs#fn[hashes_do_not_depend_on_credential_values]` swaps one token for another in Rust, Markdown and plain text, and asserts the structural hashes are equal. It also asserts that a change outside the credential does change the hash, so the check is not vacuous.\n- `outline/redaction_tests.rs#fn[redaction_never_changes_an_outline]` covers YAML, Rust, TOML, Markdown and text. It asserts the outline structure is the same with and without redaction, and that the line count is preserved.\n- `tests/outline_content.rs#fn[formatted_contents_redact_credentials_while_retaining_raw_text_and_spans]` shows two sources differing only in the credential have equal fingerprints.\n\n**Snapshots keep the original text for selection and spans**\n- The same `tests/outline_content.rs` test asserts `contents.text()` equals the raw source. It also asserts a selected item's `text()` still contains the token while its `format()` is redacted.\n\n**Evidence storage preserves the supplied record**\n- `tests/storage.rs#fn[storage_preserves_completed_answers_containing_credential_shaped_text]` stores and loads an answer containing a token the scanner recognizes. It asserts the loaded output equals the stored output and that the raw record file contains the token.\n\n**Application answers** are the application's responsibility. This is a non-obligation for the SDK, and the storage test covers its observable consequence.\n\n**Not tested**\n- The generic provider-based `SourceTools` session in `agent/sources.rs` is `cfg(test)`-gated at its wrapper in `agent.rs`, and no test with a credential exercises it. The production inspection paths are `ProjectSources` and `read_node`, and both are tested. I do not treat this as a gap against the requirement's text.",
+  "rationale": "Obligations from `requirements.sdk.sources.redaction`, and the tests that cover each:\n\n1. **Source excerpts from inspection tools are redacted.**\n   - `src/agent/project_sources.rs#mod[tests]/fn[search_excerpts_redact_credentials_before_serialization_and_paging]` runs `search_text` and `search_structure` on a file with a GitHub token and a multi-line RSA private key. It asserts the exact redacted excerpt, that the token and key body lines are absent from the serialized output, and that the file on disk is unchanged. It also asserts that the dependency fingerprint comes from the original text.\n   - `src/agent/project_sources.rs#mod[tests]/fn[child_headers_use_redacted_source_when_the_language_supplies_a_header]` covers `read_node` child headers. It asserts the header shows `[REDACTED:GitHub Token]` and the raw token is absent.\n2. **Node text supplied to agent requests is redacted.**\n   - `src/agent/tests.rs#fn[queued_contents_and_graph_read_tools_redact_credentials_before_delivery]` checks every request's chat history, covering both queued contents and the `read_node` tool result. It also asserts the dependency fingerprint holds the original text.\n   - The tool's source view shows the `secret` literal as the marker string, which looks like the tool's own redaction of a token literal. I took the test's intent from its name and assertions.\n3. **Secret regions are replaced by markers and line breaks are preserved.**\n   - `src/redaction/tests.rs#fn[private_keys_are_redacted_from_header_through_body_keeping_lines]` and `fn[tokens_in_code_are_redacted_without_adjacent_code]` check the marker output and surrounding code.\n   - `fn[regions_extend_both_ways_keep_crlf_and_scan_past_a_mebibyte]` checks CRLF handling, region extension and a large input.\n   - `fn[slices_concatenate_to_the_redacted_whole]` checks slices against the whole.\n   - `fn[heuristic_findings_alone_are_not_redacted]` and `fn[configuration_keys_do_not_add_sdk_specific_secret_rules]` check that only recognized credentials are redacted.\n   - Line-count preservation is also asserted in `src/outline/redaction_tests.rs#fn[redaction_never_changes_an_outline]`.\n4. **SDK outline languages use the same redacted regions, so a credential-only change leaves the structural fingerprint alone.**\n   - `src/outline/redaction_tests.rs#fn[hashes_do_not_depend_on_credential_values]` covers Rust, Markdown and text. It also checks that a change outside the credential still changes the hash.\n   - `fn[redaction_never_changes_an_outline]` covers YAML, Rust, TOML, Markdown and text outlines.\n   - `tests/outline_content.rs#fn[formatted_contents_redact_credentials_while_retaining_raw_text_and_spans]` checks an SDK-supplied unknown-language file: the fingerprints are equal for different tokens, and `format()` is redacted.\n5. **Loaded snapshots retain the original text for selection and spans.** The same `tests/outline_content.rs` test asserts `contents.text() == source`, and that the selected node's `text()` still contains the token while its `format()` is redacted.\n6. **Filesystem evidence storage preserves the supplied record.** `tests/storage.rs#fn[storage_preserves_completed_answers_containing_credential_shaped_text]` stores a record whose output contains a token-shaped string. It asserts the loaded output equals the original and the raw token is present in the file on disk.\n7. **Applications remain responsible for their own answers.** This is a statement of responsibility, not a testable obligation.\n\nI found no obligation that is untested, no wrong expected result and no weak assertion.",
   "references": "b0c7d2d9a5a5cf28c990d7bf9aea69af6a637ba1b32b2dccf81a2dbc44014bbb",
   "inputs": [
     {
@@ -91,24 +91,19 @@
       "hash": "65b2cc456b455361beee9f63dcbd4f95ea69fbe2e005bff6f199f5c01ac6ee27"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
-      "item": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]",
-      "hash": "1e9891fdbb67df918e9440e24bb4ccae95bc15d9677193dee3cc2c09feb845b5"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/sources.rs",
-      "item": "impl[SourceSession<'_,%20P,%20F>/ToolSession<D>]/fn[dispatch]",
-      "hash": "d126fa277e48d439983ed557408fa43ea7d31c3f0719ce42a6fe45fb446e6d06"
-    },
-    {
       "file": "crates/trust-but-verify/src/agent/tools.rs",
       "item": "impl[SessionTools<'a,%20D>]/fn[read_node]",
       "hash": "b999a065ceea7b75779e70f0347809fab9efa09b0276baa458269181e26f94cb"
     },
     {
-      "file": "crates/trust-but-verify/src/agent.rs",
-      "item": "struct[SourceTools]",
-      "hash": "70e1c54fd13a0a9128ae2067f750829eee5f6341668d89b6200eb671d57c9542"
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]",
+      "hash": "1e9891fdbb67df918e9440e24bb4ccae95bc15d9677193dee3cc2c09feb845b5"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "fn[excerpt]",
+      "hash": "201b1fe8ba5b2e506948ab326206980a78cfab74cf16fea8fb8dc3d32465e415"
     }
   ],
   "format_version": 1,
@@ -370,36 +365,14 @@
       ]
     },
     {
-      "Node": [
+      "OutgoingEdges": [
         {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
-            },
-            "selector": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]"
-          }
+          "Requirement": "requirements.sdk.sources.redaction"
         },
+        "Implements",
         {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "1e9891fdbb67df918e9440e24bb4ccae95bc15d9677193dee3cc2c09feb845b5"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/sources.rs"
-            },
-            "selector": "impl[SourceSession<'_,%20P,%20F>/ToolSession<D>]/fn[dispatch]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "d126fa277e48d439983ed557408fa43ea7d31c3f0719ce42a6fe45fb446e6d06"
+          "scheme": "node-path-set-sha256-v1",
+          "value": "68ce8245f885b72aa492e9accd14915e6b77ad4c69e2f3ad531c54fbd558f0a2"
         }
       ]
     },
@@ -426,14 +399,31 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent.rs"
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
             },
-            "selector": "struct[SourceTools]"
+            "selector": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "70e1c54fd13a0a9128ae2067f750829eee5f6341668d89b6200eb671d57c9542"
+          "value": "1e9891fdbb67df918e9440e24bb4ccae95bc15d9677193dee3cc2c09feb845b5"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "fn[excerpt]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "201b1fe8ba5b2e506948ab326206980a78cfab74cf16fea8fb8dc3d32465e415"
         }
       ]
     }

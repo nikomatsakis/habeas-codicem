@@ -1,7 +1,7 @@
 {
   "requirement": "Each coverage record MUST identify its instrumented build configuration and\ncapture enough source-input identity to determine whether its coverage remains\ncompatible with the project's current source. Source identity MUST account for\nuncommitted content changes rather than rely only on the Git revision.\n\nSource identity MUST include the paths and contents of the workspace's\nfirst-party Rust sources and the recorded source and build inputs that affect\nthe instrumented program, including manifests and the dependency lockfile when\npresent. Adding, removing, or changing an included input MUST invalidate the\nworkspace's collected coverage for the combined view. Freshness checking MUST\nNOT require rebuilding the project.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation in `requirements.test-coverage.storage.provenance`. I judged this from the supplied test source only and requested no implementation source.\n\n**Build configuration identity.**\n- `tests/execution_coverage.rs#fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]` asserts that a real run records `configuration`, `configuration_inputs.rustc` (the LLVM version), `target`, `cargo-profile` and `enabled-features`.\n- The same test checks that a different feature set yields a different `configuration` and drops the previous results.\n- `src/execution_coverage/book.rs#mod[tests]/fn[cargo_launch_metadata_does_not_invalidate_but_caller_build_environment_does]` checks that changed caller build environment (`RUSTFLAGS`, `CC`, `CARGO_PROFILE_*`, a target linker variable) makes records stale. Cargo launch metadata does not.\n\n**Source identity and uncommitted changes.**\n- `src/execution_coverage.rs#mod[tests]/fn[source_and_build_inputs_invalidate_on_addition_removal_and_dirty_content]` builds a `Run` with an unchanged `revision` and `dirty: Some(true)`. Editing `code.rs` still makes `fresh` return false, so identity is not based on the Git revision alone.\n- `no_arguments_selects_all_workspace_members_with_configured_parallelism_and_git_metadata` checks that `revision` and `dirty` are recorded for both a dirty and a clean tree.\n\n**Paths and contents of included inputs, with add, remove and change each invalidating.**\n- The same unit test changes `code.rs`, `Cargo.lock`, the root `Cargo.toml` and a `rust-toolchain.toml`.\n- It adds `added.rs`, a new member `member/Cargo.toml`, new files in a watched directory (including one under `node_modules`), and a previously absent watched path.\n- It removes `Cargo.toml`, `Cargo.lock` and `code.rs`.\n- After each case it restores the original state and asserts `fresh` is true again. That rules out an always-stale implementation.\n- `real_build_captures_dependency_files_and_environment_for_read_only_freshness_checks` uses a real build. It asserts that the recorded inputs include an `include_str!` file, a build-script `rerun-if-changed` file, `build.rs` and `Cargo.lock`. It also records the compiler and build-script environment values. Changing any of these makes `coverage-check` report \"stale coverage\".\n- `src/execution_coverage/runner.rs#mod[tests]/fn[build_script_inputs_cover_legacy_and_build_unit_layouts]` covers build-script input discovery across the legacy and modern layouts, and excludes unrelated outputs.\n- `unreadable_build_inputs_fail_preparation_before_any_tests_start` covers the failure case where an input cannot be read. Preparation fails and the stored results are untouched.\n\n**Invalidation for the combined view.**\n- `src/execution_coverage/check.rs#mod[tests]/fn[focused_recollection_leaves_only_the_unselected_result_stale_with_its_original_sources]` changes a source file. The unselected record is then reported \"stale coverage\" and is kept with its original sources.\n- In that test the combined report shows no `100.0%` and no per-file lines, so stale coverage does not appear in the combined view.\n\n**Freshness checking must not require rebuilding.**\n- The unit test calls `fresh(&run, root, &target)` using only files on disk.\n- The real-build test runs `coverage-check` with `CARGO_NET_OFFLINE`, requires empty stderr, and asserts that `retained_files(&storage)` is unchanged.\n- This is a somewhat indirect check, but together with the unit test it is adequate for the obligation.\n\nI found no unacknowledged gap. The remaining untested variations, such as source files in other workspace members, fall in input classes the tests already represent.",
+  "rationale": "I judged the tests adequate for every obligation in `requirements.test-coverage.storage.provenance`. I did not request implementation source. Each obligation maps to tests as follows.\n\n1. **Record identifies its instrumented build configuration.**\n   - `tests/execution_coverage.rs#fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]` asserts the saved `configuration` value.\n   - It asserts the `configuration_inputs` for rustc (including LLVM), target and cargo-profile.\n   - It asserts that enabling features changes `configuration` and records the enabled features.\n   - `tests/execution_coverage.rs#fn[no_arguments_selects_all_workspace_members_with_configured_parallelism_and_git_metadata]` also checks the stored record.\n\n2. **Source-input identity captured, and uncommitted changes counted rather than only the Git revision.**\n   - `real_parallel_processes_retries_child_profiles_and_filtered_reruns` asserts that `inputs` contains the path of `src/lib.rs` and that `sources` holds its contents.\n   - `no_arguments_selects_all_workspace_members_with_configured_parallelism_and_git_metadata` records the revision with `dirty` true for a dirty tree and false for a clean one.\n   - `src/execution_coverage.rs#mod[tests]/fn[source_and_build_inputs_invalidate_on_addition_removal_and_dirty_content]` keeps the recorded revision unchanged ('unchanged revision'). Changing `code.rs` content still makes `fresh` return false, so identity does not rely on the revision alone.\n\n3. **Included inputs: first-party Rust sources, manifests, lockfile and other build inputs.**\n   - **Unit level:**\n     - `source_and_build_inputs_invalidate_on_addition_removal_and_dirty_content` covers `code.rs`, the root and member `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, a watched directory (including `node_modules` and non-Rust files) and a watched path that did not exist yet.\n     - `src/execution_coverage/runner.rs#mod[tests]/fn[build_script_inputs_cover_legacy_and_build_unit_layouts]` covers build-script `rerun-if-changed` and `rerun-if-env-changed` inputs across the legacy, flat and modern layouts. It also covers dependency `.d` files and excludes unrelated build-script output.\n   - **End to end:** `real_build_captures_dependency_files_and_environment_for_read_only_freshness_checks` asserts that the real build records `included data.txt`, `build-input.data`, `build.rs` and `Cargo.lock`, plus the compiler and build environment variables.\n   - **Failure case:** `unreadable_build_inputs_fail_preparation_before_any_tests_start` checks that an unreadable input fails preparation without altering stored runs.\n   - The scenario with no lockfile is not tested, but the requirement says \"when present\", so I did not treat it as a gap.\n\n4. **Adding, removing or changing an included input invalidates collected coverage.**\n   - The unit test asserts `fresh` is false after changing, adding or removing inputs. The changes it applies:\n     - Content changes to `code.rs` and to manifests.\n     - A changed lockfile.\n     - A new `.rs` file.\n     - A new watched file.\n     - A created previously missing path.\n   - It asserts `fresh` is false after removing `Cargo.toml`, `Cargo.lock` and `code.rs`. It asserts `fresh` is true again after each restoration.\n   - `real_build_captures_dependency_files_and_environment_for_read_only_freshness_checks` asserts that changing a real included file, a build-script input, or the compiler or build environment makes the check report `stale coverage`. It asserts the check is clean again after restoration.\n   - `src/execution_coverage/book.rs#mod[tests]/fn[cargo_launch_metadata_does_not_invalidate_but_caller_build_environment_does]` shows that Cargo launch metadata does not invalidate, while caller build-environment changes (`CC`, `RUSTFLAGS` and similar) do.\n   - `src/execution_coverage/check.rs#mod[tests]/fn[focused_recollection_leaves_only_the_unselected_result_stale_with_its_original_sources]` shows a changed source makes the unselected result stale. Its original sources are preserved, and the report fails (`!result.passed`) without showing coverage.\n\n5. **Freshness checking does not require rebuilding.**\n   - The unit test calls `fresh` against a temporary directory with no build artifacts, so freshness works without a build.\n   - The end-to-end test runs `coverage-check` read-only. It asserts empty stderr and that the retained storage files are unchanged after all the checks.\n\nI found no unacknowledged gap.",
   "references": "71d351169db35a415bb3102bba37f901e53cefc9111fba0d6e2ea6a6c87e4bde",
   "inputs": [
     {
@@ -115,8 +115,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "36352c5b5667b286bf02338a73b62a7b061bee482579ba9e2515a87baeaf0e79"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "8c637041acd35fb417fd56376b0cfa290e3817b639ef6a4ace5d56bb497aaa34"
         }
       ]
     },
@@ -132,8 +132,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "d1d1b5b1b26a343537673fd3508563eb10b088154b3de23f8a8e5ce7c378540c"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "6caa519efedb19daf670a7fcc2518c8b2d31427de8f36db2bd9bb90f85a33296"
         }
       ]
     },
@@ -149,8 +149,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "e1d89e9522d6a6e16f2a5f936279e07b3ff4e8d0fd81159d5a8bb2785bec6a56"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b04432d831c279a9de345dec7efd8b3bd828e80a59dde8b40ed949f877ab9d1f"
         }
       ]
     },
@@ -166,8 +166,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "f935cb96dd240625eb78fa9ad968ca4f750348e88a91d0e67d0305c623166725"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b7a8a4b0a2cc493c8d7f0285b90efa9996fc37732f4feb387c8e0fb372db77ee"
         }
       ]
     },
@@ -183,8 +183,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "9c78b429eccd183d03a35840a6310a5cd08e2aba121d869993afc407369e3c7d"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "569e9259832f3b89a3ef418babb8d8fede1ff11ca9bec7bdf37c31e9cfa44bfe"
         }
       ]
     },
@@ -200,8 +200,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "ef3d3f1e3a7b75b71f43536dede2c6ee08e3655be652f83eb1e494e66f8aa57b"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "19e2b1e61d5027ab192843ceed1beb865e8669c2d0aed71d8b68d8c31680c076"
         }
       ]
     },
@@ -217,8 +217,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "0e3ee36df661860989e0c9ea895d2169acbb3f188033b3020f2e3d070f5bec6b"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "8a94cbb74d1ed64b7c5bfe1242a055eaf285756ee484565f3005a4a2f7f4370e"
         }
       ]
     },
@@ -234,8 +234,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "a166644f5168956e230a845127833151fdfc040806ad633c7c181f373f79bc88"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "0c8a0d47e3cbc8645ab6dfa9eb5513dc5ec325fe3631e94d9f4e0d05cb80aa16"
         }
       ]
     }

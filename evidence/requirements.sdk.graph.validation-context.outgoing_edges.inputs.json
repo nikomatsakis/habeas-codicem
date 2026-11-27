@@ -1,7 +1,7 @@
 {
   "requirement": "A successful edge selection records the source identity, the requested label,\nand the fingerprint of the returned target identity set. Adding or removing an\nidentity from that set changes it, including adding the first identity to an\nempty set. Reordering targets or repeating a target does not change it.\nChanges to a target's contents do not affect this dependency: reading those\ncontents records a separate node dependency. These observations follow\n{cite}`requirements.sdk.graph.evidence.inputs` and\n{cite}`requirements.sdk.graph.evidence.checking_records`.\n\n`ValidationContext::outgoing_edges` records the selection when returning it.\nThe SDK agent records the prepared selection when delivered. A failed selection\nrecords no successful observation.",
   "determination": true,
-  "rationale": "The two marked tests cover each obligation in `requirements.sdk.graph.validation-context.outgoing_edges.inputs`.\n\n**What is recorded (source, label, target-set fingerprint)**\n- `crates/trust-but-verify/src/graph/validation_tests.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]` calls `ctx.outgoing_edges(node 9, 7)`. It asserts that `ctx.dependencies()` equals `Dependency::OutgoingEdges(9, 7, edge_fingerprint(&graph, &[]))`.\n- The same test asserts `Dependency::OutgoingEdges(1, 7, fingerprint of {3,5})` after `successors(&7)` and `finish`.\n- `crates/trust-but-verify/src/agent/tests.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` asserts the stored record's dependency for the agent tool. It is `OutgoingEdges(1, 7, edge_fingerprint of [2,3])`.\n- The same agent test also checks a second label (8) and a different source node (3), including an empty target set.\n\n**Fingerprint sensitivity to membership**\n- In the validation test, the snapshot fingerprint for `[5,3,5]` is asserted `assert_ne!` against `{3}` (a removal) and `{3,5,9}` (an addition).\n- A record taken with an empty set for label 7 is current at first. It is asserted not current once targets 5, 3 and 5 are added for label 7, which covers adding the first identity to an empty set.\n- A change from `{3,5}` to `{3,6}` is asserted not current.\n- A change to another label's edges, `(8, 2)` and `(8, 99)`, leaves the record current.\n\n**Order and duplicates**\n- The graph returns `[5,3,5]`, and the snapshot fingerprint equals `edge_fingerprint` of `[3,5]`.\n- A record taken from that selection stays current when the graph returns `[3,5]` in a different order and without the duplicate.\n- The agent test returns `[3,2,3]` and expects the dependency fingerprint to equal the one for `{2,3}`.\n\n**Contents are a separate dependency**\n- The validation test asserts `graph.state.reads.is_empty()` after selecting, finishing and checking currency. Edge selection and freshness checking therefore never read target contents. The fingerprint is built from node paths only, so no test needs to change contents.\n\n**`ValidationContext::outgoing_edges` and the agent**\n- The validation test exercises `ValidationContext::outgoing_edges`, `successors`, `finish` and `Record::is_current`.\n- The agent test covers recording on delivery and the saved record's `load_evidence` round-trip.\n\n**Failures record nothing**\n- A malformed node ID is rejected with an error result. The test asserts `ctx.dependencies().is_empty()` and that the graph saw 0 lookups.\n- A prepared selection whose delivery fails leaves `ctx.dependencies()` empty, even though a lookup occurred.\n- A graph edge failure (`fail_edges`) makes `successors` return `Err(\"edges\")`. The dependencies stay unchanged, and `is_current` also returns `Err(\"edges\")`.\n\nThe cited requirements `requirements.sdk.graph.evidence.inputs` and `requirements.sdk.graph.evidence.checking_records` are applied by the same tests. The agent test round-trips store and load with equal dependencies. The validation test checks `is_current` and its error propagation.\n\n`edge_fingerprint` is the real helper rather than an independent oracle. The `assert_ne!` and currency assertions still pin the set semantics, and the separate `crates/trust-but-verify/tests/contracts.rs` test covers the helper's encoding. I found no gap and no acknowledgment is needed.",
+  "rationale": "The two reviewed tests cover every obligation in `requirements.sdk.graph.validation-context.outgoing_edges.inputs`.\n\n**`ValidationContext::outgoing_edges`** (`crates/trust-but-verify/src/graph/validation_tests.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]`):\n- **Recorded fields.** The test selects node 9 with label 7. It asserts the recorded `Dependency::OutgoingEdges(9, 7, edge_fingerprint(&[]))`, which covers the source identity, the label and the fingerprint.\n- **First identity added to an empty set.** A record finished with an empty set for label 7 stays current when only label 8 edges are added. It becomes not current once label 7 targets are added.\n- **Reordering and repeats.** A snapshot of `[5,3,5]` has the same fingerprint as `edge_fingerprint([3,5])`. A finished record stays current when the edges are changed to `[3,5]` in a different order and without the repeat.\n- **Adding and removing.** Fingerprints for `[3]` and `[3,5,9]` differ from the snapshot fingerprint. A record becomes not current when a target changes to `[3,6]`.\n- **Contents.** The test asserts `reads.is_empty()`. `Memory::node_content` pushes to `reads`, so no target contents were read or recorded.\n- **Failure.** With `fail_edges` set, `successors` returns `Err`, and the dependencies are unchanged from before the call. `is_current` also returns `Err`.\n\n**SDK agent** (`crates/trust-but-verify/src/agent/tests.rs#fn[agent_edge_tools_record_selections_without_validating_targets]`):\n- **Recorded on delivery.** A delivered `outgoing_edges` call for node 1 with label 7 stores `Dependency::OutgoingEdges(1, 7, fingerprint of {2,3})`. The delivered result was `[3,2,3]`, so reordering and repeats are covered here too.\n- **Label and source.** A second script selects label 8 on node 1, then label 7 on node 3. Each is recorded with its own label and source, including an empty target set.\n- **Failed selections.** A malformed node ID gives an error result, causes no graph lookup, and records no dependencies. A selection prepared but never delivered (the provider fails) leaves `ctx.dependencies()` empty.\n\nNo obligation is left untested, and no acknowledgments apply.",
   "references": "6153330648d92f2fc2a2b9f09516405490513a9e931e5e9d7ef8dc191e11408a",
   "inputs": [
     {
@@ -87,6 +87,11 @@
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[labeled_selections_track_only_target_membership_without_reading_contents]",
       "hash": "99523765d03546a8080ace6dab2053ee9b74cfbd8ee76dd224c1693883961924"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "impl[Memory/Domain]/fn[node_content]",
+      "hash": "b349c79de3f7318fb56a0371a63b05bef13c245cd377e32967bf0d7c01aa9374"
     },
     {
       "file": "crates/trust-but-verify/src/graph.rs",
@@ -184,6 +189,23 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "99523765d03546a8080ace6dab2053ee9b74cfbd8ee76dd224c1693883961924"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+            },
+            "selector": "impl[Memory/Domain]/fn[node_content]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b349c79de3f7318fb56a0371a63b05bef13c245cd377e32967bf0d7c01aa9374"
         }
       ]
     },

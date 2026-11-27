@@ -352,11 +352,39 @@ mod tests {
         );
         fs::write(&path, "experimental = ['setup-scripts']\n[profile.default]\nretries = 2\n[[profile.default.scripts]]\nfilter = 'all()'\nsetup = 'prepare'\n").unwrap();
         let preserved = configure(temp.path()).unwrap().1;
+        check(&preserved, &path, "default").unwrap();
+        let settings: toml::Table = preserved.parse().unwrap();
+        let experimental = settings["experimental"].as_array().unwrap();
+        assert_eq!(experimental.len(), 2);
         assert!(
-            preserved.contains("setup-scripts")
-                && preserved.contains("retries = 2")
-                && preserved.contains("prepare")
+            experimental
+                .iter()
+                .any(|entry| entry.as_str() == Some("setup-scripts"))
         );
+        assert!(
+            experimental
+                .iter()
+                .any(|entry| entry.as_str() == Some("wrapper-scripts"))
+        );
+        let profile = &settings["profile"]["default"];
+        assert_eq!(profile["retries"].as_integer(), Some(2));
+        let scripts = profile["scripts"].as_array().unwrap();
+        assert_eq!(scripts.len(), 2);
+        assert!(
+            scripts
+                .iter()
+                .any(
+                    |entry| entry.get("setup").and_then(toml::Value::as_str) == Some("prepare")
+                        && entry["filter"].as_str() == Some("all()")
+                )
+        );
+        assert!(
+            scripts.iter().any(
+                |entry| entry.get("run-wrapper").and_then(toml::Value::as_str) == Some(WRAPPER)
+            )
+        );
+        fs::write(&path, &preserved).unwrap();
+        assert_eq!(configure(temp.path()).unwrap().1, preserved);
         fs::write(
             &path,
             "[[profile.default.scripts]]\nfilter = 'test(x)'\nrun-wrapper = 'custom'\n",

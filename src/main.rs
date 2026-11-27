@@ -83,9 +83,8 @@ enum Command {
         /// Assess every selected subject, including those with current evidence.
         #[arg(long)]
         force: bool,
-        /// The assessment policy: `confirm` checks each true or
-        /// FIXME result in further independent conversations; `once` records a
-        /// single assessment.
+        /// `confirm` checks an initial true or FIXME result with one more
+        /// independent assessment. `once` records a single assessment.
         #[arg(long, value_name = "name")]
         policy: Option<habeas::config::AssessmentPolicy>,
     },
@@ -321,6 +320,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                     summary.push_str(&format!("; policy {policy}"));
                 }
                 println!("{summary}");
+                if outcome.cancelled && outcome.failures.is_empty() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "evidence authoring cancelled",
+                    )
+                    .into());
+                }
                 if !outcome.failures.is_empty() {
                     return Err(io::Error::other(
                         "evidence authoring failed for one or more subjects; see diagnostics above",
@@ -359,12 +365,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             );
             if matches!(outcome.determination, habeas::judgment::Judgment::Fixme(_)) {
                 summary.push_str(" — FIXME");
-            }
-            if matches!(outcome.determination, habeas::judgment::Judgment::False) {
-                eprintln!("{}: false", outcome.subject);
-                if verbose {
-                    eprintln!("{}", outcome.rationale);
-                }
             }
             if let Some(path) = outcome.evidence_path {
                 println!(

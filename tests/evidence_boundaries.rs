@@ -99,6 +99,19 @@ fn outline_inputs_survive_moves_and_unhashed_comments_but_not_edits() {
     fs::write(root.join("data.txt"), "zero\nfirst\nsecond\n").unwrap();
     assert_eq!(errors(inputs.clone()), "");
 
+    let revised_comment = rust.replace(
+        "/// Docs.\n// {cite}`rules.ready`",
+        "/// Docs.\n// Revised ordinary prose.\n// {cite}`rules.ready` with more detail",
+    );
+    fs::write(root.join("src/lib.rs"), &revised_comment).unwrap();
+    assert_eq!(errors(inputs.clone()), "");
+    fs::write(
+        root.join("src/lib.rs"),
+        revised_comment.replace("fn beta() {}", "fn beta() { changed(); }"),
+    )
+    .unwrap();
+    assert!(errors(inputs.clone()).contains("fn[beta] (now lines 4-8)"));
+
     // Editing another node must not invalidate beta's recorded input.
     fs::write(root.join("src/lib.rs"), rust.replace("work(1)", "work(2)")).unwrap();
     assert_eq!(errors(vec![inputs[1].clone()]), "");
@@ -416,10 +429,15 @@ fn symlinked_evidence_json_files_are_checked_like_other_files() {
 // {test}`requirements.ci.input_containment`
 // {test}`requirements.ci.outline_inputs`
 // {test}`requirements.configuration.loading`
+// {test}`requirements.ci.schema`
 #[test]
 fn configured_external_inputs_validate_and_remain_subject_to_freshness_and_disallow() {
     let temp = fixture();
     let root = temp.path().join("project");
+    let local = root.join("data.txt");
+    let portable = outline(&root, local.to_str().unwrap(), "");
+    assert_eq!(portable["file"], "data.txt");
+    assert_eq!(portable, outline(&root, "data.txt", ""));
     let external = temp.path().join("generated");
     fs::create_dir(&external).unwrap();
     let source = external.join("generated.rs");
@@ -429,6 +447,9 @@ fn configured_external_inputs_validate_and_remain_subject_to_freshness_and_disal
     fs::write(root.join("habeas.toml"), &config).unwrap();
     {
         let input = outline(&root, source.to_str().unwrap(), "fn[generated]");
+        assert_eq!(input["file"], source.to_str().unwrap());
+        let relative = "../generated/generated.rs";
+        assert_eq!(outline(&root, relative, "fn[generated]")["file"], relative);
         write_inputs(&root, vec![input]);
         fs::write(root.join("habeas.toml"), "version = 1\n").unwrap();
         assert!(

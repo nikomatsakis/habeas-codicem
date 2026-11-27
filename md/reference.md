@@ -140,6 +140,17 @@ habeas author --all --force
 habeas author requirements.check --force
 ```
 
+A failed requirement or example review lists each correction with its reason.
+For a missing `{test}` or `{impl}` reference, Habeas checks that the assessor
+observed the target item and that it still matches, then inserts the marker.
+It reports manual work and unapplied corrections and pauses that subject for
+the rest of the run. After a write, it reassesses affected subjects, including
+previously current reviews outside the initial selection. Further additions can
+trigger further rounds. An existing marker or a stale selector alone ends the
+round without another assessment. Use `--stdout` to inspect a single review and
+its proposed corrections before making edits.
+{cite}`requirements.authoring.corrections.apply` {cite}`requirements.authoring.reassessment`
+
 Each assessment
 gets its own conversation and usage record. Successful results are kept if
 another assessment fails; the command reports failures and exits unsuccessfully.
@@ -365,7 +376,7 @@ the selected `file` or `stdout` destination and `evidence_written` reporting
 whether the write succeeded.
 {cite}`requirements.authoring.invocation`
 {cite}`requirements.authoring.submission`
-{cite}`requirements.authoring.persistence`
+{cite}`requirements.authoring.persistence` {cite}`requirements.authoring.persistence.destination`
 {cite}`requirements.authoring.usage_storage`
 
 Change `authoring.default` in the user file to switch the default, or add a
@@ -489,20 +500,15 @@ model = "MODEL_TAG"
 policy = "once"
 ```
 
-Under `confirm`, each `true` or FIXME result is checked with an independent
-second assessment. When both assessments reach the same kind of outcome, the
-first is recorded; site reviews that differ only in `applies` disagree. When
-they disagree, a third conversation verifies the less favorable one, where
-`false` is less favorable than FIXME and FIXME than `true`: the verifier
-receives the subject, its mandatory inputs, that assessment's rationale, and the
-source tools, and answers with `submit_result`, saying whether its
-claimed gaps are real and whether `{fixme}` references acknowledge them. The
-recorded rationale then ends with a confirmation note stating that the
-assessments disagreed and what the verification concluded, and `habeas status`
-lists the record under "Disagreements". Each conversation has its own usage
-record, whose subject names the second assessment or the verification.
+Under `confirm`, a first `false` finishes the assessment. A first `true` or
+FIXME gets an independent second assessment. Habeas records `false` over FIXME
+and FIXME over `true`, together with the selected assessment's explanation.
+A tie selects the first assessment, except that a site review selects `applies`
+true when applicability differs. When the judgments or site applicability differ,
+the recorded rationale explains the disagreement and `habeas status` lists it
+under “Disagreements”. Each assessment has its own usage record.
 
-Under `once`, each subject gets a single assessment, which uses fewer tokens and
+Under `once`, each subject gets a single assessment per round, which uses fewer tokens and
 less time, such as with a slow local model. The completion report names the
 policy used, and each usage record identifies it in `policy`. An unknown policy
 name is rejected. {cite}`requirements.authoring.policy`
@@ -516,7 +522,7 @@ A disagreement is a finding, not noise to retry away: the requirement, code, or
 tests leave a gap one reviewer found or a reading the reviewers took
 differently. Close the gap, or tighten the requirement text, rather than
 rerunning for a different determination.
-{cite}`requirements.authoring.confirmation` {cite}`requirements.cli.flip_guidance`
+{cite}`requirements.authoring.confirmation` {cite}`requirements.authoring.confirmation.selection` {cite}`requirements.authoring.confirmation.disagreement` {cite}`requirements.cli.flip_guidance`
 
 ### Live Bedrock tests
 
@@ -861,8 +867,7 @@ affected judgments come first.
 
 Every form also lists, in a "Disagreements" section, each selected
 definition, citation review, and site review whose recorded rationale states
-that its assessments disagreed under the `confirm` policy. Validation accepts
-these records, so the section is where they stay visible for review. With a
+that its assessments disagreed under the `confirm` policy. The section includes both failed and accepted judgments. With a
 selection, a citation review is listed when one of its citations names a
 selected definition, and a site review when its requirement is selected.
 {cite}`requirements.cli.status`

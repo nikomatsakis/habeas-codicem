@@ -4,7 +4,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 
-pub(super) struct RecordingProvider {
+pub(crate) struct RecordingProvider {
     backend: config::BackendConfig,
     pub requests: Arc<Mutex<Vec<Value>>>,
 }
@@ -89,37 +89,6 @@ impl RecordingProvider {
                 "submit_result"
             ]
         );
-    }
-    pub fn assert_verifier(&self, turn: usize, site: bool) {
-        self.assert_tools(turn);
-        let requests = self.requests.lock().unwrap();
-        let tool = requests[turn]["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|t| t["function"]["name"] == "submit_result")
-            .unwrap();
-        let result = &tool["function"]["parameters"]["properties"]["result"];
-        let fields = &result["properties"];
-        let mut keys: Vec<_> = result["required"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|k| k.as_str().unwrap())
-            .collect();
-        keys.sort_unstable();
-        let mut expected = vec!["acknowledged", "acknowledgments", "rationale", "real"];
-        if site {
-            expected.insert(2, "applies");
-            assert_eq!(fields["applies"]["type"], "boolean");
-        }
-        assert_eq!(keys, expected);
-        assert_eq!(fields.as_object().unwrap().len(), keys.len());
-        for flag in ["real", "acknowledged"] {
-            assert_eq!(fields[flag]["type"], "boolean");
-        }
-        assert_eq!(fields["acknowledgments"]["items"]["type"], "string");
-        assert_eq!(fields["rationale"]["minLength"], 1);
     }
     pub fn prompts(&self) -> Vec<(String, Vec<String>)> {
         self.requests

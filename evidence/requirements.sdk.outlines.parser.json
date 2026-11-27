@@ -1,7 +1,7 @@
 {
   "requirement": "`OutlineContent::from_path` returns the root contents for a file using the\nsupplied [validation cache](validation-cache.md). `from_id` uses the same\ncached file and selects the addressed item. Both infer\nthe language from the filename under\n{cite}`requirements.sdk.outlines.defaults`.\n\n```rust,ignore\npub struct OutlineContent { /* private fields */ }\n\nimpl OutlineContent {\n    pub fn from_path(\n        cache: &ValidationCache<impl Domain>,\n        path: impl AsRef<Path>,\n    ) -> Result<Self, OutlineError>;\n    pub fn from_id(\n        cache: &ValidationCache<impl Domain>,\n        id: &OutlineData,\n    ) -> Result<Self, OutlineError>;\n    pub fn from_source(\n        cache: &ValidationCache<impl Domain>,\n        filename: impl AsRef<Path>,\n        source: Arc<str>,\n    ) -> Result<Self, OutlineError>;\n    pub fn from_path_with<L: OutlineLang>(\n        cache: &ValidationCache<impl Domain>,\n        language: &L,\n        path: impl AsRef<Path>,\n    ) -> Result<Self, OutlineError>;\n    pub fn from_source_with<L: OutlineLang>(\n        cache: &ValidationCache<impl Domain>,\n        language: &L,\n        filename: impl AsRef<Path>,\n        source: Arc<str>,\n    ) -> Result<Self, OutlineError>;\n    pub fn select(&self, selector: &str) -> Result<Self, OutlineError>;\n    pub fn id(&self) -> &OutlineData;\n    pub fn text(&self) -> &str;\n    pub fn source_span(&self, span: Span) -> Option<&str>;\n    pub fn source_span_redacted(&self, span: Span) -> Option<Cow<'_, str>>;\n    pub fn outline(&self) -> &Outline;\n    pub fn language(&self) -> &str;\n    pub fn structural_hash(&self) -> &str;\n    pub fn fingerprint_scheme(&self) -> &str;\n}\n```\n\nTrait implementations\n\n```rust,ignore\nimpl Clone for OutlineContent;\nimpl Debug for OutlineContent;\nimpl NodeContents for OutlineContent;\n```",
   "determination": true,
-  "rationale": "**Obligations derived from `requirements.sdk.outlines.parser`**\n1. `from_path` returns the root contents of the file, using the supplied validation cache.\n2. `from_id` uses the same cached file and selects the addressed item.\n3. Both infer the language from the filename under the cited `requirements.sdk.outlines.defaults`. That means case-insensitive extension matching, with plain text as the fallback.\n4. The signatures and trait impls (`Clone`, `Debug`, `NodeContents`) are the public surface. I did not treat the other methods in the listing as separate behavioral obligations, because the prose states no behavior for them. `from_source` is refined by `parser.supplied_source`, which has its own tests, and those obligations need no test here. The behavior of `source_span`, `from_*_with` and the language names is governed by other requirements.\n\n**Mapping to tests**\n- **`from_path` returns the root.**\n  - `tests/outline_content.rs#fn[file_constructors_infer_the_language_and_return_addressed_contents]` asserts that the root selector is `\"\"`, the root text equals the file source, the scheme is `rust-structural-v1`, and the item selectors are `[\"\", \"fn[check_token]\"]`.\n  - `tests/outline_content.rs#fn[selected_contents_outlive_handles_and_later_file_edits]` checks the root of a plain-text file.\n- **The supplied cache is used, and `from_id` uses the same cached file.** `tests/contracts.rs#fn[domain_clones_share_the_first_successful_outline_for_each_path]` runs these scenarios:\n  - A failed first read is not cached.\n  - The first successful snapshot is cached, so after the file is edited and then deleted, `from_path` on a clone's cache returns the original text.\n  - `std::ptr::eq(snapshot.outline(), cached.outline())` holds.\n  - A different cache instance yields fresh content that differs from the cached one.\n  - `from_id` on the peer cache after the file is deleted still selects `fn[first]` from the cached snapshot.\n  - The retained clone still selects after the domain is dropped, which exercises `Clone`.\n- **Language inference from the filename, applied in this subject's case.**\n  - `file_constructors_infer_the_language_and_return_addressed_contents` uses `AUTH.RS`, which exercises case-insensitive matching. It asserts Rust outline items and the Rust scheme through both `from_path` and `from_id`, and it compares fingerprints against `from_source` and `select`.\n  - `selected_contents_outlive_handles_and_later_file_edits` uses `notes.unknown`, which exercises the plain-text fallback. `from_path` gives three items, and `from_id` of the line selector gives `\"second\"`.\n  - The mapping for every default language belongs to `requirements.sdk.outlines.defaults`, which is cited context and not reassessed here.\n- **Addressing and trait impls.**\n  - `selected_contents_outlive_handles_and_later_file_edits` asserts `id()`, `text()`, `structural_hash`, `fingerprint_scheme`, `outline`, `select` (including the root selector `\"\"`) and `NodeContents` (`format`, `fingerprint`). It also asserts that selected contents survive dropping the handle and editing the file, and that a later `from_id` fails. `Debug` is checked by asserting the debug string contains \"OutlineContent\".\n  - `tests/public_api.rs#fn[public_exports_match_the_appendix]` checks the exported inventory against the book, and compiles the Habeas consumer against the SDK.\n\n**Other tests**\nTests for `from_path_with`, `from_source_with`, `source_span*` and `language()` exist in `tests/outline_content.rs`. They are marked for other requirements, such as `source_spans` and `parser.supplied_source`. The subject's prose states no behavior for them, so there is no marking gap against it.\n\nNo acknowledgments apply. I found no unresolved ambiguity and no adequacy gaps.",
+  "rationale": "Obligations and their tests:\n\n1. `from_path` returns the root contents for a file, using the supplied cache. `file_constructors_infer_the_language_and_return_addressed_contents` asserts that the root selector is empty, that `text()` equals the whole source, that the fingerprint matches `from_source`, and that the outline items are `[\"\", \"fn[check_token]\"]`. `domain_clones_share_the_first_successful_outline_for_each_path` covers the cache. A failed first load is not cached. The first successful snapshot is reused by `peer.cache()` even after the file is edited and removed. This is checked with `ptr::eq` on the outline, the original text and an equal fingerprint. A fresh cache sees the new content.\n\n2. `from_id` uses the same cached file and selects the addressed item. The `domain_clones...` test calls `from_id(peer.cache(), fn[first])` after the file was rewritten and deleted. It still gets `fn first() {}`, so it used the cached file. `file_constructors...` and `selected_contents_outlive_handles_and_later_file_edits` check that the selected id and text are right (`second`, `fn check_token() {...}`). They also check that the selected fingerprint equals the one from `root.select`.\n\n3. Both constructors infer the language from the filename under `requirements.sdk.outlines.defaults`. `file_constructors...` uses `AUTH.RS`, so it covers case-insensitive extension matching. It asserts the `rust-structural-v1` scheme and Rust selectors for both `from_path` and `from_id`. `selected_contents_outlive_handles_and_later_file_edits` uses `notes.unknown`, so it covers the plain-text fallback with one child per nonblank line (3 items, `second` selected) through both `from_path` and `from_id`. The mapping for each individual language belongs to the cited defaults requirement, which has its own tests (for example `default_language_names_match_the_retained_outline`).\n\n4. Trait implementations. `Clone` is tested by `retained = cached.clone()` still selecting after the originals are dropped. `Debug` is tested by the `format!(\"{selected:?}\")` assertion. `NodeContents` is tested by `format()`, `fingerprint()` and the scheme checks.\n\nThe other listed methods (`from_source`, `*_with`, `source_span*`, `language`) also have tests in `outline_content.rs`. They are not the subject of the prose obligations, and they belong to refining or related requirements. `public_exports_match_the_appendix` checks that the signatures are exported.\n\nI found no gap.",
   "references": "bb8f380db111649272077ed7485943ea37ef3739103da6201af16cdd20b9382f",
   "inputs": [
     {
@@ -103,34 +103,7 @@
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[public_exports_match_the_appendix]",
-      "hash": "85236d57663dd61cc1cfc8c4a81672e5c5591e6d9dfaf865943d051c38e8bb2a"
-    },
-    {
-      "requirements": "requirements.sdk.outlines.parser.supplied_source",
-      "matches": [
-        "requirements.sdk.outlines.parser.supplied_source"
-      ],
-      "text": [
-        ":::{req} parser.supplied_source",
-        "A caller that already has a file snapshot can construct its root",
-        "`OutlineContent` from the filename and supplied text. This constructor uses",
-        "only that text; the filename selects the language under",
-        "{cite}`requirements.sdk.outlines.defaults`.",
-        "",
-        "```rust,ignore",
-        "use std::sync::Arc;",
-        "",
-        "impl OutlineContent {",
-        "    /// Outline supplied text without reading the named file.",
-        "    pub fn from_source(",
-        "        cache: &ValidationCache<impl Domain>,",
-        "        filename: impl AsRef<Path>,",
-        "        source: Arc<str>,",
-        "    ) -> Result<Self, OutlineError>;",
-        "}",
-        "```",
-        ":::"
-      ]
+      "hash": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
     },
     {
       "file": "crates/trust-but-verify/tests/outline_content.rs",
@@ -146,16 +119,6 @@
       "file": "crates/trust-but-verify/tests/outline_content.rs",
       "item": "fn[explicit_languages_share_configuration_and_retain_their_scheme]",
       "hash": "b4d217f3849454ecb528cf860851500af60f692fc6c269d9683f85fc2378dcb4"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/outline_content.rs",
-      "item": "fn[unknown_extensions_keep_nonblank_lines_and_content_selectors]",
-      "hash": "94d7c178d939104d53f22b0e1d8f3dda14222b94c019532148467e15f989ce92"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/outline_content.rs",
-      "item": "fn[bundled_languages_claim_extensions_and_supply_the_same_public_outline]",
-      "hash": "fac512f81fda1ecfc4599e2dba54c837f6070de275c6f169cbcc8362df78a8c2"
     }
   ],
   "format_version": 1,
@@ -270,30 +233,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "85236d57663dd61cc1cfc8c4a81672e5c5591e6d9dfaf865943d051c38e8bb2a"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.outlines.parser"
-        },
-        "Tests",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "48eb6200b1ebab1eaf98c3b183889b84c72dfb9716b0db70e9aa21060644f6e4"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Requirement": "requirements.sdk.outlines.parser.supplied_source"
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "b8f3c1f91969e66d67bafab5e4440f00bfe404eb6ace6408d077ba2b6712e367"
+          "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
         }
       ]
     },
@@ -345,40 +285,6 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "b4d217f3849454ecb528cf860851500af60f692fc6c269d9683f85fc2378dcb4"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/outline_content.rs"
-            },
-            "selector": "fn[unknown_extensions_keep_nonblank_lines_and_content_selectors]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "d99771d9c1babd9585399af2dc693bbbe6d8b5f8e83df526e7604da405319e0e"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/outline_content.rs"
-            },
-            "selector": "fn[bundled_languages_claim_extensions_and_supply_the_same_public_outline]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "c41d147320200896aa05b92e7e9ed8d8c9540be98ec8c70d57c5e3cf78e874fc"
         }
       ]
     }

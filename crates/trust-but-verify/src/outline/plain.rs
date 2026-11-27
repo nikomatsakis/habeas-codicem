@@ -1,4 +1,12 @@
 //! Plain-text profile: every non-blank line is an anonymous `line` node.
+//!
+//! :::{cite} habeas:coverage
+//! This file declares a static profile. Plain text has no grammar and never
+//! invokes the grammar-node attachment callback. LLVM emits no line counts
+//! for the initializer. The public `plain_line_fingerprints_use_sha256_words_without_losing_boundaries`
+//! test exercises this profile through `OutlineContent::from_source`, including
+//! its fingerprint scheme, whitespace normalization, and distinct word boundaries.
+//! :::
 
 use super::profile::{Profile, kind_is_comment, never};
 

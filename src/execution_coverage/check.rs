@@ -1047,6 +1047,103 @@ mod tests {
         assert!(result.text.contains("recollect"), "{}", result.text);
     }
 
+    // {test}`requirements.test-coverage.check.threshold`
+    // {test}`requirements.test-coverage.index.freshness`
+    #[test]
+    fn inactive_and_stale_measurements_cannot_raise_the_file_total() {
+        let temp = fixture("fn a() {}");
+        let root = temp.path();
+        let target = root.join("target");
+        record(
+            root,
+            "old",
+            1,
+            "old-build",
+            vec![process(root, &[(1, 1)], 1)],
+        );
+        record(
+            root,
+            "new",
+            2,
+            "new-build",
+            vec![process(root, &[(1, 0)], 0)],
+        );
+        let saved = book::load_saved(root, Some(target.clone()));
+        assert_eq!(saved.records.len(), 1);
+        assert!(saved.records[0].fresh);
+        let result = check_saved(root, &saved).unwrap();
+        assert!(!result.passed);
+        assert!(
+            result.text.contains("code.rs: 0/1 (0.0%) — FAIL"),
+            "{}",
+            result.text
+        );
+
+        // A stale success remains in the selection beside a fresh failure.
+        fs::write(root.join("code.rs"), "fn a() { let x = 1; }").unwrap();
+        record(
+            root,
+            "new",
+            3,
+            "new-build",
+            vec![process(root, &[(1, 1)], 1)],
+        );
+        fs::write(root.join("code.rs"), "fn a() {}").unwrap();
+        record(
+            root,
+            "other",
+            4,
+            "new-build",
+            vec![process(root, &[(1, 0)], 0)],
+        );
+        let saved = book::load_saved(root, Some(target.clone()));
+        assert_eq!(saved.records.len(), 2);
+        assert!(
+            saved
+                .records
+                .iter()
+                .any(|r| r.attempt.test == "new" && !r.fresh)
+        );
+        assert!(
+            saved
+                .records
+                .iter()
+                .any(|r| r.attempt.test == "other" && r.fresh)
+        );
+        let result = check_saved(root, &saved).unwrap();
+        assert!(!result.passed);
+        assert!(
+            result.text.contains("binary / new: stale coverage"),
+            "{}",
+            result.text
+        );
+        assert!(!result.text.contains("- code.rs:"), "{}", result.text);
+
+        // A run whose recorded build disagrees with the active build makes
+        // the store unavailable even when source inputs still match.
+        let current = record(
+            root,
+            "new",
+            5,
+            "new-build",
+            vec![process(root, &[(1, 1)], 1)],
+        );
+        let run_path = current.parent().unwrap().parent().unwrap().join("run.json");
+        let mut run: Run = load(&run_path).unwrap();
+        run.configuration = "mismatched-build".to_owned();
+        save(&run_path, &run).unwrap();
+        let saved = book::load_saved(root, Some(target));
+        assert!(saved.invalid_store);
+        let result = check_saved(root, &saved).unwrap();
+        assert!(!result.passed);
+        assert!(
+            result.text.contains("active build configuration"),
+            "{}",
+            result.text
+        );
+        assert!(!result.text.contains("- code.rs:"), "{}", result.text);
+    }
+
     // {test}`requirements.test-coverage.index.summary`
     // {test}`requirements.test-coverage.index.selection`
     // {test}`requirements.test-coverage.index.unavailable`
@@ -1146,6 +1243,7 @@ mod tests {
         assert_eq!(rerun.run.sources["code.rs"], "fn a() { let changed=1; }");
     }
 
+    // {test}`requirements.test-coverage.check`
     // {test}`requirements.test-coverage.check.exceptions`
     // {test}`requirements.test-coverage.check.exceptions.reviews`
     // {test}`requirements.test-coverage.check.exceptions.binding`
@@ -1367,6 +1465,7 @@ mod tests {
         assert!(!report(root).passed);
     }
 
+    // {test}`requirements.test-coverage.check`
     // {test}`requirements.test-coverage.check.exceptions`
     // {test}`requirements.test-coverage.check.exceptions.reviews`
     // {test}`requirements.test-coverage.check.report`

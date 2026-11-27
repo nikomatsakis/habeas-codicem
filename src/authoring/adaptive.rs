@@ -11,10 +11,10 @@ pub(super) async fn assess(
     sources: AssessmentSources,
     usage: &mut UsageLog,
     policy: AssessmentPolicy,
-) -> io::Result<(Judgment, Value)> {
+) -> io::Result<Assessment> {
     let domain = sources.domain.clone();
     let first = route(root, subject, config, sources, usage).await?;
-    if policy == AssessmentPolicy::Once || first.0 == Judgment::False {
+    if policy == AssessmentPolicy::Once || first.determination == Judgment::False {
         return Ok(first);
     }
     let state = usage_state_root(root)?;
@@ -26,53 +26,8 @@ pub(super) async fn assess(
         Err(error) => Err(error),
     };
     let second = finish_followup(log, "adaptive confirmation", result)?;
-    if first.0.kind() == second.0.kind() && first.1["applies"] == second.1["applies"] {
-        return Ok(first);
-    }
-    let describe = |record: &(Judgment, Value)| match record.1["applies"].as_bool() {
-        Some(applies) => format!("{}` with applies `{applies}", record.0.kind()),
-        None => record.0.kind().to_owned(),
-    };
-    let first_kind = describe(&first);
-    let second_kind = describe(&second);
-    let (less, more) = if favorability(&second) < favorability(&first) {
-        (second, first)
-    } else {
-        (first, second)
-    };
-    let less_kind = describe(&less);
-    let mut backend = config.backend.clone();
-    let BackendConfig::Openai(openai) = &mut backend else {
-        unreachable!()
-    };
-    openai.model = Some("gpt-6.1-sol".into());
-    let mut log = followup_log(&state, root, subject, usage, "adaptive verification")?;
-    log.record.model = Some("gpt-6.1-sol".into());
-    usage.record.attempts.push(log.path.clone());
-    usage.save()?;
-    let result = match followup_sources(&domain, subject, &mut log) {
-        Ok(mut sources) => {
-            verify(
-                &backend,
-                &mut sources,
-                &mut log,
-                &less.0,
-                less.1["rationale"].as_str().unwrap_or_default(),
-            )
-            .await
-        }
-        Err(error) => Err(error),
-    };
-    let verification = finish_followup(log, "adaptive verification", result)?;
-    let chosen = confirmed_record(
-        less,
-        more,
-        &first_kind,
-        &second_kind,
-        &less_kind,
-        verification,
-    );
-    usage.record.determination = Some(chosen.0.kind().into());
+    let chosen = select_assessment(first, second);
+    usage.record.determination = Some(chosen.determination.kind().into());
     usage.save()?;
     Ok(chosen)
 }
@@ -84,7 +39,7 @@ async fn route(
     config: &ResolvedAuthoringConfig,
     sources: AssessmentSources,
     usage: &mut UsageLog,
-) -> io::Result<(Judgment, Value)> {
+) -> io::Result<Assessment> {
     let state = usage_state_root(root)?;
     if sources.has_applicable_fixme {
         usage.record.routing_reason = Some("existing_fixme");
@@ -102,10 +57,10 @@ async fn route(
         "gpt-5.4-mini",
     )
     .await?;
-    let reason = match &first {
-        Ok((Judgment::True, _)) => return first,
-        Ok((Judgment::False, _)) => "mini_false",
-        Ok((Judgment::Fixme(_), _)) => "mini_fixme",
+    let reason = match first.as_ref().map(|a| &a.determination) {
+        Ok(Judgment::True) => return first,
+        Ok(Judgment::False) => "mini_false",
+        Ok(Judgment::Fixme(_)) => "mini_fixme",
         // Provider errors, cancellation, and filesystem errors cannot be fixed
         // by selecting a more expensive model. Only conversation/submission
         // failures proceed to Sol; connection/preparation/log errors return
@@ -137,7 +92,7 @@ async fn attempt(
     parent: &mut UsageLog,
     state: &Path,
     model: &str,
-) -> io::Result<io::Result<(Judgment, Value)>> {
+) -> io::Result<io::Result<Assessment>> {
     let mut backend = config.backend.clone();
     let BackendConfig::Openai(openai) = &mut backend else {
         unreachable!("adaptive is an OpenAI model")
@@ -164,8 +119,8 @@ async fn attempt(
     } else {
         "failed"
     })?;
-    if let Ok((judgment, _)) = &result {
-        parent.record.determination = Some(judgment.kind().into());
+    if let Ok(assessment) = &result {
+        parent.record.determination = Some(assessment.determination.kind().into());
         parent.save()?;
     }
     Ok(result)

@@ -21,6 +21,7 @@ pub(crate) fn private_key() -> String {
     .join("\n")
 }
 
+// {test}`requirements.sdk.sources.redact_text`
 // {test}`requirements.authoring.redaction`
 // {test}`requirements.sdk.sources.redaction`
 #[test]

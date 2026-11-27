@@ -108,7 +108,10 @@ fn addresses_reconstruct_without_reading_the_file() {
         "",
         "fn[one%20two]#2",
         "use@0123456789ab",
+        // Slash separates the type and trait parts of an impl label.
         "impl[Thing/Trait]/fn[run]",
+        // A literal slash within one name part has to be encoded.
+        "fn[Thing%2FTrait]",
     ] {
         assert_eq!(
             OutlineData::new("not-present.rs", valid.into()).unwrap(),
@@ -122,6 +125,8 @@ fn addresses_reconstruct_without_reading_the_file() {
         "fn[x y]",
         "fn[x@]",
         "fn[x#]",
+        "fn[a[b]",
+        "fn[a]b]",
         "use@123",
         "mod[m]//fn[f]",
         "12",
@@ -1408,6 +1413,44 @@ export default abstract class Base {}
         let edited_class = edited.select("class[Widget]").unwrap();
         assert_ne!(class.structural_hash(), edited_class.structural_hash());
         assert_eq!(class.fingerprint(), edited_class.fingerprint());
+        for (selector, before, after) in [
+            ("class[Widget]", "@sealed", "@unsealed"),
+            ("class[Widget]", "@sealed\n", ""),
+            (
+                "class[Widget]",
+                r#"@register("widget")"#,
+                r#"@register("button")"#,
+            ),
+            (
+                "class[Base]",
+                "@published(() => { @local class Local {} })",
+                "@published(false)",
+            ),
+            (
+                "class[Base]",
+                "@published(() => { @local class Local {} })\n",
+                "",
+            ),
+        ] {
+            let edited = OutlineContent::from_source(
+                &ValidationCache::new(),
+                path,
+                source.replace(before, after).into(),
+            )
+            .unwrap();
+            let original = root.select(selector).unwrap();
+            let changed = edited.select(selector).unwrap();
+            assert_ne!(
+                original.structural_hash(),
+                changed.structural_hash(),
+                "{path}: {before}"
+            );
+            assert_ne!(
+                original.fingerprint(),
+                changed.fingerprint(),
+                "{path}: {before}"
+            );
+        }
     }
 }
 
@@ -1479,6 +1522,33 @@ fn toml_preserves_written_dotted_literal_and_quoted_header_names() {
             "table[items.parts]",
             "table[items.parts]/pair[\"nested%2Fkey\"]",
             "table[items.parts]/pair[\"nested%2Fkey\"]/pair['deep%20key']",
+        ]
+    );
+}
+
+// {test}`requirements.sdk.sources.yaml.items`
+#[test]
+fn yaml_selectors_encode_written_keys_and_number_duplicate_siblings() {
+    let source = "my key:\n  \"a/b#c@d[e]\": 1\na: 2\na: 3\nflow: {key: 4, key: 5}\n";
+    let root =
+        OutlineContent::from_source(&ValidationCache::new(), "data.yaml", source.into()).unwrap();
+    let selectors: Vec<_> = root
+        .outline()
+        .items
+        .iter()
+        .map(|item| item.selector.as_str())
+        .collect();
+    assert_eq!(
+        selectors,
+        [
+            "",
+            "pair[my%20key]",
+            "pair[my%20key]/pair[\"a%2Fb%23c%40d%5Be%5D\"]",
+            "pair[a]#1",
+            "pair[a]#2",
+            "pair[flow]",
+            "pair[flow]/pair[key]#1",
+            "pair[flow]/pair[key]#2"
         ]
     );
 }
@@ -1897,6 +1967,7 @@ fn custom_attachment_spans_are_checked_against_the_original_snapshot() {
     assert!(load(vec![Span::new(0, 3)]).is_err());
 }
 
+// {test}`requirements.sdk.outlines.attachments.empty`
 // {test}`requirements.sdk.outlines.Outline`
 // {test}`requirements.sdk.outlines.OutlineItem`
 // {test}`requirements.sdk.outlines.name_span`
@@ -2058,4 +2129,40 @@ fn parent_reads_cover_own_source_independently_of_children() {
         parent.select(child).unwrap().fingerprint(),
         changed.select(child).unwrap().fingerprint()
     );
+}
+
+// {test}`requirements.sdk.outlines.selection`
+// {test}`requirements.sdk.outlines.selector_syntax`
+#[test]
+fn selecting_multipart_impls_and_literal_slashes_preserves_label_boundaries() {
+    let cache = ValidationCache::new();
+    let source = "impl core::fmt::Display for Thing {\n    fn run() {}\n}";
+    let implementation = OutlineContent::from_source(&cache, "x.rs", source.into()).unwrap();
+    assert_eq!(
+        implementation
+            .select("impl[Thing/core::fmt::Display]")
+            .unwrap()
+            .text(),
+        source
+    );
+    assert_eq!(
+        implementation
+            .select("impl[Thing/core::fmt::Display]/fn[run]")
+            .unwrap()
+            .text()
+            .trim(),
+        "fn run() {}"
+    );
+    assert!(
+        implementation
+            .select("impl[Thing%2Fcore::fmt::Display]")
+            .is_err()
+    );
+    let source = "# A/B\n\nSection body.\n";
+    let markdown = OutlineContent::from_source(&cache, "x.md", source.into()).unwrap();
+    assert_eq!(
+        markdown.select("section[A%2FB]").unwrap().text().trim_end(),
+        source.trim_end()
+    );
+    assert!(markdown.select("section[A/B]").is_err());
 }

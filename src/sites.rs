@@ -644,15 +644,14 @@ fn validate_review(
             file: site.file.clone(),
             item: site.item.clone(),
         });
-    let native = value.clone();
-    let value = match crate::evidence_format::view(&value) {
+    crate::evidence_format::check_native(&value, &subject, &domain, &label, errors);
+    let value = match crate::evidence_format::application_fields(&value) {
         Ok(value) => value,
         Err(error) => {
             errors.push(format!("{label}: invalid evidence format: {error}"));
             return;
         }
     };
-    crate::evidence_format::check_native(&native, &subject, &domain, &label, errors);
     let Some(object) = value.as_object() else {
         errors.push(format!("{label}: expected a JSON object"));
         return;

@@ -1,7 +1,7 @@
 {
   "requirement": "The coverage workflow MUST verify that the effective nextest profile and\nconfiguration selected for the invocation route every selected test attempt\nthrough Habeas's per-process collector, accounting for profile inheritance and\nwrapper-rule precedence. If that cannot be established, it MUST fail before\nexecuting tests with a diagnostic identifying the conflicting profile or\nsetting, rather than silently collecting incomplete coverage.",
   "determination": true,
-  "rationale": "**Verdict:** the two marked tests adequately cover `requirements.test-coverage.run.configuration`.\n\n**Obligations derived from the requirement**\n1. The workspace must verify that the effective profile and configuration route every selected test attempt through the collector.\n2. That verification must account for profile inheritance.\n3. It must account for wrapper-rule precedence.\n4. If routing cannot be proven, the run must fail before any tests execute.\n5. The failure diagnostic must identify the conflicting profile or setting.\n\n**Source reviewed.** I read the implementation only to see where verification happens and which inputs select the profile and configuration: `src/execution_coverage/configuration.rs#fn[check]` and `src/execution_coverage/runner.rs#fn[verify_configuration]`. `fn[run]` calls `verify_configuration` before any directory creation, build or test execution.\n\n**Unit test `src/execution_coverage/configuration.rs#mod[tests]/fn[native_settings_inheritance_and_precedence]`**\n- **Valid setups:** the generated configuration passes for profile `ci`. A chain `local → fast → ci` passes.\n- **Inheritance:** a conflicting `run-wrapper` rule in the inherited parent `fast` makes `local` fail, and the diagnostic contains `profile.fast.scripts`. A child `local` rule using the collector overrides that parent conflict and passes.\n- **Precedence:** in profile `local`, collector-first followed by another wrapper passes. Another wrapper first followed by the collector fails, and the diagnostic contains `profile.local.scripts`.\n- **Rules that cannot be proven:** each of these is rejected:\n  - a collector rule with a restricted filter;\n  - a non-collector wrapper rule;\n  - a collector rule with a `platform` condition;\n  - a self-inheriting profile (a cycle).\n- **Malformed wrapper definition:** a wrong collector `command` and a wrong `target-runner` are both rejected.\n- **Configuration generation:** existing setup scripts are preserved, and a custom wrapper rule in the default profile is reported as a conflict.\n\n**Integration test `tests/execution_coverage.rs#fn[invalid_effective_collector_fails_before_any_tests_or_coverage_run]`**\n- **Profile selection:** the conflicting `fast` profile is rejected, with a `profile.fast.scripts` diagnostic, for each of these selections:\n  - `--profile fast`;\n  - `--profile=fast`;\n  - `-Pfast`;\n  - `-P fast`;\n  - `NEXTEST_PROFILE=fast`;\n  - the `--profile` option passed after `--`, which overrides `NEXTEST_PROFILE=default`.\n- **Config file selection:** `--config-file alternate-nextest.toml` with a bad collector command fails, and the diagnostic names that file.\n- **Unverifiable inputs:** each of `--tool-config-file`, `--archive-file`, `--binaries-metadata`, `--cargo-metadata`, `--target-dir-remap` and `--build-dir-remap` fails. The diagnostic names the flag and says it \"cannot be proven\".\n- **Before execution:** after every failing invocation, `target/habeas/coverage` does not exist. That shows the failure came before any collection or test run.\n- **Effective profile wins:** a valid default profile combined with `NEXTEST_PROFILE=fast` and a trailing `--profile default` is checked against the effective profile. The `--no-run` compile-only invocation succeeds, which shows the check follows the effective profile rather than the setup default.\n- **Repository validation:** `validate_repository` reports the `.config/nextest.toml` and `scripts.wrapper.habeas-coverage` problem when the collector command is wrong.\n\n**Assessment.** Each clause has a test with assertions on the outcome:\n- inheritance, including a parent conflict and a child override;\n- first-rule precedence;\n- profile and configuration selection by flag, environment variable and config file;\n- failing before execution;\n- diagnostics that name the profile or setting.\n\nI found no requirement-violating behavior that these tests would accept. Both tests carry `{test}` references to the subject. No acknowledgments (`{fixme}`) apply or are needed.",
+  "rationale": "I found no adequacy gap. The two {test} items between them cover each obligation in `requirements.test-coverage.run.configuration`.\n\n**Obligations I derived from the text**\n1. Verify that the effective profile and configuration route every test attempt through the collector wrapper.\n2. Account for profile inheritance.\n3. Account for wrapper-rule precedence.\n4. If routing cannot be established, fail before executing tests.\n5. The failure diagnostic must identify the conflicting profile or setting.\n\n**Unit test `src/execution_coverage/configuration.rs#mod[tests]/fn[native_settings_inheritance_and_precedence]`**\n- Valid cases pass:\n  - the generated config for profile `ci`;\n  - the `local` profile inheriting through `fast` to `ci`;\n  - a child profile's `all()` collector rule overriding a conflicting parent rule;\n  - a collector rule placed before a narrower `other` wrapper rule.\n- Inheritance conflict:\n  - A conflicting wrapper in the inherited profile `fast` makes `local` fail.\n  - The error contains `profile.fast.scripts`, which names the conflicting profile and setting.\n- Precedence conflict:\n  - An `other` wrapper placed before the collector in `local` fails.\n  - The error contains `profile.local.scripts`.\n- Other invalid configurations:\n  - extra filtered or platform-restricted collector rules;\n  - a self-inheriting profile;\n  - a wrong collector command;\n  - a wrong `within-wrapper` setting.\n- Existing user settings (setup scripts, retries) are preserved.\n- A custom wrapper on the default profile is reported as a conflict.\n\n**Integration test `tests/execution_coverage.rs#fn[invalid_effective_collector_fails_before_any_tests_or_coverage_run]`**\n- It runs the real `habeas coverage` command against a fixture.\n- A conflicting wrapper in the effective profile `fast` makes the command exit non-zero, and stderr contains `profile.fast.scripts`.\n- The same failure is reached however the profile is selected: `--profile fast`, `--profile=fast`, `-Pfast`, `-P fast`, `NEXTEST_PROFILE`, and a profile given after `--` that overrides the environment.\n- `--config-file` selecting an alternate config is checked, and the diagnostic names `alternate-nextest.toml`.\n- Each input that cannot be verified is rejected with a diagnostic naming the flag and saying \"cannot be proven\". The inputs are `--tool-config-file`, `--archive-file`, `--binaries-metadata`, `--cargo-metadata`, `--target-dir-remap` and `--build-dir-remap`.\n- `target/habeas/coverage` is asserted absent after every failure, which shows that no tests or coverage run happened first.\n- A counter-case checks that selecting a valid profile (`default`, with `NEXTEST_PROFILE=fast` in the environment) still succeeds. Validation therefore looks at the effective selection rather than failing unconditionally.\n\nThe tests assert the outcomes and the diagnostic contents, and I found no plausible violating behavior they would accept. There are no acknowledgments, and I found no marking gaps.",
   "references": "fc2d1bd9de1ae9be4c6490a6b71a51d3c93299f088be4f9d6752e5e20b112018",
   "inputs": [
     {
@@ -23,7 +23,7 @@
     {
       "file": "src/execution_coverage/configuration.rs",
       "item": "mod[tests]/fn[native_settings_inheritance_and_precedence]",
-      "hash": "ae5d7bb1c7c22175bcb4de4d2cc1f978e1702c23cdadd3d099fccd99461d68c8"
+      "hash": "e8ec49fdbaac89db9ad7c73889e7c8cd2713d769175d110d84845a2035317d3f"
     },
     {
       "file": "tests/execution_coverage.rs",
@@ -31,29 +31,19 @@
       "hash": "46a0d7e2783f377c811ea637ba9d529536f843ed81ff5bad826af36aef9c58a5"
     },
     {
-      "file": "src/execution_coverage/configuration.rs",
-      "item": "fn[check]",
-      "hash": "dd32d812fbbe0fb1598aa70e612cf278c32799f3dd40e04c4cbb270975319e94"
+      "file": "tests/execution_coverage.rs",
+      "item": "fn[fixture]",
+      "hash": "7dbf98dba6a8063e2c5377bda40073716abbac163a14eaca3b5bdf8cc33ef278"
+    },
+    {
+      "file": "tests/execution_coverage.rs",
+      "item": "fn[coverage]",
+      "hash": "c212f73ace1654dafdce6f10659c4b39d76dfff4ee4c30e56f10b30130b3862f"
     },
     {
       "file": "src/execution_coverage/runner.rs",
       "item": "fn[verify_configuration]",
       "hash": "4c4d048920ef36891ad23ce1b9d306f1d4fdd7b786c5b049a6044e7c313f7e32"
-    },
-    {
-      "file": "src/execution_coverage/runner.rs",
-      "item": "fn[run]",
-      "hash": "6f7b49212d5756b245550399f3a6895dd432fa803419f541915029d484855462"
-    },
-    {
-      "file": "src/execution_coverage/configuration.rs",
-      "item": "mod[tests]/fn[setup_conflicts_name_the_setting_and_preserve_existing_native_configuration]",
-      "hash": "bd64ec2c40d91b6b14a8794da8f362bc5eed7defc5b2788252c933d8f72088b1"
-    },
-    {
-      "file": "tests/execution_coverage.rs",
-      "item": "fn[missing_unreadable_malformed_or_disabled_collector_is_a_shared_validation_error]",
-      "hash": "944815495c118eb2f0c9d1a07ba5a4e321d6d7cafea474871dabd9c08b7b7c3b"
     }
   ],
   "format_version": 1,
@@ -105,8 +95,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "99db67f935b0104a48ea0cbbf50e9c9e6d004ac14128dabf268f09ab4b8e1dbd"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "e8ec49fdbaac89db9ad7c73889e7c8cd2713d769175d110d84845a2035317d3f"
         }
       ]
     },
@@ -122,8 +112,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "172c26e31a6aed7b4d5e1210b116f2fdb05cb4a3a02d2315efecf2346a5ed4cf"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "46a0d7e2783f377c811ea637ba9d529536f843ed81ff5bad826af36aef9c58a5"
         }
       ]
     },
@@ -133,14 +123,31 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "src/execution_coverage/configuration.rs"
+              "location": "tests/execution_coverage.rs"
             },
-            "selector": "fn[check]"
+            "selector": "fn[fixture]"
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "3712c5ca257150f2d2b3718838c56ba1ac2fef9ba6e4415e512995ee89d97327"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "7dbf98dba6a8063e2c5377bda40073716abbac163a14eaca3b5bdf8cc33ef278"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/execution_coverage.rs"
+            },
+            "selector": "fn[coverage]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "c212f73ace1654dafdce6f10659c4b39d76dfff4ee4c30e56f10b30130b3862f"
         }
       ]
     },
@@ -156,59 +163,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "c5891d46ec722b0e701604c8c9e43abc9a75059eba669c8ff6c1bf2e1a3d1ce4"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/execution_coverage/runner.rs"
-            },
-            "selector": "fn[run]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "df890c1209b62fd545ebe74125dedd202104f0c1a7339dfa543666cedb7e38e8"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/execution_coverage/configuration.rs"
-            },
-            "selector": "mod[tests]/fn[setup_conflicts_name_the_setting_and_preserve_existing_native_configuration]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "2a9b7104080eed3c39b4e57d1448aaef7f366fffd3b6bedd09288619d42a2496"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "tests/execution_coverage.rs"
-            },
-            "selector": "fn[missing_unreadable_malformed_or_disabled_collector_is_a_shared_validation_error]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "710c2b372e876288ceda98a6e48ddce4912331f9cbcf2b5637c799d3e2856b34"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "4c4d048920ef36891ad23ce1b9d306f1d4fdd7b786c5b049a6044e7c313f7e32"
         }
       ]
     }

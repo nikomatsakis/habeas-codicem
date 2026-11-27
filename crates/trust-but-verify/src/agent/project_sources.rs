@@ -357,6 +357,14 @@ mod tests {
         let by_id = session.read_node(&cx, child).unwrap();
         assert_eq!(read.dependencies, [expected("impl[Parser]/fn[parse]")]);
         assert_eq!(read.dependencies, by_id.dependencies);
+        for address in [
+            json!({"data":"parser.rs#impl[Parser]/fn[parse]"}),
+            json!({"node":method, "data":"parser.rs#impl[Parser]/fn[parse]"}),
+        ] {
+            let same = session.read_node(&cx, &address).unwrap();
+            assert_eq!(same.text, by_id.text);
+            assert_eq!(same.dependencies, by_id.dependencies);
+        }
         let method_page: Value = serde_json::from_str(&by_id.text).unwrap();
         assert_eq!(method_page["children"], json!([]));
         assert_eq!(method_page["text"], "fn parse(&self) -> bool { true }");
@@ -372,12 +380,12 @@ mod tests {
         for address in [
             json!({"node":entry["node"]}),
             json!({"data":entry["data"]}),
+            json!({"node":entry["node"], "data":entry["data"]}),
             json!({"path":"parser.rs"}),
         ] {
-            assert_eq!(
-                session.read_node(&cx, &address).unwrap().dependencies,
-                from_entry.dependencies
-            );
+            let same = session.read_node(&cx, &address).unwrap();
+            assert_eq!(same.text, from_entry.text);
+            assert_eq!(same.dependencies, from_entry.dependencies);
         }
         let reads = tools.domain.0.lock().unwrap().reads;
         for invalid in [
@@ -428,6 +436,7 @@ mod tests {
         assert!(!read.text.contains(&token));
     }
 
+    // {test}`requirements.sdk.graph.search.enclosing_item`
     // {test}`requirements.sdk.graph.search.search_structure.mcp`
     // {test}`requirements.sdk.graph.search.search_text.mcp`
     // {test}`requirements.sdk.graph.search.finish_search.inputs`
@@ -1324,6 +1333,7 @@ mod tests {
         );
     }
 
+    // {test}`requirements.sdk.graph.search.declaration_spans`
     // {test}`requirements.sdk.graph.search.enclosing_item`
     // {test}`requirements.sdk.outlines.attachments.item_span`
     #[tokio::test]
@@ -1625,7 +1635,7 @@ mod tests {
     fn direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns() {
         let domain = project("prepared contents");
         let inspection =
-            ValidationContext::new(&domain, domain.cache().intern_node("source-node".into()));
+            ValidationContext::new(&domain, domain.cache().intern_node("subject-node".into()));
         let supported = OutlineData::new("source.txt", String::new()).unwrap();
         for address in [
             OutlineData::new("unknown.txt", String::new()).unwrap(),

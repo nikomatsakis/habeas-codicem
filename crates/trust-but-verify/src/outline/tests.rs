@@ -286,6 +286,7 @@ extern crate core;
     assert!(outline.resolve("fn[missing]").is_err());
 }
 
+// {test}`requirements.sdk.outlines.attachments.fingerprint`
 // {test}`requirements.references.structural_hash`
 // {test}`requirements.references.outlines`
 #[test]

@@ -1,6 +1,8 @@
 //! Habeas's interpretation of the SDK graph. Wire formats, selection rules,
 //! and findings remain Habeas policy.
 
+pub(crate) mod issues;
+
 use crate::{
     evidence::Declaration,
     inputs::{InputSelector, OutlineCache, ResolvedInput},
@@ -42,41 +44,12 @@ pub(crate) struct RequirementId(pub String);
 
 // {cite}`habeas:util`
 /// Habeas node identities preserve the source address stored in existing evidence.
-// :::{fixme} requirements.sdk.habeas.github_nodes
-// :github: nikomatsakis/habeas-codicem#26
-// GitHub issue graph nodes are deferred. Stable owner/repository/number identity
-// and retained title/opening-post/status contents have no implementation or tests.
-// :::
-// :::{fixme} requirements.sdk.habeas.github_nodes.inputs
-// :github: nikomatsakis/habeas-codicem#26
-// Tracked GitHub issue snapshots are deferred. Tests do not yet cover their
-// redacted contents, field-sensitive fingerprints, or fetch-time/TTL independence.
-// :::
-// :::{fixme} requirements.sdk.habeas.fixme_graph
-// :github: nikomatsakis/habeas-codicem#26
-// FIXME graph nodes and tracking-issue edges are deferred. Named/unnamed
-// acknowledgments, source ownership, and multiple issue targets have no tests.
-// :::
-// :::{fixme} requirements.sdk.habeas.github_nodes.open
-// :github: nikomatsakis/habeas-codicem#26
-// The tracked deterministic open-issue criterion is deferred. Tests do not yet
-// verify completed open/closed assessments through the SDK without an agent.
-// :::
-// :::{fixme} requirements.sdk.habeas.github_nodes.related
-// :github: nikomatsakis/habeas-codicem#26
-// The agent-based issue-relevance criterion is deferred. Tests do not yet check
-// tracking-edge selection, delivered FIXME/issue snapshots, or unrelated answers.
-// :::
-// :::{fixme} requirements.sdk.habeas.github_nodes.cache
-// :github: nikomatsakis/habeas-codicem#26
-// Application-selected TTL caching for graph issue contents is deferred. Tests
-// do not yet cover reuse, expiry refresh/failure, or snapshot-consistent formatting
-// and fingerprinting. The existing CLI issue-state cache is a separate interface.
-// :::
 #[derive(
     Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
 pub(crate) enum HabeasNode {
+    GithubIssue(String),
+    Fixme(issues::FixmeId),
     Requirement(RequirementId),
     ReferenceSet(RequirementId),
     RequirementSelection(String),
@@ -115,6 +88,11 @@ impl HabeasNode {
     // {cite}`habeas:util`
     pub(crate) fn selector(&self) -> Result<InputSelector, std::io::Error> {
         Ok(match self {
+            Self::GithubIssue(_) | Self::Fixme(_) => {
+                return Err(std::io::Error::other(
+                    "external and acknowledgment nodes have no source input selector",
+                ));
+            }
             Self::ReferenceSet(_) => {
                 return Err(std::io::Error::other(
                     "reference-set nodes are not source inputs",
@@ -155,6 +133,9 @@ pub(crate) enum HabeasEdgeLabel {
     Tests,
     Acknowledges,
     Mandatory,
+    AcknowledgedGap,
+    ContainsFixme,
+    TrackingIssue,
 }
 
 // {cite}`habeas:util`
@@ -163,6 +144,8 @@ pub(crate) struct HabeasDomain {
     pub root: Arc<Path>,
     pub definitions: Arc<BTreeMap<String, Declaration>>,
     pub outlines: OutlineCache,
+    pub(crate) github: crate::github::GithubIssues,
+    fixmes: Arc<std::sync::OnceLock<Result<issues::Fixmes, String>>>,
     relationships: Arc<
         std::sync::RwLock<
             std::collections::HashMap<(NodeId<Self>, HabeasEdgeLabel), Vec<NodeId<Self>>>,
@@ -173,6 +156,7 @@ pub(crate) struct HabeasDomain {
 pub(crate) struct HabeasNodeContent {
     fingerprint: Fingerprint,
     text: String,
+    issue_open: Option<bool>,
 }
 
 impl HabeasNodeContent {
@@ -190,7 +174,11 @@ impl HabeasNodeContent {
             )
         };
         let text = serde_json::to_string(&model).map_err(std::io::Error::other)?;
-        Ok(Self { fingerprint, text })
+        Ok(Self {
+            fingerprint,
+            text,
+            issue_open: None,
+        })
     }
 }
 
@@ -267,6 +255,14 @@ impl Domain for HabeasDomain {
         let data = self.cache().node_data(*node).expect("assigned node handle");
         let node = data.as_ref();
         let segments = match node {
+            HabeasNode::GithubIssue(issue) => vec!["github".into(), issue.clone()],
+            HabeasNode::Fixme(id) => vec![
+                "fixme".into(),
+                id.file.clone(),
+                id.item.clone(),
+                id.subject.clone(),
+                id.ordinal.to_string(),
+            ],
             HabeasNode::Requirement(id) => vec!["requirement".into(), id.0.clone()],
             HabeasNode::ReferenceSet(id) => vec!["references".into(), id.0.clone()],
             HabeasNode::RequirementSelection(glob) => vec!["selection".into(), glob.clone()],
@@ -310,6 +306,14 @@ impl Domain for HabeasDomain {
             .node_data(*node)
             .ok_or_else(|| std::io::Error::other("unassigned node handle"))?;
         let node = data.as_ref();
+        if matches!(
+            label,
+            HabeasEdgeLabel::AcknowledgedGap
+                | HabeasEdgeLabel::ContainsFixme
+                | HabeasEdgeLabel::TrackingIssue
+        ) {
+            return self.fixme_edges(node, label);
+        }
         let HabeasNode::Requirement(query) = node else {
             return Ok(vec![]);
         };
@@ -345,7 +349,10 @@ impl Domain for HabeasDomain {
             }
             HabeasEdgeLabel::Tests => "test",
             HabeasEdgeLabel::Acknowledges => "fixme",
-            HabeasEdgeLabel::Mandatory => unreachable!(),
+            HabeasEdgeLabel::Mandatory
+            | HabeasEdgeLabel::AcknowledgedGap
+            | HabeasEdgeLabel::ContainsFixme
+            | HabeasEdgeLabel::TrackingIssue => unreachable!(),
         };
         Ok(self
             .reference_entries(query)?
@@ -420,6 +427,12 @@ impl Domain for HabeasDomain {
             .node_data(*node)
             .ok_or_else(|| std::io::Error::other("unassigned node handle"))?;
         let node = data.as_ref();
+        if let HabeasNode::GithubIssue(issue) = node {
+            return self.issue_content(issue);
+        }
+        if let HabeasNode::Fixme(id) = node {
+            return self.fixme_content(id);
+        }
         if let HabeasNode::Source(_) = node {
             let InputSelector::Outline { file, item } = node.selector()? else {
                 unreachable!()
@@ -428,6 +441,7 @@ impl Domain for HabeasDomain {
             return Ok(HabeasNodeContent {
                 fingerprint: outline.fingerprint(),
                 text: outline.format(),
+                issue_open: None,
             });
         }
         let resolved = if let HabeasNode::ReferenceSet(id) = node {
@@ -454,6 +468,8 @@ impl HabeasDomain {
             root: std::fs::canonicalize(root)?.into(),
             definitions: Default::default(),
             outlines: OutlineCache::default(),
+            github: crate::github::GithubIssues::from_env(root),
+            fixmes: Default::default(),
             relationships: Default::default(),
         };
         domain.definitions = Arc::new(crate::evidence::load_definition_snapshots(
@@ -561,6 +577,8 @@ impl HabeasDomain {
             root: root.into(),
             definitions: Arc::new(definitions.clone()),
             outlines: outlines.clone(),
+            github: crate::github::GithubIssues::from_env(root),
+            fixmes: Default::default(),
             relationships: Default::default(),
         }
     }
@@ -834,7 +852,21 @@ mod tests {
             });
             assert!(domain.source_address(&data).is_none());
         }
+        let fixme = issues::FixmeId {
+            file: "src/lib.rs".into(),
+            item: "impl[Queue]/fn[ready]".into(),
+            subject: "same".into(),
+            ordinal: 0,
+        };
         let cases = [
+            (
+                HabeasNode::GithubIssue("org/queue#7".into()),
+                vec!["github", "org/queue#7"],
+            ),
+            (
+                HabeasNode::Fixme(fixme.clone()),
+                vec!["fixme", "src/lib.rs", "impl[Queue]/fn[ready]", "same", "0"],
+            ),
             (
                 HabeasNode::Requirement(RequirementId("same".into())),
                 vec!["requirement", "same"],
@@ -878,6 +910,32 @@ mod tests {
             );
         }
         for changed in [
+            issues::FixmeId {
+                file: "other.rs".into(),
+                ..fixme.clone()
+            },
+            issues::FixmeId {
+                item: "fn[other]".into(),
+                ..fixme.clone()
+            },
+            issues::FixmeId {
+                subject: "other".into(),
+                ..fixme.clone()
+            },
+            issues::FixmeId {
+                ordinal: 1,
+                ..fixme
+            },
+        ] {
+            let id = domain.cache().intern_node(HabeasNode::Fixme(changed));
+            assert!(paths.insert(domain.node_path(&id)));
+        }
+        let other_requirement = domain.cache().intern_node(HabeasNode::SiteReview {
+            requirement: "other".into(),
+            source: source.clone(),
+        });
+        assert!(paths.insert(domain.node_path(&other_requirement)));
+        for changed in [
             OutlineId {
                 resource: ResourceId {
                     scheme: "repo".into(),
@@ -897,9 +955,15 @@ mod tests {
                 ..source
             },
         ] {
-            assert!(paths.insert(
-                domain.node_path(&domain.cache().intern_node(HabeasNode::Source(changed)))
-            ));
+            for node in [
+                HabeasNode::SiteReview {
+                    requirement: "same".into(),
+                    source: changed.clone(),
+                },
+                HabeasNode::Source(changed),
+            ] {
+                assert!(paths.insert(domain.node_path(&domain.cache().intern_node(node))));
+            }
         }
         assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
     }
@@ -1135,6 +1199,7 @@ mod tests {
         assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 3);
     }
 
+    // {test}`requirements.sdk.habeas.evidence_format`
     // {test}`requirements.sdk.graph.evidence.checking_records`
     // {test}`requirements.sdk.graph.domain_types`
     // {test}`requirements.sdk.graph.node_content`

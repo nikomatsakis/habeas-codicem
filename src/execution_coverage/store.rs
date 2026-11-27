@@ -881,6 +881,14 @@ mod tests {
         let run = invocation("a", &selected);
         store.replace(&run, &selected, false).unwrap();
         let first = complete(&store, &run, &selected[0], 9);
+        let original = store.snapshot(true).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                original.tests[0].measurements.as_ref().unwrap()
+            )
+            .unwrap(),
+            serde_json::to_value(&first.processes).unwrap()
+        );
         let mut retry = attempt(&selected[0], "2", "running");
         store.start_attempt(&run.id, &retry).unwrap();
         let snapshot = store.snapshot(true).unwrap();
@@ -898,10 +906,22 @@ mod tests {
         assert!(store.start_attempt(&run.id, &outside_selection).is_err());
         retry.outcome = "interrupted".into();
         retry.processes = first.processes.clone();
+        retry.processes[0]
+            .lines
+            .insert("code.rs".into(), BTreeMap::from([(2, 3)]));
+        let function = &mut retry.processes[0].functions.as_mut().unwrap()[0];
+        function.line = 2;
+        function.count = 3;
         store.update_attempt(&run.id, &retry, true).unwrap();
         let snapshot = store.snapshot(true).unwrap();
         assert_eq!(snapshot.tests[0].metadata.outcome, "interrupted");
-        assert!(snapshot.tests[0].measurements.is_some());
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                snapshot.tests[0].measurements.as_ref().unwrap()
+            )
+            .unwrap(),
+            serde_json::to_value(&retry.processes).unwrap()
+        );
     }
 
     // {test}`requirements.test-coverage.storage.replace`

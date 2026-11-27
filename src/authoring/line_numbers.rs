@@ -75,20 +75,11 @@ pub(crate) fn without_source_lines(error: &str) -> String {
         .into_owned()
 }
 
-/// The rationale of a submission's arguments.
-// {cite}`habeas:util`
-pub(crate) fn rationale(arguments: &Value) -> &str {
-    arguments
-        .get("rationale")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-}
-
 /// The state of an assessment's one allowed rejection.
 #[derive(Default)]
 pub(crate) struct Rejection {
     /// The UUID the rejection gave and the rejected submission's arguments.
-    rejected: Option<(String, Value)>,
+    rejected: Option<(String, String, Value)>,
 }
 
 /// What to do with a submission that is otherwise valid.
@@ -106,8 +97,9 @@ impl Rejection {
     /// when `arguments` gives exactly the UUID its rejection returned.
     // {impl}`requirements.authoring.line_numbers.resubmission`
     pub(crate) fn resubmitted(&self, arguments: &Value) -> Option<Value> {
-        let (uuid, rejected) = self.rejected.as_ref()?;
-        (rationale(arguments) == uuid).then(|| rejected.clone())
+        let (uuid, pointer, rejected) = self.rejected.as_ref()?;
+        (arguments.pointer(pointer).and_then(Value::as_str) == Some(uuid.as_str()))
+            .then(|| rejected.clone())
     }
 
     /// Decides an otherwise valid submission: accepted unless its rationale
@@ -116,7 +108,17 @@ impl Rejection {
     // {impl}`requirements.authoring.line_numbers.rejection`
     // {impl}`requirements.authoring.line_numbers.resubmission`
     pub(crate) fn decide(&mut self, submit: &str, arguments: &Value, guidance: &str) -> Outcome {
-        let Some(found) = cited(rationale(arguments)).map(str::to_owned) else {
+        let paths = std::iter::once("/rationale".to_string()).chain(
+            (0..arguments["corrections"].as_array().map_or(0, Vec::len))
+                .map(|i| format!("/corrections/{i}/rationale")),
+        );
+        let Some((pointer, found)) = paths
+            .filter_map(|path| {
+                let found = cited(arguments.pointer(&path)?.as_str()?)?;
+                Some((path, found.to_owned()))
+            })
+            .next()
+        else {
             return Outcome::Accept;
         };
         if self.rejected.is_some() {
@@ -125,9 +127,9 @@ impl Rejection {
             ));
         }
         let uuid = uuid::Uuid::new_v4().to_string();
-        self.rejected = Some((uuid.clone(), arguments.clone()));
+        self.rejected = Some((uuid.clone(), pointer.clone(), arguments.clone()));
         Outcome::Reject(format!(
-            "Not accepted: the rationale cites line numbers ({found:?}). Line numbers \
+            "Not accepted: the rationale cites line numbers ({found:?}) at {pointer}. Line numbers \
              change whenever nearby code changes, so cite locations as the judgment rules \
              say:\n\n{guidance}\n\nThe detector also matches numeric locations in quoted \
              diagnostics and illustrative examples, even when they are not source \
@@ -146,6 +148,35 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    // {test}`requirements.authoring.line_numbers.rejection`
+    // {test}`requirements.authoring.line_numbers.resubmission`
+    #[test]
+    fn uuid_restores_only_at_the_rejected_correction_position() {
+        let original = json!({"status":"failed","corrections":[{"rationale":"Clean"},{"rationale":"line 19 shows the gap"}]});
+        let mut gate = Rejection::default();
+        let Outcome::Reject(message) = gate.decide("submit_result", &original, "Use selectors")
+        else {
+            panic!("expected rejection")
+        };
+        assert!(message.contains("/corrections/1/rationale"));
+        let uuid = message
+            .split_whitespace()
+            .find(|s| uuid::Uuid::parse_str(s).is_ok())
+            .unwrap();
+        assert!(
+            gate.resubmitted(&json!({"corrections":[{"rationale":uuid}]}))
+                .is_none()
+        );
+        assert_eq!(
+            gate.resubmitted(&json!({"corrections":[{}, {"rationale":uuid}]})),
+            Some(original.clone())
+        );
+        assert!(matches!(
+            gate.decide("submit_result", &original, "guidance"),
+            Outcome::Fail(_)
+        ));
+    }
 
     // {test}`requirements.authoring.line_numbers.detection`
     #[test]

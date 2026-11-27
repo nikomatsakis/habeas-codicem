@@ -1,7 +1,7 @@
 {
   "requirement": "A successful `ValidationContext::read` records the node's identity and the\nfingerprint of the returned contents, under\n{cite}`requirements.sdk.graph.evidence.node_inputs`. A failed read records no\nsuccessful observation. The evidence becomes stale when a later read of that\nnode has a different fingerprint; a failure to resolve it is reported by\n{cite}`requirements.sdk.graph.evidence.checking_records`.\n\nFor a Rust caller, the SDK records the fingerprint when `read` returns the\ncontents. For an agent, the harness puts a tool result in the next request to\nthe model and records the fingerprint once the provider responds successfully.\nThat successful exchange is *delivery*. For example, suppose the tool reads a\nfunction that returns `3`, and someone changes it to return `4` before the\nprovider responds. The model saw the version that returns `3`, so the SDK\nrecords the fingerprint it computed from that version. Reading the function\nagain at this point would record a fingerprint for code the model never saw.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation in `read_node.inputs`.\n\n**Successful read records identity and fingerprint (Rust caller).**\n- `validation_tests.rs#fn[snapshots_record_exact_reads_and_retain_distinct_versions]` asserts that `read` and `read_snapshot` record `Dependency::Node(identity, fp(contents))`. It also asserts that two reads with different fingerprints keep both observations.\n- `validation_tests.rs#fn[direct_reads_return_complete_unicode_contents_and_snapshots]` checks the recorded fingerprint against the full contents. It covers empty contents and large multi-byte contents.\n\n**Failed read records no successful observation.**\n- In `snapshots_record_exact_reads_and_retain_distinct_versions`, reading missing node 2 returns an error. The dependency list afterwards holds only the two earlier node-1 observations.\n- In `direct_reads_return_complete_unicode_contents_and_snapshots`, a failed read of node 9 leaves `failed.dependencies()` empty.\n- In `agent/tests.rs#fn[node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents]`, a `read_node` preparation error is delivered to the model as an error tool result, and `ctx.dependencies()` stays empty.\n\n**Evidence becomes stale on a later read with a different fingerprint.**\n- `is_current` returns false for the finished record after the contents changed, in both `snapshots_record_exact_reads_and_retain_distinct_versions` and `direct_reads_return_complete_unicode_contents_and_snapshots`.\n- Resolution failures are delegated to the cited `checking_records`, which is context only.\n\n**Agent delivery semantics.**\n- `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` shows that a `read_node` tool call is recorded only after a successful provider exchange. Observations match the delivered node contents. When the provider fails (`None` response), `ctx.dependencies()` is empty. The prepared and delivered usage counters differ as expected.\n- `graph_read_pages_retain_the_prepared_snapshot_after_contents_change` reproduces the requirement's changed-before-response example. `ChangingProvider` mutates the graph contents during the provider call that delivers the `read_node` result. The test asserts that the recorded fingerprint equals the original contents, that the graph was read only once, and that the pages the model received reassemble to the original.\n- `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` checks that delivered reads are recorded as the expected node observations with concurrent agents.\n\nI found no unacknowledged gap. The `{test}` markings are present on these tests.",
+  "rationale": "The reviewed tests cover each obligation in `requirements.sdk.graph.validation-context.read_node.inputs`. The delegated `checking_records` failure-to-resolve behaviour is out of scope here.\n\n**1. A successful Rust-caller read records the node identity and the fingerprint of the returned contents.**\n- `graph/validation_tests.rs#fn[snapshots_record_exact_reads_and_retain_distinct_versions]` asserts `Dependency::Node(1, fp(\"before\"))` after `read`. It also asserts that `read_snapshot` returns a fingerprint of `fp(\"before\")`.\n- `graph/validation_tests.rs#fn[direct_reads_return_complete_unicode_contents_and_snapshots]` asserts the recorded dependency equals `fp(original)`. It uses an empty string and a large multi-byte Unicode string.\n\n**2. A failed read records no successful observation.**\n- In the snapshots test, reading missing node 2 returns an error, and the dependency list afterwards contains only the two node-1 observations.\n- In the direct-reads test, reading missing node 9 returns \"missing\", and `failed.dependencies()` is empty.\n\n**3. Evidence becomes stale when a later read has a different fingerprint, and both observations are kept.**\n- The snapshots test reads node 1 as \"before\", changes it, then reads it as \"after\". It asserts that both dependencies are kept, and that `earlier` still holds only the \"before\" observation.\n- After `finish`, it asserts `is_current` is false.\n- The direct-reads test changes the contents to \"replacement\" and asserts the finished record is not current.\n\n**4. Agent delivery: the fingerprint is recorded when the provider responds successfully, and it is the one computed from the version the model saw.**\n- `agent/tests.rs#fn[graph_read_pages_retain_the_prepared_snapshot_after_contents_change]` uses a `ChangingProvider` that changes the graph contents during the exchange. It asserts that the graph was read only once (`reads == [1]`). It asserts that the recorded fingerprint equals the original contents, not the changed ones. It also asserts that the delivered pages reassemble to the original. This is the \"returns 3 vs 4\" example from the requirement.\n- `agent/tests.rs#fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]` runs a successful `read_node` tool call. It asserts the recorded `Dependency::Node(2, fingerprint == the full contents)` and that the usage counts are prepared 3 and delivered 3.\n- In the same test, a script whose provider fails on the request carrying the `read_node` result leaves `ctx.dependencies()` empty. This shows nothing is recorded without a successful provider response.\n- The same test's later case, where only the first exchange succeeds, records exactly one dependency. The final count of prepared 6 and delivered 4 distinguishes prepared from delivered inputs.\n- `agent/tests.rs#fn[node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents]` makes node preparation fail. It asserts that no dependency is recorded and that the error tool result is delivered.\n- `agent/tests.rs#fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]` checks that concurrent agents record the expected `Dependency::Node` observations for nodes 1 and 2.\n\nThe tests exercise each mode the text governs (Rust caller and agent delivery), the failure case, the stale-fingerprint case, and the changed-before-delivery example. The assertions check recorded values, not just execution. All the relevant tests carry `{test}` markers for the subject.",
   "references": "db9d1024d2ed9d588c253c85d8451f5022bb03c8d24833bd2a07b2e33063d1c7",
   "inputs": [
     {
@@ -101,13 +101,13 @@
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "fn[graph_read_pages_retain_the_prepared_snapshot_after_contents_change]/struct[ChangingProvider]",
-      "hash": "fdf1b86d751612b057d76502dc533e3e957d234cc37e9a78a6d97bdc948365c2"
+      "item": "fn[graph_read_pages_retain_the_prepared_snapshot_after_contents_change]/impl[ChangingProvider/CompletionProvider]",
+      "hash": "1d8808274e9cc7455255b32c5b8796ff67f6b0cbc4de304394074f90f7d48dc2"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "fn[graph_read_pages_retain_the_prepared_snapshot_after_contents_change]/impl[ChangingProvider/CompletionProvider]",
-      "hash": "1d8808274e9cc7455255b32c5b8796ff67f6b0cbc4de304394074f90f7d48dc2"
+      "item": "fn[graph_read_pages_retain_the_prepared_snapshot_after_contents_change]/impl[ChangingProvider/CompletionProvider]/fn[complete]",
+      "hash": "5e628a91540b8b9a2654bc65c7aaf14cfe35f2374580b3451e8223abcc1bde42"
     }
   ],
   "format_version": 1,
@@ -279,12 +279,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
-            "selector": "fn[graph_read_pages_retain_the_prepared_snapshot_after_contents_change]/struct[ChangingProvider]"
+            "selector": "fn[graph_read_pages_retain_the_prepared_snapshot_after_contents_change]/impl[ChangingProvider/CompletionProvider]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "fdf1b86d751612b057d76502dc533e3e957d234cc37e9a78a6d97bdc948365c2"
+          "value": "d3581b9358876b412ee64d672744a17d1dab1a8f2c2a11206e0a490b0bdaf870"
         }
       ]
     },
@@ -296,12 +296,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
-            "selector": "fn[graph_read_pages_retain_the_prepared_snapshot_after_contents_change]/impl[ChangingProvider/CompletionProvider]"
+            "selector": "fn[graph_read_pages_retain_the_prepared_snapshot_after_contents_change]/impl[ChangingProvider/CompletionProvider]/fn[complete]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "d3581b9358876b412ee64d672744a17d1dab1a8f2c2a11206e0a490b0bdaf870"
+          "value": "5e628a91540b8b9a2654bc65c7aaf14cfe35f2374580b3451e8223abcc1bde42"
         }
       ]
     }

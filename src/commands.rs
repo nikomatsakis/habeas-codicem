@@ -241,7 +241,7 @@ fn disagreements(
         return String::new();
     }
     format!(
-        "\n## Disagreements\n\nThese records' independent assessments disagreed. Validation accepts them, but each disagreement is a finding: read the rationale with `habeas info` and close the gap or tighten the requirement rather than reassessing.\n\n{}",
+        "\n## Disagreements\n\nThese records' independent assessments disagreed. Read the rationale with `habeas info` to identify the test, implementation, or requirement that needs attention.\n\n{}",
         rows.concat()
     )
 }
@@ -373,7 +373,7 @@ mod tests {
         write_record(
             root,
             "evidence/requirements.rule.json",
-            serde_json::json!(true),
+            serde_json::json!(false),
             true,
         );
         write_record(
@@ -400,7 +400,7 @@ mod tests {
             serde_json::json!({"FIXME": ["example/queue#1"]}),
             true,
         );
-        let definition = "- `requirements.rule` (requirement): `true`\n";
+        let definition = "- `requirements.rule` (requirement): `false`\n";
         let site = "- `sites:requirements.rule/src/lib.rs#fn[check_two]`: `true`\n";
         let citation = "- `citations:src/lib.rs#fn[cited]`: `FIXME`\n";
         for (all, glob, verbose, expected) in [
@@ -411,6 +411,12 @@ mod tests {
             (false, Some("requirements.other"), false, &[citation]),
         ] {
             let status = status_markdown_with_options(root, all, glob, verbose).unwrap();
+            if glob != Some("requirements.other") {
+                assert!(
+                    status.contains("evidence/requirements.rule.json: determination is false"),
+                    "{status}"
+                );
+            }
             let section = status
                 .split_once("\n## Disagreements\n")
                 .unwrap_or_else(|| panic!("{glob:?}: {status}"))

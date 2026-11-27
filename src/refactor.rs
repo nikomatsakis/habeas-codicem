@@ -133,6 +133,19 @@ impl Mappings {
         match &mut mapped {
             HabeasNode::Requirement(id) | HabeasNode::ReferenceSet(id) => name(&mut id.0),
             HabeasNode::RequirementSelection(value) | HabeasNode::Definition(value) => name(value),
+            HabeasNode::GithubIssue(_) => {}
+            HabeasNode::Fixme(id) => {
+                name(&mut id.subject);
+                let mapped = if back {
+                    self.node_back(&id.file, &id.item)
+                } else {
+                    self.node(&id.file, &id.item)
+                };
+                if let Some((file, item)) = mapped {
+                    id.file = file;
+                    id.item = item;
+                }
+            }
             HabeasNode::Source(value) => source(value),
             HabeasNode::SiteReview {
                 requirement,

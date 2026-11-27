@@ -1,7 +1,7 @@
 {
   "requirement": "TBV owns the model conversation, supported backend integrations, tool\ndispatch, and structured submission used by its ask builder.",
   "determination": true,
-  "rationale": "The requirement `requirements.sdk.graph.agent-harness.tool_agent` says TBV owns four things for its ask builder: the model conversation, the supported backend integrations, tool dispatch, and structured submission. The detailed rules are in sibling requirements (`tool_agent.isolation`, `tool_agent.provider_failure`, `submission.*`, `fixed_tools`, the backend config requirements). Those are assessed on their own, so I assess only the umbrella ownership claim here.\n\n**Conversation.**\n- `supplied_openai_backend_runs_independent_calls_against_a_local_transport` runs a multi-turn exchange over a local HTTP transport. It asserts that the first request has no `function_call_output` and the follow-up carries the tool result (\"a source snapshot\"). It also asserts the user prompt, the \"Finish by calling submit_result\" instruction, and that four requests were made for two independent calls.\n- `supplied_ollama_backend_delivers_tools_and_results_over_native_chat` asserts a two-turn history. The tool result is delivered in a `tool` message on turn 1.\n- `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer` asserts the system and user message construction.\n\n**Supported backends.** The supported backends are OpenAI, Ollama and Bedrock (`enum[AgentConfig]`).\n- OpenAI and Ollama are tested end to end against local sockets. The tests check the model, endpoint path, auth header, options, the tool list, the `submit_result` schema, and the decoded answer.\n- Bedrock needs AWS network services, so a full run cannot be done offline. Its backend-specific logic is covered by the marked tests `bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted`, `cache_checkpoints_are_requested_for_caching_models` and `typed_client_calls_preserve_order_and_native_history`. These check option typing and defaults, cache checkpoints, and tool-call ordering and native history preservation. I count this as adequate for the \"supported backend integrations\" clause.\n\n**Tool dispatch.**\n- `application_tools_preserve_graph_tools_in_the_same_conversation` dispatches `outgoing_edges`, `read_node`, `get_next_page` and an application tool in one conversation. It asserts the delivered tool results and the recorded dependencies.\n- `application_tool_factories_create_fresh_state_for_each_agent_call` asserts a fresh tool session per call.\n- `source_tools_keep_search_discovery_separate_from_delivered_source_reads` covers `search_text` and `read_source` dispatch.\n- The concurrent and isolation tests assert per-tool usage counts and result bytes.\n\n**Structured submission.** Every end-to-end test finishes through `submit_result`. The OpenAI, Ollama and adequacy tests assert the tool schema (`required: [\"result\"]`, boolean or typed result properties). They also assert that the decoded typed output is returned. `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer` compares the output to a structured `TestReview`.\n\n**Isolation and sharing.** `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` and `agent_executions_isolate_conversations_and_dependency_traces` show that concurrent conversations stay separate. They run behind a barrier with a 2-second timeout.\n\nI found no plausible violation of the ownership claim that these tests would accept. Submission edge cases (multiple or missing `submit_result`, invalid arguments) and provider failure belong to the sibling requirements `submission.reminder`, `submission.invalid` and `tool_agent.provider_failure`. There are no acknowledgments, and none are needed.",
+  "rationale": "`requirements.sdk.graph.agent-harness.tool_agent` is an umbrella requirement. It says TBV owns four things for its ask builder: the model conversation, the supported backend integrations, tool dispatch, and structured submission. Details such as isolation, submission acceptance and invalidity, the MCP description, fixed tools, provider failure, and per-backend config are in refining requirements. Those need no tests here. I reviewed the supplied tests and the tests I found through targeted search, and I found no gap.\n\n**Conversation.** These tests drive the tool-agent loop with scripted providers and assert what each turn sends and receives:\n- `agent/tests.rs#fn[application_tools_preserve_graph_tools_in_the_same_conversation]` runs a four-turn conversation. It checks that every request carries all tools, that tool results are delivered in order in the next turn, and that paging and dependency observations are right.\n- `agent_executions_isolate_conversations_and_dependency_traces`, `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` and `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer` cover concurrent conversations. They also check the system and user messages, the typed `submit_result` schema, and the returned typed answer.\n\n**Tool dispatch.**\n- `application_tool_factories_create_fresh_state_for_each_agent_call` checks that application tools are dispatched and get fresh state per call. The counters reach 1 and 2 in each call and never 3.\n- `application_tools_preserve_graph_tools_in_the_same_conversation` mixes graph tools and application tools in the same turn.\n- `source_tools_keep_search_discovery_separate_from_delivered_source_reads` dispatches `search_text` and `read_source`. It asserts that only the delivered read produces a dependency.\n\n**Structured submission.** `submit_result` is exercised in every scripted test. Its schema is asserted, including `required` and the `result` type. The result is returned typed, with fingerprints and dependencies stored and reloaded.\n\n**Supported backends.** `AgentConfig` has three backends: Bedrock, OpenAI and Ollama.\n- `configured.rs#mod[tests]/fn[supplied_openai_backend_runs_independent_calls_against_a_local_transport]` runs two independent calls over a local HTTP transport. It asserts the model, the output limit, the tool list and order, and the `submit_result` schema. It also asserts that the tool result is delivered back on the second turn and that no private config reaches the saved evidence.\n- `supplied_ollama_backend_delivers_tools_and_results_over_native_chat` does the same over a native `/api/chat` transport. It checks the path, the bearer key, the model, `stream`, options, the tools, and that the tool result is delivered on turn 2.\n- Bedrock has no end-to-end transport test. `BedrockConfig` has no endpoint override, so a full conversation would need live AWS services. The project sets none up, so the network exemption applies to that path.\n- The Bedrock-specific logic that has conditionals is tested directly in `providers.rs`:\n  - `bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted`\n  - `cache_checkpoints_are_requested_for_caching_models`\n  - `typed_client_calls_preserve_order_and_native_history`\n\nThe tests carry `{test}` references to the subject, so there is no marking gap.",
   "references": "8ed00f348732b47fae1c4f4a3cd306ae69762b9f4bb6f22913ad71ae1d0c3b86",
   "inputs": [
     {
@@ -75,6 +75,96 @@
       "file": "crates/trust-but-verify/src/agent/config.rs",
       "item": "enum[AgentConfig]",
       "hash": "42fa0e71e4831941d1e9b9df8480d4a0b52cabc7348b81f4e84f0e400c810c96"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/fn[bedrock_configuration_attaches_to_a_cache_without_being_persisted]",
+      "hash": "0a39a68deecf0d56dd35ef5aee04aa1825e3a2ee749ac8bf99f8829f597cfa5e"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
+      "item": "mod[tests]/fn[transient_bedrock_codes_retry_whatever_their_http_status]",
+      "hash": "3103173dcf8073dc788f128c8b3ee0916888de667b3e51a4d5f6ef02919570c1"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
+      "item": "mod[tests]/fn[bedrock_sdk_retries_are_disabled]",
+      "hash": "843d31090f51e321289a9fc32bd4f4a4734f693ee195c896035374308fb2e66f"
+    },
+    {
+      "requirements": "requirements.sdk.graph.agent-harness.BedrockConfig",
+      "matches": [
+        "requirements.sdk.graph.agent-harness.BedrockConfig"
+      ],
+      "text": [
+        ":::{req} BedrockConfig",
+        "",
+        "Select a Bedrock model or inference profile with `model`. The optional region, AWS profile, and explicit credentials configure its client. `options` carries inference settings.",
+        "",
+        "```rust,ignore",
+        "#[non_exhaustive]",
+        "pub struct BedrockConfig {",
+        "    pub model: String,",
+        "    pub aws_profile: Option<String>,",
+        "    pub region: Option<String>,",
+        "    pub credentials: Option<BedrockCredentials>,",
+        "    pub options: BTreeMap<String, OptionValue>,",
+        "}",
+        "",
+        "impl BedrockConfig {",
+        "    pub fn new(model: String) -> Self;",
+        "    pub fn aws_profile(self, aws_profile: String) -> Self;",
+        "    pub fn region(self, region: String) -> Self;",
+        "    pub fn credentials(self, credentials: BedrockCredentials) -> Self;",
+        "    pub fn option(self, key: String, value: OptionValue) -> Self;",
+        "}",
+        "```",
+        "",
+        "Trait implementations",
+        "",
+        "```rust,ignore",
+        "impl Clone for BedrockConfig;",
+        "impl Debug for BedrockConfig;",
+        "impl<'de> Deserialize<'de> for BedrockConfig;",
+        "impl PartialEq for BedrockConfig;",
+        "impl Serialize for BedrockConfig;",
+        "```",
+        ":::"
+      ]
+    },
+    {
+      "requirements": "requirements.sdk.graph.agent-harness.agent_config",
+      "matches": [
+        "requirements.sdk.graph.agent-harness.agent_config"
+      ],
+      "text": [
+        ":::{req} agent_config",
+        "",
+        "TBV exposes configuration for its supplied Bedrock, OpenAI, and Ollama",
+        "agents. The configuration selects a backend and carries its model, connection,",
+        "credential-selection, and model-option settings.",
+        "",
+        "```rust,ignore",
+        "#[non_exhaustive]",
+        "pub enum AgentConfig {",
+        "    Bedrock(BedrockConfig),",
+        "    OpenAi(OpenAiConfig),",
+        "    Ollama(OllamaConfig),",
+        "}",
+        "```",
+        "",
+        "Trait implementations",
+        "",
+        "```rust,ignore",
+        "impl<D: Domain> AgentSettings<D> for AgentConfig;",
+        "impl Clone for AgentConfig;",
+        "impl Debug for AgentConfig;",
+        "impl<'de> Deserialize<'de> for AgentConfig;",
+        "impl PartialEq for AgentConfig;",
+        "impl Serialize for AgentConfig;",
+        "```",
+        ":::"
+      ]
     }
   ],
   "format_version": 1,
@@ -302,6 +392,18 @@
       ]
     },
     {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.sdk.graph.agent-harness.tool_agent"
+        },
+        "Implements",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "7fe99ec0a448ff4083c5f3c2511f272fe97c1d0ddd3dc0309c04e937eb314504"
+        }
+      ]
+    },
+    {
       "Node": [
         {
           "Source": {
@@ -315,6 +417,79 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "42fa0e71e4831941d1e9b9df8480d4a0b52cabc7348b81f4e84f0e400c810c96"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
+            },
+            "selector": "mod[tests]/fn[bedrock_configuration_attaches_to_a_cache_without_being_persisted]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "0a39a68deecf0d56dd35ef5aee04aa1825e3a2ee749ac8bf99f8829f597cfa5e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/providers.rs"
+            },
+            "selector": "mod[tests]/fn[transient_bedrock_codes_retry_whatever_their_http_status]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "3103173dcf8073dc788f128c8b3ee0916888de667b3e51a4d5f6ef02919570c1"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/providers.rs"
+            },
+            "selector": "mod[tests]/fn[bedrock_sdk_retries_are_disabled]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "843d31090f51e321289a9fc32bd4f4a4734f693ee195c896035374308fb2e66f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.sdk.graph.agent-harness.BedrockConfig"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "8b91a0e6021cffad3b8297a05226d30d68abe76220975c77cae0ad93128c035e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.sdk.graph.agent-harness.agent_config"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "17c5ecc7bf1bbac6f2e6ec7ace266d14e705d525d103fa974d0230e0af6272dd"
         }
       ]
     }

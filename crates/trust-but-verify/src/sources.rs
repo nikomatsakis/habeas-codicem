@@ -173,11 +173,13 @@ pub mod defaults {
         languages: &Registry,
         mut map: impl FnMut(StructuralMatch, &ParsedSource, &outline::OutlineNode) -> T,
     ) -> Result<SearchResults<T>, P::Error> {
-        let language = languages.named(query.language.as_str()).ok_or_else(|| {
-            SourceError::Invalid(format!(
-                "unknown source language {:?}",
-                query.language.as_str()
-            ))
+        let name = query.language.as_str();
+        let language = languages.named(name).ok_or_else(|| {
+            if name == outline::plain::PROFILE.name {
+                SourceError::Invalid(crate::outline::unsupported_search(name).message)
+            } else {
+                SourceError::Invalid(format!("unknown source language {name:?}"))
+            }
         })?;
         let rule =
             StructuralRule::compile_with(language, &query.rule).map_err(SourceError::Invalid)?;

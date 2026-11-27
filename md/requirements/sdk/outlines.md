@@ -95,7 +95,9 @@ one-based position among those siblings in source order, except `line` nodes:
 identical lines are interchangeable, so a `line` selector MUST resolve when any
 line with that content exists in the file. In names, `%`, `[`, `]`, `/`, `#`,
 `@`, and whitespace MUST be percent-encoded as UTF-8 bytes, so selectors are
-reversible. Line numbers MUST NOT form part of a selector.
+reversible. In a multipart label such as `impl[Thing/Trait]`, `/` separates
+name parts. A slash within one part is encoded as `%2F`. Line numbers MUST NOT
+form part of a selector.
 :::
 
 :::{req} selector_parser
