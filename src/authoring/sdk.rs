@@ -7,7 +7,6 @@ use crate::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-#[cfg(test)]
 use trust_but_verify::domain::NodeContents;
 use trust_but_verify::domain::{Domain, NodeId};
 use trust_but_verify::graph::{
@@ -41,38 +40,12 @@ struct SiteAnswer {
     rationale: String,
     applies: bool,
 }
-#[derive(Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct VerificationAnswer {
-    real: bool,
-    acknowledged: bool,
-    acknowledgments: Vec<String>,
-    #[schemars(length(min = 1))]
-    rationale: String,
-}
-#[derive(Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct SiteVerification {
-    real: bool,
-    acknowledged: bool,
-    acknowledgments: Vec<String>,
-    #[schemars(length(min = 1))]
-    rationale: String,
-    applies: bool,
-}
-
-enum Operation {
-    Assess,
-    Verify(Judgment, String),
-}
-
 // {impl}`requirements.sdk.graph.criteria.criterion_trait`
 // {impl}`requirements.authoring.mandatory_inputs`
 struct Review<'a> {
     sources: &'a AssessmentSources,
     node: NodeId<HabeasDomain>,
     criterion: CriterionPath,
-    operation: Operation,
 }
 
 impl Review<'_> {
@@ -187,37 +160,21 @@ impl Criterion<HabeasDomain> for Review<'_> {
             })
             .collect();
         let site = matches!(self.sources.subject_kind, AssessmentKind::Site(..));
-        match &self.operation {
-            Operation::Assess => {
-                let prompt = initial_prompt_with_inputs(self.sources, &annotations)
-                    .map_err(ValidationError::Graph)?;
-                if site {
-                    self.ask::<SiteAnswer>(cx, prompt, |v| site_submission(v).map(drop))
-                        .await
-                } else if matches!(self.sources.subject_kind, AssessmentKind::Citation(_)) {
-                    self.ask::<ReviewAnswer<bool>>(cx, prompt, |v| submission(v).map(drop))
-                        .await
-                } else {
-                    self.ask::<ReviewAnswer<Determination>>(cx, prompt, |v| submission(v).map(drop))
-                        .await
-                }
-            }
-            Operation::Verify(judgment, rationale) => {
-                let prompt = verification_prompt_with_inputs(
-                    self.sources,
-                    judgment,
-                    rationale,
-                    &annotations,
-                )
-                .map_err(ValidationError::Graph)?;
-                if site {
-                    self.ask::<SiteVerification>(cx, prompt, |v| site_verification(v).map(drop))
-                        .await
-                } else {
-                    self.ask::<VerificationAnswer>(cx, prompt, |v| verification(v).map(drop))
-                        .await
-                }
-            }
+        let prompt = initial_prompt_with_inputs(self.sources, &annotations)
+            .map_err(ValidationError::Graph)?;
+        if site {
+            self.ask::<SiteAnswer>(cx, prompt, |v| site_submission(v).map(drop))
+                .await
+        } else if matches!(self.sources.subject_kind, AssessmentKind::Citation(_)) {
+            self.ask::<ReviewAnswer<bool>>(cx, prompt, |v| submission(v).map(drop))
+                .await
+        } else {
+            self.ask::<corrections::AssessmentResult>(cx, prompt, |v| {
+                serde_json::from_value::<corrections::AssessmentResult>(v.clone())?
+                    .evidence()
+                    .map(drop)
+            })
+            .await
         }
     }
 }
@@ -228,44 +185,24 @@ pub(super) async fn assess(
     backend: &config::BackendConfig,
     sources: &mut AssessmentSources,
     usage: &mut UsageLog,
-) -> io::Result<(Judgment, Value)> {
-    let record = run(backend, sources, usage, Operation::Assess).await?;
+) -> io::Result<Assessment> {
+    let record = run(backend, sources, usage).await?;
     let value = crate::evidence_format::encode(&record)?;
-    let determination = Judgment::from_value(&value["determination"]).map_err(io::Error::other)?;
-    Ok((determination, value))
-}
-
-// {cite}`habeas:util`
-pub(super) async fn verify(
-    backend: &config::BackendConfig,
-    sources: &mut AssessmentSources,
-    usage: &mut UsageLog,
-    judgment: &Judgment,
-    rationale: &str,
-) -> io::Result<Verification> {
-    let site = matches!(sources.subject_kind, AssessmentKind::Site(..));
-    let record = run(
-        backend,
-        sources,
-        usage,
-        Operation::Verify(judgment.clone(), rationale.into()),
-    )
-    .await?;
-    let mut value = record.output;
-    if !site {
-        value
-            .as_object_mut()
-            .expect("verification")
-            .remove("applies");
-    }
-    let mut output = if site {
-        site_verification(&value)?
+    let findings = if let Some(items) = value.get("corrections") {
+        let corrections: Vec<corrections::Correction> = serde_json::from_value(items.clone())?;
+        corrections
+            .into_iter()
+            .map(|c| corrections::Finding::capture(c, &record.dependencies))
+            .collect()
     } else {
-        verification(&value)?
+        Vec::new()
     };
-    output.dependencies = record.dependencies;
-    output.inputs = sources.recorded_inputs().to_vec();
-    Ok(output)
+    let determination = Judgment::from_value(&value["determination"]).map_err(io::Error::other)?;
+    Ok(Assessment {
+        determination,
+        record: value,
+        findings,
+    })
 }
 
 /// Publish this assessment's counters even if its future is dropped during a request or backoff.
@@ -282,11 +219,11 @@ impl Drop for AssessmentUsage<'_, '_> {
     }
 }
 
+// {impl}`requirements.authoring.persistence.fingerprints`
 async fn run(
     backend: &config::BackendConfig,
     sources: &mut AssessmentSources,
     usage: &mut UsageLog,
-    operation: Operation,
 ) -> io::Result<trust_but_verify::graph::Record<HabeasNode, HabeasEdgeLabel>> {
     let subject = match &sources.subject_kind {
         AssessmentKind::Definition(..) => {
@@ -311,14 +248,12 @@ async fn run(
         validator: trust_but_verify::graph::Validator::new(&graph),
         log: usage,
     };
-    let verifying = matches!(operation, Operation::Verify(..));
     let result = assessment
         .validator
         .verify(Review {
             sources,
             criterion,
             node,
-            operation,
         })
         .await;
     drop(assessment);
@@ -332,28 +267,51 @@ async fn run(
     })?;
     // Project the SDK's observed nodes into the existing application evidence fields.
     for dependency in verified.dependencies() {
-        if let Dependency::Node(id, _) = dependency {
+        if let Dependency::Node(id, observed) = dependency {
             let data = graph.cache().node_data(*id).expect("observed node");
             if let Ok(selector) = data.selector() {
-                let input = sources.read_selector(&selector)?;
+                let input = if let (HabeasNode::Source(_), InputSelector::Outline { file, item }) =
+                    (data.as_ref(), &selector)
+                {
+                    // A selected search excerpt or read pins the SDK file snapshot.
+                    // Reopening the workspace here could record edits made in-flight.
+                    let contents = trust_but_verify::outline::OutlineContent::from_path(
+                        graph.cache(),
+                        graph.root.join(file),
+                    )
+                    .and_then(|snapshot| snapshot.select(item))
+                    .map_err(io::Error::other)?;
+                    if contents.fingerprint() != *observed {
+                        return Err(io::Error::other(format!(
+                            "observed snapshot unavailable for {file}#{item}"
+                        )));
+                    }
+                    json!({"file":file,"item":item,"hash":contents.structural_hash()})
+                } else {
+                    sources.read_selector(&selector)?
+                };
                 sources.record_inputs(&[input]);
             }
         }
     }
-    let output = if verifying {
-        verified.output().clone()
+    let answer = verified.output();
+    let (judgment, rationale) = if matches!(sources.subject_kind, AssessmentKind::Definition(..)) {
+        serde_json::from_value::<corrections::AssessmentResult>(answer.clone())?.evidence()?
     } else {
-        let answer = verified.output();
-        let judgment = Judgment::from_value(&answer["determination"]).map_err(io::Error::other)?;
-        usage.record.determination = Some(judgment.kind().into());
-        usage.save()?;
-        record(
-            sources,
-            &judgment,
-            answer["rationale"].as_str().expect("validated rationale"),
-            answer["applies"].as_bool(),
+        (
+            Judgment::from_value(&answer["determination"]).map_err(io::Error::other)?,
+            answer["rationale"]
+                .as_str()
+                .expect("validated rationale")
+                .to_owned(),
         )
     };
+    usage.record.determination = Some(judgment.kind().into());
+    usage.save()?;
+    let mut output = record(sources, &judgment, &rationale, answer["applies"].as_bool());
+    if let Some(items) = answer.get("corrections") {
+        output["corrections"] = items.clone();
+    }
     Ok(trust_but_verify::graph::Record::new(
         verified.version().cloned(),
         verified

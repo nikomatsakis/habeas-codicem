@@ -140,6 +140,17 @@ habeas author --all --force
 habeas author requirements.check --force
 ```
 
+A failed requirement or example review lists each correction with its reason.
+For a missing `{test}` or `{impl}` reference, Habeas checks that the assessor
+observed the target item and that it still matches, then inserts the marker.
+It reports manual work and unapplied corrections and pauses that subject for
+the rest of the run. After a write, it reassesses affected subjects, including
+previously current reviews outside the initial selection. Further additions can
+trigger further rounds. An existing marker or a stale selector alone ends the
+round without another assessment. Use `--stdout` to inspect a single review and
+its proposed corrections before making edits.
+{cite}`requirements.authoring.corrections.apply` {cite}`requirements.authoring.reassessment`
+
 Each assessment
 gets its own conversation and usage record. Successful results are kept if
 another assessment fails; the command reports failures and exits unsuccessfully.

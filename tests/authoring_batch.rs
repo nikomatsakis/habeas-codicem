@@ -21,6 +21,8 @@ struct Requests {
     active: usize,
     peak: usize,
     first_pair_overlapped: bool,
+    observed_source: Option<PathBuf>,
+    source_snapshots: Vec<(String, String)>,
     /// Each request's subject with when it arrived and when it was answered.
     timeline: Vec<(String, Instant, Option<Instant>)>,
 }
@@ -48,6 +50,8 @@ enum Behavior {
     /// Hold the three post-warmup requirement requests until all arrive.
     WarmupBarrier,
     ReadEachSubject,
+    RepairReferences,
+    RepairSharedReferences,
 }
 
 // {cite}`habeas:util`
@@ -185,7 +189,12 @@ fn serve(
 
     let (lock, arrived) = &*requests;
     let mut state = lock.lock().unwrap();
-    let first_for_subject = !state.subjects.contains(&subject);
+    if let Some(path) = &state.observed_source {
+        let source = fs::read_to_string(path).unwrap();
+        state.source_snapshots.push((subject.clone(), source));
+    }
+    let previous = state.subjects.iter().filter(|s| *s == &subject).count();
+    let first_for_subject = previous == 0;
     state.subjects.push(subject.clone());
     state.conversations.push((subject.clone(), request.clone()));
     let position = state.timeline.len();
@@ -287,6 +296,22 @@ fn serve(
         json!({"error": "fixture provider is throttling"})
     } else if failed {
         json!({"error": "fixture model rejected this subject"})
+    } else if (matches!(behavior, Behavior::RepairSharedReferences)
+        || (matches!(behavior, Behavior::RepairReferences) && subject.ends_with("alpha")))
+        && previous < 2
+    {
+        let (name, arguments) = if previous == 0 {
+            (
+                "read_node",
+                json!({"path":"src/lib.rs","location":"fn[shared]"}),
+            )
+        } else {
+            (
+                "submit_result",
+                json!({"result":{"status":"failed","corrections":[{"kind":"add_reference","file":"src/lib.rs","selector":"fn[shared]","role":"test","rationale":"Shared exercises this requirement."}]}}),
+            )
+        };
+        json!({"model":"fixture-model","created_at":"2026-01-01T00:00:00Z","message":{"role":"assistant","content":"","tool_calls":[{"id":"fixture","type":"function","function":{"name":name,"arguments":arguments}}]},"done":true,"done_reason":"stop","prompt_eval_count":11,"eval_count":7})
     } else if first_for_subject && matches!(behavior, Behavior::ReadEachSubject) {
         let name = subject.rsplit('.').next().unwrap();
         json!({
@@ -312,6 +337,17 @@ fn serve(
         let mut arguments = json!({"determination": determination, "rationale": rationale});
         if prompt.contains("Site under review: ") {
             arguments["applies"] = json!(true);
+        }
+        if subject.starts_with("requirement ") || subject.starts_with("example ") {
+            arguments = match determination {
+                Value::Bool(true) => json!({"status":"success","rationale":rationale}),
+                Value::Bool(false) => {
+                    json!({"status":"failed","corrections":[{"kind":"manual","instruction":"Fix the missing check.","rationale":rationale}]})
+                }
+                other => {
+                    json!({"status":"acknowledged_gap","entries":other["FIXME"],"rationale":rationale})
+                }
+            };
         }
         let submit = "submit_result";
         arguments = json!({"result":arguments});
@@ -2727,4 +2763,123 @@ fn mock_server_waits_for_remaining_request_headers() {
     client.read_to_string(&mut response).unwrap();
     assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
     assert_eq!(server.subjects(), ["requirement requirements.alpha"]);
+}
+
+// {test}`requirements.authoring.batch`
+// {test}`requirements.authoring.submission`
+#[test]
+// {test}`requirements.authoring.reassessment`
+fn reference_edits_reassess_a_skipped_subject_sharing_the_changed_input() {
+    let server = Server::start_with(false, Behavior::RepairReferences);
+    let fixture = Fixture::new(&server.endpoint, Some(2));
+    fs::write(
+        fixture.project.join("md/requirements.md"),
+        r#":::{req} alpha
+Alpha.
+:::
+
+:::::{req} beta
+Review each shared test and its alpha marker.
+::::{sites} shared
+```yaml
+language: rust
+paths: [src]
+rule: { kind: function_item, regex: 'fn shared' }
+match: ['fn shared() {}']
+no_match: ['fn other() {}']
+```
+::::
+::::{sites} marked
+```yaml
+language: rust
+paths: [src]
+rule: { kind: line_comment, regex: 'requirements[.]alpha' }
+match: ['// requirements.alpha']
+no_match: ['// unrelated']
+```
+::::
+:::::
+"#,
+    )
+    .unwrap();
+    fs::write(
+        fixture.project.join("src/lib.rs"),
+        "// {test}`requirements.beta`\n#[test]\nfn shared() {}\n",
+    )
+    .unwrap();
+    let first = fixture.run(&["author", "requirements.beta"]);
+    assert!(first.status.success(), "{first:?}");
+    let site = fixture.run(&["author", "sites:requirements.beta"]);
+    assert!(site.status.success(), "{site:?}");
+    let output = fixture.run(&["author", "requirements.alpha"]);
+    assert!(output.status.success(), "{output:?}");
+    let seen = server.subjects();
+    assert_eq!(seen.len(), 6, "{seen:?} {output:?}");
+    assert_eq!(
+        &seen[0..4],
+        [
+            "requirement requirements.beta",
+            "src/lib.rs fn[shared]",
+            "requirement requirements.alpha",
+            "requirement requirements.alpha"
+        ]
+    );
+    assert!(seen[4..].contains(&"src/lib.rs fn[shared]".into()));
+    assert!(seen[4..].contains(&"requirement requirements.alpha".into()));
+    assert_eq!(
+        fixture.evidence("requirements.alpha")["determination"],
+        true
+    );
+    assert!(
+        habeas::validate_repository(&fixture.project)
+            .unwrap()
+            .errors
+            .is_empty()
+    );
+}
+
+// {test}`requirements.authoring.submission`
+#[test]
+// {test}`requirements.authoring.corrections.apply`
+fn batch_collects_all_shared_file_findings_before_editing() {
+    let server = Server::start_with(false, Behavior::RepairSharedReferences);
+    let fixture = Fixture::new(&server.endpoint, Some(2));
+    let subjects = ["alpha", "beta", "gamma", "delta"];
+    fs::write(
+        fixture.project.join("md/requirements.md"),
+        subjects
+            .map(|name| format!(":::{{req}} {name}\nCheck {name}.\n:::\n"))
+            .join("\n"),
+    )
+    .unwrap();
+    let source = fixture.project.join("src/lib.rs");
+    let original = "#[test]\nfn shared() {}\n";
+    fs::write(&source, original).unwrap();
+    server.requests.0.lock().unwrap().observed_source = Some(source.clone());
+    let output = fixture.run(&["author", "--all"]);
+    assert!(output.status.success(), "{output:?}");
+    let edited = fs::read_to_string(source).unwrap();
+    let state = server.requests.0.lock().unwrap();
+    assert_eq!(state.peak, 2);
+    let (initial, retries) = state.source_snapshots.split_at(subjects.len() * 2);
+    assert!(initial.iter().all(|(_, text)| text == original));
+    assert_eq!(retries.len(), subjects.len());
+    for name in subjects {
+        let label = format!("requirement requirements.{name}");
+        assert!(
+            retries
+                .iter()
+                .any(|(s, text)| s == &label && text == &edited)
+        );
+        assert_eq!(
+            edited
+                .matches(&format!("{{test}}`requirements.{name}`"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            fixture.evidence(&format!("requirements.{name}"))["determination"],
+            true
+        );
+    }
 }

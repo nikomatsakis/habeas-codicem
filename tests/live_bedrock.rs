@@ -291,21 +291,23 @@ fn live_bedrock_authoring() {
     assert_eq!(usage["outcome"], "completed");
     assert_eq!(usage["evidence_output"], "stdout");
     assert_eq!(usage["evidence_written"], true);
-    assert!(usage["request_count"].as_u64().unwrap() >= 2);
+    let counters = &usage["provider_usage"];
+    assert!(counters["attempts"].as_u64().unwrap() >= 2);
     assert!(
-        usage["provider_usage"]["tools"]["submit_result"]["calls"]
+        counters["tools"]["submit_result"]["calls"]
             .as_u64()
             .unwrap()
             >= 1
     );
     assert!(
-        usage["provider_usage"]["tools"]["habeas"]["calls"]
-            .as_u64()
-            .unwrap_or(0)
-            + usage["provider_usage"]["tools"]["ripgrep"]["calls"]
-                .as_u64()
-                .unwrap_or(0)
-            > 0
+        [
+            "read_node",
+            "search_text",
+            "search_structure",
+            "run_named_query"
+        ]
+        .iter()
+        .any(|tool| counters["tools"][tool]["calls"].as_u64().unwrap_or(0) > 0)
     );
 }
 

@@ -136,8 +136,8 @@ reviewer could find and no reading a careful reviewer could take differently.
 Assessments that disagree are findings against that goal.
 
 By default (`confirm` policy), `habeas author` checks each `true` or FIXME
-result with a second assessment and a verifier, and notes any disagreement at
-the end of the recorded rationale. A determination that changes on
+result with an independent second assessment. The less favorable judgment wins,
+and the recorded rationale explains both decisions when they disagree. A determination that changes on
 reassessment, though the subject and sources have not changed in substance, is
 the same kind of finding.
 

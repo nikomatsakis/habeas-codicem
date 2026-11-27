@@ -1,3 +1,6 @@
+use std::collections::{BTreeMap, BTreeSet};
+
+type RoundFindings = BTreeMap<String, Vec<super::corrections::Finding>>;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -146,13 +149,158 @@ async fn run_batch(
         "Authoring {} assessments under the {policy} policy with concurrency {concurrency}; {unchanged} current records skipped",
         subjects.len()
     ));
+    let round = assess_round(
+        &root,
+        &inspection,
+        subjects,
+        &config,
+        policy,
+        &mut progress,
+        &mut outcome,
+    )
+    .await?;
+    finish_corrections(&root, &config, policy, options.verbose, &mut outcome, round).await?;
+    Ok(outcome)
+}
+
+/// Each round commits its evidence before this barrier. Inspect on both sides
+/// of source edits so unrelated, previously stale evidence is left alone.
+// {impl}`requirements.authoring.reassessment`
+pub(super) async fn finish_corrections(
+    root: &Path,
+    config: &config::ResolvedAuthoringConfig,
+    policy: AssessmentPolicy,
+    verbose: bool,
+    outcome: &mut BatchOutcome,
+    mut round: RoundFindings,
+) -> io::Result<()> {
+    let interrupt = tokio::signal::ctrl_c();
+    tokio::pin!(interrupt);
+    let mut waiting = BTreeSet::new();
+    while !outcome.cancelled {
+        let mut proposed = BTreeSet::new();
+        let mut edits = Vec::new();
+        for (subject, findings) in std::mem::take(&mut round) {
+            for finding in findings {
+                match finding.into_edit(&subject) {
+                    Ok(edit) => {
+                        proposed.insert(subject.clone());
+                        edits.push(edit);
+                    }
+                    Err(instruction) => {
+                        eprintln!("{subject}: paused for manual work: {instruction}");
+                        waiting.insert(subject.clone());
+                    }
+                }
+            }
+        }
+        if edits.is_empty() {
+            break;
+        }
+        let inspect = || -> io::Result<_> {
+            let mut inspection = crate::evidence::inspect_repository(root)?;
+            crate::github::add_issue_findings(
+                &mut inspection,
+                &crate::github::GithubIssues::from_env(root),
+            );
+            if !inspection.discovery_errors.is_empty() {
+                return Err(io::Error::other(inspection.discovery_errors.join("\n")));
+            }
+            let (stale, _) = select_subjects(root, &inspection, None, false, &mut |_| {});
+            Ok((inspection, stale))
+        };
+        // Register the listener before scanning the pre-edit repository.
+        tokio::select! {
+            biased;
+            _ = &mut interrupt => { outcome.cancelled = true; break; }
+            _ = std::future::ready(()) => {}
+        }
+        let (original, before) = inspect()?;
+        let before = before
+            .into_iter()
+            .map(|s| s.label())
+            .collect::<BTreeSet<_>>();
+        let repairs = tokio::select! {
+            biased;
+            _ = &mut interrupt => { outcome.cancelled = true; break; }
+            repairs = super::corrections::apply(&original, &edits) => repairs,
+        };
+        for (subject, reason) in repairs.outstanding {
+            eprintln!("{subject}: paused with unapplied correction: {reason}");
+            waiting.insert(subject);
+        }
+        if repairs.changed.is_empty() {
+            for subject in proposed.difference(&waiting) {
+                eprintln!(
+                    "{subject}: paused; requested markers already present, no assessment inputs changed"
+                );
+            }
+            break;
+        }
+        let (inspection, after) = inspect()?;
+        let retry = after
+            .into_iter()
+            .filter(|s| {
+                (repairs.changed.contains(&s.label()) || !before.contains(&s.label()))
+                    && !waiting.contains(&s.label())
+                    && s.evidence_path(root).is_file()
+            })
+            .collect::<Vec<_>>();
+        let labels = retry
+            .iter()
+            .map(AuthoringSubject::label)
+            .collect::<BTreeSet<_>>();
+        for subject in proposed
+            .difference(&waiting)
+            .filter(|s| !labels.contains(*s))
+        {
+            eprintln!(
+                "{subject}: paused; requested markers are present and assessment inputs are unchanged"
+            );
+        }
+        if retry.is_empty() {
+            break;
+        }
+        outcome.completed.retain(|a| !labels.contains(&a.subject));
+        eprintln!("Reassessing {} subjects after reference edits", retry.len());
+        let mut progress = BatchProgress::new(verbose);
+        tokio::select! {
+            biased;
+            _ = &mut interrupt => { outcome.cancelled = true; break; }
+            _ = tokio::task::yield_now() => {}
+        }
+        round = assess_round(
+            root,
+            &inspection,
+            retry,
+            config,
+            policy,
+            &mut progress,
+            outcome,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn assess_round(
+    root: &Path,
+    inspection: &RepositoryInspection,
+    subjects: Vec<AuthoringSubject>,
+    config: &config::ResolvedAuthoringConfig,
+    policy: AssessmentPolicy,
+    progress: &mut BatchProgress,
+    outcome: &mut BatchOutcome,
+) -> io::Result<RoundFindings> {
+    let mut round = RoundFindings::new();
+    let concurrency = config.effective_concurrency();
     progress.start(subjects.len());
     let mut subjects = subjects
         .into_iter()
-        .map(|subject| (assessment_kind(&inspection, &subject), subject))
+        .map(|subject| (assessment_kind(inspection, &subject), subject))
         .collect::<Vec<_>>();
     let mut domain =
-        crate::sdk::HabeasDomain::new(&root, &inspection.definitions, &inspection.outlines);
+        crate::sdk::HabeasDomain::new(root, &inspection.definitions, &inspection.outlines);
     domain.populate_graph()?;
     let mut warmup = CacheWarmup::default();
     let (warmed, mut warmed_kinds) = tokio::sync::mpsc::unbounded_channel();
@@ -238,7 +386,7 @@ async fn run_batch(
         // ...and discards a judgment not yet written when it arrived.
         observe_interrupt(interrupt.as_mut(), &mut listening, &cancel).await;
         let result = match result {
-            Ok(pending) => match stage_record(&root, &pending) {
+            Ok(pending) => match stage_record(root, &pending) {
                 Ok((file, path)) => {
                     // Preparation may involve slow filesystem writes. Observe
                     // cancellation again before committing the atomic replacement.
@@ -254,7 +402,10 @@ async fn run_batch(
             Err(error) => Err(error),
         };
         match result {
-            Ok(assessment) => {
+            Ok((assessment, findings)) => {
+                if !findings.is_empty() {
+                    round.insert(label, findings);
+                }
                 progress.completed(&assessment);
                 outcome.completed.push(assessment);
             }
@@ -275,7 +426,7 @@ async fn run_batch(
     }
     outcome.cancelled = cancellation.borrow().is_some();
     progress.finish(outcome.cancelled, subjects.len());
-    Ok(outcome)
+    Ok(round)
 }
 
 /// The kind of a subject's assessment, whose system prompt every

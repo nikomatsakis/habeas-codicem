@@ -95,6 +95,19 @@ pub(crate) fn view(value: &Value) -> io::Result<Value> {
     for field in SDK_FIELDS {
         object.remove(field);
     }
+    if let Some(corrections) = object.remove("corrections") {
+        if object.get("determination") != Some(&Value::Bool(false))
+            || !object.contains_key("references")
+        {
+            return Err(io::Error::other(
+                "corrections require a failed definition assessment",
+            ));
+        }
+        crate::authoring::corrections::AssessmentResult::Failed {
+            corrections: serde_json::from_value(corrections)?,
+        }
+        .evidence()?;
+    }
     Ok(Value::Object(object))
 }
 
@@ -104,7 +117,7 @@ pub(crate) fn decode(
     value: &Value,
     subject: &HabeasNode,
 ) -> io::Result<Record<HabeasNode, HabeasEdgeLabel>> {
-    let metadata = view(value)?;
+    let mut metadata = view(value)?;
     check_shape(&metadata, subject)?;
     Judgment::from_value(&metadata["determination"]).map_err(io::Error::other)?;
     metadata["rationale"]
@@ -140,6 +153,9 @@ pub(crate) fn decode(
         }
         (None, dependencies)
     };
+    if let Some(items) = value.get("corrections") {
+        metadata["corrections"] = items.clone();
+    }
     Ok(Record::new(version, dependencies, metadata))
 }
 
@@ -435,6 +451,29 @@ mod tests {
             }
         }
         value
+    }
+
+    // {test}`requirements.authoring.persistence.corrections`
+    // {test}`requirements.sdk.habeas.evidence_format`
+    #[test]
+    fn failed_definition_corrections_round_trip_and_validate_without_source_access() {
+        let subject = AuthoringSubject::Definition("old.ready".into());
+        let node = HabeasNode::review_subject(&subject);
+        let mut old = legacy(&subject);
+        old["determination"] = json!(false);
+        let mut native = encode(&decode(&old, &node).unwrap()).unwrap();
+        let change = json!({"kind":"manual","instruction":"Assert the page ID.","rationale":"The test checks only presence."});
+        native["corrections"] = json!([change]);
+        assert_eq!(encode(&decode(&native, &node).unwrap()).unwrap(), native);
+        assert_eq!(view(&native).unwrap(), old);
+        for invalid in [
+            json!([]),
+            json!([{"kind":"manual","instruction":"fix","rationale":" "}]),
+            json!([{"kind":"add_reference","role":"cite","file":"a","selector":"","rationale":"x"}]),
+        ] {
+            native["corrections"] = invalid;
+            assert!(decode(&native, &node).is_err());
+        }
     }
 
     // {test}`requirements.sdk.habeas.evidence_format`

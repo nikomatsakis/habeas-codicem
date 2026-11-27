@@ -132,6 +132,7 @@ pub fn validate_repository(root: &Path) -> io::Result<EvidenceReport> {
 pub(crate) struct RepositoryInspection {
     /// The canonical project root.
     pub(crate) root: PathBuf,
+    pub(crate) source_files: Vec<PathBuf>,
     pub(crate) definitions: BTreeMap<String, Declaration>,
     pub(crate) references: Vec<SourceReference>,
     /// The sites of each distributed requirement.
@@ -364,6 +365,7 @@ pub(crate) fn inspect_repository_with_progress(
         .filter(|definition| definition.kind == DefinitionKind::Requirement)
         .count();
     Ok(RepositoryInspection {
+        source_files: files,
         root: root.clone(),
         report: EvidenceReport {
             requirements,
