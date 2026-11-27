@@ -173,12 +173,14 @@ fn every_profile_mapping_is_documented() {
 
 // {test}`requirements.references.outlines`
 #[test]
-fn grammar_dependencies_are_pinned_to_exact_versions() {
+// {test}`requirements.authoring.redaction`
+fn grammar_and_redaction_dependencies_are_pinned_to_exact_versions() {
     let version = regex::Regex::new(r"^=\d+\.\d+\.\d+$").unwrap();
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     let manifest: toml::Table = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     let dependencies = manifest["dependencies"].as_table().unwrap();
     for name in [
+        "secretshape",
         "tree-sitter",
         "tree-sitter-css",
         "tree-sitter-md",

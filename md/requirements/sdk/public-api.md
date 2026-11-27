@@ -95,6 +95,7 @@ documented TBV public API.
       - `with_sources()` — [Declaration](validation-cache.md#habeas-req-requirements.sdk.validation-cache.with_sources)
       - `intern_node()` — [Declaration](validation-cache.md#habeas-req-requirements.sdk.validation-cache.intern_node)
       - `node_data()` — [Declaration](validation-cache.md#habeas-req-requirements.sdk.validation-cache.node_data)
+      - `set_agent()` — [Declaration](validation-cache.md#habeas-req-requirements.sdk.validation-cache.set_agent)
       - `with_agent()` — [Declaration](validation-cache.md#habeas-req-requirements.sdk.validation-cache.with_agent)
   - `mod graph` — [Graph nodes](graph.md) · [Graph edges](graph-edges.md)
     - `trait Criterion` — [Declaration](graph/criteria.md#habeas-req-requirements.sdk.graph.criteria.criterion_trait) · [Define a criterion](graph/criteria.md#define-a-criterion)
@@ -253,6 +254,8 @@ documented TBV public API.
   - `mod request` — [Agent calls](graph/agent-calls.md)
     - `struct Ask` — [Declaration](graph/agent-calls.md#habeas-req-requirements.sdk.graph.agent-calls.Ask) · [Build a request](graph/agent-calls.md#build-a-request)
       - `context()`
+      - `message()`
+      - `contents_of_node()`
       - `vet_answer()`
       - `contents_of_current_node()`
       - `contents_of_successors()`

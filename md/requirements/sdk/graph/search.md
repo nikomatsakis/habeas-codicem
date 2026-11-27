@@ -515,7 +515,7 @@ finish_search({search_id: UUID, used: string[]}) -> {search_id: UUID, finished: 
 :::{req} finish_search.behavior
 Each text or structural search page delivered to the agent opens a session-local
 `search_id` for accounting, even when there are no matches. Each match has a
-short string `tag` unique within the page. The agent may fetch further pages
+short string `tag` unique within the page. Each new page receives a fresh UUID. The agent may fetch further pages
 while earlier pages are open. Replaying a page preserves its ID, tags, and
 completion state. Failed searches and undelivered pages create no obligation.
 
@@ -523,8 +523,7 @@ Before the harness accepts a submission, the agent MUST call `finish_search`
 for every open page. `used` lists the tags of excerpts the agent relied on
 directly and may be empty. A valid call closes the page and returns its ID and
 `finished: true`. A later call for the same page can select additional tags.
-An invalid call, including an unknown ID or tag, returns a correctable tool
-error and preserves the page's completion state.
+The tool accepts exactly `search_id` and `used`. An invalid call, including an unknown ID or tag, returns a correctable tool error and preserves the page's completion state. A submission with open pages returns a tool error listing every outstanding UUID so the agent can close them and resubmit in the same conversation.
 :::
 
 :::{req} finish_search.inputs
@@ -533,4 +532,12 @@ from the snapshot that produced the delivered excerpt. If the excerpt also shows
 preserves the original dependency. Earlier selections survive later calls.
 An empty `used` list adds no dependency. Unselected excerpts and the match set
 add none either. An invalid call leaves all recorded inputs intact.
+:::
+
+:::{example} recovery
+Two search results remain outstanding; one has no matches. Submission MUST
+return an error naming both UUIDs. Finishing only the first MUST leave
+submission rejected with the second UUID. Finishing the empty search with
+`used: []` MUST permit an otherwise valid subsequent submission.
+{test}`requirements.sdk.graph.search.finish_search.behavior`
 :::

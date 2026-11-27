@@ -284,6 +284,7 @@ pub enum ValidationError<E> {
     Graph(E),
     NoAgentConfigured,
     Agent(String),
+    Provider(std::io::Error),
     Output(serde_json::Error),
 }
 
@@ -293,6 +294,7 @@ impl<E: std::fmt::Display> std::fmt::Display for ValidationError<E> {
         match self {
             Self::Graph(error) => error.fmt(f),
             Self::NoAgentConfigured => f.write_str("no agent is configured"),
+            Self::Provider(error) => error.fmt(f),
             Self::Agent(error) => write!(f, "agent: {error}"),
             Self::Output(error) => write!(f, "output: {error}"),
         }
@@ -303,6 +305,7 @@ impl<E: std::error::Error + 'static> std::error::Error for ValidationError<E> {
     // {cite}`habeas:util`
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Provider(error) => Some(error),
             Self::Graph(error) => Some(error),
             Self::Output(error) => Some(error),
             Self::Agent(_) | Self::NoAgentConfigured => None,

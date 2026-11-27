@@ -74,7 +74,12 @@ fn default_language_names_match_the_retained_outline() {
 // {test}`requirements.sdk.outlines.Span`
 #[test]
 fn span_indexes_str_at_utf8_byte_boundaries() {
+    fn needs_eq<T: Eq>() {}
+    needs_eq::<Span>();
     let source = "aé🦀";
+    for span in [Span::new(0, 0), Span::new(1, 3), Span::new(3, 7)] {
+        assert_eq!(&source[span], &source[span.start..span.end]);
+    }
     assert_eq!(&source[Span::new(1, 3)], "é");
     assert_eq!(&source[Span::new(7, 7)], "");
     for span in [
@@ -95,7 +100,39 @@ fn addresses_reconstruct_without_reading_the_file() {
     let root = OutlineData::root("not-present.rs");
     assert!(root.selector.is_empty());
     assert_eq!(root.clone().selector(id.selector.clone()).unwrap(), id);
-    assert!(root.selector("fn[".into()).is_err());
+    assert!(root.clone().selector("fn[".into()).is_err());
+    let mut addresses = std::collections::HashSet::from([id.clone(), root.clone()]);
+    assert!(!addresses.insert(root.clone().selector(id.selector.clone()).unwrap()));
+    assert_eq!(addresses.len(), 2);
+    for valid in [
+        "",
+        "fn[one%20two]#2",
+        "use@0123456789ab",
+        "impl[Thing/Trait]/fn[run]",
+    ] {
+        assert_eq!(
+            OutlineData::new("not-present.rs", valid.into()).unwrap(),
+            root.clone().selector(valid.into()).unwrap()
+        );
+    }
+    for invalid in [
+        "fn",
+        "fn[x]#0",
+        "fn[x]#",
+        "fn[x y]",
+        "fn[x@]",
+        "fn[x#]",
+        "use@123",
+        "mod[m]//fn[f]",
+        "12",
+        "fn[%xx]",
+    ] {
+        assert!(
+            OutlineData::new("not-present.rs", invalid.into()).is_err(),
+            "{invalid}"
+        );
+        assert!(root.clone().selector(invalid.into()).is_err(), "{invalid}");
+    }
     let encoded = serde_json::to_string(&id).unwrap();
     assert_eq!(serde_json::from_str::<OutlineData>(&encoded).unwrap(), id);
     assert_eq!(id.path, std::path::Path::new("not-present.rs"));
@@ -1186,7 +1223,11 @@ fn structural_fingerprint_example_tracks_the_selected_function() {
     .unwrap();
     assert_eq!(original.fingerprint(), reformatted.fingerprint());
     assert_ne!(original.fingerprint(), changed.fingerprint());
-    assert!(original.format().contains("fn check_token()"));
+    fn shareable<T: Send + Sync + ?Sized>(_: &T) {}
+    shareable(&original as &dyn NodeContents);
+    assert_eq!(original.format(), "fn check_token() { allow(); }");
+    assert_eq!(reformatted.format(), "fn check_token()\n{\n    allow();\n}");
+    assert_eq!(changed.format(), "fn check_token() { deny(); }");
 }
 
 // {test}`requirements.sdk.sources.rust.fingerprints`

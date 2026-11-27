@@ -126,6 +126,8 @@ impl<'a, 'd, D: Domain, R, P> Ask<'a, 'd, D, R, P> {
         self,
         vet: impl FnMut(&R) -> Result<VetResult, D::Error> + Send + 'a,
     ) -> Self;
+    pub fn message(self, text: impl Into<String>) -> Self;
+    pub fn contents_of_node(self, node: NodeId<D>) -> Ask<'a, 'd, D, R, NodePhase>;
     pub fn contents_of_current_node(self) -> Ask<'a, 'd, D, R, NodePhase>;
     pub fn contents_of_successors(
         self,
@@ -150,11 +152,19 @@ impl<'a, 'd, D: Domain, R> IntoFuture for Ask<'a, 'd, D, R, NodePhase> where R: 
 ```
 :::
 
+:::{req} subject_message
+`message` sets the task-specific text at the beginning of the opening user message, before queued node contents. The last call supplies the text. The system prefix and its fingerprint depend only on `context` calls.
+:::
+
+:::{req} named_input
+`contents_of_node` queues a node by its domain ID. The SDK prepares, formats, and records its contents on delivery in the same way as `contents_of_current_node`.
+:::
+
 :::{req} judge.phases
 An ask builder begins in `ContextPhase`. Only that state exposes `context`,
 composing the reusable prefix under
 {cite}`requirements.sdk.graph.agent-calls.agent_context`. The first
-`contents_of_current_node` or `contents_of_successors` call enters `NodePhase`, even
+call to `contents_of_current_node`, `contents_of_node`, or `contents_of_successors` enters `NodePhase`, even
 with an empty successor selection. This state allows further node insertions
 and awaiting, with no `context` method or transition back. The builder's types
 enforce the restriction.

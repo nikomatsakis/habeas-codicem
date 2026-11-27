@@ -97,6 +97,7 @@ mod tests {
 
     // {test}`requirements.test-coverage.check.exceptions.anchor`
     #[test]
+    // {test}`requirements.references.builtin_definitions`
     fn coverage_builtin_uses_the_documented_text_and_only_the_citation_role() {
         let coverage = builtin("habeas:coverage").unwrap();
         assert_eq!(

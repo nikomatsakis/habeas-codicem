@@ -293,7 +293,7 @@ fn live_bedrock_authoring() {
     assert_eq!(usage["evidence_written"], true);
     assert!(usage["request_count"].as_u64().unwrap() >= 2);
     assert!(
-        usage["provider_usage"]["tools"]["submit_judgment"]["calls"]
+        usage["provider_usage"]["tools"]["submit_result"]["calls"]
             .as_u64()
             .unwrap()
             >= 1

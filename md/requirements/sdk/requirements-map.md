@@ -21,9 +21,7 @@ live under `requirements.sdk.graph`, `requirements.sdk.sources`, and
 The identifiers in this table are abbreviated: each begins with `requirements.`.
 The shared search policy requires the agent to close every delivered search
 page and select the excerpts it relied on under
-{cite}`requirements.sdk.graph.search.finish_search.behavior`. HC already enforces
-this policy in its assessment adapter. The SDK tool implementation still needs
-to adopt it.
+{cite}`requirements.sdk.graph.search.finish_search.behavior`. The SDK records selected excerpts in the validation trace. Habeas stores their source identities in evidence.
 
 ## Individual outline definitions
 
@@ -61,12 +59,7 @@ implement `Display`. See [agent calls](graph/agent-calls.md).
 
 ## HC integration work
 
-HC retains an internal assessment adapter for its review protocol and evidence
-accounting. Further integration should preserve
-`requirements.authoring.initial_prompt`, the authoring tool contracts, and
-complete selected-excerpt accounting under `requirements.authoring.text_search`,
-`requirements.authoring.structural_search`, and
-`requirements.authoring.finish_search`.
+HC uses the configured SDK agent for every review. Its criteria supply the task message, mandatory nodes, typed answer, and rationale checks. The SDK owns the conversation and collects usage. HC registers requirement lookup, named queries, and GitHub issue inspection through `AgentConfig::with_tool`.
 
 External issue nodes need HC policy for unavailable observations and offline
 freshness. That policy must reconcile `requirements.authoring.github_reads`,

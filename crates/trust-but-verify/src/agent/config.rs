@@ -409,6 +409,7 @@ mod tests {
     // {test}`requirements.sdk.graph.agent-harness.OpenAiConfig`
     // {test}`requirements.sdk.graph.agent-harness.agent_config.settings`
     #[test]
+    // {test}`requirements.authoring.openai_defaults`
     fn openai_inference_options_only_fill_missing_defaults() {
         let minimal: AgentConfig = serde_json::from_value(json!({"backend":"openai"})).unwrap();
         assert_eq!(minimal, AgentConfig::OpenAi(OpenAiConfig::new()));
@@ -475,6 +476,12 @@ mod tests {
     #[test]
     fn backend_builders_set_only_the_requested_fields() {
         let bedrock = BedrockConfig::new("bedrock-model".into());
+        let minimum: BedrockConfig =
+            serde_json::from_value(json!({"model":"bedrock-model"})).unwrap();
+        assert_eq!(
+            serde_json::to_value(minimum).unwrap(),
+            serde_json::to_value(&bedrock).unwrap()
+        );
         let openai = OpenAiConfig::new();
         let ollama = OllamaConfig::new("ollama-model".into());
         assert_eq!(

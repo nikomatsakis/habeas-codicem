@@ -76,8 +76,7 @@ tuple_context!(A:0, B:1, C:2, D:3, E:4, F:5, G:6, H:7, I:8, J:9, K:10);
 tuple_context!(A:0, B:1, C:2, D:3, E:4, F:5, G:6, H:7, I:8, J:9, K:10, L:11);
 
 // {cite}`habeas:util`
-#[doc(hidden)]
-pub struct PreparedInput<N> {
+pub(crate) struct PreparedInput<N> {
     pub node: N,
     pub text: String,
     pub(crate) fingerprint: Fingerprint,
@@ -85,11 +84,11 @@ pub struct PreparedInput<N> {
 
 // {cite}`habeas:util`
 /// The conversation loop records the prepared inputs on delivery of its opening prompt.
-#[doc(hidden)]
-pub struct AgentRequest<'a, N, E> {
+pub(crate) struct AgentRequest<'a, N, E> {
     pub finish: &'a mut (dyn FnMut(Value) -> Result<Submission<()>, AgentError<E>> + Send),
     pub current_node: N,
     pub prefix: String,
+    pub message: String,
     pub prefix_fingerprint: Fingerprint,
     pub inputs: Vec<PreparedInput<N>>,
     pub result_schema: Value,
@@ -97,8 +96,7 @@ pub struct AgentRequest<'a, N, E> {
 }
 
 /// Returns one accepted structured tool submission; assistant text is an error.
-#[doc(hidden)]
-pub trait Agent<D: Domain>: Send + Sync {
+pub(crate) trait Agent<D: Domain>: Send + Sync {
     // {cite}`habeas:util`
     fn run<'a>(
         &'a self,
@@ -269,13 +267,6 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
         }
     }
 
-    /// Habeas adapter hook for a delivered, retained observation.
-    #[doc(hidden)]
-    #[cfg(feature = "habeas-integration")]
-    pub fn observe_read(&self, node: NodeId<D>, fingerprint: Fingerprint) {
-        self.record_read(node, fingerprint);
-    }
-
     // {cite}`habeas:util`
     pub(crate) fn observe_edges(
         &self,
@@ -356,6 +347,7 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
         Ask {
             ctx: self,
             contexts: Vec::new(),
+            message: String::new(),
             insertions: Vec::new(),
             callbacks: Vec::new(),
             state: PhantomData,
@@ -381,12 +373,20 @@ pub struct ContextPhase;
 ///     ctx.ask::<bool>().contents_of_successors(label).context(String::new());
 /// }
 /// ```
+///
+/// ```compile_fail
+/// use trust_but_verify::{domain::Domain, request::ValidationContext};
+/// fn too_late<D: Domain>(ctx: &ValidationContext<'_, D>) {
+///     ctx.ask::<bool>().contents_of_node(*ctx.node_id()).context(String::new());
+/// }
+/// ```
 // {test}`requirements.sdk.graph.agent-calls.judge.phases`
 pub struct NodePhase;
 
 // {cite}`habeas:util`
-enum Insertion<L> {
+enum Insertion<N, L> {
     Current,
+    Node(N),
     Successors(L, fn(&L, &L) -> bool),
 }
 
@@ -403,8 +403,9 @@ type Vet<'a, R, E> = Box<dyn FnMut(&R) -> Result<VetResult, E> + Send + 'a>;
 pub struct Ask<'a, 'd, D: Domain, R, P> {
     ctx: &'a ValidationContext<'d, D>,
     contexts: Vec<String>,
+    message: String,
     callbacks: Vec<Vet<'a, R, D::Error>>,
-    insertions: Vec<Insertion<D::EdgeLabel>>,
+    insertions: Vec<Insertion<NodeId<D>, D::EdgeLabel>>,
     state: PhantomData<fn() -> (R, P)>,
 }
 
@@ -417,6 +418,13 @@ impl<'a, 'd, D: Domain, R> Ask<'a, 'd, D, R, ContextPhase> {
 }
 
 impl<'a, 'd, D: Domain, R, P> Ask<'a, 'd, D, R, P> {
+    /// Set the task-specific user message presented before the supplied nodes.
+    // {impl}`requirements.sdk.graph.agent-calls.subject_message`
+    pub fn message(mut self, text: impl Into<String>) -> Self {
+        self.message = text.into();
+        self
+    }
+
     /// Append a check to run on each decoded submission in this conversation.
     // {impl}`requirements.sdk.graph.agent-calls.vet_answer`
     pub fn vet_answer(
@@ -432,6 +440,7 @@ impl<'a, 'd, D: Domain, R, P> Ask<'a, 'd, D, R, P> {
         Ask {
             ctx: self.ctx,
             contexts: self.contexts,
+            message: self.message,
             callbacks: self.callbacks,
             insertions: self.insertions,
             state: PhantomData,
@@ -442,6 +451,13 @@ impl<'a, 'd, D: Domain, R, P> Ask<'a, 'd, D, R, P> {
     /// Queue the current node's contents and enter the node phase.
     pub fn contents_of_current_node(mut self) -> Ask<'a, 'd, D, R, NodePhase> {
         self.insertions.push(Insertion::Current);
+        self.into_node_phase()
+    }
+
+    /// Queue the contents of a specified node.
+    // {impl}`requirements.sdk.graph.agent-calls.named_input`
+    pub fn contents_of_node(mut self, node: NodeId<D>) -> Ask<'a, 'd, D, R, NodePhase> {
+        self.insertions.push(Insertion::Node(node));
         self.into_node_phase()
     }
 
@@ -487,6 +503,7 @@ where
         let mut inputs = Vec::new();
         for insertion in self.insertions {
             let nodes = match insertion {
+                Insertion::Node(node) => vec![node],
                 Insertion::Current => vec![self.ctx.node],
                 Insertion::Successors(label, matches) => {
                     let snapshot = self
@@ -546,6 +563,7 @@ where
             current_node: self.ctx.node,
             prefix,
             prefix_fingerprint,
+            message: self.message,
             inputs,
             result_schema: serde_json::to_value(schemars::schema_for!(R))
                 .map_err(|error| ValidationError::Agent(error.to_string()))?,
@@ -555,6 +573,7 @@ where
             .run(request, self.ctx)
             .await
             .map_err(|error| match error {
+                AgentError::Provider(error) => ValidationError::Provider(error),
                 AgentError::Domain(error) => ValidationError::Graph(error),
                 AgentError::Conversation(error) => ValidationError::Agent(error.to_string()),
             })?;
@@ -585,8 +604,7 @@ await_phase!(ContextPhase);
 await_phase!(NodePhase);
 
 // {impl}`requirements.sdk.graph.agent-calls.agent_context`
-#[doc(hidden)]
-pub fn context_fingerprint(prefix: &str) -> Fingerprint {
+pub(crate) fn context_fingerprint(prefix: &str) -> Fingerprint {
     Fingerprint {
         scheme: "context-prefix-sha256-v1".into(),
         value: Sha256::digest(prefix.as_bytes())

@@ -3,20 +3,17 @@
 pub(crate) mod access;
 mod adaptive;
 mod batch;
+mod domain_tools;
 pub(crate) mod inputs;
 mod line_numbers;
-mod pages;
 mod progress;
-mod providers;
 mod sdk;
-mod searches;
-mod tools;
+#[cfg(test)]
+mod test_backend;
 mod usage;
 
 pub use batch::{BatchOutcome, author_all, author_all_with_options, author_sites_with_options};
 
-use rig_core::completion::{CompletionRequest, ToolDefinition};
-use rig_core::message::{Message, ToolResultContent, UserContent};
 use serde_json::{Value, json};
 use std::fs;
 use std::io::{self, Write};
@@ -27,7 +24,7 @@ use crate::DefinitionKind;
 use crate::config::{self, AssessmentPolicy, BackendKind, ResolvedAuthoringConfig};
 use crate::judgment::Judgment;
 use inputs::{AssessmentKind, AssessmentSources};
-use providers::{CompletionProvider, RigProvider};
+
 use usage::UsageLog;
 
 // {impl}`requirements.authoring.invocation`
@@ -371,7 +368,7 @@ pub(crate) async fn prepare_assessment(
     config: &ResolvedAuthoringConfig,
     policy: AssessmentPolicy,
     mut cancellation: watch::Receiver<Option<&'static str>>,
-    first_request_finished: Option<Box<dyn FnOnce() + Send>>,
+    first_conversation_finished: Option<Box<dyn FnOnce() + Send>>,
 ) -> io::Result<PendingAssessment> {
     let root = domain.root.clone();
     let state = usage_state_root(&root)?;
@@ -383,8 +380,8 @@ pub(crate) async fn prepare_assessment(
     }
     .map(str::to_owned);
     usage.save()?;
-    if let Some(finished) = first_request_finished {
-        usage.on_first_request(finished);
+    if let Some(finished) = first_conversation_finished {
+        usage.on_first_conversation(finished);
     }
     let result = tokio::select! {
         biased;
@@ -532,17 +529,17 @@ async fn configured_record(
     {
         return adaptive::assess(root, subject, config, sources, usage, policy).await;
     }
-    let provider = RigProvider::connect(&config.backend)
-        .await
-        .map_err(|error| {
-            io::Error::other(format!(
-                "{}: authoring.configs.{}: {error}",
-                config.config_path.display(),
-                config.name
-            ))
-        })?;
     let state = usage_state_root(root)?;
-    assess_subject(&provider, root, &state, subject, sources, usage, policy).await
+    assess_subject(
+        &config.backend,
+        root,
+        &state,
+        subject,
+        sources,
+        usage,
+        policy,
+    )
+    .await
 }
 
 // {impl}`requirements.authoring.usage_storage`
@@ -563,7 +560,7 @@ fn backend_name(model: &config::ModelRef) -> &'static str {
 // {impl}`requirements.authoring.mandatory_inputs`
 // {impl}`requirements.authoring.policy`
 async fn assess_subject(
-    provider: &impl CompletionProvider,
+    provider: &config::BackendConfig,
     root: &Path,
     state: &Path,
     subject: &AuthoringSubject,
@@ -918,12 +915,6 @@ impl Prompt {
         }
     }
 
-    /// The opening request: the system prompt as a leading system message,
-    /// then the subject message as the user's.
-    fn request(self) -> CompletionRequest {
-        CompletionRequest::new(Message::user(self.subject)).preamble(self.system)
-    }
-
     /// Both parts, for tests that look for text wherever it is sent.
     // {test}`requirements.authoring.prompt_parts`
     #[cfg(test)]
@@ -946,6 +937,7 @@ impl Prompt {
 // {impl}`requirements.authoring.judgment_rules`
 // {impl}`requirements.authoring.credentials`
 // {impl}`requirements.authoring.structural_prompt`
+#[cfg(test)]
 fn initial_prompt(sources: &AssessmentSources) -> io::Result<Prompt> {
     initial_prompt_with_inputs(sources, &sources.model_mandatory_inputs())
 }
@@ -1049,6 +1041,7 @@ const SITE_STEP: &str = "4. Also set applies to whether the requirement governs 
 // {impl}`requirements.authoring.github_reads`
 // {impl}`requirements.authoring.habeas_background`
 // {impl}`requirements.authoring.prompt_parts`
+#[cfg(test)]
 fn verification_prompt(
     sources: &AssessmentSources,
     determination: &Judgment,
@@ -1088,11 +1081,7 @@ fn verification_prompt_with_inputs(
         ("mandatory_inputs", &mandatory),
         (
             "verification_submission",
-            if matches!(sources.subject_kind, AssessmentKind::Citation(_)) {
-                "submit_result with your verification in result"
-            } else {
-                "submit_verification"
-            },
+            "submit_result with your verification in result",
         ),
     ]);
     Ok(Prompt::filled("verifier_prompt", &values))
@@ -1102,20 +1091,20 @@ fn verification_prompt_with_inputs(
 fn submission(arguments: &Value) -> io::Result<(Judgment, String)> {
     let object = arguments
         .as_object()
-        .ok_or_else(|| io::Error::other("submit_judgment expects an object"))?;
+        .ok_or_else(|| io::Error::other("submit_result expects an object"))?;
     if object.len() != 2
         || !object.contains_key("determination")
         || !object.contains_key("rationale")
     {
         return Err(io::Error::other(
-            "submit_judgment requires exactly determination and rationale",
+            "submit_result requires exactly determination and rationale",
         ));
     }
     let judgment = Judgment::from_value(&object["determination"]).map_err(io::Error::other)?;
     let rationale = object["rationale"]
         .as_str()
         .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| io::Error::other("submit_judgment rationale must be nonempty Markdown"))?;
+        .ok_or_else(|| io::Error::other("submit_result rationale must be nonempty Markdown"))?;
     Ok((judgment, rationale.to_owned()))
 }
 
@@ -1125,21 +1114,21 @@ fn submission(arguments: &Value) -> io::Result<(Judgment, String)> {
 fn site_submission(arguments: &Value) -> io::Result<(Judgment, String, bool)> {
     let object = arguments
         .as_object()
-        .ok_or_else(|| io::Error::other("submit_judgment expects an object"))?;
+        .ok_or_else(|| io::Error::other("submit_result expects an object"))?;
     if object.len() != 3 || !object.contains_key("applies") {
         return Err(io::Error::other(
-            "submit_judgment requires exactly applies, determination, and rationale",
+            "submit_result requires exactly applies, determination, and rationale",
         ));
     }
     let applies = object["applies"]
         .as_bool()
-        .ok_or_else(|| io::Error::other("submit_judgment applies must be a boolean"))?;
+        .ok_or_else(|| io::Error::other("submit_result applies must be a boolean"))?;
     let mut rest = object.clone();
     rest.remove("applies");
     let (judgment, rationale) = submission(&Value::Object(rest))?;
     if !applies && judgment != Judgment::True {
         return Err(io::Error::other(
-            "submit_judgment determination must be true when applies is false",
+            "submit_result determination must be true when applies is false",
         ));
     }
     Ok((judgment, rationale, applies))
@@ -1162,12 +1151,12 @@ struct Verification {
     inputs: Vec<Value>,
 }
 
-/// Parses a `submit_verification` call: exactly booleans `real` and
+/// Parses a `submit_result` call: exactly booleans `real` and
 /// `acknowledged`, an array of nonempty `acknowledgments`, which must be
 /// nonempty when both are true, and a nonempty `rationale`.
 fn verification(arguments: &Value) -> io::Result<Verification> {
     const FIELDS: [&str; 4] = ["real", "acknowledged", "acknowledgments", "rationale"];
-    let invalid = |message: &str| io::Error::other(format!("submit_verification {message}"));
+    let invalid = |message: &str| io::Error::other(format!("submit_result {message}"));
     let object = arguments
         .as_object()
         .ok_or_else(|| invalid("expects an object"))?;
@@ -1215,10 +1204,10 @@ fn verification(arguments: &Value) -> io::Result<Verification> {
     })
 }
 
-/// Parses a site review's `submit_verification` call: the four fields and a
+/// Parses a site review's `submit_result` call: the four fields and a
 /// boolean `applies`; `applies` false with `real` true is invalid.
 fn site_verification(arguments: &Value) -> io::Result<Verification> {
-    let invalid = |message: &str| io::Error::other(format!("submit_verification {message}"));
+    let invalid = |message: &str| io::Error::other(format!("submit_result {message}"));
     let object = arguments
         .as_object()
         .ok_or_else(|| invalid("expects an object"))?;
@@ -1237,112 +1226,6 @@ fn site_verification(arguments: &Value) -> io::Result<Verification> {
     }
     verification.applies = Some(applies);
     Ok(verification)
-}
-
-/// The source tools and one submission tool.
-// {impl}`requirements.authoring.initial_prompt`
-// {impl}`requirements.ci.outcomes`
-// {impl}`requirements.authoring.site_prompt`
-// {impl}`requirements.authoring.tool_descriptions.common_case`
-fn tool_definitions_with(submit: &str, site: bool) -> io::Result<Vec<ToolDefinition>> {
-    let mut definitions = tools::definitions();
-    let mut submission = if submit == "submit_verification" {
-        json!({"name": "submit_verification", "description": "Finish a gap verification by submitting its result until one submission is accepted, rather than using a source tool or a text message. real says whether the alleged gap is real; acknowledged says whether applicable FIXME comments acknowledge every real gap. acknowledgments lists their issue references, e.g. [\"owner/repo#123\"], or [] when none apply. rationale is a nonempty explanation grounded in the reviewed sources. Cite files and outline selectors, never line numbers, including in illustrative examples. Summarize diagnostic formats with placeholders rather than quoting numeric source locations. Close every delivered search with finish_search before submitting. A rejected submission leaves this verification open. A successful submission ends this verification and records these answers.",
-            "parameters": {"type":"object", "additionalProperties": false, "required":["real","acknowledged","acknowledgments","rationale"], "properties": {
-                "real":{"type":"boolean"},
-                "acknowledged":{"type":"boolean"},
-                "acknowledgments":{"type":"array","items":{"type":"string","minLength":1}},
-                "rationale":{"type":"string","minLength":1}}}})
-    } else {
-        let determination = json!({"oneOf":[{"type":"boolean"},{"type":"object","additionalProperties":false,"required":["FIXME"],"properties":{"FIXME":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}}}}]});
-        json!({"name": "submit_judgment", "description": "Finish the assessment by submitting your final judgment until one submission is accepted, rather than using a source tool or a text message. determination is true when the subject meets its review criteria, false when it has an unacknowledged gap, or {\"FIXME\":[\"owner/repo#123\"]} naming the issues in applicable FIXME comments that acknowledge every gap. rationale is a nonempty explanation grounded in the reviewed sources. Cite files and outline selectors, never line numbers, including in illustrative examples. Summarize diagnostic formats with placeholders rather than quoting numeric source locations. Close every delivered search with finish_search before submitting. A rejected submission leaves this assessment open. A successful submission ends this assessment and records the judgment.",
-            "parameters": {"type":"object", "additionalProperties": false, "required":["determination","rationale"], "properties": {
-                "determination": determination,
-                "rationale":{"type":"string","minLength":1}}}})
-    };
-    // A site review also records whether the requirement applies.
-    if site {
-        let description = submission["description"].as_str().unwrap().to_owned();
-        submission["description"] = json!(format!(
-            "{description} applies says whether this requirement applies to the reviewed site; when false, report no real gap{}.",
-            if submit == "submit_verification" {
-                " (real false)"
-            } else {
-                " (determination true)"
-            }
-        ));
-        let parameters = &mut submission["parameters"];
-        parameters["properties"]["applies"] = json!({"type": "boolean"});
-        parameters["required"]
-            .as_array_mut()
-            .expect("required fields")
-            .push(json!("applies"));
-    }
-    definitions.push(submission);
-    definitions
-        .into_iter()
-        .map(|value| serde_json::from_value(value).map_err(io::Error::other))
-        .collect()
-}
-
-// {impl}`requirements.authoring.submission`
-// {impl}`requirements.authoring.initial_prompt`
-// {impl}`requirements.ci.outcomes`
-#[cfg(test)]
-fn tool_definitions() -> io::Result<Vec<ToolDefinition>> {
-    tool_definitions_with("submit_judgment", false)
-}
-
-#[cfg(test)]
-mod submission_description_tests {
-    // {test}`requirements.authoring.tool_descriptions.common_case`
-    // {test}`requirements.authoring.no_line_numbers`
-    #[test]
-    fn submission_descriptions_explain_arguments_and_successful_completion() {
-        for tool in ["submit_judgment", "submit_verification"] {
-            for site in [false, true] {
-                let definitions = super::tool_definitions_with(tool, site).unwrap();
-                let value = serde_json::to_value(definitions.last().unwrap()).unwrap();
-                let description = value["description"].as_str().unwrap();
-                for argument in value["parameters"]["properties"]
-                    .as_object()
-                    .unwrap()
-                    .keys()
-                {
-                    assert!(
-                        description.contains(argument),
-                        "{tool} omits {argument}: {description}"
-                    );
-                }
-                for phrase in [
-                    "until one submission is accepted",
-                    "source tool",
-                    "nonempty explanation",
-                    "outline selectors",
-                    "never line numbers",
-                    "A successful submission ends",
-                    "owner/repo#123",
-                ] {
-                    assert!(
-                        description.contains(phrase),
-                        "{tool} omits {phrase}: {description}"
-                    );
-                }
-                if tool == "submit_judgment" {
-                    assert!(
-                        description.contains("true when the subject meets its review criteria")
-                    );
-                    assert!(description.contains("false when it has an unacknowledged gap"));
-                    assert!(description.contains(r#"{"FIXME":["owner/repo#123"]}"#));
-                } else {
-                    assert!(description.contains("real says whether the alleged gap is real"));
-                    assert!(description.contains("acknowledged says whether"));
-                    assert!(description.contains("or [] when none apply"));
-                }
-                assert_eq!(description.contains("applies says whether"), site);
-            }
-        }
-    }
 }
 
 /// The record a judgment produces: definition evidence, or a citation
@@ -1375,7 +1258,7 @@ fn record(
 /// returning the verifier's findings.
 // {impl}`requirements.authoring.verifier_prompt`
 async fn verify(
-    provider: &impl CompletionProvider,
+    provider: &config::BackendConfig,
     sources: &mut AssessmentSources,
     usage: &mut UsageLog,
     determination: &Judgment,
@@ -1384,248 +1267,8 @@ async fn verify(
     sdk::verify(provider, sources, usage, determination, rationale).await
 }
 
-type InputObserver<'a> = dyn Fn(&[Value]) -> io::Result<()> + Send + Sync + 'a;
-
-/// One conversation: sends the prompt with the source tools and the named
-/// submission tool, delivers tool results until a submission is accepted,
-/// and returns the parsed submission.
-// {impl}`requirements.authoring.delivered_inputs`
-// {impl}`requirements.authoring.usage_requests`
-// {impl}`requirements.authoring.mandatory_inputs`
-// {impl}`requirements.authoring.provider_backoff`
-// {impl}`requirements.authoring.submission_count`
-// {impl}`requirements.authoring.source_tools`
-// {impl}`requirements.authoring.file_discovery`
-// {impl}`requirements.authoring.text_search`
-// {impl}`requirements.definitions.authoring_inputs`
-// {impl}`requirements.authoring.prompt_parts`
-// {impl}`requirements.authoring.result_pages`
-// {impl}`requirements.authoring.output_limit`
-// {impl}`requirements.authoring.line_numbers.rejection`
-// {impl}`requirements.authoring.line_numbers.resubmission`
-// {impl}`requirements.authoring.submission`
-// {impl}`requirements.authoring.no_line_numbers`
-// {impl}`requirements.authoring.usage_requests.failures`
-// {impl}`requirements.authoring.provider_backoff.limit`
-// {impl}`requirements.authoring.tool_descriptions.special_cases`
-// {impl}`requirements.authoring.cache_checkpoints`
-// {impl}`requirements.authoring.submission.searches`
-// {impl}`requirements.authoring.submission.searches.recovery`
-// {impl}`requirements.authoring.submission.searches.line_numbers`
-// {impl}`requirements.authoring.submission.searches.accompanying_calls`
-async fn converse_observed(
-    inspection: &trust_but_verify::request::ValidationContext<'_, crate::sdk::HabeasDomain>,
-    provider: &impl CompletionProvider,
-    sources: &mut AssessmentSources,
-    usage: &mut UsageLog,
-    prompt: Prompt,
-    opening_inputs: Vec<
-        trust_but_verify::request::PreparedInput<
-            trust_but_verify::domain::NodeId<crate::sdk::HabeasDomain>,
-        >,
-    >,
-    result_schema: Value,
-    (submit, site): (&str, bool),
-    parse: impl Fn(&Value) -> io::Result<Value> + Send,
-    observer: Option<&InputObserver<'_>>,
-    finish: impl FnMut(
-        Value,
-    ) -> Result<
-        trust_but_verify::agent_runtime::Submission<()>,
-        trust_but_verify::agent_runtime::AgentError<io::Error>,
-    > + Send,
-) -> Result<(), trust_but_verify::agent_runtime::AgentError<io::Error>> {
-    use trust_but_verify::domain::Domain;
-    let project = sources.domain.project_sources();
-    let pending = sources.mandatory_inputs().to_vec();
-    let mut adapter = HabeasConversation {
-        sources,
-        usage,
-        site,
-        submit,
-        parse,
-        pending,
-        observer,
-        pages: pages::ResultPages::default(),
-        rejection: line_numbers::Rejection::default(),
-    };
-    trust_but_verify::agent_runtime::converse(
-        inspection,
-        provider,
-        &mut adapter,
-        project.as_ref(),
-        prompt.request(),
-        opening_inputs,
-        result_schema,
-        submit,
-        finish,
-    )
-    .await
-}
-
-// {cite}`habeas:util`
-struct HabeasConversation<'a, F> {
-    sources: &'a mut AssessmentSources,
-    usage: &'a mut UsageLog,
-    site: bool,
-    submit: &'a str,
-    parse: F,
-    pending: Vec<Value>,
-    observer: Option<&'a InputObserver<'a>>,
-    pages: pages::ResultPages,
-    rejection: line_numbers::Rejection,
-}
-
-impl<T: Send, F: Fn(&Value) -> io::Result<T> + Send> trust_but_verify::agent_runtime::Conversation
-    for HabeasConversation<'_, F>
-{
-    type Output = T;
-
-    // {cite}`habeas:util`
-    fn tools(&self, _: Option<ToolDefinition>) -> io::Result<Vec<ToolDefinition>> {
-        tool_definitions_with(self.submit, self.site)
-    }
-    fn submit(
-        &mut self,
-        submit: &str,
-        arguments: &Value,
-    ) -> io::Result<trust_but_verify::agent_runtime::Submission<T>> {
-        use trust_but_verify::agent_runtime::Submission;
-        let resubmitted = self.rejection.resubmitted(arguments);
-        let result = (self.parse)(resubmitted.as_ref().unwrap_or(arguments))?;
-        let outstanding = self.pages.outstanding_searches();
-        if !outstanding.is_empty() {
-            return Ok(Submission::Retry(format!(
-                "Submission not accepted: outstanding searches: {}. Call finish_search for every listed search_id, using used:[] when no snippets qualify, then resubmit.",
-                outstanding.join(", ")
-            )));
-        }
-        if submit == "submit_result" || resubmitted.is_some() {
-            return Ok(Submission::Accepted(result));
-        }
-        match self
-            .rejection
-            .decide(submit, arguments, location_guidance())
-        {
-            line_numbers::Outcome::Accept => Ok(Submission::Accepted(result)),
-            line_numbers::Outcome::Fail(error) => Err(io::Error::other(error)),
-            line_numbers::Outcome::Reject(message) => Ok(Submission::Retry(message)),
-        }
-    }
-    async fn dispatch(&mut self, name: &str, arguments: &Value) -> io::Result<(String, usize)> {
-        let delivery = tools::dispatch_paged(self.sources, &mut self.pages, name, arguments)
-            .map_err(|error| {
-                io::Error::new(
-                    error.kind(),
-                    line_numbers::without_source_lines(&error.to_string()),
-                )
-            })?;
-        let mut inputs = 0;
-        if name == "finish_search" {
-            self.sources.record_inputs(&delivery.inputs);
-            if let Some(observer) = self.observer {
-                observer(&delivery.inputs)?;
-            }
-        } else {
-            inputs = delivery.inputs.len();
-            self.pending.extend(delivery.inputs);
-        }
-        // Source search pages carry one input per excerpt.
-        if let Some(matches) = delivery.result["matches"].as_array() {
-            inputs += matches
-                .iter()
-                .filter(|entry| entry["lines"].is_array())
-                .count();
-        }
-        Ok((delivery.result.to_string(), inputs))
-    }
-    // {cite}`habeas:util`
-    fn delivered(&mut self) -> io::Result<()> {
-        self.sources.record_inputs(&self.pending);
-        if let Some(observer) = self.observer {
-            observer(&self.pending)?;
-        }
-        self.pending.clear();
-        Ok(())
-    }
-    // {cite}`habeas:util`
-    fn begin_request(&mut self) -> io::Result<usize> {
-        self.usage.begin_request()
-    }
-    fn end_request(
-        &mut self,
-        index: usize,
-        elapsed: std::time::Duration,
-        response: &io::Result<rig_core::completion::CompletionResponse>,
-    ) -> io::Result<()> {
-        self.usage.end_request(
-            index,
-            elapsed.as_millis(),
-            response.as_ref().ok().map(|r| &r.usage),
-            response.as_ref().err().map(providers::failure_codes),
-        )
-    }
-    // {cite}`habeas:util`
-    fn retried(&mut self, index: usize) -> io::Result<()> {
-        self.usage.retried(index)
-    }
-    // {cite}`habeas:util`
-    fn skipped_tool(&mut self, name: &str) {
-        self.usage.skipped_tool(name);
-    }
-    // {cite}`habeas:util`
-    fn tool(&mut self, name: &str, failed: bool) {
-        self.usage.tool(name, failed);
-    }
-    // {cite}`habeas:util`
-    fn save(&mut self) -> io::Result<()> {
-        self.usage.save()
-    }
-    // {cite}`habeas:util`
-    fn cut_off(
-        &mut self,
-        response: &rig_core::completion::CompletionResponse,
-        limit: u64,
-    ) -> Vec<Message> {
-        cut_off_continuation(response, limit, self.usage)
-    }
-}
-
-/// The messages that continue a conversation after `response` was cut off
-/// at `limit` output tokens: the response as it stands, then one user
-/// message answering each of its incomplete calls without running it and
-/// asking for a shorter response.
-// {cite}`habeas:util`
-fn cut_off_continuation(
-    response: &rig_core::completion::CompletionResponse,
-    limit: u64,
-    usage: &mut UsageLog,
-) -> Vec<Message> {
-    let mut content = Vec::new();
-    for call in response.tool_calls() {
-        usage.skipped_tool(call.function.name.as_str());
-        // Converse requires every call in history to have a result.
-        content.push(UserContent::ToolResult(call.error_result(vec![
-            ToolResultContent::text("not run: the call was cut off at the output limit"),
-        ])));
-    }
-    content.push(UserContent::text(
-        approved_text("output_limit", 0).replace("<limit>", &limit.to_string()),
-    ));
-    response
-        .message()
-        .into_iter()
-        .chain([Message::User { content }])
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
-    use std::time::Duration;
-
-    use rig_core::completion::{CompletionResponse, FinishReason, Usage};
-    use rig_core::message::{AssistantContent, Origin, ToolCall, ToolFunction, ToolName};
 
     use super::*;
 
@@ -1637,9 +1280,13 @@ mod tests {
         let subject = "requirements.ready";
         let mut sources = AssessmentSources::prepare(project.path(), subject).unwrap();
         let mut usage = UsageLog::start(state.path(), project.path(), subject).unwrap();
-        let (_, record) = assess(&JudgmentProvider(json!(true)), &mut sources, &mut usage)
-            .await
-            .unwrap();
+        let (_, record) = assess(
+            &RecordingProvider::new(vec![judgment(json!(true), "Covered.")]),
+            &mut sources,
+            &mut usage,
+        )
+        .await
+        .unwrap();
         let path = project.path().join("evidence/requirements.ready.json");
         let bytes = serde_json::to_vec_pretty(&record).unwrap();
         fs::create_dir(path.parent().unwrap()).unwrap();
@@ -1745,407 +1392,6 @@ mod tests {
         }
     }
 
-    // {test}`requirements.authoring.output_limit`
-    #[tokio::test]
-    async fn a_cut_off_response_without_a_known_output_limit_fails_without_continuing() {
-        struct CutOffProvider(std::sync::atomic::AtomicUsize);
-        impl CompletionProvider for CutOffProvider {
-            async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
-                self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                Ok(JudgmentProvider(json!(true))
-                    .complete(request)
-                    .await?
-                    .with_finish_reason(FinishReason::Length))
-            }
-        }
-        let project = inputs::tests::project();
-        let state = tempfile::tempdir().unwrap();
-        let mut sources = AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
-        let mut usage =
-            UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
-        let provider = CutOffProvider(std::sync::atomic::AtomicUsize::new(0));
-        let error = assess(&provider, &mut sources, &mut usage)
-            .await
-            .unwrap_err();
-        let message = error.to_string();
-        assert!(message.contains("response was incomplete"), "{message}");
-        assert!(
-            message.contains("output limit the configuration does not set"),
-            "{message}"
-        );
-        assert_eq!(
-            provider.0.load(std::sync::atomic::Ordering::Relaxed),
-            1,
-            "an unknown limit must not start a continuation"
-        );
-        assert!(
-            usage.record.determination.is_none(),
-            "the cut-off judgment is not accepted"
-        );
-    }
-
-    // {test}`requirements.authoring.submission`
-    struct JudgmentProvider(Value);
-
-    impl CompletionProvider for JudgmentProvider {
-        // {test}`requirements.authoring.submission`
-        async fn complete(&self, _request: CompletionRequest) -> io::Result<CompletionResponse> {
-            Ok(CompletionResponse::new(
-                vec![AssistantContent::ToolCall(ToolCall::from_wire(
-                    "judgment",
-                    ToolFunction::new(
-                        ToolName::new("submit_judgment").unwrap(),
-                        json!({"determination": self.0, "rationale": "The supplied source implements the requirement."}),
-                    ),
-                ))],
-                Usage::default(),
-                Origin::new("fixture", "fixture", "fixture"),
-                Value::Null,
-            ).with_finish_reason(FinishReason::ToolCalls))
-        }
-    }
-
-    // {cite}`habeas:util`
-    struct ThrottledProvider {
-        failures: usize,
-        status: u16,
-        code: &'static str,
-        requests: Mutex<Vec<Value>>,
-    }
-
-    impl CompletionProvider for ThrottledProvider {
-        // {cite}`habeas:util`
-        async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
-            self.requests
-                .lock()
-                .unwrap()
-                .push(serde_json::to_value(&request).unwrap());
-            if self.requests.lock().unwrap().len() <= self.failures {
-                return Err(io::Error::other(
-                    rig_core::error::ProviderError::from_provider_body("Too many tokens")
-                        .with_provider_status(Some(self.status.try_into().unwrap()))
-                        .with_provider_code(Some(self.code.into())),
-                ));
-            }
-            let mut response = JudgmentProvider(json!(true)).complete(request).await?;
-            response.usage = Usage::new()
-                .input_tokens(100)
-                .output_tokens(15)
-                .cached_input_tokens(20)
-                .reasoning_tokens(0);
-            Ok(response)
-        }
-    }
-
-    /// Reads one source on the first turn, then submits.
-    // {cite}`habeas:util`
-    struct ReadingProvider {
-        read: Value,
-        requests: Mutex<Vec<Value>>,
-    }
-
-    impl CompletionProvider for ReadingProvider {
-        // {cite}`habeas:util`
-        async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
-            self.requests
-                .lock()
-                .unwrap()
-                .push(serde_json::to_value(&request).unwrap());
-            if self.requests.lock().unwrap().len() > 1 {
-                return JudgmentProvider(json!(true)).complete(request).await;
-            }
-            Ok(CompletionResponse::new(
-                vec![AssistantContent::ToolCall(ToolCall::from_wire(
-                    "read",
-                    ToolFunction::new(ToolName::new("habeas").unwrap(), self.read.clone()),
-                ))],
-                Usage::default(),
-                Origin::new("fixture", "fixture", "fixture"),
-                Value::Null,
-            )
-            .with_finish_reason(FinishReason::ToolCalls))
-        }
-    }
-
-    // {test}`requirements.definitions.authoring_inputs`
-    #[tokio::test]
-    async fn definitions_introduced_by_a_read_are_supplied_and_recorded_before_submission() {
-        let project = inputs::tests::project();
-        fs::write(
-            project.path().join("md/terms.md"),
-            format!(
-                ":::{{definition}} value\n:phrase: value\nA {}.\n:::\n\n:::{{definition}} unit\n:phrase: unit\nA unit of {}.\n:::\n",
-                inputs::tests::role("term", "terms.unit"),
-                inputs::tests::role("term", "terms.value"),
-            ),
-        )
-        .unwrap();
-        fs::write(
-            project.path().join("src/lib.rs"),
-            format!(
-                "// {}\nfn work() {{}}\n",
-                inputs::tests::role("term", "terms.value")
-            ),
-        )
-        .unwrap();
-        let mut sources = AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
-        let state = tempfile::tempdir().unwrap();
-        let mut usage =
-            UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
-        let provider = ReadingProvider {
-            read: json!({"file": "src/lib.rs", "item": "fn[work]"}),
-            requests: Mutex::default(),
-        };
-        let (_, evidence) = assess(&provider, &mut sources, &mut usage).await.unwrap();
-
-        let definitions = evidence["inputs"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|input| input.get("definition").is_some())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            definitions
-                .iter()
-                .map(|input| input["definition"].as_str().unwrap())
-                .collect::<Vec<_>>(),
-            ["terms.unit", "terms.value"],
-            "the transitive set, once each: {evidence}"
-        );
-        for input in &definitions {
-            let text = input["text"].as_array().unwrap();
-            assert!(text[0].as_str().unwrap().starts_with(":::{definition}"));
-            assert!(text[1].as_str().unwrap().starts_with(":phrase: "));
-        }
-        // The submission came after the definitions were delivered.
-        let requests = provider.requests.lock().unwrap();
-        assert_eq!(requests.len(), 2);
-        let delivered = requests[1].to_string();
-        assert!(delivered.contains("A unit of"), "{delivered}");
-        assert!(!requests[0].to_string().contains("A unit of"));
-    }
-
-    /// Searches with a paged result, asks for its second page with the
-    /// token the first carried, and then submits.
-    // {cite}`habeas:util`
-    struct PagingProvider {
-        requests: Mutex<Vec<String>>,
-    }
-
-    impl CompletionProvider for PagingProvider {
-        // {cite}`habeas:util`
-        async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
-            let last = serde_json::to_string(request.chat_history.last().unwrap()).unwrap();
-            self.requests.lock().unwrap().push(last.clone());
-            let turn = self.requests.lock().unwrap().len();
-            let (name, arguments) = match turn {
-                1 => ("habeas", json!({"file": "src/lib.rs", "line_start": 1})),
-                2 => {
-                    // The tool result is JSON text inside the serialized message.
-                    let marker = r#"\"next\":\""#;
-                    let start = last.find(marker).expect("a paged result") + marker.len();
-                    ("next_page", json!({"token": &last[start..start + 16]}))
-                }
-                _ => return JudgmentProvider(json!(true)).complete(request).await,
-            };
-            Ok(CompletionResponse::new(
-                vec![AssistantContent::ToolCall(ToolCall::from_wire(
-                    format!("call-{turn}"),
-                    ToolFunction::new(ToolName::new(name).unwrap(), arguments),
-                ))],
-                Usage::default(),
-                Origin::new("fixture", "fixture", "fixture"),
-                Value::Null,
-            )
-            .with_finish_reason(FinishReason::ToolCalls))
-        }
-    }
-
-    // {test}`requirements.authoring.result_pages`
-    // {test}`requirements.authoring.delivered_inputs`
-    #[tokio::test]
-    async fn only_inputs_on_delivered_pages_are_recorded() {
-        let project = inputs::tests::project();
-        let mut source = String::new();
-        for index in 0..600 {
-            source.push_str(&format!(
-                "fn needle_{index}() {{\n    let text = \"padding padding padding\";\n}}\n\n"
-            ));
-        }
-        fs::write(project.path().join("src/lib.rs"), source).unwrap();
-        let mut sources = AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
-        let state = tempfile::tempdir().unwrap();
-        let mut usage =
-            UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
-        let provider = PagingProvider {
-            requests: Mutex::default(),
-        };
-        let (_, evidence) = assess(&provider, &mut sources, &mut usage).await.unwrap();
-        let requests = provider.requests.lock().unwrap();
-        assert_eq!(requests.len(), 3);
-        let delivered = |request: &str| {
-            (0..600)
-                .filter(|index| request.contains(&format!("fn needle_{index}()")))
-                .collect::<Vec<_>>()
-        };
-        let (first, second) = (delivered(&requests[1]), delivered(&requests[2]));
-        assert!(!first.is_empty() && !second.is_empty());
-        // The pages are consecutive and leave entries undelivered.
-        assert_eq!(second[0], first.last().unwrap() + 1);
-        let last = *second.last().unwrap();
-        assert!(last < 599, "{last}");
-        let recorded = evidence["inputs"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|input| input["item"].as_str())
-            .filter_map(|item| item.strip_prefix("fn[needle_"))
-            .map(|item| item.trim_end_matches(']').parse::<usize>().unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(recorded, (0..=last).collect::<Vec<_>>());
-        let log: Value = serde_json::from_str(&fs::read_to_string(&usage.path).unwrap()).unwrap();
-        assert_eq!(log["provider_usage"]["tools"]["next_page"]["calls"], 1);
-    }
-
-    // {test}`requirements.authoring.no_line_numbers`
-    #[tokio::test]
-    async fn tool_errors_give_the_model_no_line_numbers_it_did_not_supply() {
-        let project = inputs::tests::project();
-        fs::write(project.path().join("src/lib.rs"), "fn work() {}\n").unwrap();
-        fs::write(
-            project.path().join("src/broken.rs"),
-            "fn ok() {}\nfn broken( {\n",
-        )
-        .unwrap();
-        let sources = AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
-        // A range past the end repeats only the supplied start line.
-        let past = tools::dispatch(
-            &sources,
-            "habeas",
-            &json!({"file": "src/lib.rs", "line_start": 99}),
-        )
-        .err()
-        .unwrap()
-        .to_string();
-        assert!(
-            past.starts_with("src/lib.rs:99 is not an inclusive range"),
-            "{past}"
-        );
-        // A parse error names its line, but the model receives it without.
-        let read = json!({"file": "src/broken.rs", "item": ""});
-        let parse = tools::dispatch(&sources, "habeas", &read)
-            .err()
-            .unwrap()
-            .to_string();
-        assert!(
-            regex::Regex::new(r"line \d+: ").unwrap().is_match(&parse),
-            "{parse}"
-        );
-        let mut sources = sources;
-        let state = tempfile::tempdir().unwrap();
-        let mut usage =
-            UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
-        let provider = ReadingProvider {
-            read,
-            requests: Mutex::default(),
-        };
-        assess(&provider, &mut sources, &mut usage).await.unwrap();
-        let delivered = provider.requests.lock().unwrap()[1].to_string();
-        assert!(delivered.contains("cannot parse"), "{delivered}");
-        assert!(
-            !regex::Regex::new(r"line \d+: ")
-                .unwrap()
-                .is_match(&delivered),
-            "{delivered}"
-        );
-    }
-
-    // {test}`requirements.authoring.read_denial`
-    // {test}`requirements.authoring.tool_descriptions.special_cases`
-    #[tokio::test]
-    async fn malformed_and_failed_reads_return_to_the_model_and_the_assessment_continues() {
-        for read in [
-            json!({"file": "src/lib.rs", "line_start": "one"}),
-            json!({"file": "src/lib.rs"}),
-            json!({"file": "src/lib.rs", "item": "fn[work]", "requirements": "*"}),
-            json!({"file": "missing.rs", "line_start": 1}),
-            json!({"file": "src/lib.rs", "item": "fn[absent]"}),
-            json!({"file": "src/lib.rs", "line_start": 99}),
-        ] {
-            let project = inputs::tests::project();
-            fs::write(project.path().join("src/lib.rs"), "fn work() {}\n").unwrap();
-            let mut sources =
-                AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
-            let state = tempfile::tempdir().unwrap();
-            let mut usage =
-                UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
-            let provider = ReadingProvider {
-                read: read.clone(),
-                requests: Mutex::default(),
-            };
-            let failure = tools::dispatch(&sources, "habeas", &read)
-                .err()
-                .unwrap_or_else(|| panic!("{read} fails"));
-            assert_ne!(failure.kind(), io::ErrorKind::PermissionDenied, "{read}");
-            let (_, evidence) = assess(&provider, &mut sources, &mut usage)
-                .await
-                .unwrap_or_else(|error| panic!("{read}: {error}"));
-            // The failure went back to the model as a tool error, and the model
-            // then submitted in a second request.
-            let requests = provider.requests.lock().unwrap();
-            assert_eq!(requests.len(), 2, "{read}");
-            let message =
-                serde_json::to_string(&line_numbers::without_source_lines(&failure.to_string()))
-                    .unwrap();
-            let message = message.trim_matches('"');
-            assert!(!requests[0].to_string().contains(message), "{read}");
-            assert!(requests[1].to_string().contains(message), "{read}");
-            assert!(
-                evidence["inputs"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .all(|input| input
-                        .get("file")
-                        .is_none_or(|file| file != "src/lib.rs" && file != "missing.rs")),
-                "{read}: {evidence}"
-            );
-        }
-    }
-
-    // {test}`requirements.authoring.read_denial`
-    #[cfg(unix)]
-    // {test}`requirements.authoring.tool_descriptions.special_cases`
-    #[tokio::test]
-    async fn a_read_through_a_symlink_leaving_the_project_returns_an_error_to_the_model() {
-        let project = inputs::tests::project();
-        let outside = tempfile::tempdir().unwrap();
-        fs::write(outside.path().join("secret.rs"), "fn secret() {}\n").unwrap();
-        std::os::unix::fs::symlink(
-            outside.path().join("secret.rs"),
-            project.path().join("src/escape.rs"),
-        )
-        .unwrap();
-        let mut sources = AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
-        let state = tempfile::tempdir().unwrap();
-        let mut usage =
-            UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
-        let provider = ReadingProvider {
-            read: json!({"file": "src/escape.rs", "line_start": 1}),
-            requests: Mutex::default(),
-        };
-        let (_, evidence) = assess(&provider, &mut sources, &mut usage).await.unwrap();
-        // The denial went back to the model, naming the path and the reason,
-        // and the assessment continued without recording the file.
-        let requests = provider.requests.lock().unwrap();
-        assert_eq!(requests.len(), 2);
-        let delivered = requests[1].to_string();
-        assert!(delivered.contains("src/escape.rs"), "{delivered}");
-        assert!(delivered.contains("outside"), "{delivered}");
-        assert!(!delivered.contains("fn secret"), "{delivered}");
-        assert!(!evidence.to_string().contains("escape.rs"), "{evidence}");
-    }
-
     // {test}`requirements.ci.review_criteria`
     // {test}`requirements.authoring.requirement_task`
     // {test}`requirements.authoring.testing_bar`
@@ -2221,307 +1467,6 @@ mod tests {
         assert!(!prompt.contains("{{"), "{prompt}");
     }
 
-    // {cite}`habeas:util`
-    fn retry_fixture() -> (
-        tempfile::TempDir,
-        tempfile::TempDir,
-        AssessmentSources,
-        UsageLog,
-    ) {
-        let project = inputs::tests::project();
-        let sources = AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
-        let state = tempfile::tempdir().unwrap();
-        let usage = UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
-        (project, state, sources, usage)
-    }
-
-    // {test}`requirements.authoring.provider_backoff`
-    // {test}`requirements.authoring.usage_requests`
-    // {test}`requirements.authoring.usage_requests.failures`
-    // {test}`requirements.authoring.usage_inputs`
-    // {test}`requirements.ci.reference_set`
-    // {test}`requirements.sdk.graph.running-criteria.UsageStats`
-    #[tokio::test(start_paused = true)]
-    async fn throttled_requests_retry_unchanged_and_record_every_attempt() {
-        let (_project, _state, mut sources, mut usage) = retry_fixture();
-        let provider = ThrottledProvider {
-            failures: 5,
-            status: 429,
-            code: "ThrottlingException",
-            requests: Mutex::default(),
-        };
-        let started = tokio::time::Instant::now();
-        let (_, record) = assess(&provider, &mut sources, &mut usage).await.unwrap();
-        assert!(started.elapsed() >= Duration::from_millis(500));
-        let requests = provider.requests.lock().unwrap();
-        assert_eq!(requests.len(), 6);
-        assert!(requests.iter().all(|request| request == &requests[0]));
-        assert_eq!(record["inputs"], json!(sources.mandatory_inputs()));
-        assert_eq!(record["references"], json!(sources.reference_set));
-
-        let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();
-        for (category, measured, missing) in [
-            ("input_tokens", 100, 5),
-            ("output_tokens", 15, 5),
-            ("cached_input_tokens", 20, 5),
-            ("cache_creation_input_tokens", 0, 6),
-            ("reasoning_tokens", 0, 5),
-        ] {
-            assert_eq!(
-                log["provider_usage"][category],
-                json!({"reported": measured, "missing_attempts": missing})
-            );
-        }
-        assert_eq!(log["provider_usage"]["attempts"], 6);
-        assert_eq!(log["provider_usage"]["retries"], 5);
-        assert_eq!(log["provider_usage"]["failed_attempts"], 5);
-        let graph_inputs = sources
-            .model_mandatory_inputs()
-            .iter()
-            .filter(|input| crate::inputs::InputSelector::from_input(input).is_some())
-            .count();
-        assert_eq!(log["provider_usage"]["prepared_inputs"], graph_inputs);
-        assert_eq!(log["provider_usage"]["delivered_inputs"], graph_inputs);
-        assert_eq!(log["request_count"], 6);
-        for attempt in 0..5 {
-            assert_eq!(log["requests"][attempt]["outcome"], "failed");
-            assert_eq!(log["requests"][attempt]["tokens"]["complete"], false);
-            assert_eq!(
-                log["requests"][attempt]["failure"],
-                json!({"http_status": 429, "error_code": "ThrottlingException", "retried": true})
-            );
-        }
-        assert!(log["requests"][5].get("failure").is_none());
-        assert_eq!(log["requests"][5]["outcome"], "completed");
-        assert_eq!(
-            log["provider_usage"]["tools"]["submit_judgment"]["calls"],
-            1
-        );
-        assert_eq!(
-            log["provider_usage"]["tools"]["submit_judgment"],
-            json!({"calls": 1, "result_bytes": 0})
-        );
-    }
-
-    // {test}`requirements.authoring.provider_backoff`
-    // {test}`requirements.authoring.usage_requests.failures`
-    #[tokio::test(start_paused = true)]
-    // {test}`requirements.authoring.usage_inputs`
-    async fn permanent_provider_failure_returns_without_waiting_or_retrying() {
-        let (_project, _state, mut sources, mut usage) = retry_fixture();
-        let provider = ThrottledProvider {
-            failures: 8,
-            status: 400,
-            code: "ValidationException",
-            requests: Mutex::default(),
-        };
-        let started = tokio::time::Instant::now();
-        let error = assess(&provider, &mut sources, &mut usage)
-            .await
-            .unwrap_err();
-        assert!(error.to_string().contains("Too many tokens"));
-        assert_eq!(started.elapsed(), Duration::ZERO);
-        assert_eq!(provider.requests.lock().unwrap().len(), 1);
-        // The failure is recorded as not retried.
-        let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();
-        assert_eq!(log["provider_usage"]["attempts"], 1);
-        assert!(log["provider_usage"]["prepared_inputs"].as_u64().unwrap() > 0);
-        assert_eq!(log["provider_usage"]["delivered_inputs"], 0);
-        assert_eq!(log["provider_usage"]["failed_attempts"], 1);
-        assert_eq!(log["provider_usage"]["retries"], 0);
-        assert_eq!(
-            log["requests"][0]["failure"],
-            json!({"http_status": 400, "error_code": "ValidationException", "retried": false})
-        );
-    }
-
-    // {test}`requirements.authoring.provider_backoff.limit`
-    // {test}`requirements.authoring.usage_requests.failures`
-    #[tokio::test(start_paused = true)]
-    async fn a_request_failing_for_a_minute_fails_the_assessment() {
-        let (_project, _state, mut sources, mut usage) = retry_fixture();
-        let provider = ThrottledProvider {
-            failures: usize::MAX,
-            status: 503,
-            code: "ServiceUnavailableException",
-            requests: Mutex::default(),
-        };
-        let started = tokio::time::Instant::now();
-        let error = assess(&provider, &mut sources, &mut usage)
-            .await
-            .unwrap_err()
-            .to_string();
-        assert!(
-            started.elapsed() <= providers::RETRY_LIMIT,
-            "{:?}",
-            started.elapsed()
-        );
-        let attempts = provider.requests.lock().unwrap().len();
-        assert!(attempts > 3, "{attempts}");
-        assert!(
-            error.contains(&format!(
-                "after {attempts} attempts; last failure: HTTP 503 ServiceUnavailableException"
-            )),
-            "{error}"
-        );
-        let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();
-        assert_eq!(log["provider_usage"]["attempts"], attempts);
-        assert_eq!(log["provider_usage"]["failed_attempts"], attempts);
-        assert_eq!(log["provider_usage"]["retries"], attempts - 1);
-        assert_eq!(log["requests"][attempts - 1]["failure"]["retried"], false);
-    }
-
-    // {test}`requirements.authoring.provider_backoff`
-    #[tokio::test(start_paused = true)]
-    async fn cancelling_during_backoff_prevents_another_request() {
-        let (_project, _state, mut sources, mut usage) = retry_fixture();
-        let provider = ThrottledProvider {
-            failures: 8,
-            status: 429,
-            code: "ThrottlingException",
-            requests: Mutex::default(),
-        };
-        assert!(
-            tokio::time::timeout(
-                Duration::from_millis(100),
-                assess(&provider, &mut sources, &mut usage),
-            )
-            .await
-            .is_err()
-        );
-        assert_eq!(usage.record.provider_usage.attempts, 1);
-        assert_eq!(usage.record.provider_usage.retries, 0);
-        assert_eq!(usage.record.provider_usage.failed_attempts, 1);
-        tokio::time::advance(Duration::from_secs(120)).await;
-        assert_eq!(provider.requests.lock().unwrap().len(), 1);
-        assert!(sources.recorded_inputs().is_empty());
-        let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();
-        assert_eq!(log["request_count"], 1);
-        assert_eq!(log["requests"][0]["outcome"], "failed");
-    }
-
-    // {cite}`habeas:util`
-    struct HangingProvider {
-        requests: Mutex<usize>,
-    }
-
-    impl CompletionProvider for HangingProvider {
-        // {cite}`habeas:util`
-        async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
-            *self.requests.lock().unwrap() += 1;
-            if *self.requests.lock().unwrap() == 1 {
-                std::future::pending::<()>().await;
-            }
-            JudgmentProvider(json!(true)).complete(request).await
-        }
-    }
-
-    // {test}`requirements.authoring.provider_backoff`
-    // {test}`requirements.authoring.usage_requests`
-    #[tokio::test(start_paused = true)]
-    async fn unanswered_requests_are_abandoned_and_retried() {
-        let (_project, _state, mut sources, mut usage) = retry_fixture();
-        let provider = HangingProvider {
-            requests: Mutex::default(),
-        };
-        let started = tokio::time::Instant::now();
-        let (judgment, _) = assess(&provider, &mut sources, &mut usage).await.unwrap();
-        assert_eq!(judgment.to_value(), json!(true));
-        assert!(
-            (Duration::from_secs(600)..=Duration::from_secs(601)).contains(&started.elapsed()),
-            "{:?}",
-            started.elapsed()
-        );
-        assert_eq!(*provider.requests.lock().unwrap(), 2);
-        let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();
-        assert_eq!(log["request_count"], 2);
-        assert_eq!(log["requests"][0]["outcome"], "failed");
-        assert_eq!(log["requests"][1]["outcome"], "completed");
-    }
-    /// Fails with throttling before both requests, answering the first
-    /// recovered request with a source read and the second with a judgment.
-    // {cite}`habeas:util`
-    struct ThrottledToolProvider {
-        requests: Mutex<Vec<(tokio::time::Instant, Value)>>,
-    }
-
-    impl CompletionProvider for ThrottledToolProvider {
-        // {cite}`habeas:util`
-        async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
-            let attempt = self.requests.lock().unwrap().len();
-            self.requests.lock().unwrap().push((
-                tokio::time::Instant::now(),
-                serde_json::to_value(&request).unwrap(),
-            ));
-            match attempt {
-                0 | 2 => Err(io::Error::other(
-                    rig_core::error::ProviderError::from_provider_body("slow down")
-                        .with_provider_status(Some(429.try_into().unwrap())),
-                )),
-                1 => Ok(CompletionResponse::new(
-                    vec![AssistantContent::ToolCall(ToolCall::from_wire(
-                        "read",
-                        ToolFunction::new(
-                            ToolName::new("habeas").unwrap(),
-                            json!({"file": "src/lib.rs", "item": "fn[run]"}),
-                        ),
-                    ))],
-                    Usage::default(),
-                    Origin::new("fixture", "fixture", "fixture"),
-                    Value::Null,
-                )
-                .with_finish_reason(FinishReason::ToolCalls)),
-                _ => JudgmentProvider(json!(true)).complete(request).await,
-            }
-        }
-    }
-
-    // {test}`requirements.authoring.provider_backoff`
-    // {test}`requirements.authoring.usage_requests`
-    #[tokio::test(start_paused = true)]
-    // {test}`requirements.sdk.graph.running-criteria.ToolUsage.replay`
-    async fn success_resets_backoff_and_retries_keep_history_without_repeating_tools() {
-        let (project, _state, mut sources, mut usage) = retry_fixture();
-        fs::write(project.path().join("src/lib.rs"), "fn run() {}\n").unwrap();
-        let provider = ThrottledToolProvider {
-            requests: Mutex::default(),
-        };
-        let (_, record) = assess(&provider, &mut sources, &mut usage).await.unwrap();
-        let requests = provider.requests.lock().unwrap();
-        assert_eq!(requests.len(), 4);
-        // Each throttled request waits within the initial one-second window:
-        // the successful tool turn reset the window doubled by the first failure.
-        for (failed, retried) in [(0, 1), (2, 3)] {
-            let delay = requests[retried].0 - requests[failed].0;
-            assert!(
-                delay >= Duration::from_millis(500) && delay <= Duration::from_secs(1),
-                "{delay:?}"
-            );
-        }
-        assert_eq!(requests[0].1, requests[1].1);
-        // The retry after the tool turn resends the same history, tool
-        // results, and tools.
-        assert_eq!(requests[2].1, requests[3].1);
-        assert_ne!(requests[1].1, requests[2].1);
-        assert!(requests[3].1.to_string().contains("fn run()"));
-
-        // The read ran once, and its input was recorded after the retried
-        // request succeeded.
-        let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();
-        assert_eq!(
-            log["provider_usage"]["tools"]["habeas"]["calls"], 1,
-            "{log:#}"
-        );
-        assert_eq!(log["request_count"], 4);
-        let inputs = record["inputs"].as_array().unwrap();
-        assert!(
-            inputs
-                .iter()
-                .any(|input| input["file"] == "src/lib.rs" && input["item"] == "fn[run]"),
-            "{inputs:#?}"
-        );
-    }
-
     // {test}`requirements.authoring.submission`
     #[test]
     fn submissions_accept_exactly_a_judgment_and_a_nonempty_rationale() {
@@ -2566,43 +1511,13 @@ mod tests {
 
     // {test}`requirements.ci.outcomes`
     #[test]
-    fn submit_judgment_advertises_exactly_the_three_outcome_shapes() {
-        let definitions = serde_json::to_value(tool_definitions().unwrap()).unwrap();
-        let submit = definitions
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|definition| definition["name"] == "submit_judgment")
-            .expect("submit_judgment is advertised");
-        // `true` or `false`, or an object holding exactly `FIXME` with a
-        // nonempty array of nonempty strings.
-        assert_eq!(
-            submit["parameters"]["properties"]["determination"],
-            json!({"oneOf": [
-                {"type": "boolean"},
-                {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["FIXME"],
-                    "properties": {"FIXME": {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {"type": "string", "minLength": 1}
-                    }}
-                }
-            ]})
-        );
-    }
-
-    // {test}`requirements.ci.outcomes`
-    #[test]
     fn initial_prompt_conveys_when_to_choose_each_outcome() {
         let project = inputs::tests::project();
         let sources = AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
         let prompt = initial_prompt(&sources).unwrap().joined();
         for guidance in [
             "Choose true when your task finds no gap, {\"FIXME\": [\"...\"]} when every gap is\nacknowledged, and false otherwise.",
-            "You MUST end by calling submit_judgment\nwith determination and rationale until one submission is accepted.\nA rejected submission does not complete the assessment. A judgment written in your\nreply text is not accepted.",
+            "You MUST end by calling submit_result\nwith determination and rationale inside result until one submission is accepted.\nA rejected submission does not complete the assessment. A judgment written in your\nreply text is not accepted.",
             "A gap is acknowledged only by a {fixme} reference",
             "a {fixme} naming a\n  closed issue no longer acknowledges its gap",
             "including\n  any acknowledged gaps",
@@ -2618,1185 +1533,13 @@ mod tests {
         }
     }
 
-    // {test}`requirements.authoring.submission`
-    #[test]
-    fn submit_judgment_is_advertised_with_exactly_its_two_fields() {
-        let definitions = serde_json::to_value(tool_definitions().unwrap()).unwrap();
-        let submit = definitions
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|definition| definition["name"] == "submit_judgment")
-            .expect("submit_judgment is advertised");
-        let parameters = &submit["parameters"];
-        assert_eq!(parameters["type"], "object");
-        assert_eq!(parameters["additionalProperties"], false);
-        assert_eq!(
-            parameters["required"],
-            json!(["determination", "rationale"])
-        );
-        assert_eq!(
-            parameters["properties"]
-                .as_object()
-                .unwrap()
-                .keys()
-                .collect::<Vec<_>>(),
-            ["determination", "rationale"]
-        );
-        assert_eq!(
-            parameters["properties"]["rationale"],
-            json!({"type": "string", "minLength": 1})
-        );
-        assert_eq!(
-            parameters["properties"]["determination"]["oneOf"][0],
-            json!({"type": "boolean"})
-        );
-        assert!(
-            submit["description"]
-                .as_str()
-                .unwrap()
-                .contains("until one submission is accepted")
-        );
-    }
-
-    /// Returns one scripted response per request; each response is a list of
-    /// tool calls.
-    // {cite}`habeas:util`
-    struct ScriptedProvider {
-        turns: Vec<Vec<(&'static str, Value)>>,
-        requests: Mutex<usize>,
-    }
-
-    impl CompletionProvider for ScriptedProvider {
-        // {cite}`habeas:util`
-        async fn complete(&self, _request: CompletionRequest) -> io::Result<CompletionResponse> {
-            let turn = *self.requests.lock().unwrap();
-            *self.requests.lock().unwrap() += 1;
-            let calls = self.turns[turn]
-                .iter()
-                .enumerate()
-                .map(|(index, (name, arguments))| {
-                    AssistantContent::ToolCall(ToolCall::from_wire(
-                        format!("call-{turn}-{index}"),
-                        ToolFunction::new(ToolName::new(*name).unwrap(), arguments.clone()),
-                    ))
-                })
-                .collect();
-            Ok(CompletionResponse::new(
-                calls,
-                Usage::default(),
-                Origin::new("fixture", "fixture", "fixture"),
-                Value::Null,
-            )
-            .with_finish_reason(FinishReason::ToolCalls))
-        }
-    }
-
-    // {test}`requirements.authoring.file_discovery_usage`
-    // {test}`requirements.authoring.usage_inputs`
-    #[tokio::test]
-    async fn listing_files_counts_result_bytes_and_reading_a_function_adds_an_input() {
-        let project = inputs::tests::project();
-        let state = tempfile::tempdir().unwrap();
-        fs::write(project.path().join("src/parser.rs"), "fn parse() {}\n").unwrap();
-        let listing = json!([{"kind":"file", "path":"src/parser.rs"}]).to_string();
-        for read in [false, true] {
-            let mut turns = vec![vec![("list_files", json!({"path":"src"}))]];
-            if read {
-                turns.push(vec![(
-                    "habeas",
-                    json!({"file":"src/parser.rs", "item":"fn[parse]"}),
-                )]);
-            }
-            turns.push(vec![
-                (
-                    "submit_judgment",
-                    json!({"determination":true,"rationale":"Ready."}),
-                ),
-                ("ripgrep", json!({"pattern":"parse"})),
-            ]);
-            let provider = ScriptedProvider {
-                turns,
-                requests: Mutex::default(),
-            };
-            let mut sources =
-                AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
-            let opening = sources
-                .model_mandatory_inputs()
-                .iter()
-                .filter(|input| crate::inputs::InputSelector::from_input(input).is_some())
-                .count() as u64;
-            let mut usage =
-                UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
-            let (_, evidence) = assess(&provider, &mut sources, &mut usage).await.unwrap();
-            let stats = &usage.record.provider_usage;
-            assert!(
-                !stats.tools.contains_key("ripgrep"),
-                "the search accompanying submission was skipped"
-            );
-            assert_eq!(stats.tools["list_files"].calls, 1);
-            assert_eq!(stats.tools["list_files"].result_bytes, listing.len() as u64);
-            assert_eq!(stats.prepared_inputs, opening + u64::from(read));
-            assert_eq!(stats.delivered_inputs, stats.prepared_inputs);
-            assert_eq!(
-                evidence["inputs"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|i| i["file"] == "src/parser.rs" && i["item"] == "fn[parse]"),
-                read
-            );
-        }
-    }
-
-    enum SearchAction {
-        Call(&'static str, Value),
-        Finish(usize, Vec<&'static str>),
-        RetainRejected,
-    }
-
-    struct SearchProvider {
-        submit: &'static str,
-        turns: Vec<Vec<SearchAction>>,
-        requests: Mutex<Vec<Value>>,
-    }
-
-    fn delivered_searches(value: &Value, results: &mut Vec<Value>) {
-        match value {
-            Value::Object(object) => {
-                if object.contains_key("search_id") && object.contains_key("matches") {
-                    results.push(value.clone());
-                } else {
-                    for value in object.values() {
-                        delivered_searches(value, results);
-                    }
-                }
-            }
-            Value::Array(array) => {
-                for value in array {
-                    delivered_searches(value, results);
-                }
-            }
-            Value::String(text) => {
-                if let Ok(value) = serde_json::from_str::<Value>(text) {
-                    delivered_searches(&value, results);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    impl CompletionProvider for SearchProvider {
-        async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
-            let history = serde_json::to_value(&request.chat_history).unwrap();
-            let turn = self.requests.lock().unwrap().len();
-            self.requests.lock().unwrap().push(history.clone());
-            if self.turns[turn].is_empty() {
-                return Ok(CompletionResponse::new(
-                    vec![AssistantContent::text("The review is complete.")],
-                    Usage::default(),
-                    Origin::new("fixture", "fixture", "fixture"),
-                    Value::Null,
-                ));
-            }
-            let mut searches = Vec::new();
-            delivered_searches(&history, &mut searches);
-            let calls = self.turns[turn]
-                .iter()
-                .enumerate()
-                .map(|(index, action)| {
-                    let (name, arguments) = match action {
-                        SearchAction::Call(name, arguments) => (*name, arguments.clone()),
-                        SearchAction::Finish(index, used) => (
-                            "finish_search",
-                            json!({"search_id":searches[*index]["search_id"],"used":used}),
-                        ),
-                        SearchAction::RetainRejected => {
-                            let text = history.to_string();
-                            let captures =
-                                regex::Regex::new(r"rationale set to exactly ([0-9a-f-]{36})")
-                                    .unwrap()
-                                    .captures_iter(&text)
-                                    .last()
-                                    .unwrap()
-                                    .get(1)
-                                    .unwrap();
-                            (
-                                self.submit,
-                                json!({"determination":true,"rationale":captures.as_str()}),
-                            )
-                        }
-                    };
-                    AssistantContent::ToolCall(ToolCall::from_wire(
-                        format!("search-{turn}-{index}"),
-                        ToolFunction::new(ToolName::new(name).unwrap(), arguments),
-                    ))
-                })
-                .collect();
-            Ok(CompletionResponse::new(
-                calls,
-                Usage::default(),
-                Origin::new("fixture", "fixture", "fixture"),
-                Value::Null,
-            )
-            .with_finish_reason(FinishReason::ToolCalls))
-        }
-    }
-
-    // {test}`requirements.authoring.submission.searches`
-    // {test}`requirements.authoring.submission.searches.diagnostic`
-    // {test}`requirements.authoring.submission.searches.recovery`
-    // {test}`requirements.authoring.submission.searches.accompanying_calls`
-    // {test}`requirements.authoring.finish_search.inputs`
-    // {test}`requirements.authoring.search_accounting.recovery`
-    #[tokio::test]
-    async fn every_submission_kind_waits_for_all_searches_and_can_recover() {
-        use SearchAction::{Call, Finish};
-        for submit in ["submit_judgment", "submit_verification"] {
-            let root = inputs::tests::project();
-            fs::write(
-                root.path().join("src/lib.rs"),
-                "fn helper() { assert!(true); }\nfn untouched() {}\n",
-            )
-            .unwrap();
-            let mut sources =
-                AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-            let state = tempfile::tempdir().unwrap();
-            let mut usage =
-                UsageLog::start(state.path(), root.path(), &sources.subject_name).unwrap();
-            let arguments = if submit == "submit_judgment" {
-                json!({"determination":true,"rationale":"Helper checks its assertion."})
-            } else {
-                json!({"real":false,"acknowledged":false,"acknowledgments":[],
-                    "rationale":"Helper checks its assertion."})
-            };
-            let provider = SearchProvider {
-                submit,
-                turns: vec![
-                    vec![
-                        Call("ripgrep", json!({"pattern":"assert","path":"src/lib.rs"})),
-                        Call(
-                            "ast_grep",
-                            json!({"language":"rust","rule":{"rule":{"pattern":"absent()"}}}),
-                        ),
-                    ],
-                    // Accompanying completion is skipped, so both IDs remain open.
-                    vec![
-                        Finish(0, vec!["1"]),
-                        Call(
-                            "habeas",
-                            json!({"file":"src/lib.rs","item":"fn[untouched]"}),
-                        ),
-                        Call("ripgrep", json!({"pattern":"absent","path":"src/lib.rs"})),
-                        Call(submit, arguments.clone()),
-                    ],
-                    vec![Finish(0, vec!["1"])],
-                    vec![Call(submit, arguments.clone())],
-                    vec![Finish(1, vec![])],
-                    vec![Call(submit, arguments)],
-                ],
-                requests: Mutex::default(),
-            };
-            if submit == "submit_judgment" {
-                let (_, evidence) = assess(&provider, &mut sources, &mut usage).await.unwrap();
-                assert!(
-                    evidence["inputs"]
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .any(|input| input["item"] == "fn[helper]" && input.get("hash").is_some())
-                );
-            } else {
-                let result = verify(
-                    &provider,
-                    &mut sources,
-                    &mut usage,
-                    &Judgment::False,
-                    "Alleged gap",
-                )
-                .await
-                .unwrap();
-                assert!(!result.real);
-            }
-            let requests = provider.requests.lock().unwrap();
-            assert_eq!(requests.len(), 6);
-            let mut searches = Vec::new();
-            delivered_searches(&requests[1], &mut searches);
-            assert_eq!(searches.len(), 2);
-            let blocked = requests[2].as_array().unwrap().last().unwrap().to_string();
-            assert!(blocked.contains("not run: the response also made a submission"));
-            assert!(blocked.contains(searches[0]["search_id"].as_str().unwrap()));
-            assert!(blocked.contains(searches[1]["search_id"].as_str().unwrap()));
-            assert!(blocked.contains("Call finish_search for every listed search_id"));
-            assert!(blocked.contains("then resubmit"));
-            let latest = requests[4].as_array().unwrap().last().unwrap().to_string();
-            assert!(latest.contains("outstanding searches"));
-            assert!(!latest.contains(searches[0]["search_id"].as_str().unwrap()));
-            assert!(latest.contains(searches[1]["search_id"].as_str().unwrap()));
-            assert_eq!(
-                sources
-                    .recorded_inputs()
-                    .iter()
-                    .filter(|input| input["item"] == "fn[helper]")
-                    .count(),
-                1
-            );
-            let log: Value =
-                serde_json::from_str(&fs::read_to_string(&usage.path).unwrap()).unwrap();
-            assert_eq!(log["provider_usage"]["tools"]["finish_search"]["calls"], 2);
-            assert_eq!(log["tool_skipped"]["finish_search"], 1);
-            assert_eq!(log["tool_skipped"]["habeas"], 1);
-            assert_eq!(log["tool_skipped"]["ripgrep"], 1);
-            assert!(
-                !sources
-                    .recorded_inputs()
-                    .iter()
-                    .any(|input| input["item"] == "fn[untouched]")
-            );
-            assert_eq!(
-                log["tool_failures"]
-                    .as_object()
-                    .unwrap()
-                    .values()
-                    .filter_map(Value::as_u64)
-                    .sum::<u64>(),
-                2
-            );
-        }
-    }
-
-    // {test}`requirements.authoring.finish_search.inputs`
-    // {test}`requirements.authoring.finish_search.unselected`
-    // {test}`requirements.authoring.finish_search.deduplication`
-    #[tokio::test]
-    async fn multiple_selected_tags_are_recorded_before_acknowledgment_and_survive_a_failed_turn() {
-        use SearchAction::{Call, Finish};
-        struct Provider {
-            scripted: SearchProvider,
-            fail_after_finish: bool,
-        }
-        impl CompletionProvider for Provider {
-            async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
-                if self.fail_after_finish && self.scripted.requests.lock().unwrap().len() == 2 {
-                    let history = serde_json::to_value(&request.chat_history).unwrap();
-                    let acknowledgment = history.as_array().unwrap().last().unwrap().to_string();
-                    assert!(acknowledgment.contains("finished"));
-                    assert!(!acknowledgment.contains("fn first"));
-                    self.scripted.requests.lock().unwrap().push(history);
-                    return Err(io::Error::other("fixture stopped after acknowledgment"));
-                }
-                self.scripted.complete(request).await
-            }
-        }
-        for fail_after_finish in [false, true] {
-            let root = inputs::tests::project();
-            fs::write(
-                root.path().join("src/lib.rs"),
-                "fn first() { assert!(true); }\nfn unused() {}\nfn third() { assert_eq!(1, 1); }\n",
-            )
-            .unwrap();
-            let expected = ["fn[third]", "fn[first]"]
-                .map(|item| crate::inputs::outline_input(root.path(), "src/lib.rs", item).unwrap());
-            let mut sources =
-                AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-            let state = tempfile::tempdir().unwrap();
-            let mut usage =
-                UsageLog::start(state.path(), root.path(), &sources.subject_name).unwrap();
-            let provider = Provider {
-                fail_after_finish,
-                scripted: SearchProvider {
-                    submit: "submit_judgment",
-                    turns: vec![
-                        vec![Call("ripgrep", json!({"pattern":"fn","path":"src/lib.rs"}))],
-                        vec![Finish(0, vec!["3", "1", "3"])],
-                        vec![Call(
-                            "submit_judgment",
-                            json!({"determination":true,
-                            "rationale":"Both selected snippets contain assertions."}),
-                        )],
-                    ],
-                    requests: Mutex::default(),
-                },
-            };
-            let outcome = assess(&provider, &mut sources, &mut usage).await;
-            if fail_after_finish {
-                assert!(
-                    outcome
-                        .err()
-                        .unwrap()
-                        .to_string()
-                        .contains("fixture stopped")
-                );
-            } else {
-                let (_, evidence) = outcome.unwrap();
-                for input in &expected {
-                    assert!(evidence["inputs"].as_array().unwrap().contains(input));
-                }
-            }
-            for input in &expected {
-                assert_eq!(
-                    sources
-                        .recorded_inputs()
-                        .iter()
-                        .filter(|seen| *seen == input)
-                        .count(),
-                    1
-                );
-            }
-            assert!(
-                !sources
-                    .recorded_inputs()
-                    .iter()
-                    .any(|input| input["item"] == "fn[unused]")
-            );
-            assert_eq!(provider.scripted.requests.lock().unwrap().len(), 3);
-        }
-    }
-
-    // {test}`requirements.authoring.finish_search.invalid`
-    // {test}`requirements.authoring.finish_search.atomicity`
-    #[tokio::test]
-    async fn a_bad_tag_returns_a_recoverable_error_without_closing_the_search() {
-        use SearchAction::{Call, Finish};
-        let root = inputs::tests::project();
-        fs::write(root.path().join("src/lib.rs"), "fn helper() {}\n").unwrap();
-        let mut sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-        let state = tempfile::tempdir().unwrap();
-        let mut usage = UsageLog::start(state.path(), root.path(), &sources.subject_name).unwrap();
-        let submit = json!({"determination":true,"rationale":"Complete."});
-        let provider = SearchProvider {
-            submit: "submit_judgment",
-            turns: vec![
-                vec![Call(
-                    "ripgrep",
-                    json!({"pattern":"helper","path":"src/lib.rs"}),
-                )],
-                vec![Finish(0, vec!["1", "missing"])],
-                vec![Call("submit_judgment", submit.clone())],
-                vec![Finish(0, vec![])],
-                vec![Call("submit_judgment", submit)],
-            ],
-            requests: Mutex::default(),
-        };
-        let (_, evidence) = assess(&provider, &mut sources, &mut usage).await.unwrap();
-        let requests = provider.requests.lock().unwrap();
-        assert!(requests[2].to_string().contains("unknown tag"));
-        assert!(requests[3].to_string().contains("outstanding searches"));
-        assert_eq!(requests.len(), 5);
-        assert!(
-            !evidence["inputs"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|input| input["item"] == "fn[helper]")
-        );
-    }
-
-    // {test}`requirements.authoring.submission.searches.line_numbers`
-    // {test}`requirements.authoring.line_numbers.rejection`
-    // {test}`requirements.authoring.line_numbers.resubmission`
-    #[tokio::test]
-    async fn search_gate_preserves_line_number_correction_and_uuid_resubmission() {
-        use SearchAction::{Call, Finish, RetainRejected};
-        let root = inputs::tests::project();
-        fs::write(root.path().join("src/lib.rs"), "fn helper() {}\n").unwrap();
-        let mut sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-        let state = tempfile::tempdir().unwrap();
-        let mut usage = UsageLog::start(state.path(), root.path(), &sources.subject_name).unwrap();
-        let cited = json!({"determination":false,"rationale":"src/lib.rs:1 needs work."});
-        let provider = SearchProvider {
-            submit: "submit_judgment",
-            turns: vec![
-                vec![Call("ripgrep", json!({"pattern":"absent"}))],
-                vec![Call("submit_judgment", cited.clone())],
-                vec![Finish(0, vec![])],
-                vec![Call("submit_judgment", cited)],
-                vec![Call(
-                    "ripgrep",
-                    json!({"pattern":"helper","path":"src/lib.rs"}),
-                )],
-                vec![RetainRejected],
-                vec![Finish(1, vec![])],
-                vec![RetainRejected],
-            ],
-            requests: Mutex::default(),
-        };
-        let (judgment, evidence) = assess(&provider, &mut sources, &mut usage).await.unwrap();
-        assert_eq!(judgment, Judgment::False);
-        assert_eq!(evidence["rationale"], "src/lib.rs:1 needs work.");
-        let requests = provider.requests.lock().unwrap();
-        assert!(requests[2].to_string().contains("outstanding searches"));
-        assert!(!requests[2].to_string().contains("rationale set to exactly"));
-        assert!(requests[4].to_string().contains("rationale set to exactly"));
-        assert!(
-            requests[6]
-                .as_array()
-                .unwrap()
-                .last()
-                .unwrap()
-                .to_string()
-                .contains("outstanding searches")
-        );
-    }
-
-    // {test}`requirements.authoring.line_numbers.resubmission`
-    // {test}`requirements.authoring.submission.searches.line_numbers`
-    // {test}`requirements.authoring.submission.searches.accompanying_calls`
-    #[tokio::test]
-    async fn a_second_line_number_rationale_fails_only_after_searches_are_finished() {
-        use SearchAction::{Call, Finish};
-        let root = inputs::tests::project();
-        fs::write(root.path().join("src/lib.rs"), "fn untouched() {}\n").unwrap();
-        let mut sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-        let state = tempfile::tempdir().unwrap();
-        let mut usage = UsageLog::start(state.path(), root.path(), &sources.subject_name).unwrap();
-        let second = json!({"determination":true,"rationale":"src/lib.rs:2 is fine."});
-        let provider = SearchProvider {
-            submit: "submit_judgment",
-            turns: vec![
-                vec![
-                    Call(
-                        "habeas",
-                        json!({"file":"src/lib.rs","item":"fn[untouched]"}),
-                    ),
-                    Call(
-                        "submit_judgment",
-                        json!({"determination":false,"rationale":"src/lib.rs:1 fails."}),
-                    ),
-                ],
-                vec![Call("ripgrep", json!({"pattern":"absent"}))],
-                vec![Call("submit_judgment", second.clone())],
-                vec![Finish(0, vec![])],
-                vec![Call("submit_judgment", second)],
-            ],
-            requests: Mutex::default(),
-        };
-        let error = assess(&provider, &mut sources, &mut usage)
-            .await
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("after a rejection"), "{error}");
-        let requests = provider.requests.lock().unwrap();
-        assert_eq!(requests.len(), 5);
-        assert!(
-            requests[1]
-                .as_array()
-                .unwrap()
-                .last()
-                .unwrap()
-                .to_string()
-                .contains("not run")
-        );
-        assert!(
-            requests[3]
-                .as_array()
-                .unwrap()
-                .last()
-                .unwrap()
-                .to_string()
-                .contains("outstanding searches")
-        );
-        assert!(usage.record.determination.is_none());
-        assert!(
-            !sources
-                .recorded_inputs()
-                .iter()
-                .any(|input| input["item"] == "fn[untouched]")
-        );
-    }
-
-    // {test}`requirements.authoring.submission.searches.line_numbers`
-    // {test}`requirements.authoring.submission`
-    #[tokio::test]
-    async fn the_search_gate_validates_arguments_first_and_does_not_consume_the_reminder() {
-        use SearchAction::{Call, Finish};
-        for malformed in [true, false] {
-            let root = inputs::tests::project();
-            fs::write(root.path().join("src/lib.rs"), "fn helper() {}\n").unwrap();
-            let mut sources =
-                AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-            let state = tempfile::tempdir().unwrap();
-            let mut usage =
-                UsageLog::start(state.path(), root.path(), &sources.subject_name).unwrap();
-            let valid = json!({"determination":true,"rationale":"Complete."});
-            let mut turns = vec![
-                vec![Call("ripgrep", json!({"pattern":"absent"}))],
-                vec![Call(
-                    "submit_judgment",
-                    if malformed {
-                        json!({"determination":true,"rationale":""})
-                    } else {
-                        valid.clone()
-                    },
-                )],
-            ];
-            if !malformed {
-                turns.extend([
-                    vec![],
-                    vec![Finish(0, vec![])],
-                    vec![Call("submit_judgment", valid)],
-                ]);
-            }
-            let provider = SearchProvider {
-                submit: "submit_judgment",
-                turns,
-                requests: Mutex::default(),
-            };
-            let result = assess(&provider, &mut sources, &mut usage).await;
-            if malformed {
-                let error = result.unwrap_err().to_string();
-                assert!(error.contains("rationale"), "{error}");
-                assert!(!error.contains("outstanding searches"), "{error}");
-                assert_eq!(provider.requests.lock().unwrap().len(), 2);
-                assert!(usage.record.determination.is_none());
-            } else {
-                assert_eq!(result.unwrap().0, Judgment::True);
-                assert_eq!(provider.requests.lock().unwrap().len(), 5);
-                assert!(
-                    provider.requests.lock().unwrap()[3]
-                        .to_string()
-                        .contains("Reminder:")
-                );
-            }
-        }
-    }
-
-    // {test}`requirements.authoring.search_accounting.helper_freshness`
-    // {test}`requirements.authoring.finish_search.snapshot`
-    // {test}`requirements.authoring.finish_search.inputs`
-    // {test}`requirements.authoring.delivered_inputs`
-    #[tokio::test]
-    async fn a_helper_used_only_through_a_search_snippet_invalidates_saved_evidence_when_weakened()
-    {
-        use SearchAction::{Call, Finish};
-        let root = inputs::tests::project();
-        let helper_source = "fn assert_refusal(bytes: &mut Vec<u8>) {\n    let before = bytes.clone();\n    assert!(!try_insert(bytes));\n    assert_eq!(*bytes, before);\n}";
-        let source = format!(
-            "{helper_source}\nfn try_insert(_bytes: &mut Vec<u8>) -> bool {{ false }}\n\
-            // {{test}}`requirements.ready`\n#[test]\nfn refuses_without_change() {{\n\
-                let mut bytes = vec![1, 2];\n    assert_refusal(&mut bytes);\n}}\nfn unrelated() {{}}\n"
-        );
-        fs::write(root.path().join("src/lib.rs"), &source).unwrap();
-        let marked_test =
-            crate::inputs::outline_input(root.path(), "src/lib.rs", "fn[refuses_without_change]")
-                .unwrap();
-        let mut sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-        let state = tempfile::tempdir().unwrap();
-        let mut usage = UsageLog::start(state.path(), root.path(), &sources.subject_name).unwrap();
-        let provider = SearchProvider {
-            submit: "submit_judgment",
-            turns: vec![
-                vec![Call(
-                    "ripgrep",
-                    json!({"pattern":"assert_refusal","path":"src/lib.rs","context":5}),
-                )],
-                vec![Finish(0, vec!["1"])],
-                vec![Call(
-                    "submit_judgment",
-                    json!({"determination":true,
-                    "rationale":"The assert_refusal snippet asserts refusal and byte preservation."}),
-                )],
-            ],
-            requests: Mutex::default(),
-        };
-        let (_, evidence) = assess(&provider, &mut sources, &mut usage).await.unwrap();
-        let inputs = evidence["inputs"].as_array().unwrap();
-        let helper = inputs
-            .iter()
-            .find(|input| input["item"] == "fn[assert_refusal]")
-            .unwrap();
-        assert!(inputs.contains(&marked_test));
-        assert!(!inputs.iter().any(|input| input["item"] == "fn[unrelated]"));
-        assert!(helper.get("text").is_none());
-        let mut errors = Vec::new();
-        crate::evidence::validate_input(
-            root.path(),
-            &std::collections::BTreeMap::new(),
-            &crate::inputs::OutlineCache::default(),
-            helper,
-            "helper",
-            &mut errors,
-        );
-        assert!(errors.is_empty(), "{errors:?}");
-        fs::write(
-            root.path().join("src/lib.rs"),
-            source.replace(helper_source, "fn assert_refusal(_bytes: &mut Vec<u8>) {}"),
-        )
-        .unwrap();
-        assert_eq!(
-            crate::inputs::outline_input(root.path(), "src/lib.rs", "fn[refuses_without_change]")
-                .unwrap(),
-            marked_test
-        );
-        crate::evidence::validate_input(
-            root.path(),
-            &std::collections::BTreeMap::new(),
-            &crate::inputs::OutlineCache::default(),
-            helper,
-            "helper",
-            &mut errors,
-        );
-        assert!(
-            errors.iter().any(|error| error.contains("hash")),
-            "{errors:?}"
-        );
-        let log: Value = serde_json::from_str(&fs::read_to_string(&usage.path).unwrap()).unwrap();
-        assert!(log["provider_usage"]["tools"].get("habeas").is_none());
-        assert_eq!(log["provider_usage"]["tools"]["finish_search"]["calls"], 1);
-    }
-
-    // {cite}`habeas:util`
-    /// Submits `first`, then, on each later request, the submission
-    /// `next` makes from the UUID in the conversation's last rejection.
-    struct ResubmittingProvider {
-        first: Value,
-        next: fn(&str) -> Value,
-        requests: Mutex<Vec<String>>,
-    }
-
-    impl CompletionProvider for ResubmittingProvider {
-        // {cite}`habeas:util`
-        async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
-            let history = serde_json::to_string(&request.chat_history).unwrap();
-            let turn = self.requests.lock().unwrap().len();
-            self.requests.lock().unwrap().push(history.clone());
-            let arguments = if turn == 0 {
-                self.first.clone()
-            } else {
-                let uuid = regex::Regex::new(
-                    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
-                )
-                .unwrap()
-                .find_iter(&history)
-                .last()
-                .map(|found| found.as_str().to_owned())
-                .unwrap_or_default();
-                (self.next)(&uuid)
-            };
-            let call = AssistantContent::ToolCall(ToolCall::from_wire(
-                format!("call-{turn}"),
-                ToolFunction::new(ToolName::new("submit_judgment").unwrap(), arguments),
-            ));
-            Ok(CompletionResponse::new(
-                vec![call],
-                Usage::default(),
-                Origin::new("fixture", "fixture", "fixture"),
-                Value::Null,
-            )
-            .with_finish_reason(FinishReason::ToolCalls))
-        }
-    }
-
-    // {test}`requirements.authoring.line_numbers.rejection`
-    // {test}`requirements.authoring.line_numbers.resubmission`
-    // {test}`requirements.authoring.submission`
-    #[tokio::test]
-    async fn a_rationale_citing_line_numbers_is_rejected_once() {
-        let cited = json!({"determination": false, "rationale": "`work` at src/lib.rs:1 fails."});
-        type Next = fn(&str) -> Value;
-        let uuid = regex::Regex::new(r"[0-9a-f]{8}-[0-9a-f]{4}-").unwrap();
-        let cases: [(Next, Option<&str>); 3] = [
-            // Exactly the UUID keeps the rejected submission.
-            (
-                |uuid| json!({"determination": true, "rationale": uuid}),
-                Some("`work` at src/lib.rs:1 fails."),
-            ),
-            // A rationale without line numbers replaces it.
-            (
-                |_| json!({"determination": false, "rationale": "`src/lib.rs#fn[work]` fails."}),
-                Some("`src/lib.rs#fn[work]` fails."),
-            ),
-            // Line numbers again fail the assessment.
-            (
-                |_| json!({"determination": false, "rationale": "Line 1 fails."}),
-                None,
-            ),
-        ];
-        for (next, accepted) in cases {
-            let project = inputs::tests::project();
-            fs::write(project.path().join("src/lib.rs"), "fn work() {}\n").unwrap();
-            let mut sources =
-                AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
-            let state = tempfile::tempdir().unwrap();
-            let mut usage =
-                UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
-            let provider = ResubmittingProvider {
-                first: cited.clone(),
-                next,
-                requests: Mutex::default(),
-            };
-            let result = assess(&provider, &mut sources, &mut usage).await;
-            let requests = provider.requests.lock().unwrap();
-            assert_eq!(requests.len(), 2);
-            // The rejection quotes the citation and repeats the guidance.
-            assert!(requests[1].contains("src/lib.rs:1"), "{}", requests[1]);
-            assert!(
-                requests[1].contains("Give a source location"),
-                "{}",
-                requests[1]
-            );
-            // Both turns are counted in usage.
-            let record = serde_json::to_value(&usage.record).unwrap();
-            assert_eq!(
-                record["requests"].as_array().unwrap().len(),
-                2,
-                "{record:#}"
-            );
-            match accepted {
-                Some(rationale) => {
-                    let (_, evidence) = result.unwrap();
-                    assert_eq!(evidence["rationale"], rationale);
-                    // The UUID is not recorded.
-                    assert!(!uuid.is_match(&evidence.to_string()), "{evidence}");
-                }
-                None => {
-                    let error = result.unwrap_err().to_string();
-                    assert!(error.contains("after a rejection"), "{error}");
-                }
-            }
-        }
-    }
-
-    // {test}`requirements.authoring.line_numbers.rejection`
-    #[tokio::test]
-    async fn verification_line_citations_are_rejected_with_the_correct_retry_tool() {
-        let project = inputs::tests::project();
-        let mut sources = AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
-        let state = tempfile::tempdir().unwrap();
-        let mut usage =
-            UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
-        let provider = RecordingProvider::new(vec![
-            verdict(true, &[], "src/lib.rs:3 fails."),
-            verdict(true, &[], "`src/lib.rs#fn[ready]` fails."),
-        ]);
-        let result = verify(
-            &provider,
-            &mut sources,
-            &mut usage,
-            &Judgment::False,
-            "A gap.",
-        )
-        .await
-        .unwrap();
-        assert_eq!(result.rationale, "`src/lib.rs#fn[ready]` fails.");
-        let prompts = provider.prompts();
-        assert_eq!(prompts.len(), 2);
-        assert!(prompts[1].0.contains("Call submit_verification once more"));
-        assert!(prompts[1].0.contains("src/lib.rs:3"));
-        assert_eq!(
-            serde_json::to_value(&usage.record).unwrap()["requests"]
-                .as_array()
-                .unwrap()
-                .len(),
-            2
-        );
-    }
-
-    // A first submission giving no line numbers is accepted at once.
-    // {test}`requirements.authoring.line_numbers.rejection`
-    #[tokio::test]
-    async fn a_rationale_without_line_numbers_is_accepted_at_once() {
-        let project = inputs::tests::project();
-        let mut sources = AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
-        let state = tempfile::tempdir().unwrap();
-        let mut usage =
-            UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
-        let provider = ResubmittingProvider {
-            first: json!({"determination": true, "rationale": "`src/lib.rs` is fine."}),
-            next: |_| unreachable!(),
-            requests: Mutex::default(),
-        };
-        assess(&provider, &mut sources, &mut usage).await.unwrap();
-        assert_eq!(provider.requests.lock().unwrap().len(), 1);
-    }
-
-    // {cite}`habeas:util`
-    /// Records each request's conversation and answers with the next
-    /// scripted tool calls.
-    struct RemindedProvider {
-        turns: Vec<Vec<(&'static str, Value)>>,
-        requests: Mutex<Vec<String>>,
-    }
-
-    impl CompletionProvider for RemindedProvider {
-        // {cite}`habeas:util`
-        async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
-            let turn = self.requests.lock().unwrap().len();
-            self.requests
-                .lock()
-                .unwrap()
-                .push(serde_json::to_string(&request.chat_history).unwrap());
-            let mut content: Vec<AssistantContent> = self.turns[turn]
-                .iter()
-                .enumerate()
-                .map(|(index, (name, arguments))| {
-                    AssistantContent::ToolCall(ToolCall::from_wire(
-                        format!("call-{turn}-{index}"),
-                        ToolFunction::new(ToolName::new(*name).unwrap(), arguments.clone()),
-                    ))
-                })
-                .collect();
-            if content.is_empty() {
-                content.push(AssistantContent::text("The judgment is true."));
-            }
-            Ok(CompletionResponse::new(
-                content,
-                Usage::default(),
-                Origin::new("fixture", "fixture", "fixture"),
-                Value::Null,
-            )
-            .with_finish_reason(FinishReason::Stop))
-        }
-    }
-
-    // {test}`requirements.authoring.submission`
-    // {test}`requirements.authoring.submission_count`
-    #[tokio::test]
-    async fn a_response_without_a_submission_is_reminded_once() {
-        let submit = json!({"determination": true, "rationale": "Fine."});
-        for (turns, accepted, count) in [
-            (
-                vec![vec![], vec![("submit_judgment", submit.clone())]],
-                true,
-                2,
-            ),
-            (vec![vec![], vec![]], false, 2),
-            (
-                vec![
-                    vec![],
-                    vec![("habeas", json!({"file":"src/lib.rs","item":"fn[work]"}))],
-                    vec![],
-                ],
-                false,
-                3,
-            ),
-        ] {
-            let project = inputs::tests::project();
-            fs::write(project.path().join("src/lib.rs"), "fn work() {}\n").unwrap();
-            let mut sources =
-                AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
-            let state = tempfile::tempdir().unwrap();
-            let mut usage =
-                UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
-            let provider = RemindedProvider {
-                turns,
-                requests: Mutex::default(),
-            };
-            let result = assess(&provider, &mut sources, &mut usage).await;
-            let requests = provider.requests.lock().unwrap();
-            assert_eq!(requests.len(), count);
-            assert!(!requests[0].contains("Reminder:"));
-            assert!(
-                requests[1].contains(
-                    "Reminder: you MUST submit your result with the submit_judgment tool."
-                ),
-                "{}",
-                requests[1]
-            );
-            // Both turns are counted in usage.
-            let record = serde_json::to_value(&usage.record).unwrap();
-            assert_eq!(record["requests"].as_array().unwrap().len(), count);
-            assert_eq!(
-                requests
-                    .last()
-                    .unwrap()
-                    .matches("Reminder: you MUST")
-                    .count(),
-                1
-            );
-            if accepted {
-                assert_eq!(result.unwrap().1["rationale"], "Fine.");
-            } else {
-                let error = result.unwrap_err().to_string();
-                assert!(error.contains("even after a reminder"), "{error}");
-            }
-        }
-    }
-
-    // {test}`requirements.authoring.submission`
-    // {test}`requirements.authoring.line_numbers.rejection`
-    // {test}`requirements.authoring.submission.searches.accompanying_calls`
-    #[tokio::test]
-    async fn a_submission_finishes_the_assessment_wherever_it_arrives() {
-        let read = json!({"file": "src/lib.rs", "item": "fn[work]"});
-        let submit = json!({"determination": false, "rationale": "Gaps remain."});
-        let invalid = json!({"determination": "false", "rationale": "Gaps remain."});
-        let cited = json!({"determination": false, "rationale": "See line 10."});
-        let invalid_cited = json!({"determination": "false", "rationale": "See line 10."});
-        for (turns, accepted, requests) in [
-            // After earlier tool turns.
-            (
-                vec![
-                    vec![("habeas", read.clone())],
-                    vec![("habeas", read.clone())],
-                    vec![("submit_judgment", submit.clone())],
-                ],
-                true,
-                3,
-            ),
-            // Alongside other tool calls in the same response, before or after
-            // them: the submission finishes and the other calls are skipped.
-            (
-                vec![vec![
-                    ("habeas", read.clone()),
-                    ("submit_judgment", submit.clone()),
-                ]],
-                true,
-                1,
-            ),
-            (
-                vec![vec![
-                    ("submit_judgment", submit.clone()),
-                    ("ripgrep", json!({"pattern": "work"})),
-                ]],
-                true,
-                1,
-            ),
-            // Multiple submissions anywhere in one response fail even when the
-            // first is valid, and invalid arguments fail without a retry.
-            (
-                vec![vec![
-                    ("submit_judgment", submit.clone()),
-                    ("habeas", read.clone()),
-                    ("submit_judgment", submit.clone()),
-                ]],
-                false,
-                1,
-            ),
-            (
-                vec![
-                    vec![("habeas", read.clone())],
-                    vec![("submit_judgment", invalid.clone())],
-                    vec![("submit_judgment", submit.clone())],
-                ],
-                false,
-                2,
-            ),
-            (
-                vec![vec![
-                    ("submit_judgment", cited.clone()),
-                    ("submit_judgment", cited.clone()),
-                ]],
-                false,
-                1,
-            ),
-            (vec![vec![("submit_judgment", invalid_cited)]], false, 1),
-        ] {
-            let project = inputs::tests::project();
-            fs::write(project.path().join("src/lib.rs"), "fn work() {}\n").unwrap();
-            let mut sources =
-                AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
-            let state = tempfile::tempdir().unwrap();
-            let mut usage =
-                UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
-            let provider = ScriptedProvider {
-                turns: turns.clone(),
-                requests: Mutex::default(),
-            };
-            let result = assess(&provider, &mut sources, &mut usage).await;
-            assert_eq!(*provider.requests.lock().unwrap(), requests, "{turns:?}");
-            let record = serde_json::to_value(&usage.record).unwrap();
-            if accepted {
-                let (judgment, evidence) = result.unwrap();
-                assert_eq!(judgment, Judgment::False);
-                assert_eq!(evidence["rationale"], "Gaps remain.");
-                let last = turns.last().unwrap();
-                if last.len() > 1 {
-                    // The other calls in the submitting response were skipped,
-                    // not run, so they delivered no inputs.
-                    let skipped = record["tool_skipped"].as_object().unwrap();
-                    assert_eq!(
-                        skipped.values().filter_map(Value::as_u64).sum::<u64>(),
-                        1,
-                        "{record:#}"
-                    );
-                    assert!(record["tool_failures"].as_object().unwrap().is_empty());
-                    assert!(
-                        evidence["inputs"]
-                            .as_array()
-                            .unwrap()
-                            .iter()
-                            .all(|input| input["file"] != "src/lib.rs"),
-                        "{evidence}"
-                    );
-                }
-            } else {
-                let error = result.unwrap_err().to_string();
-                assert!(!error.contains("line numbers"), "{turns:?}: {error}");
-                if turns.last().unwrap().len() > 1 {
-                    assert!(error.contains("exactly once"), "{error}");
-                } else {
-                    assert!(error.contains("expected true, false"), "{error}");
-                }
-            }
-        }
-    }
-
-    /// Answers each request with the next scripted tool call, recording the
-    /// requests it receives.
-    // {cite}`habeas:util`
-    struct RecordingProvider {
-        turns: Vec<(&'static str, Value)>,
-        requests: Mutex<Vec<Value>>,
-    }
-
-    impl RecordingProvider {
-        // {cite}`habeas:util`
-        fn new(turns: Vec<(&'static str, Value)>) -> Self {
-            Self {
-                turns,
-                requests: Mutex::default(),
-            }
-        }
-
-        /// The prompt and advertised tool names of each request.
-        // {cite}`habeas:util`
-        fn prompts(&self) -> Vec<(String, Vec<String>)> {
-            self.requests
-                .lock()
-                .unwrap()
-                .iter()
-                .map(|request| {
-                    let text = request.to_string();
-                    let tools = request["tools"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
-                        .collect();
-                    (text, tools)
-                })
-                .collect()
-        }
-    }
-
-    impl CompletionProvider for RecordingProvider {
-        // {cite}`habeas:util`
-        async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
-            let turn = self.requests.lock().unwrap().len();
-            self.requests
-                .lock()
-                .unwrap()
-                .push(serde_json::to_value(&request).unwrap());
-            let (name, arguments) = self.turns[turn].clone();
-            Ok(CompletionResponse::new(
-                vec![AssistantContent::ToolCall(ToolCall::from_wire(
-                    format!("call-{turn}"),
-                    ToolFunction::new(ToolName::new(name).unwrap(), arguments),
-                ))],
-                Usage::default(),
-                Origin::new("fixture", "fixture", "fixture"),
-                Value::Null,
-            )
-            .with_finish_reason(FinishReason::ToolCalls))
-        }
-    }
+    use super::test_backend::RecordingProvider;
 
     // {cite}`habeas:util`
     fn judgment(determination: Value, rationale: &str) -> (&'static str, Value) {
         (
-            "submit_judgment",
-            json!({"determination": determination, "rationale": rationale}),
+            "submit_result",
+            json!({"result":{"determination": determination, "rationale": rationale}}),
         )
     }
 
@@ -3810,9 +1553,9 @@ mod tests {
     // {cite}`habeas:util`
     fn verdict(real: bool, acknowledgments: &[&str], rationale: &str) -> (&'static str, Value) {
         (
-            "submit_verification",
-            json!({"real": real, "acknowledged": !acknowledgments.is_empty(),
-                "acknowledgments": acknowledgments, "rationale": rationale}),
+            "submit_result",
+            json!({"result":{"real": real, "acknowledged": !acknowledgments.is_empty(),
+                "acknowledgments": acknowledgments, "rationale": rationale}}),
         )
     }
 
@@ -3863,7 +1606,7 @@ mod tests {
         ] {
             let (result, provider, logs) = confirmed(turns.clone(), confirm).await;
             let (_, record) = result.unwrap();
-            assert_eq!(record["rationale"], turns[0].1["rationale"]);
+            assert_eq!(record["rationale"], turns[0].1["result"]["rationale"]);
             assert_eq!(provider.requests.lock().unwrap().len(), 1);
             assert_eq!(logs.len(), 1);
         }
@@ -3896,90 +1639,165 @@ mod tests {
         assert_eq!(record["rationale"], "Fresh assessment.");
     }
 
-    // {test}`requirements.authoring.citation_prompt`
-    // {test}`requirements.authoring.delivered_inputs`
+    // {test}`requirements.authoring.github_reads`
     #[tokio::test]
-    async fn citation_review_tracks_sdk_reads_and_only_selected_excerpts() {
-        use SearchAction::{Call, Finish};
-        let project = inputs::tests::project();
-        fs::write(
-            project.path().join("src/lib.rs"),
-            "// {cite}`requirements.ready`\nfn reviewed() {}\n",
-        )
-        .unwrap();
-        let path = project.path().join("src/details.rs");
-        let source = "fn direct() {}\nfn selected() { needle(); }\nfn unused() { needle(); }\n";
-        fs::write(&path, source).unwrap();
-        let subject = AuthoringSubject::parse("citations:src/lib.rs#fn[reviewed]");
-        let mut sources = subject.sources(project.path()).unwrap();
+    async fn a_successful_github_tool_read_is_delivered_without_adding_an_evidence_input() {
+        let root = inputs::tests::project();
         let state = tempfile::tempdir().unwrap();
-        let mut usage = UsageLog::start(state.path(), project.path(), &subject.label()).unwrap();
-        let submit = || {
-            Call(
-                "submit_result",
-                json!({"result":{"determination":true,"rationale":"The helper supports the citation."}}),
-            )
-        };
-        let provider = SearchProvider {
-            submit: "submit_result",
-            turns: vec![
-                vec![
-                    Call(
-                        "read_node",
-                        json!({"path":"src/details.rs","location":"fn[direct]"}),
-                    ),
-                    Call(
-                        "search_text",
-                        json!({"path":"src/details.rs","pattern":"needle"}),
-                    ),
-                ],
-                vec![submit()],
-                vec![Finish(0, vec!["1"])],
-                vec![submit()],
-            ],
-            requests: Mutex::default(),
-        };
-        let (_, evidence) = assess(&provider, &mut sources, &mut usage).await.unwrap();
-        assert!(
-            provider.requests.lock().unwrap()[2]
-                .to_string()
-                .contains("Call finish_search")
+        let github = crate::github::tests::FakeGithub::start(&[(
+            "/repos/example/repo/issues/42",
+            200,
+            json!({"state":"closed","title":"Distinct issue title","body":"Distinct issue body"}),
+        )]);
+        let issues = crate::github::GithubIssues::with_api(
+            github.endpoint.clone(),
+            Some(state.path().join("cache")),
+            None,
         );
-        let (_, deps) = crate::evidence_format::versioned_fields(&evidence).unwrap();
-        let mut observed = Vec::new();
-        for dep in deps {
-            if let trust_but_verify::graph::Dependency::Node(crate::sdk::HabeasNode::Source(id), _) =
-                dep
-                && id.resource.location == "src/details.rs"
-            {
-                observed.push(id.selector);
+        let mut sources =
+            AssessmentSources::prepare_with_github(root.path(), "requirements.ready", issues)
+                .unwrap();
+        let provider = RecordingProvider::new(vec![
+            ("github", json!({"issue":"example/repo#42"})),
+            judgment(json!(true), "The requirement is covered."),
+        ]);
+        let mut log = UsageLog::start(state.path(), root.path(), "requirements.ready").unwrap();
+        let (_, record) = assess(&provider, &mut sources, &mut log).await.unwrap();
+        let requests = provider.requests.lock().unwrap();
+        let delivered: Value = serde_json::from_str(
+            requests[1]["messages"].as_array().unwrap().last().unwrap()["content"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            delivered,
+            json!({"reference":"example/repo#42","state":"closed","title":"Distinct issue title","body":"Distinct issue body"})
+        );
+        let baseline =
+            RecordingProvider::new(vec![judgment(json!(true), "The requirement is covered.")]);
+        let mut plain = AuthoringSubject::parse("requirements.ready")
+            .sources(root.path())
+            .unwrap();
+        let (_, without_read) = assess(&baseline, &mut plain, &mut log).await.unwrap();
+        assert_eq!(record["inputs"], without_read["inputs"]);
+        assert_eq!(record["dependencies"], without_read["dependencies"]);
+    }
+
+    // {test}`requirements.authoring.delivered_inputs`
+    // {test}`requirements.authoring.source_tools`
+    // {test}`requirements.definitions.authoring_inputs`
+    // {test}`requirements.authoring.verifier_prompt`
+    #[tokio::test]
+    // {test}`requirements.authoring.line_numbers.rejection`
+    async fn citation_assessments_and_example_verifiers_record_selected_and_explicit_reads() {
+        let project = inputs::tests::project();
+        fs::write(project.path().join("md/requirements.md"), ":::{req} ready\nThe project MUST be ready.\n:::\n:::{example} sample\nA ready case. {cite}`requirements.ready`\n:::\n").unwrap();
+        fs::write(
+            project.path().join("md/terms.md"),
+            ":::{definition} unused\n:phrase: sometimes\nOptional vocabulary.\n:::\n",
+        )
+        .unwrap();
+        fs::write(project.path().join("src/lib.rs"), "// {cite}`requirements.ready`\nfn helper() {}\nfn first() { test_first(); }\nfn second() {}\nfn untouched() {}\n").unwrap();
+        let state = tempfile::tempdir().unwrap();
+        for (subject, verify) in [
+            ("citations:src/lib.rs#fn[helper]", false),
+            ("requirements.sample", true),
+        ] {
+            let mut sources = AuthoringSubject::parse(subject)
+                .sources(project.path())
+                .unwrap();
+            let mut log = UsageLog::start(state.path(), project.path(), subject).unwrap();
+            let answer = if verify {
+                json!({"real":false,"acknowledged":false,"acknowledgments":[],"rationale":"Checked both functions."})
+            } else {
+                json!({"determination":true,"rationale":"The citation is supported."})
+            };
+            let mut turns = vec![
+                (
+                    "search_text",
+                    json!({"path":"src/lib.rs","pattern":"test_first","window_bytes":0}),
+                ),
+                ("finish_search", json!("first")),
+                (
+                    "read_node",
+                    json!({"path":"src/lib.rs","location":"fn[second]"}),
+                ),
+                ("read_node", json!({"data":{"Definition":"terms.unused"}})),
+            ];
+            if verify {
+                let mut rejected = answer.clone();
+                rejected["rationale"] = json!("See src/lib.rs:12 here.");
+                turns.push(("submit_result", json!({"result":rejected})));
             }
-        }
-        observed.sort();
-        assert_eq!(observed, ["fn[direct]", "fn[selected]"]);
-        let node = crate::sdk::HabeasNode::review_subject(&subject);
-        let record = crate::evidence_format::decode(&evidence, &node).unwrap();
-        let is_current = || {
-            record
-                .is_current(
-                    &crate::sdk::HabeasDomain::discover(project.path()).unwrap(),
-                    &crate::sdk::review_version(),
+            turns.push(("submit_result", json!({"result":answer})));
+            let provider = RecordingProvider::new(turns);
+            let inputs = if verify {
+                sdk::verify(
+                    &provider,
+                    &mut sources,
+                    &mut log,
+                    &Judgment::False,
+                    "Check the example.",
                 )
+                .await
                 .unwrap()
-        };
-        assert!(is_current());
-        fs::write(
-            &path,
-            source.replace("fn unused() { needle(); }", "fn unused() {}"),
-        )
-        .unwrap();
-        assert!(is_current());
-        fs::write(
-            &path,
-            source.replace("fn selected() { needle(); }", "fn selected() {}"),
-        )
-        .unwrap();
-        assert!(!is_current());
+                .inputs
+            } else {
+                assess(&provider, &mut sources, &mut log).await.unwrap().1["inputs"]
+                    .as_array()
+                    .unwrap()
+                    .clone()
+            };
+            if verify {
+                let requests = provider.requests.lock().unwrap();
+                assert_eq!(requests.len(), 6);
+                let correction =
+                    requests[5]["messages"].as_array().unwrap().last().unwrap()["content"]
+                        .as_str()
+                        .unwrap();
+                assert!(
+                    correction.contains("src/lib.rs:12")
+                        && correction.contains("file and outline selector")
+                        && correction
+                            .split_whitespace()
+                            .any(|word| uuid::Uuid::parse_str(word).is_ok()),
+                    "{correction}"
+                );
+                drop(requests);
+                provider.assert_verifier(0, false);
+            } else {
+                provider.assert_tools(0);
+            }
+            for selector in ["fn[first]", "fn[second]"] {
+                assert!(
+                    inputs.contains(
+                        &crate::outline_input(project.path(), "src/lib.rs", selector).unwrap()
+                    ),
+                    "{inputs:?}"
+                );
+            }
+            assert!(
+                inputs.iter().any(|i| i["definition"] == "terms.unused"
+                    && i["text"]
+                        == json!([
+                            ":::{definition} unused",
+                            ":phrase: sometimes",
+                            "Optional vocabulary.",
+                            ":::"
+                        ])),
+                "{inputs:?}"
+            );
+            assert!(!inputs.iter().any(|i| i["item"] == "fn[untouched]"));
+            let requests = provider.requests.lock().unwrap();
+            let text = requests[4]["messages"].as_array().unwrap().last().unwrap()["content"]
+                .as_str()
+                .unwrap();
+            assert!(
+                text.contains("Optional vocabulary.") && text.contains(":phrase: sometimes"),
+                "{text}"
+            );
+        }
     }
 
     // {test}`requirements.authoring.confirmation`
@@ -4021,7 +1839,7 @@ mod tests {
         );
         let prompts = provider.prompts();
         assert_eq!(prompts.len(), 3);
-        let correction = provider.requests.lock().unwrap()[1]["chat_history"]
+        let correction = provider.requests.lock().unwrap()[1]["messages"]
             .as_array()
             .unwrap()
             .last()
@@ -4095,6 +1913,7 @@ mod tests {
         assert!(rationale.contains("the assessments disagreed"));
         assert!(rationale.contains("`src/lib.rs#fn[helper]` omits the check."));
         assert!(!rationale.contains("line 2"));
+        provider.assert_verifier(2, false);
         let prompts = provider.prompts();
         assert_eq!(prompts.len(), 4);
         assert!(prompts[2].0.contains("The cited function omits a check."));
@@ -4108,6 +1927,7 @@ mod tests {
     }
 
     // {test}`requirements.authoring.citation_prompt`
+    // {test}`requirements.authoring.submission`
     #[tokio::test]
     async fn citation_submission_requires_a_boolean_and_nonempty_rationale() {
         let project = inputs::tests::project();
@@ -4137,9 +1957,9 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .find(|tool| tool["name"] == "submit_result")
+                .find(|tool| tool["function"]["name"] == "submit_result")
                 .unwrap();
-            let fields = &tool["parameters"]["properties"]["result"]["properties"];
+            let fields = &tool["function"]["parameters"]["properties"]["result"]["properties"];
             assert_eq!(fields["determination"]["type"], "boolean");
             assert_eq!(fields["rationale"]["minLength"], 1);
             assert!(fields.get("applies").is_none());
@@ -4150,6 +1970,7 @@ mod tests {
     // {test}`requirements.authoring.citation_prompt`
     // {test}`requirements.authoring.line_numbers.citation`
     #[tokio::test]
+    // {test}`requirements.authoring.submission`
     async fn citation_verification_fails_on_a_repeated_line_reference() {
         let project = inputs::tests::project();
         fs::write(
@@ -4187,9 +2008,9 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|tool| tool["name"] == "submit_result")
+            .find(|tool| tool["function"]["name"] == "submit_result")
             .unwrap();
-        let result = &submit["parameters"]["properties"]["result"]["properties"];
+        let result = &submit["function"]["parameters"]["properties"]["result"]["properties"];
         assert!(result.get("real").is_some() && result.get("applies").is_none());
     }
 
@@ -4213,7 +2034,7 @@ mod tests {
         assert_eq!(prompts.len(), 2);
         assert!(prompts.iter().all(|(text, tools)| {
             text.contains("Assess whether a project's tests adequately check")
-                && tools.contains(&"submit_judgment".to_owned())
+                && tools.contains(&"submit_result".to_owned())
         }));
         assert_eq!(logs.len(), 2);
         assert_eq!(logs[0]["subject"], "requirements.ready");
@@ -4332,7 +2153,7 @@ mod tests {
             assert_eq!(record["determination"], judgment.to_value());
             let rationale = record["rationale"].as_str().unwrap();
             assert!(
-                rationale.starts_with(turns[kept].1["rationale"].as_str().unwrap()),
+                rationale.starts_with(turns[kept].1["result"]["rationale"].as_str().unwrap()),
                 "{rationale}"
             );
             assert!(
@@ -4341,7 +2162,7 @@ mod tests {
             );
             assert!(rationale.contains(conclusion), "{rationale}");
             assert!(
-                rationale.contains(turns[2].1["rationale"].as_str().unwrap()),
+                rationale.contains(turns[2].1["result"]["rationale"].as_str().unwrap()),
                 "{rationale}"
             );
 
@@ -4349,15 +2170,16 @@ mod tests {
             // compared in its JSON-escaped form.
             // The verifier receives the less favorable determination, its
             // rationale, and the criteria it applied, with the source tools
-            // and submit_verification only.
+            // and submit_result only.
             let prompts = provider.prompts();
             assert_eq!(prompts.len(), 3);
-            let determination = turns[less].1["determination"].to_string();
-            let less_rationale = turns[less].1["rationale"].as_str().unwrap();
+            let determination = turns[less].1["result"]["determination"].to_string();
+            let less_rationale = turns[less].1["result"]["rationale"].as_str().unwrap();
             let escaped = serde_json::to_string(&format!(
                 "The reviewer judged requirement requirements.ready as {determination}."
             ))
             .unwrap();
+            provider.assert_verifier(2, false);
             let (text, tools) = &prompts[2];
             assert!(text.contains(escaped.trim_matches('"')), "{text}");
             assert!(text.contains(less_rationale), "{text}");
@@ -4374,16 +2196,16 @@ mod tests {
                 approved_text("habeas_background", 0),
                 approved_text("habeas_background", 1),
                 approved_text("judgment_rules", 0),
-                "\"requirements\": \"requirements.ready\"",
+                "requirements.ready",
                 "The project MUST be ready.",
             ] {
                 let background = serde_json::to_string(background).unwrap();
                 assert!(text.contains(background.trim_matches('"')), "{text}");
             }
             assert!(!text.contains("{{"), "{text}");
-            assert!(tools.contains(&"submit_verification".to_owned()));
-            assert!(tools.contains(&"habeas".to_owned()));
-            assert!(!tools.contains(&"submit_judgment".to_owned()));
+            assert!(tools.contains(&"submit_result".to_owned()));
+            assert!(tools.contains(&"read_node".to_owned()));
+
             // The verifier has the assessments' source tools.
             let source_tools = |tools: &[String]| {
                 tools
@@ -4423,7 +2245,7 @@ mod tests {
                 "requirements.case",
                 "The reviewer judged example requirements.case as false.",
                 "Subject: example requirements.case",
-                "submit_verification",
+                "submit_result with your verification in result",
             ),
             (
                 "citations:src/lib.rs#fn[helper]",
@@ -4514,25 +2336,6 @@ mod tests {
         ] {
             assert!(verification(&arguments).is_err(), "accepted {arguments}");
         }
-        let definitions =
-            serde_json::to_value(tool_definitions_with("submit_verification", false).unwrap())
-                .unwrap();
-        let submit = definitions
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|definition| definition["name"] == "submit_verification")
-            .unwrap();
-        assert_eq!(
-            submit["parameters"]["required"],
-            json!(["real", "acknowledged", "acknowledgments", "rationale"])
-        );
-        assert_eq!(
-            submit["parameters"]["properties"],
-            json!({"real": {"type": "boolean"}, "acknowledged": {"type": "boolean"},
-                "acknowledgments": {"type": "array", "items": {"type": "string", "minLength": 1}},
-                "rationale": {"type": "string", "minLength": 1}})
-        );
     }
 
     // {test}`requirements.authoring.initial_prompt`
@@ -4697,7 +2500,7 @@ mod tests {
             ":::{req} ready\nReadiness is measured in {term}`terms.unit`.\n:::\n",
         )
         .unwrap();
-        let body = "# Notes\n\nUnrelated chapter text.\n\n:::{cite} requirements.ready\nReadiness is measured in units.\n:::\n\nAdjacent prose.\n";
+        let body = "# Notes\n\nUnrelated chapter text.\n\n:::{cite} requirements.ready\nReadiness is measured in units. {cite}`habeas:coverage` explains the exemption.\n:::\n\nAdjacent prose.\n";
         fs::write(project.path().join("md/notes.md"), body).unwrap();
         let definitions = crate::evidence::load_definitions(project.path()).unwrap();
         let references = crate::evidence::collect_references(project.path(), &mut Vec::new());
@@ -4715,6 +2518,12 @@ mod tests {
             AuthoringSubject::parse(&crate::citations::subject_label(&item.file, &item.item));
         let mut sources = subject.sources(project.path()).unwrap();
         let mandatory = sources.mandatory_inputs();
+        assert!(mandatory.iter().any(|input| {
+            input["builtin"] == "habeas:coverage"
+                && input["text"][0]
+                    .as_str()
+                    .is_some_and(|s| s.contains("difficulty alone"))
+        }));
         assert_eq!(mandatory[0]["file"], "md/notes.md");
         assert_eq!(mandatory[0]["item"], item.item);
         assert!(
@@ -4837,6 +2646,9 @@ mod tests {
     // {test}`requirements.authoring.judgment_rules`
     // {test}`requirements.authoring.adaptive`
     #[tokio::test]
+    // {test}`requirements.sdk.graph.agent-calls.subject_message`
+    // {test}`requirements.sdk.graph.agent-calls.named_input`
+    // {test}`requirements.authoring.no_line_numbers`
     async fn citation_reviews_use_their_prompt_and_record_the_item_and_citations() {
         let project = inputs::tests::project();
         let cite = "{cite}`requirements.ready`";
@@ -4880,32 +2692,19 @@ mod tests {
             [
                 "finish_search",
                 "get_next_page",
+                "github",
                 "list_sources",
+                "lookup_requirements",
                 "outgoing_edges",
                 "outline_source",
                 "read_node",
+                "run_named_query",
                 "search_structure",
                 "search_text",
                 "submit_result"
             ]
         );
-        assert!(!prompts[0].1.iter().any(|name| name == "submit_judgment"));
-        let duplicate = citation_judgment(true, "Both are sensible.");
-        let duplicate_provider = ScriptedProvider {
-            turns: vec![
-                vec![duplicate.clone(), duplicate.clone()],
-                vec![duplicate.clone(), duplicate],
-            ],
-            requests: Mutex::default(),
-        };
-        let mut duplicate_sources = subject.sources(project.path()).unwrap();
-        assert!(
-            assess(&duplicate_provider, &mut duplicate_sources, &mut usage)
-                .await
-                .unwrap_err()
-                .to_string()
-                .contains("exactly once")
-        );
+
         let prompt = &prompts[0].0;
         assert!(prompt.contains("Review kind: source_item"), "{prompt}");
         assert!(
@@ -4921,10 +2720,7 @@ mod tests {
             "{prompt}"
         );
         // The initial request carries the complete mandatory set.
-        assert!(
-            prompt.contains(mandatory[0]["hash"].as_str().unwrap()),
-            "{prompt}"
-        );
+        assert!(prompt.contains("fn helper()"), "{prompt}");
         assert!(prompt.contains("The project MUST be ready."), "{prompt}");
         assert!(
             prompt.contains("Cite this on an item that serves"),
@@ -4948,13 +2744,20 @@ mod tests {
         let request: Value = serde_json::from_str(prompt).unwrap();
         // Compare the actual placeholder payload, rather than text which
         // could also appear independently in the mandatory source inputs.
-        let user = request["chat_history"]
+        let user = request["messages"]
             .as_array()
             .unwrap()
             .iter()
             .find(|message| message["role"] == "user")
             .unwrap();
-        let subject_text = user["content"][0]["text"].as_str().unwrap();
+        let subject_text = user["content"].as_str().unwrap();
+        assert!(
+            subject_text.starts_with("# Subject\n\nItem under review:"),
+            "{subject_text}"
+        );
+        let task_end = subject_text.find("Citations to check: ").unwrap();
+        assert!(subject_text.find("fn helper()").unwrap() > task_end);
+        assert!(subject_text.find("The project MUST be ready.").unwrap() > task_end);
         let payload = subject_text
             .lines()
             .find_map(|line| line.strip_prefix("Citations to check: "))
@@ -5057,6 +2860,7 @@ mod tests {
     // {test}`requirements.authoring.site_prompt`
     // {test}`requirements.authoring.verifier_prompt`
     #[test]
+    // {test}`requirements.authoring.no_line_numbers`
     fn subjects_of_one_kind_share_a_byte_identical_system_prompt() {
         // Check every literal segment of the selected approved blocks, allowing
         // only declared placeholders to expand, then check the opening message roles.
@@ -5079,18 +2883,6 @@ mod tests {
                 );
                 assert!(!actual.contains("{{"), "{actual}");
             }
-            let request = Prompt {
-                system: prompt.system.clone(),
-                subject: prompt.subject.clone(),
-            }
-            .request();
-            assert_eq!(
-                request.chat_history,
-                vec![
-                    Message::system(prompt.system.clone()),
-                    Message::user(prompt.subject.clone())
-                ]
-            );
         }
         let project =
             crate::sites::tests::project(crate::sites::tests::RULE, crate::sites::tests::SOURCE);
@@ -5100,13 +2892,27 @@ mod tests {
         book.push_str(&format!(
             "\n:::{{req}} other\nThe project MUST also work.\n:::\n\n:::{{req}} second\nThe project MUST keep working.\n:::\n\n:::{{req}} structure_one\nThe API MUST delegate to a helper.\n:::\n\n:::{{req}} structure_two\nThe API MUST expose a function.\n:::\n\n:::{{example}} first_case\nA case. {cite}\n:::\n\n:::{{example}} second_case\nAnother case. {cite}\n:::\n"
         ));
-        fs::write(&requirements, book).unwrap();
+        fs::write(
+            project.path().join("md/terms.md"),
+            ":::{definition} size\n:phrase: size\nThe size of a batch.\n:::\n",
+        )
+        .unwrap();
+        fs::write(
+            &requirements,
+            book.replace(
+                "The project MUST also work.",
+                "The project MUST also work for each {term}`terms.size`.",
+            ),
+        )
+        .unwrap();
         let source = project.path().join("src/lib.rs");
         let mut text = fs::read_to_string(&source).unwrap();
         text.push_str(&format!(
             "\n// {cite}\nfn cites_one() {{}}\n\n// {cite}\n// :::{{cite}} habeas:util\n// Formats output.\n// :::\nfn cites_two() {{}}\n\n// {{impl}}`requirements.structure_one`\nfn delegates() {{ helper(); }}\nfn helper() {{}}\n// {{impl}}`requirements.structure_two`\npub fn api() {{}}\n"
         ));
+        text.push_str("\n// {test}`requirements.other`\nfn check_batch_size() {}\n// :::{fixme} requirements.other\n// Handle larger batches.\n// :::\nfn grow() {}\n");
         fs::write(&source, text).unwrap();
+        let position = regex::Regex::new(r#"(?i)\.(?:rs|md|toml):\d+|\blines?\s+\d+|"(?:line|column|line_start|line_end|start_line|end_line)"\s*:"#).unwrap();
         for (first, second, template) in [
             (
                 "requirements.other",
@@ -5140,6 +2946,25 @@ mod tests {
                     .unwrap()
             };
             let (first, second) = (sources(first), sources(second));
+            for sources in [&first, &second] {
+                for input in sources
+                    .mandatory_inputs()
+                    .iter()
+                    .chain(sources.model_acknowledgments().iter())
+                {
+                    if input.get("file").is_some() {
+                        assert!(
+                            input["file"].is_string() && input["item"].is_string(),
+                            "{input}"
+                        );
+                    }
+                    let mut metadata = input.clone();
+                    let fields = metadata.as_object_mut().unwrap();
+                    fields.remove("text");
+                    fields.remove("body");
+                    assert!(!position.is_match(&metadata.to_string()), "{metadata}");
+                }
+            }
             assert_eq!(first.structural, template == "structural_prompt");
             assert_eq!(second.structural, template == "structural_prompt");
             let (one, two) = (
@@ -5149,6 +2974,16 @@ mod tests {
             assert_opening(&one, template);
             assert_opening(&two, template);
             for prompt in [&one, &two] {
+                assert!(
+                    !position.is_match(&prompt.subject),
+                    "{template}: {}",
+                    prompt.subject
+                );
+                assert!(
+                    !position.is_match(&prompt.system),
+                    "{template}: {}",
+                    prompt.system
+                );
                 assert!(
                     prompt
                         .system
@@ -5174,6 +3009,16 @@ mod tests {
             assert_opening(&one, "verifier_prompt");
             assert_opening(&two, "verifier_prompt");
             for prompt in [&one, &two] {
+                assert!(
+                    !position.is_match(&prompt.subject),
+                    "{template}: {}",
+                    prompt.subject
+                );
+                assert!(
+                    !position.is_match(&prompt.system),
+                    "{template}: {}",
+                    prompt.system
+                );
                 assert!(
                     prompt
                         .system
@@ -5483,8 +3328,8 @@ no_match:
         let state = tempfile::tempdir().unwrap();
         let mut usage = UsageLog::start(state.path(), root, &subject.label()).unwrap();
         let provider = RecordingProvider::new(vec![(
-            "submit_judgment",
-            json!({"applies": true, "determination": {"FIXME": ["Panics."]}, "rationale": "Acknowledged."}),
+            "submit_result",
+            json!({"result":{"applies": true, "determination": {"FIXME": ["Panics."]}, "rationale": "Acknowledged."}}),
         )]);
         let (_, record) = assess(&provider, &mut sources, &mut usage).await.unwrap();
         let prompts = provider.prompts();
@@ -5493,7 +3338,7 @@ no_match:
         let text = prompt.to_string();
         assert!(
             text.contains(
-                serde_json::to_string(&initial.subject)
+                serde_json::to_string(&prompt_section(&initial.subject, "Subject").trim())
                     .unwrap()
                     .trim_matches('"')
             ),
@@ -5526,49 +3371,30 @@ no_match:
             "the site prompt has no reference roles"
         );
         assert!(!text.contains("{{"), "{text}");
-        assert!(tools.contains(&"submit_judgment".to_owned()));
-        let expected: Vec<_> = tool_definitions_with("submit_judgment", false)
-            .unwrap()
-            .into_iter()
-            .map(|tool| tool.name)
-            .collect();
-        assert_eq!(*tools, expected);
-        let duplicate = json!({"applies":true,"determination":true,"rationale":"Covered."});
-        let duplicate_provider = ScriptedProvider {
-            turns: vec![vec![
-                ("submit_judgment", duplicate.clone()),
-                ("submit_judgment", duplicate),
-            ]],
-            requests: Mutex::default(),
-        };
-        let mut duplicate_sources = subject.sources(root).unwrap();
-        assert!(
-            assess(&duplicate_provider, &mut duplicate_sources, &mut usage)
-                .await
-                .unwrap_err()
-                .to_string()
-                .contains("exactly once")
-        );
-        let submit = provider.requests.lock().unwrap()[0]["tools"]
+        assert!(tools.contains(&"submit_result".to_owned()));
+        provider.assert_tools(0);
+        let schema = prompt["tools"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|tool| tool["name"] == "submit_judgment")
-            .unwrap()
-            .clone();
-        assert_eq!(
-            submit["parameters"]["required"],
-            json!(["determination", "rationale", "applies"])
+            .find(|t| t["function"]["name"] == "submit_result")
+            .unwrap();
+        let result = &schema["function"]["parameters"]["properties"]["result"];
+        assert_eq!(result["properties"]["applies"]["type"], "boolean");
+        assert!(
+            result["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("applies"))
         );
-
         assert_eq!(record["requirement"], "requirements.rule");
         assert_eq!(record["file"], "src/lib.rs");
         assert_eq!(record["item"], "fn[check_two]");
         assert_eq!(record["queries"], json!(["checkers"]));
         assert_eq!(record["applies"], true);
         let outside_scope = RecordingProvider::new(vec![(
-            "submit_judgment",
-            json!({"applies": false, "determination": true, "rationale": "Outside scope."}),
+            "submit_result",
+            json!({"result":{"applies": false, "determination": true, "rationale": "Outside scope."}}),
         )]);
         let mut sources = subject.sources(root).unwrap();
         let (_, outside_record) = assess(&outside_scope, &mut sources, &mut usage)
@@ -5612,6 +3438,7 @@ no_match:
 
     // {test}`requirements.authoring.site_prompt`
     // {test}`requirements.authoring.verifier_outcome`
+    // {test}`requirements.authoring.submission`
     #[test]
     fn site_submissions_require_applies_and_a_true_determination_when_it_is_false() {
         assert_eq!(
@@ -5650,36 +3477,6 @@ no_match:
                 "accepted {arguments}"
             );
         }
-        let definitions =
-            serde_json::to_value(tool_definitions_with("submit_verification", true).unwrap())
-                .unwrap();
-        let submit = definitions
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|definition| definition["name"] == "submit_verification")
-            .unwrap();
-        assert_eq!(
-            submit["parameters"]["required"],
-            json!([
-                "real",
-                "acknowledged",
-                "acknowledgments",
-                "rationale",
-                "applies"
-            ])
-        );
-        assert_eq!(submit["parameters"]["additionalProperties"], false);
-        assert_eq!(
-            submit["parameters"]["properties"],
-            json!({
-                "real":{"type":"boolean"},
-                "acknowledged":{"type":"boolean"},
-                "acknowledgments":{"type":"array","items":{"type":"string","minLength":1}},
-                "rationale":{"type":"string","minLength":1},
-                "applies":{"type":"boolean"}
-            })
-        );
     }
 
     // {test}`requirements.authoring.confirmation`
@@ -5688,18 +3485,19 @@ no_match:
     // {test}`requirements.authoring.habeas_background`
     #[tokio::test]
     // {test}`requirements.authoring.judgment_rules`
+    // {test}`requirements.authoring.submission`
     async fn site_assessments_differing_only_in_applies_are_verified() {
         let site = |applies: bool, determination: Value, rationale: &str| {
             (
-                "submit_judgment",
-                json!({"applies": applies, "determination": determination, "rationale": rationale}),
+                "submit_result",
+                json!({"result":{"applies": applies, "determination": determination, "rationale": rationale}}),
             )
         };
         let check = |applies: bool, real: bool, rationale: &str| {
             (
-                "submit_verification",
-                json!({"real": real, "acknowledged": false, "acknowledgments": [],
-                    "rationale": rationale, "applies": applies}),
+                "submit_result",
+                json!({"result":{"real": real, "acknowledged": false, "acknowledgments": [],
+                    "rationale": rationale, "applies": applies}}),
             )
         };
         // Agreement needs the same applies too.
@@ -5754,11 +3552,11 @@ no_match:
                     site(false, json!(true), "Not a checker."),
                     site(true, json!(false), "It panics."),
                     (
-                        "submit_verification",
-                        json!({
+                        "submit_result",
+                        json!({"result":{
                             "applies":true, "real":true, "acknowledged":true,
                             "acknowledgments":["o/r#1"], "rationale":"The site acknowledges its panic."
-                        }),
+                        }}),
                     ),
                 ],
                 Judgment::Fixme(vec!["o/r#1".into()]),
@@ -5828,36 +3626,17 @@ no_match:
             assert!(!text.contains("{{"), "{text}");
             assert!(text.contains(&escaped(reviewed)), "{text}");
             assert!(text.contains("# Mandatory inputs"), "{text}");
-            assert!(tools.contains(&"submit_verification".to_owned()));
-            assert!(!tools.contains(&"submit_judgment".to_owned()));
+            assert!(tools.contains(&"submit_result".to_owned()));
+
+            provider.assert_verifier(2, true);
             let requests = provider.requests.lock().unwrap();
-            let subject = requests[2]["chat_history"][1]["content"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter_map(|part| part["text"].as_str())
-                .collect::<String>();
-            let inputs: Value =
-                serde_json::from_str(prompt_section(&subject, "Mandatory inputs").trim()).unwrap();
-            assert_eq!(
-                inputs[0]["text"],
-                json!(["fn check_one() { panic!(\"x\"); }"])
-            );
-            assert_eq!(
-                requests[2]["tools"],
-                serde_json::to_value(tool_definitions_with("submit_verification", true).unwrap())
-                    .unwrap()
-            );
             let source_tools = |request: &Value| {
                 request["tools"]
                     .as_array()
                     .unwrap()
                     .iter()
                     .filter(|tool| {
-                        !matches!(
-                            tool["name"].as_str(),
-                            Some("submit_judgment" | "submit_verification")
-                        )
+                        !matches!(tool["function"]["name"].as_str(), Some("submit_result"))
                     })
                     .cloned()
                     .collect::<Vec<_>>()
@@ -6170,8 +3949,8 @@ no_match:
             judgment(json!(true), "The structure is present."),
             judgment(json!(false), "The required signature is absent."),
             (
-                "submit_verification",
-                json!({"real":false,"acknowledged":false,"acknowledgments":[],"rationale":"The signature is present."}),
+                "submit_result",
+                json!({"result":{"real":false,"acknowledged":false,"acknowledgments":[],"rationale":"The signature is present."}}),
             ),
         ]);
         let state = tempfile::tempdir().unwrap();
@@ -6198,24 +3977,14 @@ no_match:
         );
         let prompts = provider.prompts();
         assert_eq!(prompts.len(), 3);
+        provider.assert_tools(0);
+        provider.assert_tools(1);
+        provider.assert_verifier(2, false);
         assert!(prompts.iter().all(
             |(prompt, _)| prompt.contains("stated structural obligations")
                 || prompt.contains("Inspect the supplied implementation roots")
         ));
-        let requests = provider.requests.lock().unwrap();
-        for (index, request) in requests.iter().enumerate() {
-            let submit_name = if index == 2 {
-                "submit_verification"
-            } else {
-                "submit_judgment"
-            };
-            let expected =
-                serde_json::to_value(tool_definitions_with(submit_name, false).unwrap()).unwrap();
-            assert_eq!(
-                request["tools"], expected,
-                "structural conversation {index} must retain tools and submission schemas"
-            );
-            let prompt = &prompts[index].0;
+        for (prompt, _) in &prompts {
             assert!(prompt.contains("requirements.ready"));
             assert!(prompt.contains("The remaining structural gap."));
         }
@@ -6223,7 +3992,7 @@ no_match:
 }
 
 async fn assess(
-    provider: &impl CompletionProvider,
+    provider: &config::BackendConfig,
     sources: &mut AssessmentSources,
     usage: &mut UsageLog,
 ) -> io::Result<(Judgment, Value)> {

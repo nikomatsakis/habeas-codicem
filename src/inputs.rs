@@ -51,7 +51,6 @@ pub(crate) struct ResolvedInput {
 pub(crate) struct ParsedSource {
     /// Canonical path.
     pub(crate) path: PathBuf,
-    pub(crate) snapshot: trust_but_verify::outline::OutlineContent,
     pub(crate) source: String,
     /// The source as models receive it and Habeas displays it, with the same
     /// lines as `source`.
@@ -251,7 +250,6 @@ impl OutlineCache {
         Ok(snapshot)
     }
 
-    // {impl}`requirements.authoring.outline_tool`
     /// Reads and parses a permitted file, or returns the cached result.
     pub(crate) fn parse(&self, root: &Path, file: &str) -> Arc<Result<ParsedSource, String>> {
         let key = root.join(file);
@@ -269,7 +267,6 @@ impl OutlineCache {
                     .source_span_redacted(public.items[0].span)
                     .expect("validated file-root span")
                     .into_owned(),
-                snapshot,
                 path: fs::canonicalize(&path).unwrap_or(path),
                 source,
                 outline,
@@ -401,6 +398,7 @@ mod tests {
     // {test}`requirements.authoring.credentials`
     // {test}`requirements.references.structural_hash`
     #[test]
+    // {test}`requirements.authoring.redaction`
     fn configuration_source_uses_sdk_redaction_for_text_and_hashes() {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir(dir.path().join("fixtures")).unwrap();
@@ -425,7 +423,8 @@ mod tests {
         );
     }
 
-    // {test}`requirements.authoring.outline_tool`
+    // {test}`requirements.sdk.habeas.graph_discovery`
+    // {test}`requirements.sdk.outlines.snapshot`
     #[test]
     fn clones_share_sources_loaded_after_cloning_but_new_runs_read_changes() {
         let temp = tempfile::tempdir().unwrap();
@@ -455,7 +454,7 @@ mod tests {
         assert_eq!(fresh.as_ref().as_ref().unwrap().source, "fn changed() {}\n");
     }
 
-    // {test}`requirements.authoring.outline_tool`
+    // {test}`requirements.sdk.habeas.graph_discovery`
     #[test]
     fn clones_share_overrides_and_failed_reads() {
         let temp = tempfile::tempdir().unwrap();

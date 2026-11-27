@@ -1095,6 +1095,7 @@ async fn read_node_accepts_a_domain_id_first_supplied_by_the_agent() {
 #[tokio::test]
 // {test}`requirements.sdk.graph.validation-context.node_reference`
 // {test}`requirements.sdk.graph.running-criteria.UsageStats`
+// {test}`requirements.authoring.delivered_inputs`
 async fn graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery() {
     let graph = Memory::new("x".repeat(18_000));
     let agent = ToolAgent::new(Script::new(vec![
@@ -1381,6 +1382,7 @@ impl CompletionProvider for TextOnly {
 // {test}`requirements.sdk.graph.agent-harness.submission.reminder`
 // {test}`requirements.sdk.graph.agent-harness.tool_agent.provider_failure`
 #[tokio::test]
+// {test}`requirements.sdk.graph.running-criteria.ValidationError`
 async fn assistant_text_and_provider_failure_cannot_become_typed_results() {
     let graph = Memory::new("source".into());
     let agent = ToolAgent::new(TextOnly(Mutex::default()));
@@ -1403,7 +1405,7 @@ async fn assistant_text_and_provider_failure_cannot_become_typed_results() {
     let failing = ToolAgent::new(Script::new(vec![None]));
     let ctx = ValidationContext::with_agent(&graph, graph.cache().intern_node(Node(1)), &failing);
     assert!(
-        matches!(ctx.ask::<bool>().await,Err(ValidationError::Agent(error)) if error.to_string().contains("permanent provider failure"))
+        matches!(ctx.ask::<bool>().await,Err(ValidationError::Provider(error)) if error.to_string().contains("permanent provider failure"))
     );
     assert!(ctx.dependencies().is_empty());
 }
@@ -1435,6 +1437,7 @@ async fn one_submission_accepts_only_its_value_and_skips_other_calls_and_prose()
 // {test}`requirements.sdk.graph.agent-harness.submission.reminder`
 #[tokio::test]
 // {test}`requirements.sdk.graph.running-criteria.ToolUsage.calls`
+// {test}`requirements.sdk.graph.agent-harness.submission_count`
 async fn count_is_checked_before_arguments_and_one_reminder_allows_recovery() {
     let graph = Memory::new("source".into());
     let agent = ToolAgent::new(Script::new(vec![
@@ -1539,6 +1542,8 @@ async fn zero_and_multiple_submissions_share_one_reminder_and_a_second_violation
 // {test}`requirements.sdk.sources.redaction`
 // {test}`requirements.sdk.graph.agent-harness.fixed_tools`
 #[tokio::test]
+// {test}`requirements.authoring.redaction`
+// {test}`requirements.authoring.redaction_notice`
 async fn queued_contents_and_graph_read_tools_redact_credentials_before_delivery() {
     let secret = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890";
     let original = format!("credential = {secret}\n");
@@ -1907,6 +1912,93 @@ async fn cache_retains_usage_across_validators_and_sums_each_token_category() {
     }
 }
 
+// {test}`requirements.authoring.provider_backoff`
+#[tokio::test(start_paused = true)]
+async fn a_timed_out_request_retries_and_each_success_resets_the_backoff_window() {
+    struct Provider(Mutex<Vec<(tokio::time::Instant, CompletionRequest)>>);
+    impl CompletionProvider for Provider {
+        async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
+            let attempt = {
+                let mut seen = self.0.lock().unwrap();
+                seen.push((tokio::time::Instant::now(), request));
+                seen.len()
+            };
+            match attempt {
+                1 => std::future::pending().await,
+                2 | 3 | 5 => Err(throttled()),
+                4 => Ok(tool_turn(
+                    FinishReason::ToolCalls,
+                    vec![("lookup", json!({}))],
+                )),
+                6 => Ok(tool_turn(
+                    FinishReason::ToolCalls,
+                    vec![("submit_result", json!({"result":true}))],
+                )),
+                _ => panic!("unexpected retry"),
+            }
+        }
+    }
+    let provider = Provider(Mutex::default());
+    let graph = Memory::new(String::new());
+    let ctx = ValidationContext::new(&graph, graph.cache().intern_node(Node(0)));
+    let mut session = MinimalConversation::default();
+    let accepted: bool = converse(
+        &ctx,
+        &provider,
+        &mut session,
+        CompletionRequest::new("review"),
+        Vec::new(),
+        json!({"type":"boolean"}),
+        |answer| Ok(Submission::Accepted(answer)),
+    )
+    .await
+    .unwrap();
+    assert!(accepted);
+    let requests = provider.0.lock().unwrap();
+    let delay = |n: usize| (requests[n].0 - requests[n - 1].0).as_millis();
+    assert!((600_500..=601_001).contains(&delay(1)));
+    assert!((1000..=2001).contains(&delay(2)));
+    assert!((2000..=4001).contains(&delay(3)));
+    assert!((500..=1001).contains(&delay(5)));
+    for i in [1, 2, 3, 5] {
+        assert_eq!(
+            serde_json::to_value(&requests[i].1).unwrap(),
+            serde_json::to_value(&requests[i - 1].1).unwrap()
+        );
+    }
+    assert_eq!(session.dispatched, 1);
+}
+
+// {test}`requirements.authoring.provider_backoff`
+#[tokio::test(start_paused = true)]
+async fn cancelling_during_backoff_leaves_prepared_inputs_undelivered() {
+    let graph = Memory::new("source".into());
+    let mut validator = Validator::new(&graph);
+    let provider = Scenario::new(vec![Err(throttled())]);
+    let agent = ToolAgent::new(provider);
+    let question = Question {
+        subject: graph.cache().intern_node(Node(1)),
+        name: "check".into(),
+        successors: false,
+    };
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            verify_with_agent(&mut validator, &agent, question)
+        )
+        .await
+        .is_err()
+    );
+    tokio::time::advance(std::time::Duration::from_secs(90)).await;
+    let stats = validator.usage();
+    assert_eq!(
+        (stats.attempts, stats.failed_attempts, stats.retries),
+        (1, 1, 0)
+    );
+    assert!(stats.prepared_inputs > 0);
+    assert_eq!(stats.delivered_inputs, 0);
+}
+
 // {test}`requirements.sdk.validation-cache.usage`
 // {test}`requirements.sdk.graph.running-criteria.Validator.usage`
 #[tokio::test(start_paused = true)]
@@ -1998,7 +2090,7 @@ async fn node_preparation_tool_errors_allow_recovery_without_recording_undeliver
 
 // {test}`requirements.authoring.output_limit`
 // {test}`requirements.authoring.provider_backoff`
-// {test}`requirements.authoring.submission_count`
+// {test}`requirements.sdk.graph.agent-harness.submission_count`
 // {test}`requirements.sdk.graph.validation-context.tracked_inspection`
 #[tokio::test(start_paused = true)]
 async fn retries_and_cut_off_tools_preserve_inputs_and_submission_skips_other_reads() {
@@ -2122,11 +2214,9 @@ async fn tool_usage_counts_utf8_results_and_errors_once_across_retries() {
         &ctx,
         &provider,
         &mut session,
-        None,
         CompletionRequest::new("review"),
         Vec::new(),
         json!({"type":"boolean"}),
-        "submit_result",
         |answer| Ok(Submission::Accepted(answer)),
     )
     .await
@@ -2144,7 +2234,7 @@ async fn tool_usage_counts_utf8_results_and_errors_once_across_retries() {
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
 // {test}`requirements.authoring.provider_backoff`
 // {test}`requirements.authoring.output_limit`
-// {test}`requirements.authoring.submission_count`
+// {test}`requirements.sdk.graph.agent-harness.submission_count`
 // {test}`requirements.sdk.graph.running-criteria.UsageStats`
 #[tokio::test(start_paused = true)]
 // {test}`requirements.sdk.graph.running-criteria.ToolUsage.calls`
@@ -2179,11 +2269,9 @@ async fn generic_conversations_can_use_default_telemetry_through_retry_and_conti
             &ctx,
             &provider,
             &mut session,
-            None,
             CompletionRequest::new("review"),
             Vec::new(),
             json!({"type":"boolean"}),
-            "submit_result",
             |answer| Ok(Submission::Accepted(answer)),
         )
         .await

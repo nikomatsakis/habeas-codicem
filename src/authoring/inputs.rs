@@ -10,7 +10,7 @@ use super::access::SourceAccess;
 use crate::citations::CitationItem;
 use crate::evidence::{Declaration, SourceReference};
 use crate::github::GithubIssues;
-use crate::inputs::{InputSelector, OutlineCache, ParsedSource, recorded_input};
+use crate::inputs::{InputSelector, OutlineCache, recorded_input};
 use crate::sites::{SiteFixme, SiteItem};
 use crate::{DefinitionKind, ReferenceKind};
 
@@ -344,10 +344,6 @@ impl AssessmentSources {
         let root = domain.root.to_path_buf();
         let access = std::sync::Arc::new(SourceAccess::new(&root));
         domain.outlines = domain.outlines.for_authoring(access.clone());
-        domain.outlines.validation = domain
-            .outlines
-            .validation
-            .with_sources(trust_but_verify::sources::Sources::new(&root));
         let definitions = domain.definitions.clone();
         let outlines = domain.outlines.clone();
         let catalog = outlines.reference_catalog(&root);
@@ -636,94 +632,6 @@ impl AssessmentSources {
             selector,
         )
     }
-
-    /// Parses a permitted file, aborting on access denial.
-    // {impl}`requirements.authoring.outline_tool`
-    pub(crate) fn parse_file(
-        &self,
-        file: &str,
-    ) -> io::Result<std::sync::Arc<Result<ParsedSource, String>>> {
-        self.access.file(&self.root, Path::new(file))?;
-        Ok(self.outlines.parse(&self.root, file))
-    }
-
-    /// Reads the innermost outline nodes covering an inclusive line range,
-    /// as model-facing outline inputs. With `comments`, comment lines select
-    /// their comments' owners.
-    // {impl}`requirements.ci.outline_inputs`
-    pub(crate) fn read_lines(
-        &self,
-        file: &str,
-        line_start: usize,
-        line_end: Option<usize>,
-        comments: bool,
-    ) -> io::Result<Vec<Value>> {
-        let parsed = self.parse_file(file)?;
-        let parsed = parsed
-            .as_ref()
-            .as_ref()
-            .map_err(|error| io::Error::other(error.clone()))?;
-        let count = parsed.source.lines().count();
-        // The error repeats only the numbers the model supplied.
-        // {impl}`requirements.authoring.no_line_numbers`
-        let requested = match line_end {
-            Some(line_end) => format!("{line_start}-{line_end}"),
-            None => line_start.to_string(),
-        };
-        let line_end = line_end.unwrap_or(count);
-        if line_start == 0 || line_end < line_start || line_end > count || line_start > count {
-            return Err(io::Error::other(format!(
-                "{file}:{requested} is not an inclusive range within the file; read it by selector instead"
-            )));
-        }
-        parsed
-            .nodes_for_range(line_start, line_end, comments)
-            .into_iter()
-            .map(|index| {
-                self.read_selector(&InputSelector::Outline {
-                    file: file.to_owned(),
-                    item: parsed.outline.nodes[index].selector.clone(),
-                })
-            })
-            .collect()
-    }
-
-    /// The additional definitions each input needs on its own, so a page of
-    /// inputs can carry the definitions that accompany them.
-    pub(crate) fn definitions_each(&self, inputs: &[Value]) -> io::Result<Vec<Vec<Value>>> {
-        let definitions = &self.domain.definitions;
-        inputs
-            .iter()
-            .map(|input| {
-                Ok(definition_inputs(
-                    &self.root,
-                    &self.access,
-                    &definitions,
-                    &self.outlines,
-                    std::slice::from_ref(input),
-                    None,
-                )?
-                .into_iter()
-                .filter(|definition| definition != input && !self.recorded.contains(definition))
-                .collect())
-            })
-            .collect()
-    }
-
-    pub(crate) fn additional_definitions(&self, inputs: &[Value]) -> io::Result<Vec<Value>> {
-        let definitions = &self.domain.definitions;
-        Ok(definition_inputs(
-            &self.root,
-            &self.access,
-            &definitions,
-            &self.outlines,
-            inputs,
-            None,
-        )?
-        .into_iter()
-        .filter(|input| !inputs.contains(input) && !self.recorded.contains(input))
-        .collect())
-    }
 }
 
 // {impl}`requirements.authoring.mandatory_inputs`
@@ -793,7 +701,7 @@ fn insert_selector(selectors: &mut Vec<InputSelector>, selector: InputSelector) 
 /// Markdown declaration, otherwise the smallest outline node the reference
 /// belongs to, or the whole file in a plain-text source.
 // {impl}`requirements.references.outline_comments`
-fn reference_selector(
+pub(crate) fn reference_selector(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
     outlines: &OutlineCache,
@@ -902,6 +810,7 @@ pub(crate) mod tests {
     // {test}`requirements.ci.reference_set`
     // {test}`requirements.definitions.authoring_inputs`
     #[test]
+    // {test}`requirements.authoring.redaction`
     fn acknowledgment_only_terms_are_supplied_and_validated_without_implementation_reads() {
         let root = project();
         let (path, configuration) = crate::execution_coverage::configure(root.path()).unwrap();
@@ -917,6 +826,26 @@ pub(crate) mod tests {
         assert!(prompt.contains("A unit."));
         assert!(prompt.contains("at the limit."));
         assert!(prompt.contains("is untested."));
+        for (name, declaration) in [
+            (
+                "terms.unit",
+                ":::{definition} unit\n:phrase: unit\nA unit.\n:::",
+            ),
+            (
+                "terms.boundary",
+                ":::{definition} boundary\n:phrase: boundary\nA {term}`terms.unit` at the limit.\n:::",
+            ),
+        ] {
+            let entry = sources
+                .mandatory_inputs()
+                .iter()
+                .find(|i| i["definition"] == name)
+                .unwrap();
+            assert_eq!(
+                entry["text"],
+                json!(declaration.lines().collect::<Vec<_>>())
+            );
+        }
         assert!(!prompt.contains("IMPLEMENTATION_BODY"));
         assert!(
             !sources
@@ -924,6 +853,17 @@ pub(crate) mod tests {
                 .iter()
                 .any(|input| input.get("item").is_some())
         );
+        let secret = crate::redaction::tests::github_token();
+        fs::write(
+            root.path().join("src/lib.rs"),
+            source.replace("is untested.", &format!("is untested. {secret}")),
+        )
+        .unwrap();
+        let protected = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let body = &protected.model_acknowledgments()[0]["body"];
+        assert!(body.as_str().unwrap().contains("[REDACTED:GitHub Token]"));
+        assert!(!body.as_str().unwrap().contains(&secret));
+        fs::write(root.path().join("src/lib.rs"), source).unwrap();
         let mandatory = sources.mandatory_inputs().to_vec();
         sources.record_inputs(&mandatory);
         let record = json!({
@@ -1477,6 +1417,49 @@ pub(crate) mod tests {
 
     // {test}`requirements.authoring.fixme_inputs`
     #[test]
+    fn acknowledgment_order_follows_file_then_source_position_even_when_names_sort_backwards() {
+        let root = project();
+        let comment = |name: &str, body: &str| {
+            format!("// :::{{fixme}} requirements.ready\n// {body}\n// :::\nfn {name}() {{}}\n")
+        };
+        fs::write(
+            root.path().join("src/z.rs"),
+            comment("middle", "Middle description."),
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("src/a.rs"),
+            format!(
+                "{}\n{}",
+                comment("zeta", "Z description."),
+                comment("alpha", "A description.")
+            ),
+        )
+        .unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let entries = sources.model_acknowledgments();
+        let locations: Vec<_> = entries
+            .iter()
+            .map(|a| {
+                (
+                    a["file"].as_str().unwrap(),
+                    a["item"].as_str().unwrap(),
+                    a["body"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            locations,
+            [
+                ("src/a.rs", "fn[zeta]", "Z description."),
+                ("src/a.rs", "fn[alpha]", "A description."),
+                ("src/z.rs", "fn[middle]", "Middle description.")
+            ]
+        );
+    }
+
+    // {test}`requirements.authoring.fixme_inputs`
+    #[test]
     fn acknowledgment_metadata_is_ordered_and_deduplicates_issue_options() {
         let root = project();
         let acknowledgment = |issues: &str, body: &str| {
@@ -1506,7 +1489,13 @@ pub(crate) mod tests {
                 .collect::<Vec<_>>(),
             ["a.txt", "a.txt", "z.txt"]
         );
-        assert!(metadata[0]["body"].as_str().unwrap().contains("First gap."));
+        assert!(
+            metadata[0]["body"]
+                .as_str()
+                .unwrap()
+                .contains(":github: o/r#2\n:github: o/r#1\n:github: o/r#2\nFirst gap."),
+            "{metadata:?}"
+        );
         assert!(
             metadata[1]["body"]
                 .as_str()

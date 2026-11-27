@@ -44,7 +44,14 @@ impl<D: Domain> SourceProject<D> {
             .map_err(|error| SourceError::Invalid(error.to_string()))?;
         let item = OutlineContent::from_path(self.domain.cache(), &full)
             .and_then(|root| root.select(&address.selector))
-            .map_err(|e| SourceError::Invalid(e.to_string()))?;
+            .map_err(|e| {
+                SourceError::Invalid(format!(
+                    "{}#{}: {}",
+                    address.path.display(),
+                    address.selector,
+                    e.message
+                ))
+            })?;
         Ok(item.with_path(relative))
     }
 

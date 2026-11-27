@@ -161,15 +161,25 @@ impl<D: Domain> ValidationCache<D> {
         D::EdgeLabel: serde::de::DeserializeOwned + schemars::JsonSchema + PartialEq,
         D::Error: std::fmt::Display,
     {
+        let mut cache = Self::new();
+        cache.set_agent(config);
+        cache
+    }
+
+    /// Select the agent for requests through this handle and future clones.
+    // {impl}`requirements.sdk.validation-cache.set_agent`
+    pub fn set_agent(&mut self, config: impl AgentSettings<D>)
+    where
+        D::NodeData: serde::Serialize + serde::de::DeserializeOwned + schemars::JsonSchema,
+        D::EdgeLabel: serde::de::DeserializeOwned + schemars::JsonSchema + PartialEq,
+        D::Error: std::fmt::Display,
+    {
         let (backend, tools) = config.into_parts();
-        Self {
-            agent: Some(Arc::new(CachedAgent {
-                runner: Box::new(ConfiguredAgent::default()),
-                backend,
-                tools,
-            })),
-            ..Self::default()
-        }
+        self.agent = Some(Arc::new(CachedAgent {
+            runner: Box::new(ConfiguredAgent::default()),
+            backend,
+            tools,
+        }));
     }
 }
 

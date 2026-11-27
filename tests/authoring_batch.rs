@@ -293,7 +293,7 @@ fn serve(
             "model":"fixture-model", "created_at":"2026-01-01T00:00:00Z",
             "message":{"role":"assistant", "content":"", "tool_calls":[{
                 "id":format!("read-{name}"), "type":"function", "function":{
-                    "name":"habeas", "arguments":{"file":"src/lib.rs", "item":format!("fn[{name}]")}
+                    "name":"read_node", "arguments":{"path":"src/lib.rs", "location":format!("fn[{name}]")}
                 }
             }]},
             "done":true, "done_reason":"stop", "prompt_eval_count":11, "eval_count":7
@@ -303,7 +303,7 @@ fn serve(
             "model":"fixture-model", "created_at":"2026-01-01T00:00:00Z",
             "message":{"role":"assistant", "content":"", "tool_calls":[{
                 "id":"denied-read", "type":"function", "function":{
-                    "name":"habeas", "arguments":{"file":"evidence/private.txt", "line_start":1}
+                    "name":"read_node", "arguments":{"path":"evidence/private.txt"}
                 }
             }]},
             "done":true, "done_reason":"stop", "prompt_eval_count":11, "eval_count":7
@@ -313,16 +313,8 @@ fn serve(
         if prompt.contains("Site under review: ") {
             arguments["applies"] = json!(true);
         }
-        let submit = if request["tools"].as_array().is_some_and(|tools| {
-            tools
-                .iter()
-                .any(|tool| tool["function"]["name"] == "submit_result")
-        }) {
-            arguments = json!({"result": arguments});
-            "submit_result"
-        } else {
-            "submit_judgment"
-        };
+        let submit = "submit_result";
+        arguments = json!({"result":arguments});
         json!({
             "model":"fixture-model", "created_at":"2026-01-01T00:00:00Z",
             "message":{"role":"assistant", "content":"", "tool_calls":[{
@@ -746,7 +738,7 @@ fn concurrent_assessments_keep_their_own_continuing_histories() {
         assert_eq!(calls.len(), 1);
         let name = subject.rsplit('.').next().unwrap();
         assert_eq!(
-            calls[0]["function"]["arguments"]["item"],
+            calls[0]["function"]["arguments"]["location"],
             format!("fn[{name}]")
         );
         assert_eq!(continuation[1]["role"], "tool");
@@ -760,6 +752,7 @@ fn concurrent_assessments_keep_their_own_continuing_histories() {
 }
 
 // {test}`requirements.authoring.concurrency`
+// {test}`requirements.authoring.usage_requests.failures`
 #[test]
 fn throttled_assessment_retries_within_itself_while_others_proceed() {
     let server = Server::start_with(
@@ -800,14 +793,14 @@ fn throttled_assessment_retries_within_itself_while_others_proceed() {
         .iter()
         .find(|run| run["subject"] == "requirements.alpha")
         .unwrap();
-    assert_eq!(alpha["request_count"], 2);
-    assert_eq!(alpha["requests"][0]["outcome"], "failed");
-    assert_eq!(alpha["requests"][1]["outcome"], "completed");
+    assert_eq!(alpha["provider_usage"]["attempts"], 2);
+    assert_eq!(alpha["provider_usage"]["failed_attempts"], 1);
+    assert_eq!(alpha["provider_usage"]["retries"], 1);
     assert!(
         usage
             .iter()
             .filter(|run| run["subject"] != "requirements.alpha")
-            .all(|run| run["request_count"] == 1)
+            .all(|run| run["provider_usage"]["attempts"] == 1)
     );
 }
 
@@ -816,6 +809,8 @@ fn throttled_assessment_retries_within_itself_while_others_proceed() {
 // {test}`requirements.authoring.reporting`
 // {test}`requirements.authoring.usage_storage`
 // {test}`requirements.authoring.progress`
+// {test}`requirements.authoring.cache_warmup`
+// {test}`requirements.authoring.usage_requests.failures`
 #[test]
 fn failed_assessment_keeps_other_results_and_reports_failure() {
     let server = Server::start(true, Some("requirement requirements.alpha"));
@@ -840,7 +835,17 @@ fn failed_assessment_keeps_other_results_and_reports_failure() {
         fixture.evidence("requirements.gamma")["determination"],
         true
     );
+    let kinds = assert_warmed_first(&server);
+    assert_eq!(kinds[0][0].0, "requirement requirements.alpha");
+    assert_eq!(kinds[0].len(), 4);
     let usage = fixture.usage();
+    let failed = usage
+        .iter()
+        .find(|run| run["subject"] == "requirements.alpha")
+        .unwrap();
+    assert_eq!(failed["provider_usage"]["attempts"], 1);
+    assert_eq!(failed["provider_usage"]["failed_attempts"], 1);
+    assert_eq!(failed["provider_usage"]["retries"], 0);
     assert_eq!(usage.len(), 6);
     assert_eq!(
         usage
@@ -1267,8 +1272,8 @@ fn a_denied_read_returns_an_error_and_its_assessment_continues() {
         .iter()
         .find(|run| run["subject"] == "requirements.alpha_case")
         .unwrap();
-    assert_eq!(denied["request_count"], 2);
-    assert_eq!(denied["tool_failures"]["habeas"], 1);
+    assert_eq!(denied["provider_usage"]["attempts"], 2);
+
     // The denied file is not recorded.
     assert!(
         !fixture
@@ -1338,7 +1343,7 @@ fn a_denied_mandatory_input_aborts_only_its_assessment() {
         .find(|run| run["subject"] == "requirements.alpha")
         .expect("the aborted assessment has a usage record");
     assert_eq!(aborted["outcome"], "failed");
-    assert_eq!(aborted["request_count"], 0);
+    assert_eq!(aborted["provider_usage"]["attempts"], 0);
     assert_eq!(aborted["evidence_written"], false);
     // With --stdout it emits no evidence JSON.
     let single = fixture.run(&["author", "requirements.alpha", "--stdout"]);
@@ -1553,6 +1558,7 @@ fn batch_reauthors_a_false_judgment_when_its_reference_set_changes() {
 // {test}`requirements.authoring.batch`
 // {test}`requirements.authoring.refresh`
 #[test]
+// {test}`requirements.authoring.policy`
 fn site_reviews_are_authored_by_requirement_and_orphans_deleted_by_all() {
     let server = Server::start(false, None);
     let fixture = Fixture::new(&server.endpoint, None);
@@ -1564,7 +1570,10 @@ fn site_reviews_are_authored_by_requirement_and_orphans_deleted_by_all() {
         ),
     )
     .unwrap();
-    let output = fixture.run(&["author", "sites:requirements.spread"]);
+    let output = fixture.run(&["author", "sites:requirements.spread", "--policy", "once"]);
+    let logs = fixture.usage();
+    assert_eq!(logs.len(), 2);
+    assert!(logs.iter().all(|log| log["policy"] == "once"));
     assert!(
         output.status.success(),
         "{}",
@@ -1664,6 +1673,7 @@ fn site_reviews_are_authored_by_requirement_and_orphans_deleted_by_all() {
 
 // {test}`requirements.authoring.batch`
 #[test]
+// {test}`requirements.authoring.batch`
 fn batch_stdout_is_rejected_before_authoring() {
     let server = Server::start(false, None);
     let fixture = Fixture::new(&server.endpoint, None);
@@ -2675,8 +2685,7 @@ fn a_failed_first_request_still_releases_its_kind() {
     let kinds = assert_warmed_first(&server);
     let requirements = &kinds[0];
     assert_eq!(requirements[0].0, "requirement requirements.alpha");
-    // The other requirements start after the throttled request, without
-    // waiting for the retry, which backs off for at least half a second.
+    // Peers wait through the initial conversation, including its successful retry.
     let retry = requirements[1..]
         .iter()
         .find(|(subject, ..)| subject == "requirement requirements.alpha")
@@ -2686,7 +2695,11 @@ fn a_failed_first_request_still_releases_its_kind() {
         .filter(|(subject, ..)| subject != "requirement requirements.alpha")
         .collect::<Vec<_>>();
     assert_eq!(others.len(), 3);
-    assert!(others.iter().all(|(_, arrived, _)| *arrived < retry.1));
+    assert!(
+        others
+            .iter()
+            .all(|(_, arrived, _)| *arrived >= retry.2.unwrap())
+    );
 }
 
 // {cite}`habeas:util`

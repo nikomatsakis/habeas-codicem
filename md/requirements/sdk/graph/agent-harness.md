@@ -341,7 +341,7 @@ inputs to that criterion's shared trace under
 
 :::{req} tool_agent.provider_failure
 A provider failure that ends the model conversation returns
-`ValidationError::Agent` to the awaiting ask builder.
+`ValidationError::Provider` with the underlying I/O error to the awaiting ask builder.
 :::
 
 :::{req} fixed_tools
@@ -580,3 +580,11 @@ looks like this:
 The criterion can inspect that answer, perform more computation, or make
 another ask request. The application interprets the completed answer under
 {cite}`requirements.sdk.graph.criteria.output_policy`.
+
+:::{example} submission_count
+A model finishes with prose but no `submit_result` call: the harness reminds
+it once, and when it then calls `submit_result`, the agent request succeeds. When
+it ends with prose again, the request fails. The same reminder applies to a response with multiple `submit_result` calls. A single call with invalid
+arguments fails without requesting a replacement submission.
+{test}`requirements.sdk.graph.agent-harness.submission.reminder`
+:::

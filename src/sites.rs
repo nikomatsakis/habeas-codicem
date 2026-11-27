@@ -893,6 +893,7 @@ no_match:
     // {test}`requirements.authoring.redaction`
     // {test}`requirements.authoring.site_prompt`
     #[test]
+    // {test}`requirements.authoring.site_prompt`
     fn violation_text_reaches_the_model_redacted() {
         let token = ["ghp_", "abcdefghijklmnopqrstuvwxyz0123456789"].concat();
         let found = |kind, text: &str| SiteMatch {
@@ -1027,6 +1028,7 @@ no_match: ["fn check() { let other = 1; }"]
     // {test}`requirements.references.distributed`
     #[test]
     // {test}`requirements.authoring.no_line_numbers`
+    // {test}`requirements.authoring.site_prompt`
     fn sites_are_the_innermost_nodes_of_site_matches_and_violations_within_them() {
         let temp = project(RULE, SOURCE);
         let (errors, sites) = inspect(temp.path());
@@ -1080,6 +1082,33 @@ no_match: ["fn check() { let other = 1; }"]
                 "{item}: {errors:?}"
             );
         }
+    }
+
+    // {test}`requirements.references.distributed`
+    #[test]
+    fn query_paths_include_named_files_and_directory_descendants_and_apply_exclude() {
+        let rule = RULE.replace(
+            "paths: [src]",
+            "paths: [src, single.rs]\nexclude: [src/skipped.rs]",
+        );
+        let temp = project(&rule, "fn check_lib() {}");
+        for file in [
+            "src/nested/child.rs",
+            "src/skipped.rs",
+            "single.rs",
+            "outside.rs",
+        ] {
+            let path = temp.path().join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "fn check_file() {}").unwrap();
+        }
+        let (_, sites) = inspect(temp.path());
+        let mut files: Vec<_> = sites["requirements.rule"]
+            .iter()
+            .map(|s| s.file.as_str())
+            .collect();
+        files.sort();
+        assert_eq!(files, ["single.rs", "src/lib.rs", "src/nested/child.rs"]);
     }
 
     // {test}`requirements.references.distributed`

@@ -177,29 +177,25 @@ because waiting cannot make that request fit. {cite}`requirements.authoring.prov
 
 `habeas author <full-name>` assesses one requirement or example, records the
 source inputs delivered to the model, and writes its judgment to the usual
-evidence file. `author-evidence` remains an alias. The model can read sources
-with `habeas`, list files, list a file's selectable nodes with `outline`, search
-files with ripgrep (built in; no `rg` executable is needed), and use `references`
-to list definition names or every `{impl}`, `{cite}`, and `{test}` site for a
-definition selection. A `habeas` read names an outline node directly or asks for
-a line range; a line range is returned as the innermost outline nodes covering
-those lines, and those nodes are recorded as outline inputs. Each ripgrep or ast-grep match identifies an outline item and gives matching
-lines and context clipped to that item. Search results have UUIDs and their
+evidence file. `author-evidence` remains an alias. The model uses `list_sources` to discover files,
+`outline_source` to inspect their structure, and `read_node` to read one node and see its children.
+`lookup_requirements` finds requirement and example nodes. `outgoing_edges` follows
+relationships such as implementation and test sites. `search_text` and
+`search_structure` return excerpts clipped to the matching outline item. Search results have UUIDs and their
 entries have short tags. Before submitting, the model uses `finish_search`
 to select snippets it used to justify its conclusion without an additional
 read; an empty selection still closes the search. Selected items are recorded
 as evidence dependencies without requiring full-source delivery. Submission
 is rejected until every delivered search is finished, including empty results
-and individual search pages. Listings, outlines, and reference lookups are
-not recorded as evidence. No tool gives the model line numbers:
+and individual search pages. An explicit `outgoing_edges` inspection records the relationship the agent followed. No tool gives the model line numbers:
 every location it sees is a file and outline selector, which is also how its
 rationale cites code. {cite}`requirements.authoring.no_line_numbers`
 
-Choose a model that supports tool calls, either on Amazon Bedrock or an accessible
+Choose a model that supports tool calls, on Amazon Bedrock, OpenAI, or an accessible
 Ollama server. The server can run on another machine; Habeas does not need a GPU.
 {cite}`requirements.authoring.invocation` {cite}`requirements.authoring.provider`
-{cite}`requirements.authoring.text_search`
-{cite}`requirements.authoring.outline_tool`
+{cite}`requirements.sdk.graph.search.search_text.mcp`
+{cite}`requirements.sdk.graph.validation-context.outline_source.behavior`
 {cite}`requirements.authoring.reference_index`
 
 Authoring uses the SDK’s project source rules. You can read and search a new
@@ -499,7 +495,7 @@ first is recorded; site reviews that differ only in `applies` disagree. When
 they disagree, a third conversation verifies the less favorable one, where
 `false` is less favorable than FIXME and FIXME than `true`: the verifier
 receives the subject, its mandatory inputs, that assessment's rationale, and the
-source tools, and answers with `submit_verification`, saying whether its
+source tools, and answers with `submit_result`, saying whether its
 claimed gaps are real and whether `{fixme}` references acknowledge them. The
 recorded rationale then ends with a confirmation note stating that the
 assessments disagreed and what the verification concluded, and `habeas status`

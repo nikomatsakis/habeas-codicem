@@ -16,9 +16,16 @@ use trust_but_verify::request::ValidationContext;
 // {test}`requirements.sdk.graph.search.source_identity`
 // {test}`requirements.sdk.sources.provider.attachment`
 #[test]
+// {test}`requirements.sdk.sources.source_nodes`
+// {test}`requirements.sdk.domain`
 fn domain_without_project_sources_leaves_source_tools_disabled() {
     let domain = Application::default();
     assert!(domain.project_sources().is_none());
+    let address = trust_but_verify::outline::OutlineData::root("unknown.rs");
+    assert!(matches!(
+        domain.source_node(&address),
+        Err(trust_but_verify::sources::SourceError::Invalid(_))
+    ));
     assert_eq!(domain.source_address(&Node(1)), None);
 }
 
@@ -891,6 +898,7 @@ async fn dependency_resolution_failures_do_not_execute_or_replace_saved_answers(
 // {test}`requirements.sdk.graph.criteria.criterion_path`
 // {test}`requirements.sdk.graph.evidence.recorded_criterion_version`
 #[tokio::test]
+// {test}`requirements.sdk.graph.evidence.inputs`
 async fn wildcard_revision_does_not_supply_other_criteria_or_nodes() {
     let domain = Application::default();
     persist(&domain, Review::new(&domain, &[], false)).await;

@@ -222,8 +222,9 @@ impl Memory {
 
 // {test}`requirements.sdk.graph.validation-context.shared_context`
 #[tokio::test]
+// {test}`requirements.sdk.graph.running-criteria.verify`
 async fn a_second_verification_starts_with_an_empty_trace() {
-    let mut graph = Memory {
+    let graph = Memory {
         read_in_callback: true,
         ..Memory::default()
     };
@@ -247,12 +248,24 @@ async fn a_second_verification_starts_with_an_empty_trace() {
             fp("subject")
         )]
     );
-    graph.read_in_callback = false;
-    let second = validation::Validator::new(&graph)
-        .verify(review())
+    let other = graph.cache().intern_node(2);
+    graph
+        .state
+        .lock()
+        .unwrap()
+        .contents
+        .insert(2, "other".into());
+    let second = validator
+        .verify(Review {
+            node: other,
+            revision: "v1",
+        })
         .await
         .unwrap();
-    assert!(second.dependencies().is_empty());
+    assert_eq!(
+        second.dependencies(),
+        &[Dependency::Node(other, fp("other"))]
+    );
 }
 
 // {test}`requirements.sdk.graph.evidence.checking_records`
@@ -364,6 +377,7 @@ async fn runner_does_not_store_a_missing_agent_error_and_supports_intermediate_c
 // {cite}`habeas:util`
 #[derive(Default)]
 struct MockAgent {
+    messages: Mutex<Vec<String>>,
     requests: Mutex<Vec<(String, Fingerprint, Vec<(u8, String)>, Value)>>,
     barrier: Option<Arc<tokio::sync::Barrier>>,
     invalid: bool,
@@ -389,6 +403,7 @@ impl Agent<Memory> for MockAgent {
             } else {
                 7
             };
+            self.messages.lock().unwrap().push(request.message);
             self.requests.lock().unwrap().push((
                 request.prefix,
                 request.prefix_fingerprint,
@@ -1140,6 +1155,44 @@ async fn contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text()
             .contents()
             .as_ref(),
         "1\n\n2\n\n3\n\n4\n\n5\n\n6\n\n7\n\n8\n\n9\n\n10\n\n11\n\n12"
+    );
+}
+
+// {test}`requirements.sdk.graph.agent-calls.subject_message`
+// {test}`requirements.sdk.graph.agent-calls.named_input`
+#[tokio::test]
+// {test}`requirements.sdk.graph.agent-calls.Ask`
+// {test}`requirements.sdk.graph.agent-calls.judge.phases`
+async fn task_messages_share_a_prefix_and_can_queue_another_node() {
+    let graph = Memory::default();
+    graph
+        .state
+        .lock()
+        .unwrap()
+        .contents
+        .insert(2, "selected source".into());
+    let agent = MockAgent::default();
+    let current = graph.cache().intern_node(1);
+    let selected = graph.cache().intern_node(2);
+    let ctx = ValidationContext::with_agent(&graph, current, &agent);
+    for task in ["assess", "verify"] {
+        let with_node: crate::request::Ask<'_, '_, Memory, Answer, crate::request::NodePhase> = ctx
+            .ask::<Answer>()
+            .context("shared")
+            .message("superseded")
+            .contents_of_node(selected);
+        with_node.message(task).await.unwrap();
+    }
+    assert_eq!(*agent.messages.lock().unwrap(), ["assess", "verify"]);
+    let requests = agent.requests.lock().unwrap();
+    for (prefix, fingerprint, inputs, _) in requests.iter() {
+        assert_eq!(prefix, "shared");
+        assert_eq!(*fingerprint, context_fingerprint("shared"));
+        assert_eq!(inputs, &[(2, "selected source".into())]);
+    }
+    assert_eq!(
+        ctx.dependencies(),
+        [Dependency::Node(selected, fp("selected source"))]
     );
 }
 

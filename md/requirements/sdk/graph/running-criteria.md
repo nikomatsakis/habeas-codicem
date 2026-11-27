@@ -115,13 +115,14 @@ completed answer.
 :::{req} ValidationError
 :test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
 
-Distinguishes a domain operation failure, a missing agent, an agent failure, and an error encoding or decoding the output.
+Distinguishes a domain operation failure, a missing agent, a provider connection or request failure, an agent protocol failure, and an error encoding or decoding the output.
 
 ```rust,ignore
 pub enum ValidationError<E> {
     Graph(E),
     NoAgentConfigured,
     Agent(String),
+    Provider(std::io::Error),
     Output(serde_json::Error),
 }
 ```

@@ -99,7 +99,7 @@ same source tools, and this prompt. The verification result has exactly the fiel
 `{ real: Boolean, acknowledged: Boolean, acknowledgments: Array<String>,
 rationale: String }`, plus `applies: Boolean` for a site review. Citation verifiers
 submit this value through the SDK’s `submit_result({result})`. Other verifiers
-pass the fields to `submit_verification`. The first prompt block is the system
+pass the fields in `result` to `submit_result`. The first prompt block is the system
 prompt and the second is the subject message under
 {cite}`requirements.authoring.prompt_parts`. The harness MUST replace
 `{{subject_kind}}`
@@ -112,7 +112,7 @@ message after its "# Subject" heading and before its "# Mandatory inputs"
 heading, which names the subject, its citations or matches, and what to judge
 against, followed by, for a site review, the filled `{{distributed_background}}`,
 and then the filled "Your task" section;
-`{{verification_submission}}` with `submit_result with your verification in result` for a citation review and `submit_verification` otherwise;
+`{{verification_submission}}` with `submit_result with your verification in result`;
 `{{site_step}}` with nothing, or, for a site review, the line `4. Also set
 applies to whether the requirement governs the site, as the reviewer's step 1
 decides it; if it does not, set real to false.`; `{{habeas_background}}` and
@@ -414,7 +414,7 @@ Judge against: the declarations or fixed built-in text it cites.
 :::{req} site_prompt
 A site review under {cite}`requirements.references.site_review` MUST use the
 same tools and exactly-once submission rule as other assessments, except that
-`submit_judgment` MUST also require an `applies: Boolean` field, recorded as the
+`submit_result` MUST also require an `applies: Boolean` field, recorded as the
 review's `applies`; a submission with `applies` false and a determination other
 than `true` MUST be invalid. It MUST use this prompt, replacing
 `{{requirement_name}}`, `{{site_file}}`, `{{site_selector}}`, `{{matches}}` (a
@@ -476,8 +476,8 @@ site's callers, or other sites.
 # Submitting
 
 Choose true when your task finds no gap, {"FIXME": ["..."]} when every gap is
-acknowledged, and false otherwise. You MUST end by calling submit_judgment
-with applies, determination, and rationale until one submission is accepted.
+acknowledged, and false otherwise. You MUST end by calling submit_result
+with applies, determination, and rationale inside result until one submission is accepted.
 A rejected submission does not complete the assessment. A judgment written in
 your reply text is not accepted.
 ```
@@ -583,105 +583,36 @@ and the last failure's HTTP status and provider error code, when available.
 
 ## Model tools
 
-For requirement, example, and site assessments the model receives ten tools: `habeas`, `list_files`, `outline`, `ripgrep`, `ast_grep`, `github`, `references`, `next_page`, `finish_search`, and `submit_judgment`.
-The following notation defines their arguments and results; names in uppercase
-are data types, and optional fields show their defaults.
-
-The tools locate code by file and outline selector, the form rationales cite
-under {cite}`requirements.authoring.judgment_rules`.
+All review kinds use TBV’s configured agent and `submit_result`. The agent can read graph nodes, inspect edges, list and search project sources, finish searches, and retrieve additional pages. Habeas registers `lookup_requirements`, `run_named_query`, and `github` for operations specific to its domain.
 
 :::{req} tool_descriptions.common_case
-Each model tool's description MUST give what the model needs in the common
-case: what the tool does, when to use it rather than another tool, each
+The descriptions of `lookup_requirements`, `run_named_query`, and `github` MUST explain what the tool does, when to use it rather than another tool, each
 argument's meaning and form, with a short example where the form is not
 obvious, and the form of a successful result.
 :::
 
 :::{req} tool_descriptions.special_cases
-Model tool descriptions SHOULD NOT explain cases the model meets only
-occasionally, such as excluded paths, redaction,
-paging, and failures, and the harness SHOULD explain each of these where it
-occurs: in the tool error, or in a note in the result it affects. The model reads
-every description on every assessment, so explaining rare cases there costs
-attention on every review for a case most never meet, and access-policy wording
-in particular can steer its reasoning away from the review. A tool whose purpose
-is one of these cases, such as `next_page`, explains it in its description.
+`lookup_requirements`, `run_named_query`, and `github` SHOULD each explain an invalid request or failed lookup in the returned error. Each description SHOULD focus on the successful operation.
 :::
 
 :::{req} redaction_notice
-A tool result containing text the harness redacted under
-{cite}`requirements.authoring.redaction` MUST include a note saying that
-`[REDACTED:<kind>]` replaces credential-shaped text and that the original is not
-available. A result with no redacted text MUST NOT include the note.
+Tool results MUST use the SDK’s `[REDACTED:<kind>]` marker for credential-shaped text under {cite}`requirements.authoring.redaction`.
 :::
 
 :::{req} no_line_numbers
-No prompt, tool result, or tool error the harness gives the model MUST state a
-line number or line range of a project source, except within source text it
-quotes and where a tool error repeats a line number the model supplied. The
-harness MUST identify a source location by file and outline selector under
-{cite}`requirements.references.outline_selectors` instead.
+For each project source location Habeas supplies, the address MUST consist of the project-relative file and outline selector under {cite}`requirements.references.outline_selectors`. This applies to the source metadata in mandatory inputs, acknowledgments, site matches and citation reviews, and to locations in Habeas tool diagnostics. These addresses MUST omit line and column coordinates. Quoted source retains its text, and an argument error may quote the agent's input.
 :::
 
-### Request evidence inputs: `habeas`
+The SDK specifies the response formats for its graph and source tools, including {cite}`requirements.sdk.graph.validation-context.read_node.source_children` and {cite}`requirements.sdk.graph.search.agent_search`.
+
+### Read graph nodes
 
 :::{req} source_tools
-For requirement, example, and site reviews and their verifications, the harness MUST expose a `habeas` tool accepting exactly one of these request
-forms. Each form MUST correspond to one existing evidence-input kind:
-
-| Request fields | Evidence input returned | Definition |
-| --- | --- | --- |
-| `file: String`, `line_start: Integer`, optional `line_end: Integer` | Outline inputs for the innermost outline nodes covering the range | {cite}`requirements.ci.outline_inputs` |
-| `file: String`, `item: String` | Outline input | {cite}`requirements.ci.outline_inputs` |
-| `requirements: String` | Requirements input, including its matching names | {cite}`requirements.ci.requirements_inputs` |
-| `definition: String` | Definition input | {cite}`requirements.definitions.inputs` |
-
-Selector arguments MUST use the syntax defined by
-{cite}`requirements.references.outline_selectors`. Habeas MUST use the public SDK project source provider for authoring. Mandatory
-inputs, file listings, direct reads, outlines, and searches MUST follow
-{cite}`requirements.sdk.sources.local_provider`. Every source supplied to the
-model MUST be redacted under {cite}`requirements.authoring.redaction`.
-
-Line numbers are only a way to request sources; recorded evidence MUST identify
-sources by outline selector and structural hash, never by line number. Request
-line numbers MUST be one-based and inclusive, and omitting `line_end` MUST read
-through EOF. A line-range request MUST be resolved to the innermost outline
-nodes covering the requested lines, which are `line` nodes in a file using the
-plain-text profile; the result MUST show the model each node's selector and
-source text, without line numbers, and the harness MUST record those nodes as
-outline inputs. The model-facing tool description MUST include the argument conventions
-from the cited requirements, including outline selector syntax, definition
-selections, and full definition names, with a short request example for each form.
-
-A successful call MUST return the requested evidence input, populated by the
-harness with the selected source text, using the existing evidence schema.
-{cite}`requirements.ci.schema`
-Required terminology dependencies MUST be returned alongside it as additional
-definition inputs under {cite}`requirements.definitions.authoring_inputs`.
-For item, requirement, and definition selections, the result MUST have this shape:
-
-```text
-HabeasResult {
-    input: EvidenceInput,
-    definitions: Array<DefinitionInput>,
-}
-```
-
-Line-range selections can contain multiple outline nodes. Their result MUST use
-`inputs: Array<EvidenceInput>` instead of the singular `input` field, including
-when only one node is selected.
-
-`definitions` MUST be empty when no additional terminology is required. The
-harness MUST record inputs supplied to the model in the assessment's evidence.
-A failed read MUST add no evidence input. Access-policy denials MUST be handled
-under {cite}`requirements.authoring.read_denial`; other failed reads MUST return
-an explanatory tool error.
+All assessments and verifications MUST use the SDK graph and source tools. A read uses the node address under {cite}`requirements.sdk.graph.validation-context.read_node.mcp`. A delivered read records that node’s fingerprint under {cite}`requirements.sdk.graph.validation-context.read_node.inputs`. The source project follows {cite}`requirements.sdk.sources.local_provider`.
 :::
 
 :::{req} read_denial
-When a model tool explicitly reads an excluded file, the harness MUST return a tool error naming the path and the reason
-it cannot be read, add no evidence input, and continue the assessment.
-Discovery and search MUST omit excluded files. Malformed tool
+Habeas configures the SDK source tools with the project directory. The files available for agent discovery and search follow {cite}`requirements.sdk.sources.local_provider`. An explicit tool read of a file excluded by that provider MUST return a tool error naming the path and reason, add no evidence input, and allow the assessment to continue. Malformed tool
 arguments and ordinary read failures MUST also return explanatory tool errors.
 :::
 
@@ -701,328 +632,36 @@ build-script output records, subject to {cite}`requirements.configuration.eviden
 It MUST check freshness using the recorded selector and MUST NOT run a build.
 :::
 
-### Discover files: `list_files`
+### Discover source nodes
 
-:::{req} file_discovery
-The harness MUST expose a `list_files` tool with this interface:
-
-```text
-list_files({ path: String = "." }) -> Array<DirectoryEntry>
-
-DirectoryEntry {
-    path: String,
-    kind: "file" | "directory",
-}
-```
-
-The tool MUST list the immediate children of the requested directory, returning
-project-relative paths. Each listed directory MUST contain a visible file.
-A failed listing MUST return an explanatory tool error. Directory listings
-MUST NOT become evidence inputs.
-:::
-
-### List a file's outline: `outline`
-
-:::{req} outline_tool
-The harness MUST expose an `outline` tool with this interface:
-
-```text
-outline({ file: String }) -> Array<OutlineEntry>
-
-OutlineEntry {
-    item: String,
-    kind: String,
-    name: String?,
-    children: Array<OutlineEntry>,
-}
-```
-
-The tool MUST return the outline of a permitted file in a supported language
-under {cite}`requirements.references.outlines`, with each node's selector under
-{cite}`requirements.references.outline_selectors`, its kind, and its name when it
-is named, nested by outline ancestry and in source order. Results MUST contain
-no source text or line numbers and MUST NOT become evidence inputs; the model reads
-the nodes it relies on with the `habeas` tool. For a file using the plain-text
-profile, the outline lists its `line` nodes. Explicitly requesting an excluded
-file MUST be handled as a denial under {cite}`requirements.authoring.read_denial`.
-:::
-
-### Search file contents: `ripgrep`
-
-:::{req} text_search
-The harness MUST expose a `ripgrep` tool with this interface:
-
-```text
-ripgrep({ pattern: String, path: String = ".", context: Integer = 2,
-          referencing: Optional<ReferenceScope> }) -> SearchResult
-
-ReferenceScope {
-    selection: String,                     // full name or definition glob
-    roles: Array<Role> = ["impl", "test", "cite"],
-    scope: "node" | "file" = "file",
-}
-
-SearchResult {
-    search_id: UUID,
-    instructions: Optional<String>,
-    matches: Array<SearchMatch>,
-}
-
-SearchMatch {
-    tag: String,         // short tag for finish_search
-    file: String,
-    item: String,        // selector of the innermost outline node
-    kind: String,
-    lines: Array<{ text: String, matched: Boolean }>,
-}
-```
-
-The tool MUST search the requested permitted file or directory using
-ripgrep's regular-expression syntax and case-sensitive matching. It MUST search in process using ripgrep's library crates, without
-requiring an external `rg` executable, and MUST apply source-access policy while
-walking files rather than filtering results afterwards. It MAY search files in
-parallel; results MUST be ordered by path and then line regardless of
-parallelism, so the same sources always produce the same inputs. The search scope follows {cite}`requirements.sdk.sources.local_provider`.
-`context`
-MUST be nonnegative and specify how many lines before and after each matching
-line to include, defaulting to two on each side. Windows MUST stop at item
-boundaries under {cite}`requirements.authoring.search_accounting.excerpts`,
-and overlapping windows within the same item MUST be merged. The result
-MUST give one entry for each innermost outline node containing a match, where a
-match in a comment belongs to the node the comment belongs to under
-{cite}`requirements.references.outline_comments`: the node's file, selector
-under {cite}`requirements.references.outline_selectors`, kind, and its matching
-and context lines in source order, each marked as matching or not and redacted
-under {cite}`requirements.authoring.redaction`. Results MUST NOT give line
-numbers; the model locates and cites code by selector. Separate windows within
-one node MUST be distinguishable, such as by an elision line that is not
-marked as matching. Search results MUST NOT include definitions. Selected snippets MUST contribute
-evidence inputs through {cite}`requirements.authoring.finish_search.inputs`;
-unselected snippets MUST NOT contribute inputs merely through discovery.
-Results and descriptions MUST follow
-{cite}`requirements.authoring.search_accounting.instructions` and
-{cite}`requirements.authoring.finish_search.description`. Setting `context` to zero MUST return only matching lines.
-With `referencing`, the tool MUST search only sources, within `path`, that carry
-a reference in one of `roles` to a requirement or example the `selection`
-matches under {cite}`requirements.references.definition_globs`, including
-anchors under {cite}`requirements.references.anchors`: with `scope` `node`, only
-the outline nodes that contain or are named by those references, and with
-`file`, their whole files. A selection matching no requirement or example, or an
-unknown role or scope, MUST return an explanatory tool error. Its model-facing
-description MUST explain `referencing`.
-Search results MUST contain only files visible under
-{cite}`requirements.authoring.source_tools`. A search scoped to a `.gitignore`-excluded
-file or directory MUST return an empty `matches` array.
-No matches MUST return an empty array; invalid arguments or a failed search MUST
-return an explanatory tool error.
-:::
-
-### Search syntax trees: `ast_grep`
+The SDK supplies {cite}`requirements.sdk.graph.validation-context.list_sources.behavior`, {cite}`requirements.sdk.graph.validation-context.outline_source.behavior`, {cite}`requirements.sdk.graph.search.search_text.mcp`, and {cite}`requirements.sdk.graph.search.search_structure.mcp`. Agents follow a result with `read_node` and can traverse its direct children under {cite}`requirements.sdk.graph.validation-context.read_node.source_children`. For a result with a continuation, use {cite}`requirements.sdk.graph.validation-context.pages.mcp`.
 
 :::{req} structural_search
-The harness MUST expose an `ast_grep` tool with this interface:
-
-```text
-ast_grep({ language: String, rule: Object, path: String = ".",
-           referencing: Optional<ReferenceScope> }) -> SearchResult
-ast_grep({ query: String }) -> SearchResult
-```
-
-The second form MUST run the query a distributed requirement declares, named
-`<full-name>/<query-name>`, exactly as validation runs it, including `paths`,
-`exclude`, and `within`, and MUST return each match's site. In the first form,
-`referencing` MUST restrict the search as for
-{cite}`requirements.authoring.text_search`, and `language` MUST follow the `language` key of a query body under
-{cite}`requirements.references.distributed`, and `rule` MUST be a JSON object
-holding that body's `rule`, `utils`, and `constraints` keys. The tool MUST search
-the requested permitted file or directory in process, with the same file walking,
-ordering, and source-access policy as {cite}`requirements.authoring.text_search`,
-over files of that language. Each match MUST be returned as the entry of the
-innermost outline node containing it, in the `SearchResult` form and under the
-rules of {cite}`requirements.authoring.text_search`, with the matched lines as
-its lines; selected snippets MUST contribute inputs through
-{cite}`requirements.authoring.finish_search.inputs`. Its model-facing description MUST
-explain the rule syntax and the `context` and `selector` form for fragments that
-do not parse as standalone code. A search scoped to a `.gitignore`-excluded file
-or directory MUST return an empty `matches` array. No matches
-MUST return an empty array; an invalid language or rule, or a failed search,
-MUST return an explanatory tool error.
+`run_named_query` MUST accept a declared `requirement/query` name and return the matching source node IDs and their data. Agents read the relevant nodes with `read_node`.
 :::
 
-### Account for search snippets
+### Record the excerpts used in a review
 
-:::{req} search_accounting.result_ids
-Each successfully delivered `ripgrep` or `ast_grep` result MUST contain a
-`search_id` UUID identifying only that result in the current assessment.
-A new search call MUST use new UUIDs.
-:::
-
-:::{req} search_accounting.entry_tags
-Each `matches` entry MUST have a short string `tag`, unique within its result,
-for selection by `finish_search`.
-:::
-
-:::{req} search_accounting.outstanding
-A successfully delivered search result MUST become outstanding, including
-a result with no matches, and remain outstanding until accepted by
-`finish_search`. Failed searches and undelivered results MUST NOT create
-outstanding searches.
-:::
-
-:::{req} search_accounting.pagination
-Each delivered search page under {cite}`requirements.authoring.result_pages`
-MUST have its own `search_id` and independently require `finish_search`.
-Fetching another page MUST NOT require finishing an earlier page.
-:::
-
-:::{req} search_accounting.page_replay
-Repeated retrieval of the same search page MUST preserve its UUID and tags
-and MUST NOT reopen it if it has already been finished.
-:::
-
-:::{req} search_accounting.first_result
-Each assessment MUST include `instructions` on its first delivered search
-result, even when the result has no matches. `ripgrep` and `ast_grep` share
-this rule. A failed search leaves the instructions for the first delivered
-result. Subsequent searches and continuation pages MUST omit the field.
-:::
-
-:::{req} search_accounting.instructions
-The `instructions` field supplied under {cite}`requirements.authoring.search_accounting.first_result` MUST contain the following text.
-
-```text
-Before submitting your assessment, close every delivered search with finish_search({search_id, used:[tags]}). Submission fails while any search remains open. Include a tag only when you used information in its snippet to justify your conclusion without an additional source read. Entries whose source you subsequently read with habeas may be omitted; including them is harmless. Use used:[] when no entries qualify, including for an empty search. finish_search records dependencies and does not request more source.
-```
-:::
-
-:::{req} search_accounting.excerpts
-Every `ripgrep` or `ast_grep` excerpt, including matching and context text,
-MUST be clipped to
-the source span of the outline item identified by their `file` and `item`,
-including that item's attached source under
-{cite}`requirements.references.outline_comments`.
-Clipping MUST apply within a line shared by different items.
-:::
-
-:::{req} finish_search
-The harness MUST expose:
-
-```text
-finish_search({ search_id: UUID, used: Array<String> })
-    -> { search_id: UUID, finished: true }
-```
-
-The arguments MUST contain exactly these fields.
-:::
-
-:::{req} finish_search.description
-The model-facing search and `finish_search` tool descriptions MUST give the
-same selection guidance as
-{cite}`requirements.authoring.search_accounting.instructions`.
-:::
-
-:::{req} finish_search.completion
-For a valid call, `finish_search` MUST finish the named search result and
-return the acknowledgment defined by {cite}`requirements.authoring.finish_search`.
-:::
-
-:::{req} finish_search.empty
-`finish_search` MUST accept an empty `used` array, including when the search
-has no matches, and finish the result without adding search-derived inputs.
-:::
-
-:::{req} finish_search.no_additional_source
-`finish_search` MUST NOT require another model-requested source read or
-deliver additional source text or definitions.
-:::
+Text and structural searches use the SDK's page IDs, match tags, and first-page instructions under {cite}`requirements.sdk.graph.search.first_search.instructions`. The agent closes each delivered page with {cite}`requirements.sdk.graph.search.finish_search.mcp`. The SDK retains the selected observations and requires all pages to be closed before submission under {cite}`requirements.sdk.graph.search.finish_search.behavior`.
 
 :::{req} finish_search.inputs
-For each tag selected by a valid `finish_search` call, the harness MUST record
-its `file`, `item`, and structural hash as an outline input under
-{cite}`requirements.ci.outline_inputs` before acknowledging that call.
-:::
-
-:::{req} finish_search.snapshot
-The hash recorded for a selected tag MUST describe the source snapshot that
-produced its delivered excerpt, even if the file changes before `finish_search`.
-:::
-
-:::{req} finish_search.unselected
-A `finish_search` call MUST NOT add inputs for tags it does not select.
-It MUST retain all previously recorded inputs, including inputs recorded
-by earlier `finish_search` calls.
-:::
-
-:::{req} finish_search.deduplication
-Duplicate selected tags and identical recorded inputs MUST have no
-additional effect.
-:::
-
-:::{req} finish_search.repetition
-Repeated valid calls for a finished search MUST retain previously recorded dependencies
-and add dependencies for newly selected tags.
-:::
-
-:::{req} finish_search.invalid
-Missing, extra, or wrongly typed arguments, an invalid or unknown UUID,
-a UUID from another assessment, or a tag outside that UUID's delivered
-`matches` MUST return an explanatory tool error. The assessment MUST
-continue so the model can correct the call.
-:::
-
-:::{req} finish_search.atomicity
-A rejected `finish_search` call MUST change neither recorded dependencies
-nor outstanding searches, including when only some supplied tags are valid.
-:::
-
-:::{req} submission.searches
-An otherwise valid submission of a judgment or verification MUST be
-rejected while any search remains outstanding.
-:::
-
-:::{req} submission.searches.diagnostic
-The tool error for an outstanding-search rejection MUST list
-every outstanding UUID and explain that `finish_search` is required before
-resubmitting.
-:::
-
-:::{req} submission.searches.recovery
-An outstanding-search rejection MUST leave the assessment open for the model
-to finish its searches and submit again. It MUST NOT accept a judgment or
-publish evidence.
+Habeas MUST store the source dependencies selected by `finish_search` under {cite}`requirements.sdk.graph.search.finish_search.inputs` as outline inputs under {cite}`requirements.ci.outline_inputs`. Each input identifies the file, selector, and structural hash from the snapshot that supplied the selected excerpt.
 :::
 
 :::{req} submission.searches.line_numbers
-After validating submission arguments or resolving the UUID resubmission
-form, the outstanding-search gate MUST precede line-number rejection or
-acceptance. An outstanding-search rejection MUST NOT consume the line-number
-resubmission or submission reminder.
-:::
-
-:::{req} submission.searches.accompanying_calls
-Non-submission tool calls accompanying a submission, including `finish_search`,
-MUST be skipped, even when the submission is rejected for outstanding searches.
+The SDK checks for outstanding searches before invoking Habeas's rationale vetting. A submission rejected for an outstanding search MUST leave the rationale correction attempt available under {cite}`requirements.authoring.line_numbers.rejection`.
 :::
 
 :::{example} search_accounting.helper_freshness
 A marked test calls `assert_refusal`. A search excerpt of that helper supplies
 the refusal and byte-preservation assertions used to justify the judgment.
 The model finishes the search with the helper's tag without reading it with
-`habeas`. Saved evidence MUST include the helper's outline input.
+`read_node`. Saved evidence MUST include the helper's outline input.
 
 Replacing the helper with a no-op MUST make that evidence stale, even when
 the marked test source is unchanged.
 {test}`requirements.authoring.finish_search.inputs`
-{test}`requirements.authoring.finish_search.snapshot`
-:::
-
-:::{example} search_accounting.recovery
-Two search results remain outstanding; one has no matches. Submission MUST
-return an error naming both UUIDs. Finishing only the first MUST leave
-submission rejected with the second UUID. Finishing the empty search with
-`used: []` MUST permit an otherwise valid subsequent submission.
-{test}`requirements.authoring.submission.searches`
-{test}`requirements.authoring.submission.searches.recovery`
+{test}`requirements.sdk.graph.search.finish_search.inputs`
 :::
 
 ### Read GitHub issues: `github`
@@ -1060,127 +699,16 @@ The harness MAY take the GitHub API base URL from `HABEAS_GITHUB_API_URL`,
 accepting only `http://127.0.0.1:<port>`, so that tests can use a local server.
 :::
 
-### Look up definitions and references: `references`
+### Look up requirements and follow references
 
 :::{req} reference_index
-The harness MUST expose a `references` tool with this interface:
-
-```text
-references({ selection: String?, roles: Array<"impl" | "cite" | "test">? }) -> ReferenceIndex
-
-ReferenceIndex {
-    definitions: Array<DefinitionName>,
-    sites: Array<ReferenceSite>,
-}
-
-DefinitionName { name: String, kind: "requirement" | "example" }
-
-ReferenceSite {
-    name: String,
-    role: "impl" | "cite" | "test",
-    file: String,
-    item: String?,
-}
-```
-
-`selection` MUST be a {term}`requirements.references.definition_selection`.
-Without `selection`, the tool MUST return
-the full name and kind of every requirement and named example in full-name
-order, with empty `sites`. With `selection`, it MUST return the selected definitions
-in full-name order and one flattened `sites` array containing every valid
-reference to any match whose role is in `roles`, defaulting to
-`["impl", "cite", "test"]`, under
-{cite}`requirements.references.discovery`, each naming the definition it
-references, ordered by name, file, and position in the file, without line
-numbers. Roles MUST be treated as a set: repeating a permitted role MUST NOT
-duplicate sites or change the result.
-An anchor under {cite}`requirements.references.anchors` whose role is selected
-by `roles` MUST be
-reported as a site for its anchored file, with the anchored node's selector as
-`item` when it names one and no `item` when it names the whole file. Every
-other site MUST give as `item` the selector of its smallest enclosing outline
-node under {cite}`requirements.references.outline_comments`. Only sources reference discovery considers under
-{cite}`requirements.references.discovery` MUST contribute sites. If reading such a
-source fails, the tool MUST return an explanatory tool error naming the source.
-An invalid selection or one matching no definition MUST return an explanatory tool
-error.
-
-An empty `roles` array MUST return no sites while preserving the selected
-definitions' names and kinds. An unknown role or a value other than an array of
-permitted role strings MUST return an explanatory tool error. Without `selection`,
-`roles` MUST NOT change the definition-name listing.
-
-Results MUST contain no requirement text, example text, reference commentary,
-or source text. Like directory listings, they MUST
-NOT become evidence inputs; the model requests the sources it relies on with the
-`habeas` tool. For example,
-`references({selection: "requirements.cli.status", roles: ["impl"]})` MUST
-locate only that subject's implementation references and anchors, without
-supplying their source or recording evidence inputs.
+`lookup_requirements` MUST accept an optional requirement-name glob and return matching requirement and example node IDs and their data. With no selection it lists all requirements and named examples. The agent can inspect implementation, citation, test, and acknowledgment targets through `outgoing_edges`. Reading the returned node through `read_node` records its contents.
 :::
 
-### Submit the result: `submit_judgment`
-
-:::{req} result_pages
-A result of the `habeas` line-range form, `list_files`, `outline`, `ripgrep`,
-`ast_grep`, or `references` whose serialized JSON exceeds 32 KiB MUST be
-returned in pages. The size limit MUST include search UUIDs, tags, and instructions.
-Each page MUST hold whole entries of the result's arrays, such
-as inputs, matches, nodes, or sites, with its accompanying definitions, in the
-result's order, and MUST NOT exceed 32 KiB unless a single entry does, which
-then forms a page of its own. Every paged result MUST include:
-
-```text
-page: {
-    total_entries: Integer,
-    returned_entries: Integer,
-    next: String?,
-}
-```
-
-`next` MUST be an opaque token when entries remain and null on the last page.
-While entries remain, the page MUST also include a `note` saying that more
-entries remain and that `next_page` with `next` returns them. The
-harness MUST expose a `next_page({ token: String })` tool returning the following
-page of the same result, in the same shape. Pages MUST be kept only until the
-assessment that requested them finishes; an unknown token, including one from
-another assessment, MUST return an explanatory tool error. A result within the
-limit MUST be returned whole, without `page`. Only inputs on pages delivered to
-the model MUST be recorded under {cite}`requirements.authoring.delivered_inputs`.
-:::
+### Submit the result
 
 :::{req} submission
-For requirement, example, and site assessments the harness MUST expose a `submit_judgment` tool accepting exactly these fields:
-
-```text
-submit_judgment({ determination: Judgment, rationale: String })
-
-Judgment = Boolean | { FIXME: Array<String> }
-```
-
-The judgment MUST use the three outcomes and nonempty FIXME entries defined by
-{cite}`requirements.ci.outcomes`.
-`rationale` MUST be nonempty Markdown. This tool call MUST supply the final
-assessment result. The model MUST obtain exactly one accepted submission over the entire
-assessment. Rejected attempts under
-{cite}`requirements.authoring.submission.searches.recovery` and
-{cite}`requirements.authoring.line_numbers.rejection` do not count as accepted
-submissions. If a response ends without invoking it, and the assessment has
-not already been reminded, the harness MUST continue the conversation with one
-user message, `Reminder: you MUST submit your result with the submit_judgment
-tool.`, naming the assessment's submission tool. If a later response also ends
-without invoking it, or a response contains multiple submission calls, the harness MUST
-report an error and leave existing evidence unchanged. The reminder MUST be
-counted in usage like any other turn.
-The harness MUST check the complete model response for multiple submissions
-before accepting one. Invalid submission arguments MUST also fail the assessment.
-A valid single submission MUST finish the assessment; there is no submission
-repair or resubmission loop, except the one continuation after a response cut
-off at its output limit under {cite}`requirements.authoring.output_limit`, the
-one reminder above, and the one resubmission after a rejection under
-{cite}`requirements.authoring.line_numbers.rejection`, and recovery under
-{cite}`requirements.authoring.submission.searches.recovery`. An assessment that fails before accepting a valid
-judgment MUST emit no evidence JSON to stdout.
+Each assessment and verification MUST use the SDK’s `submit_result({"result": ...})` tool under {cite}`requirements.sdk.graph.agent-harness.submission.mcp`. An assessment submits `determination` and a nonempty Markdown `rationale`. Citation assessments require a boolean determination. Requirement, example, and site assessments accept the three outcomes under {cite}`requirements.ci.outcomes`. Site assessments also submit `applies`. The SDK handles submission under {cite}`requirements.sdk.graph.agent-harness.submission.acceptance`. Failure before acceptance MUST preserve existing evidence.
 :::
 
 ## Initial prompt
@@ -1195,7 +723,7 @@ a number, or a parenthesized number range such as `(12–30)` or `(12-30)`.
 
 :::{req} line_numbers.rejection
 For requirement, example, and site reviews and their verifications, when the only submission in a response under
-{cite}`requirements.authoring.submission`, or a `submit_verification` call under
+{cite}`requirements.authoring.submission`, or a `submit_result` call under
 {cite}`requirements.authoring.verifier_prompt`, is otherwise valid but its
 rationale cites line numbers under
 {cite}`requirements.authoring.line_numbers.detection`, and it is the
@@ -1413,8 +941,8 @@ it. Each {fixme} acknowledgment includes the state of the issues it names.
 # Submitting
 
 Choose true when your task finds no gap, {"FIXME": ["..."]} when every gap is
-acknowledged, and false otherwise. You MUST end by calling submit_judgment
-with determination and rationale until one submission is accepted.
+acknowledged, and false otherwise. You MUST end by calling submit_result
+with determination and rationale inside result until one submission is accepted.
 A rejected submission does not complete the assessment. A judgment written in your
 reply text is not accepted.
 ```
@@ -1440,7 +968,7 @@ Judge against: the subject's text, using structural assessment.
 :::{req} initial_prompt
 Except for structural assessments under
 {cite}`requirements.authoring.structural_prompt`, the initial request MUST provide
-the ten tool definitions above and the
+the SDK and domain tool definitions above and the
 following prompt, the first block as its system prompt and the second as its
 subject message under {cite}`requirements.authoring.prompt_parts`. The harness MUST replace `{{subject_kind}}` with `requirement`
 or `example`, `{{subject_name}}` with the full subject name,
@@ -1448,8 +976,7 @@ or `example`, `{{subject_name}}` with the full subject name,
 under {cite}`requirements.authoring.habeas_background`, `{{judgment_rules}}` under
 {cite}`requirements.authoring.judgment_rules`, `{{acknowledgments}}` with the JSON
 array of {cite}`requirements.authoring.fixme_inputs`, and `{{mandatory_inputs}}` with the
-complete mandatory inputs as a JSON array using
-the existing evidence-input formats. It MUST replace `{{subject_task}}`, for a requirement, with the text of
+addresses and supplemental metadata for the mandatory inputs as a JSON array. The SDK appends the corresponding node contents to the subject message. It MUST replace `{{subject_task}}`, for a requirement, with the text of
 {cite}`requirements.authoring.requirement_task` followed by that of
 {cite}`requirements.authoring.testing_bar`, and for an example, with the text of
 {cite}`requirements.authoring.example_task`. It MUST replace
@@ -1480,7 +1007,7 @@ examples it cites, the vocabulary definitions it uses, and the source text of
 its {test} items and :test: anchors. Requirement and example declarations that
 refine the subject through {impl} are also included. Implementation source is
 not included merely because it carries an {impl} reference or :impl: anchor.
-You can locate it with references and request it with habeas when needed.
+Use outgoing_edges to locate it and read_node to read its contents when needed.
 Each {fixme} acknowledgment includes the state of the issues it names.
 
 Cited requirements and examples are context: when the subject requires behavior
@@ -1507,8 +1034,8 @@ when those criteria are met.
 # Submitting
 
 Choose true when your task finds no gap, {"FIXME": ["..."]} when every gap is
-acknowledged, and false otherwise. You MUST end by calling submit_judgment
-with determination and rationale until one submission is accepted.
+acknowledged, and false otherwise. You MUST end by calling submit_result
+with determination and rationale inside result until one submission is accepted.
 A rejected submission does not complete the assessment. A judgment written in your
 reply text is not accepted.
 ```
@@ -1619,7 +1146,7 @@ its queries:
    neither covers is a gap.
 9. The site queries must select every place the text's description of a site
    covers, and no place outside the requirement's stated scope. Run each site
-   query once with ast_grep by its name, <subject>/<query>, scan its matches,
+   query once with run_named_query by its name, <subject>/<query>, scan its matches,
    and search briefly for the construct the text describes to find places the
    queries miss. Obligations that decide which places are sites, such as how a
    variable is named, are checked by this search.
@@ -1905,9 +1432,7 @@ for each tool call in the cut-off response, followed by this text with `<limit>`
 replaced by the limit:
 
 ```text
-Your previous response reached the <limit>-token output limit and was cut off,
-so its tool call was incomplete. Keep within the limit: make your rationale
-shorter, then call the tool again.
+The response was cut off at <limit> tokens. Continue with a shorter response and finish with submit_result.
 ```
 
 A second response that reaches the limit, or a response that stops at an
@@ -1947,8 +1472,7 @@ It MUST NOT insert checkpoint blocks.
 So that concurrent assessments find their system prompt cached under
 {cite}`requirements.authoring.cache_checkpoints`, a batch MUST start one
 assessment of each kind it contains before any other of that kind, and start the
-others only once that assessment's first provider request has finished, whether
-or not it succeeded.
+others once its first conversation with a provider attempt finishes, including a failed conversation.
 :::
 
 :::{req} rig_configuration_mapping
@@ -2239,9 +1763,9 @@ Each assessment’s usage record MUST report its validator’s `prepared_inputs`
 
 :::{example} file_discovery_usage
 {cite}`requirements.authoring.usage_inputs`
-{cite}`requirements.authoring.file_discovery`
+{cite}`requirements.sdk.graph.validation-context.list_sources.behavior`
 
-`list_files` returns the name `src/parser.rs`. The assessment counts one `list_files` invocation and the bytes of the whole listing. Showing the filename leaves `prepared_inputs` and `delivered_inputs` unchanged. If the agent then reads a function in `src/parser.rs`, the function’s contents become an evidence input when delivered to the model.
+`list_sources` returns the name `src/parser.rs`. The assessment counts one `list_sources` invocation and the bytes of the whole listing. Showing the filename leaves `prepared_inputs` and `delivered_inputs` unchanged. If the agent then reads a function in `src/parser.rs`, the function’s contents become an evidence input when delivered to the model.
 :::
 
 :::{req} usage_requests.failures
@@ -2268,9 +1792,7 @@ A requirement has an implementation reference in one function, a test reference
 in another, and a terminology reference. The initial prompt contains the complete
 requirement, the test function's source text, and the required terminology
 definition as evidence inputs. The implementation reference alone does not add
-that function's source to the initial prompt. A references request can locate it
-without creating an evidence input; a subsequent habeas request supplies its
-source text and records the selected node and hash.
+that function's source to the initial prompt. Following the requirement’s `Implements` edges identifies that function. Reading it with `read_node` supplies its source and records its fingerprint.
 {cite}`requirements.authoring_input`
 {cite}`requirements.references.authoring_inputs`
 {cite}`requirements.definitions.authoring_inputs`
@@ -2279,31 +1801,15 @@ source text and records the selected node and hash.
 :::
 
 :::{example} additional_read
-The model calls `list_files` to find a directory, then `ripgrep` to find matching
-lines in a Rust file. The listing creates no evidence input; the search returns
-the selector of the innermost Rust item containing each match, with the
-matching and context lines but no line numbers, and creates no evidence input. An `outline` request
-for that file lists its items without content and creates no evidence input. A
-`habeas` request with the file and one item's selector returns and records that
-item, along with any required terminology. A line-range request omitting
-`line_end` reads through EOF and records the outline nodes it covers.
-{cite}`requirements.authoring.file_discovery`
-{cite}`requirements.authoring.text_search`
+The model calls `list_sources` to discover `src/lib.rs`, then `search_text` to find a matching function. The search returns its node address and a source excerpt. Reading the function with `read_node` records the function as a dependency. The agent closes the search with `finish_search` and an empty `used` list because it relied on the full node read.
+{cite}`requirements.sdk.graph.validation-context.list_sources.behavior`
+{cite}`requirements.sdk.graph.search.search_text.mcp`
 {cite}`requirements.authoring.source_tools`
 {cite}`requirements.authoring.delivered_inputs`
 :::
 
-:::{example} submission_count
-A model finishes with prose but no `submit_judgment` call: the harness reminds
-it once, and when it then calls `submit_judgment`, the assessment succeeds. When
-it ends with prose again, the assessment fails without writing evidence. A response with two `submit_judgment` calls also
-fails, even when their payloads are identical. A single call with invalid
-arguments fails without requesting a replacement submission.
-{cite}`requirements.authoring.submission`
-:::
-
 :::{example} negative_assessment
-The model reads additional sources and calls `submit_judgment` once with
+The model reads additional sources and calls `submit_result` once with
 `determination: false` and a rationale explaining the discrepancy. The harness
 saves that judgment with all source inputs it supplied. The authoring operation
 completes; ordinary evidence validation reports the false determination.
@@ -2317,7 +1823,7 @@ The tests omit a boundary case explicitly required by a requirement. A fenced
 `{fixme}` reference to that requirement describes the missing test and names
 `:github: example/app#125`. The model receives that acknowledgment and its open
 issue state without the containing implementation source. It finds no other gaps
-and calls `submit_judgment` once with
+and calls `submit_result` once with
 `determination: {"FIXME": ["example/app#125"]}` and a rationale locating the
 acknowledgment and explaining the untested boundary. The harness saves that
 judgment, the source inputs it supplied, and the reference-set digest covering

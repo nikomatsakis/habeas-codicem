@@ -445,17 +445,6 @@ pub(crate) fn tool(github: &GithubIssues, arguments: &Value) -> Result<Value, St
     }
 }
 
-/// The `github` tool's definition.
-// {impl}`requirements.authoring.github_reads`
-// {impl}`requirements.authoring.initial_prompt`
-pub(crate) fn tool_definition() -> Value {
-    json!({
-        "name": "github",
-        "description": "Read a GitHub issue or pull request named as <owner>/<repo>#<number>, such as one a {fixme} option line names. Returns its reference, state (open or closed), title, and body. Results are not evidence inputs.",
-        "parameters": {"type": "object", "properties": {"issue": {"type": "string"}}, "required": ["issue"], "additionalProperties": false}
-    })
-}
-
 /// The closed `{fixme}` fences of a reference list and the issues each
 /// names.
 // {impl}`requirements.authoring.github_reads`
@@ -736,7 +725,7 @@ fn containing_item(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::io::{BufRead, BufReader};
     use std::net::TcpListener;
     use std::sync::Mutex;
@@ -746,14 +735,14 @@ mod tests {
     /// A local stand-in for the GitHub API: each request's path selects a
     /// status and JSON body, and the request heads are kept.
     // {test}`requirements.authoring.github_reads`
-    struct FakeGithub {
-        endpoint: String,
+    pub(crate) struct FakeGithub {
+        pub(crate) endpoint: String,
         requests: Arc<Mutex<Vec<String>>>,
     }
 
     impl FakeGithub {
         // {test}`requirements.authoring.github_reads`
-        fn start(answers: &[(&str, u16, Value)]) -> Self {
+        pub(crate) fn start(answers: &[(&str, u16, Value)]) -> Self {
             let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
             let endpoint = format!("http://{}", listener.local_addr().unwrap());
             let answers = answers
@@ -833,6 +822,7 @@ mod tests {
     // {test}`requirements.authoring.github_reads`
     // {test}`requirements.authoring.redaction`
     #[test]
+    // {test}`requirements.authoring.no_line_numbers`
     fn the_tool_reads_issues_with_the_token_and_redacts_bodies() {
         let token = ["ghp_", "abcdefghijklmnopqrstuvwxyz0123456789"].concat();
         let github = FakeGithub::start(&[
@@ -851,6 +841,14 @@ mod tests {
             Some("TEST_TOKEN".to_owned()),
         );
         let read = tool(&issues, &json!({"issue": "example/queue#125"})).unwrap();
+        let mut keys: Vec<_> = read
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["body", "reference", "state", "title"]);
         assert_eq!(read["reference"], "example/queue#125");
         assert_eq!(read["state"], "closed");
         assert_eq!(read["title"], "Queue capacity");

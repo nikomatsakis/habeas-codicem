@@ -58,6 +58,12 @@ impl OutlineData {
 }
 
 /// UTF-8 byte boundaries in the original file snapshot, with an exclusive end.
+///
+/// ```compile_fail,E0639
+/// use trust_but_verify::outline::Span;
+/// let _ = Span { start: 0, end: 1 };
+/// ```
+// {test}`requirements.sdk.outlines.Span`
 // {impl}`requirements.sdk.outlines.Span`
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -823,6 +829,12 @@ pub(super) fn unsupported_search(language: &str) -> OutlineError {
 }
 
 /// A source that its grammar cannot parse.
+///
+/// ```compile_fail,E0639
+/// use trust_but_verify::outline::OutlineError;
+/// let _ = OutlineError { line: 1, message: String::new() };
+/// ```
+// {test}`requirements.sdk.outlines.OutlineError`
 #[derive(Clone, Debug, PartialEq, Eq)]
 // {cite}`habeas:util`
 #[non_exhaustive]

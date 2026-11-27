@@ -124,6 +124,7 @@ fn fenced_references_in_comments_and_built_in_rules_are_validated() {
 // {test}`requirements.references.citation_review`
 // {test}`requirements.references.rust_item_coverage`
 #[test]
+// {test}`requirements.references.builtin_definitions`
 fn habeas_util_citations_cover_their_item_without_a_citation_review() {
     let temp = project();
     let root = temp.path();

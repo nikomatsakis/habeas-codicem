@@ -254,17 +254,20 @@ impl LocalSources {
                 Component::CurDir => {}
                 Component::ParentDir if relative.pop() => {}
                 _ => {
-                    return Err(SourceError::Invalid(
-                        "source path must be relative to the project directory".into(),
-                    ));
+                    return Err(SourceError::Invalid(format!(
+                        "{location}: source path must be relative to the project directory"
+                    )));
                 }
             }
         }
         let path = root.join(relative);
-        if !path.canonicalize()?.starts_with(&root) {
-            return Err(SourceError::Invalid(
-                "source is outside the selected root".into(),
-            ));
+        let target = path
+            .canonicalize()
+            .map_err(|error| std::io::Error::new(error.kind(), format!("{location}: {error}")))?;
+        if !target.starts_with(&root) {
+            return Err(SourceError::Invalid(format!(
+                "{location}: source is outside the selected root"
+            )));
         }
         Ok(path)
     }

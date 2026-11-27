@@ -151,6 +151,7 @@ impl HabeasNode {
 )]
 pub(crate) enum HabeasEdgeLabel {
     Implements,
+    Cites,
     Tests,
     Acknowledges,
     Mandatory,
@@ -205,6 +206,17 @@ impl NodeContents for HabeasNodeContent {
     }
 }
 
+fn project_source_path(path: &std::path::Path) -> bool {
+    path.components()
+        .any(|part| matches!(part, std::path::Component::Normal(_)))
+        && path.components().all(|part| {
+            matches!(
+                part,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        })
+}
+
 // {impl}`requirements.sdk.graph.domain_types`
 // {impl}`requirements.sdk.domain`
 impl Domain for HabeasDomain {
@@ -212,6 +224,13 @@ impl Domain for HabeasDomain {
         &self,
         item: &trust_but_verify::outline::OutlineData,
     ) -> Result<HabeasNode, trust_but_verify::sources::SourceError> {
+        if !project_source_path(&item.path) {
+            return Err(trust_but_verify::sources::SourceError::Invalid(
+                "expected a project-relative file".into(),
+            ));
+        }
+        trust_but_verify::outline::OutlineData::new(&item.path, item.selector.clone())
+            .map_err(|e| trust_but_verify::sources::SourceError::Invalid(e.to_string()))?;
         let file = item.path.to_str().ok_or_else(|| {
             trust_but_verify::sources::SourceError::Invalid("source path is not UTF-8".into())
         })?;
@@ -228,7 +247,9 @@ impl Domain for HabeasDomain {
         let HabeasNode::Source(id) = data else {
             return None;
         };
-        if id.resource.scheme != "repo" {
+        if id.resource.scheme != "repo"
+            || !project_source_path(std::path::Path::new(&id.resource.location))
+        {
             return None;
         }
         trust_but_verify::outline::OutlineData::new(&id.resource.location, id.selector.clone()).ok()
@@ -309,6 +330,19 @@ impl Domain for HabeasDomain {
         }
         let role = match label {
             HabeasEdgeLabel::Implements => "impl",
+            HabeasEdgeLabel::Cites => {
+                let catalog = self.outlines.reference_catalog(&self.root);
+                let catalog = catalog
+                    .as_ref()
+                    .as_ref()
+                    .map_err(|error| std::io::Error::other(error.clone()))?;
+                return Ok(self
+                    .citation_targets(catalog.references.iter().filter(|r| r.name == query.0))?
+                    .into_iter()
+                    .filter(|target| target != node)
+                    .map(|target| self.cache().intern_node(target))
+                    .collect());
+            }
             HabeasEdgeLabel::Tests => "test",
             HabeasEdgeLabel::Acknowledges => "fixme",
             HabeasEdgeLabel::Mandatory => unreachable!(),
@@ -430,6 +464,26 @@ impl HabeasDomain {
         Ok(domain)
     }
 
+    fn citation_targets<'a>(
+        &self,
+        references: impl Iterator<Item = &'a crate::evidence::SourceReference>,
+    ) -> std::io::Result<Vec<HabeasNode>> {
+        let mut targets = Vec::new();
+        for reference in references.filter(|r| r.kind == crate::ReferenceKind::Cite) {
+            let selector = crate::authoring::inputs::reference_selector(
+                &self.root,
+                &self.definitions,
+                &self.outlines,
+                reference,
+            )?;
+            let target = HabeasNode::from(&selector);
+            if !targets.contains(&target) {
+                targets.push(target);
+            }
+        }
+        Ok(targets)
+    }
+
     pub(crate) fn populate_graph(&mut self) -> std::io::Result<()> {
         let catalog = self.outlines.reference_catalog(&self.root);
         let catalog = catalog
@@ -459,12 +513,19 @@ impl HabeasDomain {
             ) else {
                 continue;
             };
+            let references = incoming.remove(name.as_str()).unwrap_or_default();
+            let citations = self.citation_targets(references.iter().copied())?;
+            self.install_edges(
+                subject.clone(),
+                HabeasEdgeLabel::Cites,
+                citations.into_iter(),
+            );
             let mut entries = crate::evidence::reference_set_entries(
                 &self.root,
                 &self.outlines,
                 name,
                 declaration,
-                incoming.remove(name.as_str()).unwrap_or_default(),
+                references,
                 &sites,
             );
             entries.sort();
@@ -755,8 +816,24 @@ mod tests {
         .unwrap();
         assert_eq!(
             domain.source_address(&domain.source_node(&method).unwrap()),
-            Some(method)
+            Some(method.clone())
         );
+        for (path, selector) in [
+            ("../outside.rs", ""),
+            ("/absolute.rs", ""),
+            ("src/parser.rs", "fn["),
+            ("", ""),
+        ] {
+            let mut address = method.clone();
+            address.path = path.into();
+            address.selector = selector.into();
+            assert!(domain.source_node(&address).is_err());
+            let data = HabeasNode::from(&InputSelector::Outline {
+                file: path.into(),
+                item: selector.into(),
+            });
+            assert!(domain.source_address(&data).is_none());
+        }
         let cases = [
             (
                 HabeasNode::Requirement(RequirementId("same".into())),

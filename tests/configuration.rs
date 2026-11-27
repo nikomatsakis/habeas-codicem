@@ -733,6 +733,17 @@ fn explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them() {
     let path = Path::new("habeas.toml");
     let source = "version = 1\n[authoring.configs.cloud]\nbackend = 'bedrock'\nmodel = 'm'\n[authoring.configs.cloud.credentials]\naccess_key_id = 'PRIVATE_ACCESS_KEY'\nsecret_access_key = 'PRIVATE_SECRET_KEY'\nsession_token = 'PRIVATE_SESSION'\n[authoring.configs.local]\nbackend = 'ollama'\nmodel = 'm'\napi_key = 'PRIVATE_OLLAMA_KEY'\n[authoring.configs.openai]\nbackend = 'openai'\napi_key = 'PRIVATE_OPENAI_KEY'\n";
     let config = WorkspaceConfig::parse(source, path).unwrap();
+    let permanent = source.replace("session_token = 'PRIVATE_SESSION'\n", "");
+    let permanent = WorkspaceConfig::parse(&permanent, path).unwrap();
+    let encoded = permanent.to_toml().unwrap();
+    assert!(!encoded.contains("session_token"));
+    assert_eq!(WorkspaceConfig::parse(&encoded, path).unwrap(), permanent);
+    for required in [
+        "access_key_id = 'PRIVATE_ACCESS_KEY'",
+        "secret_access_key = 'PRIVATE_SECRET_KEY'",
+    ] {
+        assert!(WorkspaceConfig::parse(&source.replace(required, ""), path).is_err());
+    }
     let debug = format!("{config:?}");
     for secret in [
         "PRIVATE_ACCESS_KEY",

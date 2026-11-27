@@ -79,17 +79,6 @@ impl SourceAccess {
         Ok(relative)
     }
 
-    // {impl}`requirements.authoring.file_discovery`
-    pub fn files(&self, root: &Path, path: &Path) -> io::Result<Vec<PathBuf>> {
-        use trust_but_verify::sources::SourceScope;
-        let relative = Self::relative(root, path)?;
-        let prefix = relative
-            .to_str()
-            .ok_or_else(|| io::Error::other("source path is not UTF-8"))?;
-        futures_executor::block_on(self.sources.list(&SourceScope::under(prefix)))
-            .map_err(|error| io::Error::other(format!("cannot list {}: {error}", path.display())))
-    }
-
     // {impl}`requirements.authoring.source_tools`
     // {impl}`requirements.authoring.mandatory_inputs`
     // {impl}`requirements.authoring.tool_descriptions.special_cases`
@@ -217,22 +206,6 @@ impl std::fmt::Display for PolicyDenial {
 
 impl std::error::Error for PolicyDenial {}
 
-/// Turns a permission error that did not come from source-access policy, such
-/// as an operating-system `EACCES`, into an ordinary read failure, leaving
-/// policy denials and every other error unchanged.
-// {impl}`requirements.authoring.read_denial`
-pub fn recoverable_os_denial(error: io::Error) -> io::Error {
-    if error.kind() == io::ErrorKind::PermissionDenied
-        && !error
-            .get_ref()
-            .is_some_and(|inner| inner.is::<PolicyDenial>())
-    {
-        io::Error::other(error.to_string())
-    } else {
-        error
-    }
-}
-
 // {cite}`habeas:util`
 fn denied(message: impl Into<String>) -> io::Error {
     io::Error::new(
@@ -241,7 +214,6 @@ fn denied(message: impl Into<String>) -> io::Error {
     )
 }
 
-// {impl}`requirements.authoring.file_discovery`
 // {impl}`requirements.configuration.evidence_paths`
 fn resolve(root: &Path, relative: &Path) -> io::Result<(PathBuf, PathBuf)> {
     if relative.as_os_str().is_empty() {

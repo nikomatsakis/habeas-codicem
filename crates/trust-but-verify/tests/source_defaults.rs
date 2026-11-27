@@ -136,6 +136,7 @@ async fn scoped_text_results_keep_line_numbers_context_and_completeness() {
 // {test}`requirements.sdk.sources.Sources`
 // {test}`requirements.sdk.sources.read_file`
 #[tokio::test]
+// {test}`requirements.authoring.source_tools`
 async fn gitignore_is_shared_by_all_operations_with_or_without_a_git_repository() {
     for repository in [false, true] {
         let root = tempfile::tempdir().unwrap();

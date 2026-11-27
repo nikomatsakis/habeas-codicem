@@ -111,6 +111,20 @@ impl<D: Domain> ValidationCache<D> {
 ```
 :::
 
+:::{req} set_agent
+`set_agent` selects an agent for subsequent requests through this cache handle and its future clones. Earlier clones retain their selected agent. All handles continue to share the same node IDs, source snapshots, and aggregate usage. A caller can discover a graph before selecting the model for a review.
+
+```rust,ignore
+impl<D: Domain> ValidationCache<D> {
+    pub fn set_agent(&mut self, config: impl AgentSettings<D>)
+    where
+        D::NodeData: Serialize + DeserializeOwned + JsonSchema,
+        D::EdgeLabel: DeserializeOwned + JsonSchema + PartialEq,
+        D::Error: Display;
+}
+```
+:::
+
 For example, an application that stores an optional `AgentConfig` in its
 settings can construct its domain's cache when it loads those settings:
 

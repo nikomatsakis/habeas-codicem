@@ -25,17 +25,6 @@ pub mod storage;
 #[path = "sources.rs"]
 mod source_engine;
 
-// :::{fixme} requirements.sdk.public-api.exports
-// Habeas still enables the `habeas-integration` Cargo feature to reach TBV's
-// agent internals. The public API
-// inventory test covers the documented exports. It does not yet check that
-// the manifest defines no features or that Habeas builds using those exports alone.
-// :::
-#[cfg(feature = "habeas-integration")]
-#[doc(hidden)]
-#[path = "agent.rs"]
-pub mod agent_runtime;
-#[cfg(not(feature = "habeas-integration"))]
 #[path = "agent.rs"]
 mod agent_runtime;
 

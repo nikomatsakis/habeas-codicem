@@ -177,6 +177,7 @@ impl<N: Clone, L: Clone> Pages<N, L> {
     // {impl}`requirements.sdk.graph.search.finish_search.behavior`
     // {impl}`requirements.sdk.graph.search.finish_search.inputs`
     // {impl}`requirements.sdk.graph.search.finish_search.mcp`
+    // {impl}`requirements.authoring.finish_search.inputs`
     pub(super) fn finish_search(&mut self, args: &Value) -> io::Result<ToolDelivery<N, L>> {
         #[derive(serde::Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -258,4 +259,37 @@ fn chunks<T>(entries: Vec<T>, length: impl Fn(&T) -> usize) -> Vec<Vec<T>> {
     }
     parts.push(current);
     parts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // {test}`requirements.sdk.graph.validation-context.pages.behavior`
+    #[test]
+    fn text_listing_and_outline_continuations_replay_the_same_page_and_successor() {
+        let entries = json!([
+            "a".repeat(PAGE_SIZE),
+            "b".repeat(PAGE_SIZE),
+            "c".repeat(PAGE_SIZE)
+        ]);
+        for (field, value) in [
+            ("text", json!("abc".repeat(PAGE_SIZE))),
+            ("files", entries.clone()),
+            ("items", entries),
+        ] {
+            let mut pages = Pages::<(), ()>::new();
+            let first = pages.prepare(json!({}), field, value, vec![]);
+            let next =
+                |text: &str| json!({"uuid":serde_json::from_str::<Value>(text).unwrap()["next"]});
+            let second_id = next(&first.text);
+            let second = pages.get(&second_id).unwrap();
+            let third_id = next(&second.text);
+            assert!(third_id["uuid"].is_string());
+            let third = pages.get(&third_id).unwrap();
+            assert_eq!(pages.get(&second_id).unwrap().text, second.text);
+            assert_eq!(pages.get(&third_id).unwrap().text, third.text);
+            assert!(Pages::<(), ()>::new().get(&second_id).is_err());
+        }
+    }
 }

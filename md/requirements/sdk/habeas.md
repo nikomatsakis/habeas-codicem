@@ -89,8 +89,7 @@ HC runs the `citation-review` criterion on the source node for the reviewed file
 HC's criterion types specify the questions. Its `Context` implementations
 supply the review instructions and conventions. HC loads SDK agent
 configuration through its own [configuration policy](../configuration.md),
-then uses `ValidationCache::with_agent(agent_config)` to create the domain’s
-cache. Each assessment creates its own validator and reads its usage before handling the result under {cite}`requirements.authoring.usage_requests`.
+then installs the assessment’s configured agent and tools on a clone of the discovery cache under {cite}`requirements.sdk.validation-cache.set_agent`. Each assessment creates its own validator and reads its usage before handling the result under {cite}`requirements.authoring.usage_requests`.
 
 ```rust,ignore
 use trust_but_verify::graph::Validator;

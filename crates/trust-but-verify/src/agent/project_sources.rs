@@ -433,6 +433,7 @@ mod tests {
     // {test}`requirements.sdk.graph.search.finish_search.inputs`
     #[tokio::test]
     // {test}`requirements.sdk.graph.search.agent_search`
+    // {test}`requirements.sdk.sources.provider.attachment`
     async fn scoped_search_accounts_for_visible_descendant_text() {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir(root.path().join("src")).unwrap();
@@ -445,6 +446,31 @@ mod tests {
         }
         let tools = ProjectSources::new(project(""), Sources::new(root.path()));
         let mut session = SessionTools::new(tools.session());
+        for (tool, args) in [
+            ("search_text", json!({"pattern":"hit"})),
+            (
+                "search_structure",
+                json!({"language":"rust","rule":{"rule":{"pattern":"hit()"}}}),
+            ),
+        ] {
+            let result = session.dispatch(tool, &args).await.unwrap();
+            let page: Value = serde_json::from_str(&result.text).unwrap();
+            let mut paths: Vec<_> = page["matches"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|hit| hit["file"].as_str().unwrap())
+                .collect();
+            paths.sort_unstable();
+            assert_eq!(paths, ["other.rs", "src/code.rs"]);
+            session
+                .dispatch(
+                    "finish_search",
+                    &json!({"search_id":page["search_id"],"used":[]}),
+                )
+                .await
+                .unwrap();
+        }
         let fixture = root.path().join("src/code.rs");
         let original =
             crate::outline::OutlineContent::from_path(tools.domain.cache(), &fixture).unwrap();
@@ -513,6 +539,9 @@ mod tests {
     #[tokio::test]
     // {test}`requirements.sdk.graph.search.agent_search`
     // {test}`requirements.sdk.graph.running-criteria.UsageStats`
+    // {test}`requirements.authoring.finish_search.inputs`
+    // {test}`requirements.authoring.tool_descriptions.common_case`
+    // {test}`requirements.authoring.delivered_inputs`
     async fn search_obligations_follow_delivery_and_keep_the_original_snapshot() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("source.txt");
@@ -520,13 +549,13 @@ mod tests {
             .map(|n| format!("hit me here {n}\n"))
             .collect::<String>();
         std::fs::write(&path, &original).unwrap();
-        let expected = crate::outline::OutlineContent::from_source(
+        let original_outline = crate::outline::OutlineContent::from_source(
             project("").cache(),
             "source.txt",
             original.into(),
         )
-        .unwrap()
-        .at_offset(0);
+        .unwrap();
+        let expected = original_outline.at_offset(0);
         let expected_id = project("").source_node(expected.id()).unwrap();
         let expected = expected.fingerprint();
         let tools = ProjectSources {
@@ -680,10 +709,31 @@ mod tests {
                 .is_err()
         );
         assert_eq!(session.outstanding_searches().len(), 2);
+        let id = &first["search_id"];
+        for malformed in [
+            json!({}),
+            json!({"search_id":id}),
+            json!({"search_id":id,"used":true}),
+            json!({"search_id":"bad UUID","used":[]}),
+            json!({"search_id":id,"used":[],"unexpected":true}),
+        ] {
+            let result = session.dispatch("finish_search", &malformed).await;
+            assert!(
+                !result
+                    .err()
+                    .expect("invalid selection")
+                    .to_string()
+                    .is_empty()
+            );
+        }
         let selected = finish(&first, json!([first["matches"][0]["tag"]]));
         for _ in 0..2 {
             let closed = session.dispatch("finish_search", &selected).await.unwrap();
             assert_eq!(closed.input_count, 0);
+            assert_eq!(
+                serde_json::from_str::<Value>(&closed.text).unwrap(),
+                json!({"search_id":id,"finished":true})
+            );
             assert_eq!(
                 closed.dependencies,
                 [Dependency::Node(
@@ -692,10 +742,23 @@ mod tests {
                 )]
             );
         }
-        session
-            .dispatch("finish_search", &finish(&second, json!([])))
+        let later_hit = &second["matches"][0];
+        let later_item = original_outline
+            .select(later_hit["selector"].as_str().unwrap())
+            .unwrap();
+        let later_id = tools
+            .domain
+            .cache()
+            .intern_node(tools.domain.source_node(later_item.id()).unwrap());
+        assert_eq!(later_hit["node"], json!(later_id));
+        let selected = session
+            .dispatch("finish_search", &finish(&second, json!([later_hit["tag"]])))
             .await
             .unwrap();
+        assert_eq!(
+            selected.dependencies,
+            [Dependency::Node(later_id, later_item.fingerprint())]
+        );
         assert_eq!(
             session.dispatch("get_next_page", &next).await.unwrap().text,
             delivery.text
@@ -1616,6 +1679,8 @@ mod tests {
     // {test}`requirements.sdk.graph.search.search_text.mcp`
     #[tokio::test]
     // {test}`requirements.sdk.graph.search.search_structure.mcp`
+    // {test}`requirements.authoring.redaction`
+    // {test}`requirements.authoring.redaction_notice`
     async fn search_excerpts_redact_credentials_before_serialization_and_paging() {
         let root = tempfile::tempdir().unwrap();
         let token = format!("gh{}_{}", "p", "16C7e42F292c6912E7710c838347Ae178B4a");
@@ -1710,6 +1775,7 @@ mod tests {
     #[tokio::test]
     // {test}`requirements.sdk.graph.validation-context.outline_source.mcp`
     // {test}`requirements.sdk.graph.validation-context.node_reference`
+    // {test}`requirements.authoring.no_line_numbers`
     async fn outline_tool_rejects_excluded_and_unreadable_sources_without_domain_reads() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("source.txt"), "first\nsecond\n").unwrap();
@@ -1749,7 +1815,11 @@ mod tests {
                 "{args}"
             );
         }
-        std::fs::write(root.path().join("invalid.rs"), "fn {").unwrap();
+        std::fs::write(
+            root.path().join("invalid.rs"),
+            "fn intact() { keep(); }\nfn incomplete(\n",
+        )
+        .unwrap();
         let listing = session.dispatch("list_sources", &json!({})).await.unwrap();
         let listing: Value = serde_json::from_str(&listing.text).unwrap();
         let files = tools.sources.list(&Default::default()).await.unwrap();
@@ -1764,6 +1834,25 @@ mod tests {
         let outline: Value = serde_json::from_str(&recovered.text).unwrap();
         assert!(outline["items"][0]["node"].is_u64());
         assert_eq!(domain.0.lock().unwrap().reads, 0);
+        domain.0.lock().unwrap().outline_root = Some(root.path().to_owned());
+        let cx = ValidationContext::new(&domain, domain.cache().intern_node("subject".into()));
+        let read = session
+            .read_node(&cx, &json!({"path":"invalid.rs","location":"fn[intact]"}))
+            .unwrap();
+        let text = serde_json::from_str::<Value>(&read.text).unwrap();
+        assert_eq!(text["file"], "invalid.rs");
+        assert_eq!(text["selector"], "fn[intact]");
+        assert!(text["text"].as_str().unwrap().contains("keep()"));
+        let hits = session.dispatch("search_structure", &json!({"path":"invalid.rs","language":"rust","rule":{"rule":{"pattern":"keep()"}}})).await.unwrap();
+        let hits = serde_json::from_str::<Value>(&hits.text).unwrap();
+        assert_eq!(hits["matches"][0]["selector"], "fn[intact]");
+        let position = regex::Regex::new(
+            r#"(?i)\blines?\s+\d|\.rs:\d|"(?:line|column|line_start|line_end)"\s*:"#,
+        )
+        .unwrap();
+        for payload in [outline, text, hits] {
+            assert!(!position.is_match(&payload.to_string()), "{payload}");
+        }
     }
 }
 
@@ -1804,6 +1893,7 @@ where
     // {impl}`requirements.sdk.graph.search.search_structure.mcp.description`
     // {impl}`requirements.sdk.graph.search.finish_search.mcp`
     // {impl}`requirements.sdk.graph.search.finish_search.mcp.description`
+    // {impl}`requirements.authoring.tool_descriptions.common_case`
     fn definitions(&self) -> io::Result<Vec<ToolDefinition>> {
         [
             json!({"name":LIST_SOURCES,"description":"List available project file nodes.", "parameters":{"type":"object","properties":{}}}),

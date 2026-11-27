@@ -224,6 +224,9 @@ impl<P: CompletionProvider, T> ToolAgent<P, T> {
         let tools = SessionTools::new(self.tools.session());
         let current = serde_json::to_string(&request.current_node).map_err(io::Error::other)?;
         let mut texts = Vec::new();
+        if !request.message.is_empty() {
+            texts.push(request.message);
+        }
         for input in &request.inputs {
             let reference = serde_json::to_string(&input.node).map_err(io::Error::other)?;
             texts.push(format!("{}\nNode: {reference}", input.text));
@@ -242,11 +245,9 @@ impl<P: CompletionProvider, T> ToolAgent<P, T> {
             inspection,
             &self.provider,
             &mut session,
-            None,
             opening,
             request.inputs,
             request.result_schema,
-            &submit,
             request.finish,
         )
         .await
@@ -501,8 +502,8 @@ where
             .unwrap_or("");
         let project =
             project.ok_or_else(|| io::Error::other("project sources are not configured"))?;
-        let id =
-            crate::outline::OutlineData::new(path, location.into()).map_err(io::Error::other)?;
+        let id = crate::outline::OutlineData::new(path, location.into())
+            .map_err(|error| io::Error::other(format!("{path}#{location}: {}", error.message)))?;
         let item = project.resolve_outline(&id)?;
         return Ok(project.intern_source(item.id())?);
     }

@@ -516,6 +516,43 @@ fn public_exports_match_the_appendix() {
         .unwrap()
         .parent()
         .unwrap();
+    let metadata = Command::new(env!("CARGO"))
+        .current_dir(workspace)
+        .args(["metadata", "--no-deps", "--locked", "--format-version=1"])
+        .output()
+        .unwrap();
+    assert!(metadata.status.success());
+    let metadata: serde_json::Value = serde_json::from_slice(&metadata.stdout).unwrap();
+    let sdk = metadata["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "trust-but-verify")
+        .unwrap();
+    assert_eq!(
+        sdk["features"],
+        serde_json::json!({}),
+        "TBV defines no Cargo features"
+    );
+    let consumer = Command::new(env!("CARGO"))
+        .current_dir(workspace)
+        .args([
+            "check",
+            "--locked",
+            "--offline",
+            "--package",
+            "habeas",
+            "--lib",
+        ])
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .output()
+        .expect("check the shipping Habeas consumer against the SDK");
+    assert!(
+        consumer.status.success(),
+        "Habeas must compile using the public SDK: {}",
+        String::from_utf8_lossy(&consumer.stderr)
+    );
     let target = workspace.join("target");
     // Use stable rustdoc's published HTML to check paths and item kinds. Always
     // generate it for this source tree rather than accepting an old book copy.

@@ -44,6 +44,7 @@ where
                     RigProvider::connect(&configured.backend)
                         .await
                         .map(Arc::new)
+                        .map_err(super::AgentError::Provider)
                 })
                 .await?;
             let tools = &configured.tools;
@@ -221,8 +222,43 @@ mod tests {
         }
     }
 
+    // {test}`requirements.sdk.graph.agent-calls.subject_message`
+    #[tokio::test]
+    async fn a_late_task_message_precedes_the_first_source_in_the_provider_request() {
+        let (backend, server) =
+            local_backend(vec![("submit_result", serde_json::json!({"result":true}))]);
+        let domain = TestDomain(
+            Default::default(),
+            Default::default(),
+            crate::domain::ValidationCache::with_agent(backend),
+        );
+        let current = domain.cache().intern_node(TestNode { id: 1 });
+        let cx = ValidationContext::new(&domain, current);
+        cx.ask::<bool>()
+            .message("old task")
+            .contents_of_current_node()
+            .message("new task")
+            .await
+            .unwrap();
+        let requests = server.join().unwrap();
+        let content = &requests[0]["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["role"] == "user")
+            .unwrap()["content"];
+        let user = content
+            .as_str()
+            .or_else(|| content[0]["text"].as_str())
+            .unwrap();
+        assert!(user.starts_with("new task"), "{user}");
+        assert!(user.contains("a source snapshot"));
+        assert!(!user.contains("old task"));
+    }
+
     // {test}`requirements.sdk.graph.validation-context.shared_context`
     #[tokio::test]
+    // {test}`requirements.sdk.graph.validation-context.ValidationContext.ask`
     async fn verify_returns_direct_and_tool_reads_in_one_trace() {
         struct ReadThenAsk(NodeId<TestDomain>);
         impl Criterion<TestDomain> for ReadThenAsk {
@@ -280,6 +316,8 @@ mod tests {
     // {test}`requirements.sdk.graph.criteria.deterministic_procedures`
     // {test}`requirements.sdk.validation-cache.with_agent`
     #[tokio::test]
+    // {test}`requirements.sdk.graph.running-criteria.ValidationError`
+    // {test}`requirements.sdk.graph.agent-harness.agent_config`
     async fn configured_agents_initialize_only_when_asked_and_report_setup_errors() {
         // An explicitly empty credential fails before any request is sent.
         let config = AgentConfig::OpenAi(OpenAiConfig {
@@ -311,7 +349,7 @@ mod tests {
             Ok(_) => panic!("missing credentials must fail the awaited ask"),
             Err(error) => error,
         };
-        assert!(matches!(error, crate::graph::ValidationError::Agent(_)));
+        assert!(matches!(error, crate::graph::ValidationError::Provider(_)));
         assert!(
             error
                 .to_string()
@@ -676,6 +714,41 @@ mod tests {
         assert!(Arc::ptr_eq(&cache.source_addresses, &peer.source_addresses));
         assert!(Arc::ptr_eq(&cache.outlines, &peer.outlines));
         assert!(Arc::ptr_eq(&cache.usage, &peer.usage));
+    }
+
+    // {test}`requirements.sdk.validation-cache.set_agent`
+    #[tokio::test]
+    async fn installing_an_agent_after_discovery_preserves_the_cache() {
+        let mut domain = TestDomain::default();
+        let discovery = domain.clone();
+        let node = discovery.cache().intern_node(TestNode { id: 9 });
+        let (first, first_server) = local_backend(vec![(
+            "submit_result",
+            serde_json::json!({"result": false}),
+        )]);
+        let (second, second_server) =
+            local_backend(vec![("submit_result", serde_json::json!({"result": true}))]);
+        domain.2.set_agent(first);
+        let earlier = domain.clone();
+        domain.2.set_agent(second);
+        let later = domain.clone();
+        assert!(discovery.2.agent.is_none());
+        assert!(Arc::ptr_eq(
+            later.2.agent.as_ref().unwrap(),
+            domain.2.agent.as_ref().unwrap()
+        ));
+        assert_eq!(later.cache().node_data(node).unwrap().id, 9);
+        assert!(Arc::ptr_eq(&later.2.outlines, &discovery.2.outlines));
+        for (handle, expected) in [(&earlier, false), (&later, true)] {
+            let result = validation::Validator::new(handle)
+                .verify(Question(true, node))
+                .await
+                .unwrap();
+            assert_eq!(*result.output(), expected);
+        }
+        assert_eq!(discovery.cache().usage().attempts, 2);
+        assert_eq!(first_server.join().unwrap().len(), 1);
+        assert_eq!(second_server.join().unwrap().len(), 1);
     }
 
     struct ReadSelection;
@@ -1353,6 +1426,7 @@ mod tests {
     #[tokio::test]
     // {test}`requirements.sdk.graph.validation-context.shared_context`
     // {test}`requirements.sdk.graph.running-criteria.UsageStats`
+    // {test}`requirements.sdk.graph.agent-harness.submission_count`
     async fn configured_agent_uses_domain_source_tools_in_independent_executions() {
         use std::{
             io::{Read, Write},
@@ -1511,7 +1585,8 @@ mod tests {
                         };
                         let used = match step {
                             11 => serde_json::json!([tag("unused.txt"), "invalid"]),
-                            12 | 13 => serde_json::json!([tag("beta.txt")]),
+                            12 => serde_json::json!([tag("beta.txt"), tag("beta.txt")]),
+                            13 => serde_json::json!([tag("beta.txt")]),
                             _ => serde_json::json!([tag("alpha.txt")]),
                         };
                         (

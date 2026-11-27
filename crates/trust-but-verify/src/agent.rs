@@ -7,11 +7,7 @@ use rig_core::{
     message::{Message, ToolResultContent, turn_failure},
 };
 use serde_json::Value;
-use std::{
-    future::Future,
-    io,
-    time::{Duration, Instant},
-};
+use std::{future::Future, io, time::Duration};
 
 #[path = "agent/pages.rs"]
 mod pages;
@@ -115,6 +111,7 @@ pub enum Submission<T> {
 #[derive(Debug)]
 pub enum AgentError<E> {
     Conversation(io::Error),
+    Provider(io::Error),
     Domain(E),
 }
 
@@ -146,31 +143,6 @@ pub trait Conversation: Send {
         Ok(())
     }
     // {cite}`habeas:util`
-    fn begin_request(&mut self) -> io::Result<usize> {
-        Ok(0)
-    }
-    // {cite}`habeas:util`
-    fn end_request(
-        &mut self,
-        _index: usize,
-        _elapsed: Duration,
-        _response: &io::Result<CompletionResponse>,
-    ) -> io::Result<()> {
-        Ok(())
-    }
-    // {cite}`habeas:util`
-    fn retried(&mut self, _index: usize) -> io::Result<()> {
-        Ok(())
-    }
-    // {cite}`habeas:util`
-    fn skipped_tool(&mut self, _name: &str) {}
-    // {cite}`habeas:util`
-    fn tool(&mut self, _name: &str, _failed: bool) {}
-    // {cite}`habeas:util`
-    fn save(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-    // {cite}`habeas:util`
     fn cut_off(&mut self, response: &CompletionResponse, limit: u64) -> Vec<Message>;
 }
 
@@ -192,7 +164,7 @@ impl<D: crate::domain::Domain> Drop for ProviderAttempt<'_, '_, D> {
 // {impl}`requirements.sdk.graph.agent-calls.judge.submission`
 // {impl}`requirements.sdk.graph.agent-harness.submission.acceptance`
 // {impl}`requirements.sdk.graph.agent-harness.submission.reminder`
-// {impl}`requirements.authoring.submission_count`
+// {impl}`requirements.sdk.graph.agent-harness.submission_count`
 // {impl}`requirements.authoring.provider_backoff`
 // {impl}`requirements.authoring.output_limit`
 // {impl}`requirements.sdk.graph.running-criteria.UsageStats`
@@ -205,11 +177,9 @@ pub async fn converse<P: CompletionProvider, C: Conversation, D: crate::domain::
     context: &crate::request::ValidationContext<'_, D>,
     provider: &P,
     session: &mut C,
-    project: Option<&crate::sources::SourceProject<D>>,
     mut request: CompletionRequest,
     opening_inputs: Vec<crate::request::PreparedInput<crate::domain::NodeId<D>>>,
     result_schema: Value,
-    submit: &str,
     mut finish: impl FnMut(C::Output) -> Result<Submission<T>, AgentError<D::Error>> + Send,
 ) -> Result<T, AgentError<D::Error>>
 where
@@ -217,15 +187,8 @@ where
     D::EdgeLabel: serde::de::DeserializeOwned + schemars::JsonSchema + PartialEq,
     D::Error: std::fmt::Display,
 {
-    let mut graph_tools = project.map(|project| {
-        tools::GraphSession::new(context, &[], tools::SessionTools::new(project.session()))
-    });
-    let standard_submission = submit == "submit_result";
-    let tool = standard_submission.then(|| tools::submission_tool(result_schema));
-    request.tools = match &graph_tools {
-        Some(graph) => graph.tools(tool)?,
-        None => session.tools(tool)?,
-    };
+    let submit = "submit_result";
+    request.tools = session.tools(Some(tools::submission_tool(result_schema)))?;
     // Only names from the configured tool list belong in usage records.
     // Record entry before dispatch so cancellation retains the invocation.
     let begin_tool = |name: &str| {
@@ -245,8 +208,6 @@ where
     let mut continued = false;
     let mut reminded = false;
     loop {
-        let index = session.begin_request()?;
-        let started = Instant::now();
         let mut attempt = ProviderAttempt {
             context,
             usage: crate::graph::UsageStats::attempt(retrying, false, None),
@@ -272,26 +233,21 @@ where
             attempt.usage.delivered_inputs = std::mem::take(&mut pending_inputs);
         }
         drop(attempt);
-        session.end_request(index, started.elapsed(), &response)?;
         let response = match response {
             Ok(response) => response,
             Err(error) => match backoff.retry(error, tokio::time::Instant::now().into_std()) {
                 Retry::Wait(delay) => {
                     retrying = true;
-                    session.retried(index)?;
                     tokio::time::sleep(delay).await;
                     continue;
                 }
-                Retry::Stop(error) => return Err(error.into()),
+                Retry::Stop(error) => return Err(AgentError::Provider(error)),
             },
         };
         retrying = false;
         backoff = ProviderBackoff::default();
         for input in opening_inputs.by_ref() {
             context.record_read(input.node, input.fingerprint);
-        }
-        if let Some(graph) = &mut graph_tools {
-            graph.delivered()?;
         }
         session.delivered()?;
         if matches!(response.finish_reason(), Some(FinishReason::Length)) {
@@ -313,7 +269,6 @@ where
             request
                 .chat_history
                 .extend(session.cut_off(&response, limit));
-            session.save()?;
             continue;
         }
         if let Some(error) = turn_failure(
@@ -328,8 +283,7 @@ where
             .iter()
             .filter(|call| call.function.name.as_str() == submit)
             .collect();
-        // Habeas's authoring bridge retains its separate submission protocol.
-        if calls.is_empty() || (standard_submission && submissions.len() > 1) {
+        if calls.is_empty() || submissions.len() > 1 {
             if reminded {
                 return Err(io::Error::other(format!(
                     "model must invoke {submit} exactly once, even after a reminder; {} submissions received",
@@ -342,7 +296,6 @@ where
                 let results = calls
                     .iter()
                     .map(|call| {
-                        session.tool(call.function.name.as_str(), true);
                         call.error_result(vec![ToolResultContent::text(format!(
                             "not run: invoke {submit} exactly once"
                         ))])
@@ -350,45 +303,17 @@ where
                     .collect();
                 request.chat_history.push(Message::tool_results(results));
             }
-            let reminder = if standard_submission {
-                format!("Reminder: you MUST invoke {submit} exactly once to submit your result.")
-            } else {
-                format!("Reminder: you MUST submit your result with the {submit} tool.")
-            };
+            let reminder =
+                format!("Reminder: you MUST invoke {submit} exactly once to submit your result.");
             request.chat_history.push(Message::user(reminder));
-            session.save()?;
             continue;
         }
+        // {impl}`requirements.authoring.submission.searches.line_numbers`
         if !submissions.is_empty() {
-            for call in &calls {
-                if call.function.name.as_str() != submit {
-                    session.skipped_tool(call.function.name.as_str());
-                }
-            }
-            if submissions.len() != 1 {
-                for _ in &submissions {
-                    session.tool(submit, true);
-                }
-                return Err(io::Error::other(format!(
-                    "{submit} must be invoked exactly once; multiple submissions received"
-                ))
-                .into());
-            }
             begin_tool(submit);
             let arguments = Value::Object(submissions[0].function.arguments.clone());
-            let submitted = if standard_submission {
-                tools::submitted_value(&arguments)
-            } else {
-                Ok(arguments)
-            };
-            let submission = submitted.and_then(|value| {
-                if let Some(graph) = &mut graph_tools
-                    && let Submission::Retry(message) = graph.submit(submit, &value)?
-                {
-                    return Ok(Submission::Retry(message));
-                }
-                session.submit(submit, &value)
-            });
+            let submission =
+                tools::submitted_value(&arguments).and_then(|value| session.submit(submit, &value));
             let vetted = match submission {
                 Ok(Submission::Accepted(value)) => finish(value),
                 Ok(Submission::Retry(message)) => Ok(Submission::Retry(message)),
@@ -396,15 +321,12 @@ where
             };
             match vetted {
                 Ok(Submission::Accepted(value)) => {
-                    session.tool(submit, false);
                     return Ok(value);
                 }
                 Err(error) => {
-                    session.tool(submit, true);
                     return Err(error);
                 }
                 Ok(Submission::Retry(message)) => {
-                    session.tool(submit, true);
                     record_result(submit, &message);
                     request.chat_history.push(
                         response
@@ -422,7 +344,6 @@ where
                             call.error_result(vec![ToolResultContent::text(text)])
                         })
                         .collect();
-                    session.save()?;
                     request.chat_history.push(Message::tool_results(results));
                     continue;
                 }
@@ -441,10 +362,7 @@ where
             if known {
                 begin_tool(name);
             }
-            let delivery = match &mut graph_tools {
-                Some(graph) => graph.dispatch(name, &arguments).await,
-                None => session.dispatch(name, &arguments).await,
-            };
+            let delivery = session.dispatch(name, &arguments).await;
             let result = match delivery {
                 Ok((text, inputs)) => {
                     if inputs > 0 {
@@ -457,11 +375,9 @@ where
                     if known {
                         record_result(name, &text);
                     }
-                    session.tool(name, false);
                     call.result(vec![ToolResultContent::text(text)])
                 }
                 Err(error) => {
-                    session.tool(name, true);
                     let text = error.to_string();
                     if known {
                         record_result(name, &text);
@@ -471,14 +387,13 @@ where
             };
             results.push(result);
         }
-        session.save()?;
         request.chat_history.push(Message::tool_results(results));
     }
 }
 
 /// Execute a criterion using an application-provided conversation adapter.
 #[doc(hidden)]
-#[cfg(any(test, feature = "habeas-integration"))]
+#[cfg(test)]
 pub async fn verify_with_agent<D: crate::domain::Domain, V: crate::graph::Criterion<D>>(
     validator: &mut crate::graph::Validator<'_, D>,
     agent: &dyn crate::request::Agent<D>,
