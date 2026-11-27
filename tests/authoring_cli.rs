@@ -1356,6 +1356,10 @@ fn negative_assessment_records_additional_reads_and_fails_validation() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("paused for manual work: Fix the reported gap.")
+    );
     let requests = server.finish();
     assert_eq!(requests.len(), 2, "the model made one additional read");
 
@@ -2623,6 +2627,7 @@ fn outstanding_search_preserves_the_rationale_correction_attempt() {
 // {test}`requirements.authoring.usage_storage`
 #[test]
 // {test}`requirements.authoring.invocation`
+// {test}`requirements.authoring.line_numbers.rejection`
 fn missing_duplicate_and_invalid_submissions_preserve_existing_evidence() {
     let valid = json!({"status":"success","rationale":"The reviewed sources support the subject."});
     for calls in [
@@ -2631,6 +2636,19 @@ fn missing_duplicate_and_invalid_submissions_preserve_existing_evidence() {
             call("one", "submit_result", json!({"result":valid})),
             call("two", "submit_result", json!({"result":valid})),
         ],
+        vec![
+            call(
+                "citing",
+                "submit_result",
+                json!({"result":{"status":"success","rationale":"See src/lib.rs:17."}}),
+            ),
+            call("second", "submit_result", json!({"result":valid})),
+        ],
+        vec![call(
+            "malformed",
+            "submit_result",
+            json!({"result":{"status":"failed","corrections":[{"kind":"manual","instruction":"","rationale":"See src/lib.rs:17."}]}}),
+        )],
         vec![call(
             "bad",
             "submit_result",
@@ -7125,6 +7143,17 @@ fn corrections_replay_reference_only_mixed_and_regression_findings() {
             2,
         ),
         (
+            "confirm-reassessment",
+            vec![
+                read("page_id"),
+                fail(vec![add("page_id")]),
+                success(),
+                success(),
+            ],
+            true,
+            1,
+        ),
+        (
             "mixed",
             vec![read("page_id"), fail(vec![manual.clone(), add("page_id")])],
             false,
@@ -7212,7 +7241,7 @@ fn corrections_replay_reference_only_mixed_and_regression_findings() {
         let stdout = case == "stdout";
         let output = if stdout {
             fixture.run(&["author", SUBJECT, "--stdout"])
-        } else if case == "other assessor read" {
+        } else if matches!(case, "other assessor read" | "confirm-reassessment") {
             fixture.run(&["author", SUBJECT, "--policy", "confirm"])
         } else {
             fixture.run(&["author", SUBJECT])

@@ -1776,6 +1776,37 @@ mod tests {
         assert_ne!(logs[0]["run_id"], logs[1]["run_id"]);
     }
 
+    // {test}`requirements.authoring.line_numbers.citation`
+    #[tokio::test]
+    async fn a_citation_review_fails_when_the_revised_rationale_still_uses_line_numbers() {
+        let project = inputs::tests::project();
+        fs::write(
+            project.path().join("src/lib.rs"),
+            "// {cite}`requirements.ready`\nfn helper() {}\n",
+        )
+        .unwrap();
+        let subject = AuthoringSubject::parse("citations:src/lib.rs#fn[helper]");
+        let state = tempfile::tempdir().unwrap();
+        let mut usage = UsageLog::start(state.path(), project.path(), &subject.label()).unwrap();
+        let provider = RecordingProvider::new(vec![
+            citation_judgment(true, "See src/lib.rs:1."),
+            citation_judgment(true, "See src/lib.rs:2."),
+        ]);
+        let result = assess_subject(
+            &provider,
+            project.path(),
+            state.path(),
+            &subject,
+            subject.sources(project.path()).unwrap(),
+            &mut usage,
+            AssessmentPolicy::Confirm,
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(provider.prompts().len(), 2);
+        assert!(!subject.evidence_path(project.path()).exists());
+    }
+
     // {test}`requirements.authoring.confirmation.selection`
     // {test}`requirements.authoring.confirmation`
     // {test}`requirements.authoring.line_numbers.citation`
