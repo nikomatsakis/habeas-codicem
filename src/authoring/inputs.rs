@@ -1128,6 +1128,7 @@ pub(crate) mod tests {
         );
     }
 
+    // {test}`requirements.authoring.mandatory_inputs`
     // {test}`requirements.authoring.read_denial`
     #[cfg(unix)]
     // {test}`requirements.references.anchors`
@@ -1381,6 +1382,7 @@ pub(crate) mod tests {
         assert!(!prompt.contains("fn sibling"), "{prompt}");
     }
 
+    // {test}`requirements.authoring.mandatory_inputs`
     // {test}`requirements.references.anchors`
     // {test}`requirements.authoring.read_denial.mandatory`
     #[test]

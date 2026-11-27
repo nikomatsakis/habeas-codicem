@@ -1,7 +1,7 @@
 {
   "requirement": "Builds a typed agent request. `context` is available in the context phase. Adding graph contents enters the node phase. Awaiting a request returns the decoded answer or a validation error.\n\n```rust,ignore\npub struct Ask<'a, 'd, D: Domain, R, P> { /* private fields */ }\n\nimpl<'a, 'd, D: Domain, R> Ask<'a, 'd, D, R, ContextPhase> {\n    pub fn context(self, value: impl Context) -> Self;\n}\n\nimpl<'a, 'd, D: Domain, R, P> Ask<'a, 'd, D, R, P> {\n    pub fn vet_answer(\n        self,\n        vet: impl FnMut(&R) -> Result<VetResult, D::Error> + Send + 'a,\n    ) -> Self;\n    pub fn message(self, text: impl Into<String>) -> Self;\n    pub fn contents_of_node(self, node: NodeId<D>) -> Ask<'a, 'd, D, R, NodePhase>;\n    pub fn contents_of_current_node(self) -> Ask<'a, 'd, D, R, NodePhase>;\n    pub fn contents_of_successors(\n        self,\n        label: D::EdgeLabel,\n    ) -> Ask<'a, 'd, D, R, NodePhase>\n    where\n        D::EdgeLabel: PartialEq;\n}\n```\n\nTrait implementations\n\n```rust,ignore\nimpl<'a, 'd, D: Domain, R> IntoFuture for Ask<'a, 'd, D, R, ContextPhase> where R: DeserializeOwned + JsonSchema + Send + 'a, D::Error: Display, D::EdgeLabel: DeserializeOwned + JsonSchema + PartialEq, 'd: 'a {\n    type Output = Result<R, ValidationError<<D as Domain>::Error>>;\n    type IntoFuture = Pin<Box<dyn Future<Output = <Ask<'a, 'd, D, R, ContextPhase> as IntoFuture>::Output> + Send + 'a>>;\n}\nimpl<'a, 'd, D: Domain, R> IntoFuture for Ask<'a, 'd, D, R, NodePhase> where R: DeserializeOwned + JsonSchema + Send + 'a, D::Error: Display, D::EdgeLabel: DeserializeOwned + JsonSchema + PartialEq, 'd: 'a {\n    type Output = Result<R, ValidationError<<D as Domain>::Error>>;\n    type IntoFuture = Pin<Box<dyn Future<Output = <Ask<'a, 'd, D, R, NodePhase> as IntoFuture>::Output> + Send + 'a>>;\n}\n```",
   "determination": true,
-  "rationale": "I found no test-adequacy gap for `requirements.sdk.graph.agent-calls.Ask`. The prose obligations are these: `context` works in the context phase, adding graph contents enters the node phase, and awaiting returns the decoded answer or a validation error. Each is covered below.\n\n- **`context` in the context phase.** `explicit_insertions_preserve_order_repetition_and_selection_snapshots` calls `.context(String::from(\"question\"))` and asserts the agent received the prefix `\"question\"`. `task_messages_share_a_prefix_and_can_queue_another_node` asserts the shared prefix `\"shared\"` and its context fingerprint.\n- **Graph contents enter the node phase.** The first test chains `contents_of_current_node`, `contents_of_successors(7)` and `contents_of_current_node` again. It asserts the inputs arrive in order with repetition: 1, 3, 2, 3, 1. It also asserts the reads and the recorded dependencies, including the edge snapshot, with edge label 99 filtered out. `task_messages_share_a_prefix_and_can_queue_another_node` types the result as `NodePhase`, uses `contents_of_node(selected)`, and asserts the input `[(2, \"selected source\")]` and the dependency.\n- **`message`.** The same test checks that the later message replaces the earlier one (`\"superseded\"` is dropped) and that the final messages are `\"assess\"` and `\"verify\"`.\n- **Awaiting returns the decoded answer.** The first test asserts `answer.n == 7` and that the request schema has `properties.n.type == \"integer\"`. It also asserts the future is `Send`. In `runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls`, `verify_with_agent` produces a successful result when the callback asks inside the validator.\n- **Awaiting returns a validation error.**\n  - `invalid_typed_submission_is_an_agent_error` asserts `ValidationError::Agent` for an invalid submission, in both a direct `ask` and the runner.\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` asserts `Graph(\"read\")`, `Graph(\"edges\")` and `Graph(\"render\")` errors, and that the agent is not called.\n  - The same test also covers empty and non-matching successor selections, and that a dropped, un-awaited request makes no agent call.\n  - The runner test asserts `NoAgentConfigured` when no agent is set.\n- **Both `IntoFuture` implementations.** The context-phase future is awaited in `invalid_typed_submission_is_an_agent_error` (`ctx.ask::<Answer>().await`) and in the callback of the runner test. The node-phase future is awaited in several tests.\n- **`vet_answer`.** It appears in the `Ask` signature, but its behavior has its own requirements: `requirements.sdk.graph.agent-calls.vet_answer`, `.ok` and `.corrections`. These are tested in `crates/trust-but-verify/src/agent/tests.rs` by `vetting_collects_corrections_and_rechecks_every_callback` and `vetting_preserves_domain_errors_and_skips_later_callbacks`. It needs no separate test here.\n- **Phase restriction.** `context` being available only in the context phase is a compile-time type constraint. The tests use the typed phases, and `public_exports_match_the_appendix` checks the public exports.\n\nI found no obligation without a test that exercises it and asserts the outcome.",
+  "rationale": "**Obligations in `requirements.sdk.graph.agent-calls.Ask`**\n1. `Ask` builds a typed agent request.\n2. `context` is available in the context phase.\n3. Adding graph contents enters the node phase. The methods are `contents_of_node`, `contents_of_current_node` and `contents_of_successors`.\n4. `message` adds a message to the request.\n5. Awaiting the request returns the decoded answer or a validation error. This covers both the ContextPhase and NodePhase `IntoFuture` impls.\n\n`vet_answer` has its own requirements: `requirements.sdk.graph.agent-calls.vet_answer`, `.ok` and `.corrections`. Its behaviour is tested separately in `agent/tests.rs`. The subject text gives it no behaviour beyond its signature, so I did not assess it here.\n\n**Mapping to tests**\n- **Typed request, `context`, and every contents method together.**\n  - `graph/validation_tests.rs#fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]` chains `ask::<Answer>().context(..).contents_of_current_node().contents_of_successors(7).contents_of_current_node()`.\n  - It asserts the context prefix `\"question\"`.\n  - It asserts the ordered inputs, including repeated nodes.\n  - It asserts the JSON schema, `n` is an integer.\n  - It asserts the decoded `answer.n == 7`.\n  - It asserts the reads and dependencies.\n  - It also asserts that the future is `Send`.\n- **`contents_of_node` and `message`.**\n  - `#fn[task_messages_share_a_prefix_and_can_queue_another_node]` calls `context(..).message(..).contents_of_node(selected)` and annotates the result as `Ask<.., NodePhase>`. That checks the phase transition.\n  - It then calls `message(task).await` on that NodePhase value.\n  - It asserts the messages `[\"assess\",\"verify\"]`, the shared prefix, the inputs and the dependency.\n- **Await from the ContextPhase.**\n  - `Memory::run_review`, used by `#fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]`, awaits `ctx.ask().context(format!(..))` with no contents. It asserts `second.n == first.n`.\n  - The test asserts two requests and the text of the second.\n  - The test also awaits `ask().contents_of_current_node()`, a NodePhase await, as the first call.\n- **Validation errors.**\n  - `#fn[invalid_typed_submission_is_an_agent_error]` asserts `Err(ValidationError::Agent(_))` for a context-phase await and through the runner.\n  - `#fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]` covers the other error paths:\n    - read failure gives `Graph(\"read\")`;\n    - edges failure gives `Graph(\"edges\")`;\n    - render failure gives `Graph(\"render\")`;\n    - empty and non-matching successor selections still succeed;\n    - a dropped builder makes no request.\n  - `#fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]` asserts `NoAgentConfigured`.\n- **Public signature.** `tests/public_api.rs#fn[public_exports_match_the_appendix]` checks the exports against rustdoc and compiles the Habeas consumer against the SDK.\n\nI found no obligation without a test and no assertion that contradicts the requirement. Each test carries a `{test}` reference to the subject. Phase availability is enforced by the type system and is exercised by the compiling test code. The text only says `context` is available in the context phase, so it does not require a compile-fail test.",
   "references": "6d84ec3ae51b566d17de2fbe5c38a1295667e1a0a8226e89f2b1bfac4a787bdb",
   "inputs": [
     {
@@ -84,6 +84,11 @@
       "hash": "85236d57663dd61cc1cfc8c4a81672e5c5591e6d9dfaf865943d051c38e8bb2a"
     },
     {
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "impl[Memory]/fn[run_review]",
+      "hash": "859d5fd94a3e4eb0419394e295c11c60dd02b8d06b3a701a32196cc3ccae25cb"
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[typed_submission_references_resolve_and_invalid_results_are_agent_errors]",
       "hash": "344a5e130451f6de2e1bdbb6259870eca27cf41875ed2259472d30db7f95e2bf"
@@ -97,6 +102,11 @@
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[vetting_preserves_domain_errors_and_skips_later_callbacks]",
       "hash": "1cc1cd808a680c101b6adac1fdae4aafdbc30efc837b75d6736e27bf31ff735a"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "fn[vetting_preserves_domain_errors_and_skips_later_callbacks]/use@485c96987abf",
+      "hash": "485c96987abf5d30ef3410d01661a0dd415a46cb8cf45e9369866d021ca7bd65"
     }
   ],
   "format_version": 1,
@@ -244,6 +254,23 @@
           "Source": {
             "resource": {
               "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+            },
+            "selector": "impl[Memory]/fn[run_review]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "859d5fd94a3e4eb0419394e295c11c60dd02b8d06b3a701a32196cc3ccae25cb"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
             "selector": "fn[typed_submission_references_resolve_and_invalid_results_are_agent_errors]"
@@ -273,18 +300,6 @@
       ]
     },
     {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.agent-calls.Ask"
-        },
-        "Implements",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
-        }
-      ]
-    },
-    {
       "Node": [
         {
           "Source": {
@@ -298,6 +313,23 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "eed232332253f47c8c0b3d1c76436ef5db72ec8347c49068aa9ea3706feeadc7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
+            },
+            "selector": "fn[vetting_preserves_domain_errors_and_skips_later_callbacks]/use@485c96987abf"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "485c96987abf5d30ef3410d01661a0dd415a46cb8cf45e9369866d021ca7bd65"
         }
       ]
     }

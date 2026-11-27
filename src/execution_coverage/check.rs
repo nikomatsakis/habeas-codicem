@@ -1146,6 +1146,7 @@ mod tests {
         assert_eq!(rerun.run.sources["code.rs"], "fn a() { let changed=1; }");
     }
 
+    // {test}`requirements.test-coverage.check`
     // {test}`requirements.test-coverage.check.exceptions`
     // {test}`requirements.test-coverage.check.exceptions.reviews`
     // {test}`requirements.test-coverage.check.exceptions.binding`
@@ -1367,6 +1368,7 @@ mod tests {
         assert!(!report(root).passed);
     }
 
+    // {test}`requirements.test-coverage.check`
     // {test}`requirements.test-coverage.check.exceptions`
     // {test}`requirements.test-coverage.check.exceptions.reviews`
     // {test}`requirements.test-coverage.check.report`

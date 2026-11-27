@@ -1,7 +1,7 @@
 {
   "requirement": "When a provider reports a transient failure, the harness MUST wait and retry\nthe same completion request. Transient failures are throttling, reported\nthrough HTTP 429 or a Bedrock `ThrottlingException`; temporary unavailability,\nreported through HTTP 500, 502, 503, or 504 or a Bedrock\n`ServiceUnavailableException`, `InternalServerException`, or\n`ModelNotReadyException`; and a request with no response after ten minutes,\nwhich the harness MUST abandon. The retry MUST retain its prompt, history,\ntools, and pending inputs. It MUST NOT\nrestart the assessment or repeat already completed tool calls. A permanent\ninput/context-length error, authentication failure, or invalid request MUST\nremain an error; mentioning tokens in an error message alone MUST NOT trigger\nretries.\n\nThe backoff window MUST start at one second and double after each consecutive\ntransient failure, up to sixty seconds. Each delay MUST be randomly selected\nbetween half and all of that window to spread parallel retries. An available\nprovider `Retry-After` value, in seconds or HTTP-date form, MUST be honored as a\nminimum delay even when longer than the window. A successful response MUST reset\nbackoff for the next completion request, and interruption MUST cancel both the\nwait and further retries.\n\nEach attempt MUST count toward the assessment totals under {cite}`requirements.authoring.usage_requests`.\nHidden SDK retries MUST remain disabled so the harness can account for attempts.\nTransient retries MUST NOT be reported as finished judgments or terminal\nassessment errors while recovery is still in progress. Pending inputs MUST be\nrecorded as evidence only after the request succeeds.\n{cite}`requirements.authoring.provider` {cite}`requirements.authoring.delivered_inputs`",
   "determination": true,
-  "rationale": "I found no adequacy gap. I did not read the implementation. The `…` elision in the timeout test body hides its `Provider` fixture, so I relied on the visible assertions.\n\n**Transient classification**\n- `providers.rs#mod[tests]/fn[retries_throttling_unavailability_and_timeouts_but_not_permanent_errors]` checks these inputs:\n  - HTTP 429, 500, 502, 503 and 504 retry.\n  - The Bedrock codes `ThrottlingException`, `ServiceUnavailableException`, `InternalServerException` and `ModelNotReadyException` retry, with and without a status.\n  - `io::ErrorKind::TimedOut` retries.\n  - 400 `ValidationException`, 403 `AccessDeniedException`, 501 and an unclassified error do not retry.\n  - The message \"Too many tokens; HTTP 429\" does not retry, so mentioning tokens alone does not trigger a retry.\n- `fn[transient_bedrock_codes_retry_whatever_their_http_status]` checks that transient codes retry under non-transient statuses. It also checks that a transient status still retries when the code is a permanent one.\n- `fn[rig_failures_keep_their_provider_report_for_backoff]` checks that provider errors wrapped by Rig keep their classification.\n- `tests/authoring_cli.rs#fn[terminal_provider_failure_retains_the_retry_and_undelivered_inputs]` covers the end-to-end path. A 503 is retried with an identical request body, and a following 400 stays a failing run.\n\n**Ten-minute abandonment**\n- `agent/tests.rs#fn[a_timed_out_request_retries_and_each_success_resets_the_backoff_window]` asserts that the retry follows the first request by about 600.5–601 s. That is the ten-minute abandonment plus a jittered first-window delay.\n\n**Retry keeps the same request and does not repeat completed tool calls**\n- The timeout test compares the serialized requests before and after each retry and asserts `session.dispatched == 1`.\n- `fn[retries_and_cut_off_tools_preserve_inputs_and_submission_skips_other_reads]` and `fn[generic_conversations_can_use_default_telemetry_through_retry_and_continuation]` also compare the retried request with the original. The latter asserts that the `lookup` tool ran once and that continuation history is preserved.\n\n**Backoff schedule and jitter**\n- `fn[jittered_backoff_grows_to_a_ceiling]` runs 100 consecutive failures. It checks each delay lies in [window/2, window], with the window doubling from 1 s and capped at 60 s. It also checks the capped draws vary, so the delay is random.\n- The timeout test checks the delays grow across consecutive failures: 1–2 s, then 2–4 s.\n\n**`Retry-After`**\n- `fn[retry_after_accepts_seconds_and_dates_without_shortening_provider_delay]` checks seconds, a future HTTP-date, a past HTTP-date (zero) and an invalid value (none).\n- The same test checks that a 90 s `Retry-After` yields exactly 90 s, which exceeds the first window.\n- It also checks that values of 0, 5 and 45 never shorten the delay at the 60 s window, so the `Retry-After` value acts as a minimum.\n\n**Success resets backoff**\n- The timeout test asserts the delay after a success is back in the first window (0.5–1 s).\n\n**Interruption cancels the wait and further retries**\n- `fn[cancelling_during_backoff_leaves_prepared_inputs_undelivered]` times out the call during backoff and then advances 90 s. Attempts stay at 1 and retries at 0, so no further retry happens.\n\n**Hidden SDK retries disabled**\n- `fn[bedrock_sdk_retries_are_disabled]` asserts `max_attempts() == 1`.\n\n**Attempt accounting and no terminal report during recovery**\n- The usage assertions on attempts, retries and failed attempts in the CLI test, the cancel test and the telemetry test cover attempt counting. The obligation itself only cites `requirements.authoring.usage_requests`.\n- The retry-then-success tests return `Ok` with the accepted answer. That shows a retry is not reported as a terminal error or finished judgment.\n- Mid-recovery cancellation produces no result.\n\n**Pending inputs recorded only after success**\n- In the cancel test, `prepared_inputs > 0` and `delivered_inputs == 0`. The CLI terminal-failure test asserts the same.\n- In the retry-then-success test, the `Dependency::Node` is recorded after success.",
+  "rationale": "The reviewed tests cover each obligation of `requirements.authoring.provider_backoff`.\n\n**Transient classification**\n- `providers.rs#mod[tests]/fn[retries_throttling_unavailability_and_timeouts_but_not_permanent_errors]` covers these cases:\n  - HTTP 429, 500, 502, 503 and 504 retry.\n  - Bedrock `ThrottlingException`, `ServiceUnavailableException`, `InternalServerException` and `ModelNotReadyException` retry.\n  - A `TimedOut` error retries.\n  - Permanent errors stay errors: 400 `ValidationException`, 403 `AccessDeniedException`, 501 and unclassified errors.\n  - A message that only mentions \"Too many tokens\" does not retry.\n- `providers.rs#mod[tests]/fn[transient_bedrock_codes_retry_whatever_their_http_status]` covers transient codes under non-transient statuses, and a permanent code under a transient status.\n- `providers.rs#mod[tests]/fn[rig_failures_keep_their_provider_report_for_backoff]` shows the provider report survives Rig error wrapping. `provider_failure` passes the report through unchanged.\n\n**Ten-minute abandonment**\n- `agent/tests.rs#fn[a_timed_out_request_retries_and_each_success_resets_the_backoff_window]` runs with paused time. The retry lands about 600.5–601 s after the original request, which means the hung request was abandoned at ten minutes and then backed off.\n\n**Retry the same request without redoing completed work**\n- Requests before and after a failure are serialized and compared as equal in that test, in `agent/tests.rs#fn[retries_and_cut_off_tools_preserve_inputs_and_submission_skips_other_reads]`, and in `agent/tests.rs#fn[generic_conversations_can_use_default_telemetry_through_retry_and_continuation]`.\n- `session.dispatched == 1` shows no tool call is repeated.\n- The assessment is not restarted: the retry carries the same history, and the later request extends the earlier history.\n\n**Backoff window and jitter**\n- `providers.rs#mod[tests]/fn[jittered_backoff_grows_to_a_ceiling]` checks over 100 consecutive failures that each delay lies in [window/2, window]. The window starts at 1 s, doubles and caps at 60 s. It also checks that draws at the cap are random (more than one distinct value).\n- The timing test checks delays of 1–2 s and 2–4 s on consecutive failures.\n\n**Retry-After**\n- `providers.rs#mod[tests]/fn[retry_after_accepts_seconds_and_dates_without_shortening_provider_delay]` checks these cases:\n  - Seconds and HTTP-date forms are parsed, and an invalid value is ignored.\n  - A 90 s `Retry-After` exceeds the 1 s window and is honored exactly.\n  - With a 30–60 s window, a smaller `Retry-After` never shortens the delay.\n\n**Reset and interruption**\n- Success resets backoff: the delay after a success falls back to 0.5–1 s in the timing test.\n- `agent/tests.rs#fn[cancelling_during_backoff_leaves_prepared_inputs_undelivered]` times out during the wait, advances 90 s and sees no further attempts: attempts 1, retries 0.\n\n**Accounting and SDK retries**\n- Each attempt counts toward the totals. `agent/tests.rs#fn[generic_conversations_can_use_default_telemetry_through_retry_and_continuation]` asserts attempts 4, retries 1 and failed attempts 1. `tests/authoring_cli.rs#fn[terminal_provider_failure_retains_the_retry_and_undelivered_inputs]` asserts attempts 2 and retries 1 end to end.\n- `providers.rs#mod[tests]/fn[bedrock_sdk_retries_are_disabled]` asserts `max_attempts() == 1`.\n\n**No premature judgment or error, and evidence only after success**\n- A transient failure followed by success yields an accepted result in the converse tests.\n- A terminal 400 after a retry makes the CLI fail with outcome \"failed\", and the identical request body is retained.\n- Prepared inputs are greater than 0 while delivered inputs are 0 during backoff and after terminal failure.\n\nThe `{cite}` references to `requirements.authoring.usage_requests`, `requirements.authoring.provider` and `requirements.authoring.delivered_inputs` need no separate tests here.",
   "references": "0a3e5b2ef7ab463219d518eac90cac33b5c232b609eadf6c757f8e27fc6d9b56",
   "inputs": [
     {
@@ -78,7 +78,7 @@
         "defined by {cite}`requirements.ci.outline_inputs`,",
         "{cite}`requirements.ci.requirements_inputs`, and",
         "{cite}`requirements.definitions.inputs`. The harness MUST create these records",
-        "itself so ordinary evidence validation can check them later. For citation assessments and verifications, additional node reads and selected excerpts are recorded as SDK dependencies under {cite}`requirements.sdk.graph.search.finish_search.inputs` and {cite}`requirements.sdk.graph.validation-context.read_node.inputs`.",
+        "itself so ordinary evidence validation can check them later. For citation assessments, additional node reads and selected excerpts are recorded as SDK dependencies under {cite}`requirements.sdk.graph.search.finish_search.inputs` and {cite}`requirements.sdk.graph.validation-context.read_node.inputs`.",
         ":::"
       ]
     },
@@ -146,6 +146,11 @@
         "A *validator* runs criteria against one borrowed domain and accumulates agent usage for the caller's operation. The caller chooses the operation's scope by creating a validator and using it for one or more criteria.",
         ":::"
       ]
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
+      "item": "fn[provider_failure]",
+      "hash": "ae8deb26d03ba456a1ccf49ee2237e2cbecefc6588cc04e4c27c56edad14db96"
     }
   ],
   "format_version": 1,
@@ -214,7 +219,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "781106f8b9e1d80359859bf56a2b5c850c75030a1e2d9392d512028d743f2764"
+          "value": "f1afe8e9d09e59b89d8dfe2e27342b239cadc5add84290bfd104be69332587fc"
         }
       ]
     },
@@ -413,6 +418,23 @@
         {
           "scheme": "habeas-input-v1",
           "value": "fccf7e4f4b7ad677067e7080c8396e547eb9e4b73d0a9455f6c5df4648d200a6"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/providers.rs"
+            },
+            "selector": "fn[provider_failure]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "ae8deb26d03ba456a1ccf49ee2237e2cbecefc6588cc04e4c27c56edad14db96"
         }
       ]
     }

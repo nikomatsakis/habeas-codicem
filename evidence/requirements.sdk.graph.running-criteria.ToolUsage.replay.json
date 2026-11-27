@@ -1,7 +1,7 @@
 {
   "requirement": "Sending a previously prepared result again during a provider retry or a later conversation turn leaves the tool’s `calls` and `result_bytes` unchanged.",
   "determination": true,
-  "rationale": "The requirement `requirements.sdk.graph.running-criteria.ToolUsage.replay` has one obligation. Sending a previously prepared tool result again must leave that tool's `calls` and `result_bytes` unchanged. The text names two replay situations: a provider retry and a later conversation turn. I judged the two marked tests against that text and did not read implementation source.\n\n**Provider retry.** `crates/trust-but-verify/src/agent/tests.rs#fn[tool_usage_counts_utf8_results_and_errors_once_across_retries]` runs three responses in order.\n- The first is a tool turn with two `read_node` calls and one `lookup` call.\n- The second is a throttled error. It answers the request that carries the prepared tool results, so the retry resends them.\n- The third is a `submit_result` turn.\n\nThe test asserts exact per-tool usage: `read_node` has 2 calls and 1280 bytes, `lookup` has 1 call and 6 bytes, and `submit_result` has 1 call and 0 bytes. Counting results again on the retry would raise `lookup` or `read_node` above these values, so the test would fail. The `lookup` result is a missing-key error and `read_node` has a large result, so both result kinds are covered.\n\n**Later conversation turn.** In `crates/trust-but-verify/src/agent/tests.rs#fn[generic_conversations_can_use_default_telemetry_through_retry_and_continuation]`, a `lookup` result is prepared and then the conversation continues. A length-finish continuation and a final request follow. The test asserts that the final request's chat history contains \"fixture answer\", so the earlier result really was resent. It then asserts `usage.tools[\"lookup\"].calls == 1` and `result_bytes == \"fixture answer\".len()`, so replaying the result in the later turn did not change either field. It also asserts `session.dispatched == 1`. In the same test, the retry is a throttled first request. It resends nothing prepared, so the retry replay case rests on the first test.\n\nThe first test also shows that the later turn after the retry leaves counts unchanged. Both tests carry `{test}` references to `ToolUsage.replay`, so there is no marking gap. Together they cover both replay situations the text names, and their assertions would catch double counting. I found no gaps.\n\nNo acknowledgments apply.",
+  "rationale": "**Obligation.** `requirements.sdk.graph.running-criteria.ToolUsage.replay` says that when a previously prepared tool result is sent again, the tool's `calls` and `result_bytes` stay unchanged. It names two situations: a provider retry and a later conversation turn.\n\n**Provider retry.** `crates/trust-but-verify/src/agent/tests.rs#fn[tool_usage_counts_utf8_results_and_errors_once_across_retries]` covers it.\n- The script is: a first turn with three tool calls (`read_node` twice and `lookup` once, the last returning an error result), then a throttled provider error, then a successful turn that calls `submit_result`.\n- The throttled request is the second one, and it carries the first turn's prepared tool results. It is sent once, fails, and is resent on retry.\n- The test asserts the exact usage map: `read_node` has 2 calls and 1280 bytes, `lookup` has 1 call and 6 bytes, and `submit_result` has 1 call and 0 bytes.\n- If a retry re-counted results, those totals would be higher. The test would catch that for both `calls` and `result_bytes`.\n\n**Later turn or continuation.** `crates/trust-but-verify/src/agent/tests.rs#fn[generic_conversations_can_use_default_telemetry_through_retry_and_continuation]` covers it.\n- A `lookup` result is prepared on one turn. A later `FinishReason::Length` continuation request and the final request then carry that result in their history.\n- The test asserts that the history contains \"fixture answer\", so the result really was sent again.\n- It also asserts `usage.tools[\"lookup\"].calls == 1` and `result_bytes == \"fixture answer\".len()`. It asserts `submit_result` has 1 call and 0 bytes.\n- It additionally checks that the retried request is identical to the original (`requests[0]` equals `requests[1]`), so the retry resends the same content.\n\n**Marking.** Both tests carry `{test}` references to `ToolUsage.replay`, and `converse` carries the matching `{impl}`.\n\n**Conclusion.** The retry scenario and the later-turn scenario are each exercised, and each has assertions that enforce unchanged `calls` and `result_bytes`. I found no gap.",
   "references": "70488046a0d3fbb1b7947d2134bec296456595b3d4756a5671e362390e0e5a0a",
   "inputs": [
     {
@@ -26,14 +26,39 @@
       "hash": "8ed001e20faf00ba0c965b2988852bcbd7797a27f56395b308b89f1348a3beda"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "fn[tool_turn]",
-      "hash": "8f6a9fb8df8e5541f4eb9f501e635c9887bf6a333526f1bc49e67696e6ced13a"
+      "file": "crates/trust-but-verify/src/agent.rs",
+      "item": "fn[converse]",
+      "hash": "a909b32e3a742693d32e5bb25e87fc280fc13ac5665d019dda2bd3db6d14ff07"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "fn[throttled]",
-      "hash": "d49510a1c83cae1dc199f63550e423a2e178985ae50054383bc4a28fe93c4afd"
+      "requirements": "requirements.sdk.graph.running-criteria.ToolUsage",
+      "matches": [
+        "requirements.sdk.graph.running-criteria.ToolUsage"
+      ],
+      "text": [
+        ":::{req} ToolUsage",
+        "",
+        "`ToolUsage` holds the cumulative usage for one tool.",
+        "",
+        "```rust,ignore",
+        "#[non_exhaustive]",
+        "pub struct ToolUsage {",
+        "    pub calls: u64,",
+        "    pub result_bytes: u64,",
+        "}",
+        "```",
+        "",
+        "Trait implementations",
+        "",
+        "```rust,ignore",
+        "impl Clone for ToolUsage;",
+        "impl Copy for ToolUsage;",
+        "impl Debug for ToolUsage;",
+        "impl Default for ToolUsage;",
+        "impl Serialize for ToolUsage;",
+        "```",
+        ":::"
+      ]
     }
   ],
   "format_version": 1,
@@ -108,19 +133,14 @@
       ]
     },
     {
-      "Node": [
+      "OutgoingEdges": [
         {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "fn[tool_turn]"
-          }
+          "Requirement": "requirements.sdk.graph.running-criteria.ToolUsage.replay"
         },
+        "Implements",
         {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "8f6a9fb8df8e5541f4eb9f501e635c9887bf6a333526f1bc49e67696e6ced13a"
+          "scheme": "node-path-set-sha256-v1",
+          "value": "001b048cf6fddd7cc68f8b069e947ac6f69c14425cb61212dcae42f321d4be4d"
         }
       ]
     },
@@ -130,14 +150,25 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
+              "location": "crates/trust-but-verify/src/agent.rs"
             },
-            "selector": "fn[throttled]"
+            "selector": "fn[converse]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "d49510a1c83cae1dc199f63550e423a2e178985ae50054383bc4a28fe93c4afd"
+          "value": "a909b32e3a742693d32e5bb25e87fc280fc13ac5665d019dda2bd3db6d14ff07"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.sdk.graph.running-criteria.ToolUsage"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "9a8b58045839d216eaf7144cf863db7320c89a20ae5887779e7188d7624d9f8c"
         }
       ]
     }

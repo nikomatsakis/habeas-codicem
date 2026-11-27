@@ -1,7 +1,7 @@
 {
   "requirement": "Habeas MUST resolve its saved configuration before constructing Rig provider\nclients and completion models. The Habeas data structures MUST remain the saved\nformat. Rig model references MAY be reused internally without discarding the\nconnection settings they do not represent.\n\nThe Bedrock adapter MUST pass the chosen AWS profile and region through AWS SDK\nconfiguration, or use explicitly configured credentials. The Ollama adapter MUST use the chosen server, exact model ID,\nand optional authentication; the server MAY be local or remote. The OpenAI adapter MUST use the Responses API, selected endpoint, exact model\nID, and resolved API key. All adapters\nMUST supply the same tools and initial prompt.",
   "determination": true,
-  "rationale": "Each obligation in `requirements.authoring.rig_configuration_mapping` maps to a test with assertions that enforce it.\n\n- **Bedrock profile and region:** `tests/authoring_cli.rs#fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]` runs both the untyped and typed tool-call forms. It configures profile `habeas-test` and region `us-west-2`. The profile's own file region is `eu-west-1`, and a wrong `[default]` credential is present. The test asserts that the request is signed with `FAKE_PROFILE_ACCESS_KEY`, that the scope includes `/us-west-2/bedrock/aws4_request`, that the wrong default key is absent, and that the model ID is in the converse path.\n- **Bedrock default chain:** `tests/authoring_cli.rs#fn[all_adapters_preserve_prompt_tools_and_evidence_with_default_connections]` covers the case with no profile or region.\n- **Bedrock explicit credentials:** `crates/trust-but-verify/src/agent/providers.rs#mod[tests]/fn[explicit_bedrock_credentials_reach_the_sdk_without_the_default_chain]` runs in an isolated process with conflicting AWS environment variables, profile and files. It asserts that the SDK credentials equal the configured ones, with and without a session token, and that the region is correct. It also asserts that the environment and files are unchanged.\n- **Ollama:** `tests/authoring_cli.rs#fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]` asserts the server endpoint (`POST /api/chat`), the model, the bearer authorization and the options. `fn[authoring_uses_nearest_workspace_configuration_without_a_user_file]` asserts a literal key reaches the request headers and the workspace-configured model and endpoint are used. `fn[all_adapters_preserve_prompt_tools_and_evidence_with_default_connections]` asserts that no authorization header is sent when no authentication is configured. The server is a local mock, but the requirement only says a remote server MAY be used.\n- **OpenAI:** `fn[openai_responses_replays_tool_calls_and_records_usage]` asserts `POST /responses`, the configured endpoint, the exact model, the `api_key_env`-resolved bearer key, and the replayed history. `fn[all_adapters_preserve_prompt_tools_and_evidence_with_default_connections]` covers the default `OPENAI_API_KEY`.\n- **Same tools and initial prompt:** `fn[all_adapters_preserve_prompt_tools_and_evidence_with_default_connections]` runs all three adapters. It uses `prompt_and_tools` to extract the prompt and the sorted tool name, description and schema for each provider, and asserts they are equal across Ollama, Bedrock and OpenAI. It also asserts the tool count and that the evidence documents are identical. The Bedrock and Ollama CLI tests assert the 12-tool list and the prompt contents.\n- **Resolve saved config and keep the saved format:** `tests/configuration.rs#fn[explicit_project_and_default_selections_choose_whole_configs]` covers selection and resolution of whole configs. The CLI tests assert that the saved config files are not rewritten. The `providers.rs` tests deserialize the saved `BedrockConfig` form. `fn[bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted]` and `fn[typed_client_calls_preserve_order_and_native_history]` cover the Bedrock option and response mapping, and the history test also covers the malformed-call error path.\n\nI found no obligation without a test. The MAY clauses (reusing Rig model references, a remote Ollama server) impose nothing to check.",
+  "rationale": "I judged the tests against each obligation in `requirements.authoring.rig_configuration_mapping`. I did not read implementation source, because the supplied tests and assertions were enough to map every clause.\n\n- **Resolve saved config first, and keep the Habeas structures as the saved format.**\n  - `tests/configuration.rs#fn[explicit_project_and_default_selections_choose_whole_configs]` checks that the explicit, project and default selections each resolve to whole configs with the right backend, model and endpoint. It also checks the missing-config and unknown-name errors.\n  - `tests/authoring_cli.rs#fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]` asserts that the user config file is byte-identical after a run.\n  - `tests/authoring_cli.rs#fn[authoring_uses_nearest_workspace_configuration_without_a_user_file]` asserts the same for both workspace files, and that no user file is created.\n  - The Bedrock credentials test also asserts that the AWS config and credentials files and the environment are unchanged. This covers the point that Rig model references may be reused without discarding connection settings. The connection settings (endpoint, key, profile, region) reach the wire in the CLI tests.\n- **Bedrock profile and region.** `tests/authoring_cli.rs#fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]` runs both the untyped and the typed tool-call variants.\n  - It sets a wrong `[default]` profile and a profile-specific region of `eu-west-1`.\n  - It asserts that the request is signed with the selected profile's `FAKE_PROFILE_ACCESS_KEY`, that the wrong default key is absent, and that the credential scope is `us-west-2`.\n  - It asserts the exact model path `/model/fixture-bedrock-model/converse`.\n- **Bedrock explicit credentials.** `explicit_bedrock_credentials_reach_the_sdk_without_the_default_chain` runs in an isolated process with conflicting AWS environment variables and profile files. It checks that the configured access key, secret and session token reach the SDK, both with and without a session token. It also checks the region and that nothing from the default chain is used.\n- **Bedrock default chain.** The Bedrock branch of `all_adapters_preserve_prompt_tools_and_evidence_with_default_connections` covers the no-profile, no-region case through the SDK default chain.\n- **Ollama.**\n  - The Ollama CLI test asserts `POST /api/chat`, the exact `MODEL`, the bearer authorization header and the options.\n  - The workspace test asserts a literal API key reaches the header and the model, and that the key is absent from the request body.\n  - The Ollama branch of the all-adapters test asserts that no authorization header is sent when no authentication is configured. This covers optional authentication.\n  - The server is the configured endpoint (a mock server) in each case.\n- **OpenAI.**\n  - `openai_responses_replays_tool_calls_and_records_usage` asserts `POST /responses`, the exact model, the bearer key resolved from `api_key_env`, and the configured options.\n  - The all-adapters test asserts the same endpoint and model, and that the default `OPENAI_API_KEY` is resolved.\n- **Same tools and initial prompt for all adapters.** The all-adapters test extracts the prompt and tools through `prompt_and_tools` for Ollama, Bedrock and OpenAI. It asserts they are equal and that there are 12 tools. It also asserts that the resulting evidence documents are identical. The Bedrock and OpenAI tests separately check the prompt content and the tool schemas and names.\n- **Other tests.** `typed_client_calls_preserve_order_and_native_history`, `malformed_typed_client_calls_are_reported` and `bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted` check Bedrock call normalization and option mapping. They support the mapping but add no gap.\n\nI found no gap and no marking gap.",
   "references": "0de56d1c297836dbb64576f34d87e06c1584137f2d3f6696e717b91e30b64613",
   "inputs": [
     {
@@ -47,37 +47,32 @@
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]",
-      "hash": "c710fed6606490c4a6b84a2b0282971e28c960c35b8ac9e50a10f1d8bcc73257"
+      "hash": "30a4bbe0281bcaab3304902e1cdc689db00f712739bd6c79978e075bb3611c36"
     },
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[authoring_uses_nearest_workspace_configuration_without_a_user_file]",
-      "hash": "301083abb8a577d6e8c673e2bc948d86205faaf1ce9576c4a3406421bec3e379"
+      "hash": "599844a416a230f2787be5f7bcc0f15ac75515226f990834fd478404c5448e33"
     },
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]",
-      "hash": "0c0217a969462f34a207b95f6c51ce626f62487ea2a24b75751f4aaab352d09d"
+      "hash": "fc4fa4f250b30b409db9148c700f314a878b246281bb60f1a668dd10c79e04a4"
     },
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[all_adapters_preserve_prompt_tools_and_evidence_with_default_connections]",
-      "hash": "26afb05ce9cac7b344c874eb1e5df081c845d5e4ce04ff56600f252b91e977c9"
+      "hash": "8c318a116d09a06f3884f3ee254c21a125825aadab9413abb4592d1c469f37c2"
     },
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[openai_responses_replays_tool_calls_and_records_usage]",
-      "hash": "46c612b31c950aa93ff1fa70ba2369b28b1869a33d2d987e56d856db48dd6c89"
+      "hash": "769d2800a7800584a8c940d39385ee6f226dcc532bf2c586f721c3474efec704"
     },
     {
       "file": "tests/configuration.rs",
       "item": "fn[explicit_project_and_default_selections_choose_whole_configs]",
       "hash": "9b6f26d17ac393e367ff3451e746631a7acd51e4122fcb0a23647daeb9643285"
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "item": "fn[prompt_and_tools]",
-      "hash": "90c2533007ea67c4906ba38eeb72627c05c1357cdf4cbfcc715f570c1e5c2c94"
     }
   ],
   "format_version": 1,
@@ -198,7 +193,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "c710fed6606490c4a6b84a2b0282971e28c960c35b8ac9e50a10f1d8bcc73257"
+          "value": "30a4bbe0281bcaab3304902e1cdc689db00f712739bd6c79978e075bb3611c36"
         }
       ]
     },
@@ -215,7 +210,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "301083abb8a577d6e8c673e2bc948d86205faaf1ce9576c4a3406421bec3e379"
+          "value": "599844a416a230f2787be5f7bcc0f15ac75515226f990834fd478404c5448e33"
         }
       ]
     },
@@ -232,7 +227,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "0c0217a969462f34a207b95f6c51ce626f62487ea2a24b75751f4aaab352d09d"
+          "value": "fc4fa4f250b30b409db9148c700f314a878b246281bb60f1a668dd10c79e04a4"
         }
       ]
     },
@@ -249,7 +244,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "26afb05ce9cac7b344c874eb1e5df081c845d5e4ce04ff56600f252b91e977c9"
+          "value": "8c318a116d09a06f3884f3ee254c21a125825aadab9413abb4592d1c469f37c2"
         }
       ]
     },
@@ -266,7 +261,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "347fdefb124cf2381b02b9c4f39c142fe345b958e3a87c239ccae6115fa98531"
+          "value": "7237b4f467af9ae685aa91ba9fd4a61f8cce1e5fb9758e9560fbdeffab5df841"
         }
       ]
     },
@@ -284,23 +279,6 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "9b6f26d17ac393e367ff3451e746631a7acd51e4122fcb0a23647daeb9643285"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "tests/authoring_cli.rs"
-            },
-            "selector": "fn[prompt_and_tools]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "90c2533007ea67c4906ba38eeb72627c05c1357cdf4cbfcc715f570c1e5c2c94"
         }
       ]
     }

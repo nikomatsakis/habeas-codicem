@@ -779,6 +779,7 @@ fn real_build_captures_dependency_files_and_environment_for_read_only_freshness_
     assert_eq!(retained_files(&storage), before);
 }
 
+// {test}`requirements.test-coverage.storage.replace`
 // {test}`requirements.test-coverage.run`
 // {test}`requirements.test-coverage.processes`
 // {test}`requirements.test-coverage.processes.reports`

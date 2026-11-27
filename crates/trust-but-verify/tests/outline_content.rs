@@ -1897,6 +1897,7 @@ fn custom_attachment_spans_are_checked_against_the_original_snapshot() {
     assert!(load(vec![Span::new(0, 3)]).is_err());
 }
 
+// {test}`requirements.sdk.outlines.attachments.empty`
 // {test}`requirements.sdk.outlines.Outline`
 // {test}`requirements.sdk.outlines.OutlineItem`
 // {test}`requirements.sdk.outlines.name_span`

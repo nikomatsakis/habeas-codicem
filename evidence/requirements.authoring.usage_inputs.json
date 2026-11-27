@@ -1,7 +1,7 @@
 {
   "requirement": "Each assessment’s usage record MUST report its validator’s `prepared_inputs` and `delivered_inputs` under {cite}`requirements.sdk.graph.running-criteria.UsageStats`. It MUST also report the invocation count and total result bytes for each invoked tool under {cite}`requirements.sdk.graph.running-criteria.ToolUsage.calls` and {cite}`requirements.sdk.graph.running-criteria.ToolUsage.result_bytes`.",
-  "determination": true,
-  "rationale": "**Obligations.** `requirements.authoring.usage_inputs` has two obligations. The assessment's usage record must report the validator's `prepared_inputs` and `delivered_inputs`. It must also report each invoked tool's invocation count and total result bytes. The cited `UsageStats` and `ToolUsage` rules supply the counting details to apply in this case:\n- The opening message counts one input per node.\n- Each `read_node` page counts, including repeated reads.\n- Each `outgoing_edges` result counts.\n- A search page counts one input per excerpt.\n- Listings, search finalization and failed lookups count zero.\n- Delivery is counted once, across retries and later turns.\n- A permanent failure before any reply leaves delivered at zero.\n- Calls include invocations that return errors.\n- Error messages count toward bytes.\n- An invocation with no result text adds zero bytes.\n\n**Test mapping.**\n- `tests/authoring_cli.rs#fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]` covers most scenarios:\n  - It runs `list_sources`, `search_text`, `read_node` twice on the same node, a failing `read_node` on a missing file, `finish_search`, and `submit_result`, over three provider turns.\n  - It asserts `prepared_inputs == opening count + search excerpt count + 2`. That excludes the listing, the finish_search call and the failed read, and counts the repeated read twice.\n  - It asserts `delivered_inputs == prepared_inputs`, so inputs replayed across turns are not double-counted.\n  - It asserts per-tool `{calls, result_bytes}` equal to the actual tool message lengths for `list_sources`, `search_text` and `read_node`. The `read_node` total includes the error message from the missing file.\n  - It asserts `finish_search` bytes equal the delivered text length, and `submit_result` is `{calls:1, result_bytes:0}`, the zero-result-text case.\n- `each_edge_result_counts_once_and_a_failed_lookup_only_charges_tool_usage` covers the rest of the counting rules:\n  - Two identical `outgoing_edges` calls add exactly 2 to both prepared and delivered inputs.\n  - `outgoing_edges` is `{calls:2, bytes: sum of both replies}`.\n  - An erroring `lookup_requirements` adds no inputs but is `{calls:1, bytes: error text length}`. That covers errors counting as calls and as bytes.\n- `listing_charges_result_bytes_while_only_the_explicit_read_adds_an_input` runs a baseline, a listing, and a listing plus a read. It asserts the listing leaves the counts equal to the baseline and charges the listing's bytes. It asserts the explicit read adds exactly one prepared and one delivered input.\n- `a_successful_retry_reports_partial_token_measurements` covers a 503 followed by success. Prepared and delivered both equal the opening count, so delivery is counted once across the retry. Attempts, retries and failed attempts are also asserted.\n- `terminal_provider_failure_retains_the_retry_and_undelivered_inputs` covers a 503 followed by a 400. Prepared is greater than 0 and delivered is exactly 0, which is the example in the cited text.\n\n**Possible gaps I checked.**\n- The `get_next_page` paging cases (extra `read_node` or search pages) are not exercised in the authoring tests. They belong to the cited `UsageStats` counting, which I was told not to reassess. The SDK tests in `crates/trust-but-verify/src/agent/tests.rs` cover that counting: `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` and `inputs_count_each_opening_insertion_and_each_repeated_node_read`.\n- I found no authoring-level \"skipped call\" scenario in the tests or source I searched, so I did not require one.\n- Opaque custom-tool results are not exercised at authoring level. The authoring tests show no custom tools, so I did not require that case.\n\nThe assertions compare reported values against independently computed counts, such as the opening-message length and actual tool message byte lengths, so they would catch wrong counts or byte totals. All the reviewed tests carry `{test}` references to the subject. No acknowledgments apply.",
+  "determination": false,
+  "rationale": "Add a marked test (`requirements.authoring.usage_inputs`) in `tests/authoring_cli.rs` where a model response includes a tool call that the harness skips, for example a call that follows `submit_result` in the same turn. Assert that `provider_usage.tools` leaves that tool's `calls` and `result_bytes` unchanged, and that `prepared_inputs` and `delivered_inputs` are unchanged. — `requirements.sdk.graph.running-criteria.ToolUsage.calls` says skipped calls leave usage unchanged. This is an explicit unchanged-value obligation, so it needs a test. The reviewed tests are `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free`, `a_successful_retry_reports_partial_token_measurements`, `terminal_provider_failure_retains_the_retry_and_undelivered_inputs`, `each_edge_result_counts_once_and_a_failed_lookup_only_charges_tool_usage` and `listing_charges_result_bytes_while_only_the_explicit_read_adds_an_input`. None of them issues a skipped call. A harness that charges skipped calls for `calls` or `result_bytes` would pass all five.\n\nAdd a marked test that exercises paged results, where a `get_next_page` continuation returns a further page of `read_node` or search results, and also a `search_structure` call. Assert the `prepared_inputs` and `delivered_inputs` counts: one per requested `read_node` page, one per excerpt on a requested search page, and each input counted once. Assert the `get_next_page` and `search_structure` `calls` and `result_bytes`. The assertions should use a result that contains non-ASCII text, so the UTF-8 byte length differs from the character count. — `requirements.sdk.graph.running-criteria.UsageStats` counts each requested `read_node` page and each excerpt on a requested search page. The reviewed tests only use single-page `read_node` and `outgoing_edges` results and one `search_text` page. The tool list shows `get_next_page` and `search_structure` exist, but no reviewed test calls either. If continuation pages or structural-search excerpts were uncounted or double-counted, the tests would still pass. `ToolUsage.result_bytes` requires the UTF-8 byte length, but every asserted result is ASCII, where a character count would match `.len()`. A paging unit test in `src/authoring/pages.rs` appears to exist. It is not marked for `requirements.authoring.usage_inputs` and does not assert usage totals.",
   "references": "a5e629ceb75089492e7c278d888aab20036adce7b11e9dc988fda562587e148d",
   "inputs": [
     {
@@ -82,12 +82,12 @@
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]",
-      "hash": "c710fed6606490c4a6b84a2b0282971e28c960c35b8ac9e50a10f1d8bcc73257"
+      "hash": "30a4bbe0281bcaab3304902e1cdc689db00f712739bd6c79978e075bb3611c36"
     },
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[a_successful_retry_reports_partial_token_measurements]",
-      "hash": "55815fc106216191a6be4f5652ae8fecac6f60e3694ee76ace34cfe2d0a87396"
+      "hash": "21ca86dbf94040e11b0897fe9c241b38efc19bdd0c74a0620bc791f645eee479"
     },
     {
       "file": "tests/authoring_cli.rs",
@@ -97,27 +97,34 @@
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[each_edge_result_counts_once_and_a_failed_lookup_only_charges_tool_usage]",
-      "hash": "70ef109f8d66e5e82deac0479afd2deb7fc7ea31214303df19ed16e538b40075"
+      "hash": "34278c6bfa699604a9d6dd0fdb45c17690db81e1221390ca20d3c3470612fa63"
     },
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[listing_charges_result_bytes_while_only_the_explicit_read_adds_an_input]",
-      "hash": "10826088db288cfb07156a5fedf91d81455a87fe0dfd958e5213bffb717620d4"
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "item": "fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]",
-      "hash": "0c0217a969462f34a207b95f6c51ce626f62487ea2a24b75751f4aaab352d09d"
+      "hash": "0b62d7cdcadeb9f0605a1d620963aedcf7e0d844192fde557a50214629159c64"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[configured_record]",
-      "hash": "c457a9feba1038fbe06f2325c46dce804599c0de07cf0db6c5f0c046994cfbbf"
+      "hash": "957347e05fb24e26ebfb92559c0386e2e009762e8308070d080e627f824c1bb1"
     },
     {
       "file": "src/authoring/sdk.rs",
       "item": "impl[AssessmentUsage<'_,%20'_>/Drop]/fn[drop]",
       "hash": "d3767f3479ee1c1f7457031c3bfb7ec9095bcc097794e4b1a63d44958c31cf46"
+    }
+  ],
+  "corrections": [
+    {
+      "kind": "manual",
+      "instruction": "Add a marked test (`requirements.authoring.usage_inputs`) in `tests/authoring_cli.rs` where a model response includes a tool call that the harness skips, for example a call that follows `submit_result` in the same turn. Assert that `provider_usage.tools` leaves that tool's `calls` and `result_bytes` unchanged, and that `prepared_inputs` and `delivered_inputs` are unchanged.",
+      "rationale": "`requirements.sdk.graph.running-criteria.ToolUsage.calls` says skipped calls leave usage unchanged. This is an explicit unchanged-value obligation, so it needs a test. The reviewed tests are `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free`, `a_successful_retry_reports_partial_token_measurements`, `terminal_provider_failure_retains_the_retry_and_undelivered_inputs`, `each_edge_result_counts_once_and_a_failed_lookup_only_charges_tool_usage` and `listing_charges_result_bytes_while_only_the_explicit_read_adds_an_input`. None of them issues a skipped call. A harness that charges skipped calls for `calls` or `result_bytes` would pass all five."
+    },
+    {
+      "kind": "manual",
+      "instruction": "Add a marked test that exercises paged results, where a `get_next_page` continuation returns a further page of `read_node` or search results, and also a `search_structure` call. Assert the `prepared_inputs` and `delivered_inputs` counts: one per requested `read_node` page, one per excerpt on a requested search page, and each input counted once. Assert the `get_next_page` and `search_structure` `calls` and `result_bytes`. The assertions should use a result that contains non-ASCII text, so the UTF-8 byte length differs from the character count.",
+      "rationale": "`requirements.sdk.graph.running-criteria.UsageStats` counts each requested `read_node` page and each excerpt on a requested search page. The reviewed tests only use single-page `read_node` and `outgoing_edges` results and one `search_text` page. The tool list shows `get_next_page` and `search_structure` exist, but no reviewed test calls either. If continuation pages or structural-search excerpts were uncounted or double-counted, the tests would still pass. `ToolUsage.result_bytes` requires the UTF-8 byte length, but every asserted result is ASCII, where a character count would match `.len()`. A paging unit test in `src/authoring/pages.rs` appears to exist. It is not marked for `requirements.authoring.usage_inputs` and does not assert usage totals."
     }
   ],
   "format_version": 1,
@@ -203,7 +210,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "c710fed6606490c4a6b84a2b0282971e28c960c35b8ac9e50a10f1d8bcc73257"
+          "value": "30a4bbe0281bcaab3304902e1cdc689db00f712739bd6c79978e075bb3611c36"
         }
       ]
     },
@@ -220,7 +227,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "55815fc106216191a6be4f5652ae8fecac6f60e3694ee76ace34cfe2d0a87396"
+          "value": "21ca86dbf94040e11b0897fe9c241b38efc19bdd0c74a0620bc791f645eee479"
         }
       ]
     },
@@ -254,7 +261,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "70ef109f8d66e5e82deac0479afd2deb7fc7ea31214303df19ed16e538b40075"
+          "value": "34278c6bfa699604a9d6dd0fdb45c17690db81e1221390ca20d3c3470612fa63"
         }
       ]
     },
@@ -271,36 +278,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "10826088db288cfb07156a5fedf91d81455a87fe0dfd958e5213bffb717620d4"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "tests/authoring_cli.rs"
-            },
-            "selector": "fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "0c0217a969462f34a207b95f6c51ce626f62487ea2a24b75751f4aaab352d09d"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.authoring.usage_inputs"
-        },
-        "Implements",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "511a0fefb1720a3663ec13db3e64851227afd7bfe0b9b3670c1a479e92372b8a"
+          "value": "0b62d7cdcadeb9f0605a1d620963aedcf7e0d844192fde557a50214629159c64"
         }
       ]
     },
@@ -317,7 +295,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "c457a9feba1038fbe06f2325c46dce804599c0de07cf0db6c5f0c046994cfbbf"
+          "value": "957347e05fb24e26ebfb92559c0386e2e009762e8308070d080e627f824c1bb1"
         }
       ]
     },

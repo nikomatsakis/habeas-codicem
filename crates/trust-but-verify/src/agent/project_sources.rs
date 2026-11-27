@@ -428,6 +428,7 @@ mod tests {
         assert!(!read.text.contains(&token));
     }
 
+    // {test}`requirements.sdk.graph.search.enclosing_item`
     // {test}`requirements.sdk.graph.search.search_structure.mcp`
     // {test}`requirements.sdk.graph.search.search_text.mcp`
     // {test}`requirements.sdk.graph.search.finish_search.inputs`
@@ -1324,6 +1325,7 @@ mod tests {
         );
     }
 
+    // {test}`requirements.sdk.graph.search.declaration_spans`
     // {test}`requirements.sdk.graph.search.enclosing_item`
     // {test}`requirements.sdk.outlines.attachments.item_span`
     #[tokio::test]

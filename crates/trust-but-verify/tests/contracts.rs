@@ -746,6 +746,7 @@ async fn changing_one_criteria_input_does_not_invalidate_another() {
     );
 }
 
+// {test}`requirements.sdk.graph.evidence.recorded_criterion_version`
 // {test}`requirements.sdk.graph.evidence.store_evidence`
 // {test}`requirements.sdk.graph.evidence.record.output`
 // {test}`requirements.sdk.graph.evidence.procedure_identity`
@@ -1365,6 +1366,7 @@ async fn loading_execution_resolution_and_saving_failures_do_not_publish_answers
     assert_eq!(state.writes, 0);
 }
 
+// {test}`requirements.sdk.graph.evidence.recorded_criterion_version`
 // {test}`requirements.sdk.graph.evidence.evidence_storage`
 // {test}`requirements.sdk.domain`
 // {test}`requirements.sdk.graph.evidence.store_evidence`

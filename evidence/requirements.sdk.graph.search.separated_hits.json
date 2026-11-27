@@ -1,7 +1,7 @@
 {
   "example": "{cite}`requirements.sdk.graph.search.declaration_spans`\n{cite}`requirements.sdk.graph.search.omissions`\n{cite}`requirements.sdk.graph.search.windows`\n\nThe agent calls `search_text({\"pattern\":\"hit\",\"window_bytes\":4})` on this source.\n\n```rust\n# struct Runner;\n# fn setup() {}\n# fn hit() {}\n# fn cleanup() {}\n# fn finish() {}\nimpl Runner {\n    fn run() {\n        setup();\n        hit(); hit();\n        cleanup();\n        hit();\n        finish();\n    }\n}\n```\n\nThe first two windows overlap. Together they include the space between the calls and the newline after the second semicolon. The third window is separated by omitted source. The agent receives one entry for `run`.\n\n```json\n{\"tag\":\"1\",\"node\":9,\"file\":\"src/lib.rs\",\"selector\":\"impl[Runner]/fn[run]\",\"excerpt\":\"fn run() {...    hit(); hit();\\n...    hit();\\n...}\"}\n```\n\n`read_node({\"node\":9})` reads the full function, including `cleanup();`.",
   "determination": true,
-  "rationale": "The example `separated_hits` gives a concrete case. It names the source, the call `search_text({\"pattern\":\"hit\",\"window_bytes\":4})`, the expected single entry for `run`, and a follow-up `read_node` that returns the full function including `cleanup();`.\n\n`mod[tests]/fn[separated_hit_windows_preserve_the_function_declaration]` in `crates/trust-but-verify/src/agent/project_sources.rs` is marked {test} for this example. It checks each outcome:\n\n- **Setup.** It writes the example's `impl Runner { fn run() {...} }` source to `runner.rs`. The source has the same three `hit()` calls, with `setup()`, `cleanup()` and `finish()` around them. The `Runner` struct and the stub functions that the example hides are absent, and they don't affect the result.\n- **Search.** It dispatches `search_text` with `pattern: \"hit\"` and `window_bytes: 4`, as in the example.\n- **Excerpt.** It asserts that `page[\"matches\"]` equals exactly one entry. The entry has tag `\"1\"`, selector `impl[Runner]/fn[run]`, file `runner.rs`, and excerpt `fn run() {...    hit(); hit();\\n...    hit();\\n...}`. This is the example's excerpt.\n  - The first two windows overlap into one contiguous run that keeps the space between the calls and the newline after the second `;`.\n  - The third window stays separate, with `...` markers where `cleanup` and the rest are omitted.\n  - The header `fn run() {` and the trailer `}` are present.\n  - The array equality also proves there is a single entry for `run`.\n- **Full read.** It calls `read_node` on the match. It asserts that `text` equals the full function and contains `cleanup();`. It also asserts that the node read was `runner.rs#impl[Runner]/fn[run]`.\n- **Extra case.** A second iteration uses `window_bytes: 0` and expects `fn run() {...hit...hit...hit...}`. This also covers the `windows` rule that only hits, header and trailer contribute at zero window.\n- **Snapshot.** The file is overwritten with `fn changed() {}` between iterations. The second search and read still return the original function, which checks the same-snapshot requirement.\n\nThe `project(...)` helper only supplies the node text. The header and trailer spans therefore come from the real Rust outline of `runner.rs`, so the test exercises the declaration spans. The expected values follow from the example and from the cited `windows`, `omissions` and `declaration_spans` requirements. I found no gap.",
+  "rationale": "The example gives a concrete case: `search_text` with pattern `hit` and `window_bytes` 4, on the `impl Runner`/`fn run` source. It states the expected outcomes. The first two windows overlap and merge. The third window is separated by omitted source. The agent receives one entry for `run`. `read_node` returns the full function, including `cleanup();`.\n\n`mod[tests]/fn[separated_hit_windows_preserve_the_function_declaration]` in `crates/trust-but-verify/src/agent/project_sources.rs` is the only test reviewed. It is marked `{test}` for this example. It reproduces the example's source in `runner.rs` and calls `search_text` with `{\"pattern\":\"hit\",\"window_bytes\":4}`. It asserts that `matches` is exactly one entry with these fields:\n- tag `1`\n- the interned node for `runner.rs#impl[Runner]/fn[run]`\n- file `runner.rs`\n- selector `impl[Runner]/fn[run]`\n- excerpt `fn run() {...    hit(); hit();\\n...    hit();\\n...}`\n\nThat excerpt matches the example's JSON. Working through the source gives the same result:\n- The header `fn run() {` is kept.\n- The first two hit windows (4 bytes each side) merge into `    hit(); hit();\\n`. That keeps the space between the calls and the newline after the second semicolon.\n- `cleanup();` is omitted and marked `...`.\n- The third window `    hit();\\n` is kept, followed by `...` and the trailer `}`.\n\nAn implementation that did not merge overlapping windows, dropped the header or trailer, or emitted more than one entry would fail this assertion.\n\nThe test then calls `read_node` on the match. It asserts that the text equals the full function and contains `cleanup();`. It also asserts that the node read is `runner.rs#impl[Runner]/fn[run]`.\n\nThe test also runs `window_bytes` 0. That case is not part of the example but is consistent with `requirements.sdk.graph.search.windows` and `requirements.sdk.graph.search.omissions`. It expects `fn run() {...hit...hit...hit...}`. Between runs it overwrites the file, so the second run also checks that results come from the same snapshot.\n\nAll the example's stated outcomes are asserted, and I found no gap.",
   "references": "28e95553d9b21cd1e0de729a2457866c63dd1d66f7c98d7570b1dab085f95551",
   "inputs": [
     {
@@ -83,16 +83,6 @@
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[separated_hit_windows_preserve_the_function_declaration]",
       "hash": "1a9702e2ef2e866be27e54566db11c5f797bdac533f8e3439359ef3297dc7969"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
-      "item": "mod[tests]/fn[project]",
-      "hash": "13863d54a393bf163628089702835c9b2d694aa79d56b7a2941594cdd36f0cc3"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
-      "item": "fn[excerpt]",
-      "hash": "201b1fe8ba5b2e506948ab326206980a78cfab74cf16fea8fb8dc3d32465e415"
     }
   ],
   "format_version": 1,
@@ -177,42 +167,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "2e26b160a175e50d2d99d90fc21f3ab92f0b4e1de6ef99c09639b64d07546969"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
-            },
-            "selector": "mod[tests]/fn[project]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "9eea88e29ce360fee788e3a9766b47d443ffdcea5e5f860b747cece340a73468"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
-            },
-            "selector": "fn[excerpt]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "6f3e211e2b3831432b650e6007dab3d36cb3c18e2f954afab2b365e4644b78b8"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "1a9702e2ef2e866be27e54566db11c5f797bdac533f8e3439359ef3297dc7969"
         }
       ]
     }

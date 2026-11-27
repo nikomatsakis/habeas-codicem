@@ -1,7 +1,7 @@
 {
   "requirement": "LLVM profiles are collected independently for each test process, identifying\nits nextest binary, test name, and attempt. Concurrent tests, same-named tests\nin different binaries, and different attempts do not overwrite or combine\none another's profiles during collection. Instrumented child-process profiles\nremain separate and associated with the attempt that spawned them.\n\nProfiles for a current result remain available until that result is replaced\nunder {cite}`requirements.test-coverage.storage.current`.",
   "determination": true,
-  "rationale": "I judge the tests adequate for `requirements.test-coverage.processes`. I did not read the `assert_profiles_present` helper in `tests/execution_coverage.rs`. I took its name and its use in the test as meaning it checks that raw profile files exist.\n\nObligations and the tests that cover them:\n\n1. **Profiles are collected per test process, identified by binary, test name and attempt.**\n   - `tests/execution_coverage.rs#fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]` runs a real `cargo nextest` fixture.\n   - It checks the saved run selection and the attempt records for binary, test and attempt.\n   - It checks each record's `processes` and their `profiles`.\n   - Each profile file name must start with its process's pid, and no raw profile path may be shared between processes.\n\n2. **Concurrent tests do not overwrite or combine profiles.**\n   - The real test runs with `-j 2` and `HABEAS_FIXTURE_OVERLAP`. The fixture's `overlap` helper makes `same_name` and `second` wait for each other's marker file, so they must overlap.\n   - The test asserts that both marker files exist.\n   - `same_name` must hit only the true-branch line and `second` only the false-branch line. Combined or overwritten profiles would fail this.\n   - `src/execution_coverage/store.rs#mod[tests]/fn[concurrent_writers_preserve_each_tests_state_and_measurements]` runs 64 barrier-synchronised writers on separate `Store` handles. Each result must keep its own attempt id and its own distinct count.\n   - `src/execution_coverage/runner.rs#mod[tests]/fn[parallel_conversion_is_bounded_and_retains_every_result_in_order]` checks that profile conversion is concurrent and that every result is retained in order, including a failing one.\n\n3. **Same-named tests in different binaries stay separate.**\n   - The real test has `same_name` in both `coverage-fixture` and `coverage-fixture::processes`. It asserts that both binaries appear among the attempt records.\n   - The store test uses 64 binaries that all share the test name `same_name`. Each must keep its own measurements.\n   - `focused_replacement_preserves_unselected_results_and_shared_artifacts` does the same with `lib::same` and `integration::same`.\n\n4. **Different attempts do not overwrite or combine.**\n   - The `retries` test uses `NEXTEST_ATTEMPT` to take a different branch on each attempt.\n   - The test asserts that the final record is attempt \"2\" with exactly one process, with the message \"retry processes are not combined\".\n   - It asserts that the line for the attempt-1 branch is 0 and the line for the attempt-2 branch is above 0. Merged attempts would fail this.\n   - It asserts that the retry's process pid matches the record's pid.\n\n5. **Child-process profiles stay separate and tied to the spawning attempt.**\n   - The `child_process` record must contain 2 processes.\n   - Each process has its own pid-prefixed profile files, which must be distinct and present under that attempt's directory.\n\n6. **Profiles for a current result stay available until the result is replaced.**\n   - `assert_profiles_present` is called for every record, and for the retained failure attempt.\n   - After a focused rerun of `second`, the old `second` attempt directory is gone and `attempts(&first)` has 4 entries. The unselected attempts and their profiles remain.\n   - The same test checks that a later attempt replaces retained failure profiles.\n   - `focused_replacement_preserves_unselected_results_and_shared_artifacts` checks the same behaviour at store level: preserved `1.profraw` files exist, and the replaced test's attempt directory is removed.\n\nI found no plausible violating behaviour that these tests would accept. The refined requirement `requirements.test-coverage.storage.current` is cited here, and the replacement and retention behaviour the subject relies on is exercised by the tests above.",
+  "rationale": "The reviewed tests cover each obligation in `requirements.test-coverage.processes`. I did not read the `assert_profiles_present` helper or the implementation.\n\n- **Independent profiles per process, identified by binary, test name and attempt.** `tests/execution_coverage.rs#fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]` runs real nextest with `-j 2` and `--retries 1`.\n  - It checks that five attempt records exist. The record for `retries` has `attempt` equal to `\"2\"`. Records carry binary and test.\n  - It checks that each `processes[].pid` matches its profile file names, which start with the pid. It also checks that no raw profile path is shared between processes.\n- **Concurrent tests do not overwrite or combine.**\n  - The integration test uses a rendezvous in the fixture (`HABEAS_FIXTURE_OVERLAP`), so `same_name` and `second` must overlap or one of them fails. It then asserts disjoint per-test line counts: the true branch is nonzero for `same_name` and the false branch is nonzero for `second`.\n  - `src/execution_coverage/store.rs#mod[tests]/fn[concurrent_writers_preserve_each_tests_state_and_measurements]` runs 64 simultaneous writers. They use the same test name across different binaries. It asserts that every attempt's state and measurements survive uncombined, using a distinct count per writer.\n- **Same-named tests in different binaries.** The integration test asserts that `same_name` records exist for both `coverage-fixture` and `coverage-fixture::processes`. The store test does the same with 64 binaries.\n- **Different attempts are not combined.** The `retries` test behaves differently on attempt 1 than on attempt 2. The final record has exactly one process, with line 3 equal to 0 and line 5 greater than 0, so attempt 1 is not merged in. Superseded attempt profiles are also removed, and the `attempts` directory holds exactly five entries.\n- **Child-process profiles stay separate and associated with the spawning attempt.** `child_process` has two processes. Each process's profiles are files under that attempt's own directory, and profile paths are distinct.\n- **Profiles remain available until replaced.**\n  - The integration test asserts profile presence for every record, and for the retained failed attempt. It also asserts that a later attempt removes the failed run's profiles.\n  - `src/execution_coverage/store.rs#mod[tests]/fn[focused_replacement_preserves_unselected_results_and_shared_artifacts]` asserts that unselected results keep their `1.profraw` files. It also asserts that the replaced entry's attempt directory is removed.\n\nAll of these tests carry `{test}` references to the subject. `src/execution_coverage/runner.rs#mod[tests]/fn[parallel_conversion_is_bounded_and_retains_every_result_in_order]` also carries one and checks bounded parallel conversion, which supports the subject only indirectly. I found no unaddressed obligation.",
   "references": "e091bcb50128111fc4c5b82a3f1f4f375d74bfb6f2dd6f11db3d476909a94598",
   "inputs": [
     {
@@ -59,16 +59,6 @@
       "file": "tests/execution_coverage.rs",
       "item": "fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]",
       "hash": "19e2b1e61d5027ab192843ceed1beb865e8669c2d0aed71d8b68d8c31680c076"
-    },
-    {
-      "file": "tests/execution_coverage.rs",
-      "item": "fn[fixture]",
-      "hash": "7dbf98dba6a8063e2c5377bda40073716abbac163a14eaca3b5bdf8cc33ef278"
-    },
-    {
-      "file": "tests/execution_coverage.rs",
-      "item": "fn[assert_profiles_present]",
-      "hash": "5463f294bdc8d6b57492767dc404663361d9b0aadf90f5e4eaea4af9e5361abf"
     }
   ],
   "format_version": 1,
@@ -131,8 +121,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "be047574b2810bce95552477a3228e679185103319ea1fbe332c207c84172c65"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "8df90d268097ed5c8a2a444599a1a9a8f75308d8bdd7ba24cd2d9c98f19c5620"
         }
       ]
     },
@@ -148,8 +138,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "61e364dfce36ab8b855b2fe1f513095810bbd5f1b217e8cfed8c16600237cfdd"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "d770869c8f4d8c257c96e0831ef4553634833903b6bdb7ec9aad4f6a21c0668e"
         }
       ]
     },
@@ -165,8 +155,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "e02bb18d07883f8cba4a973210772fc8a27d580c9c96fd1b50b32739a730085d"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "87e03d38d9f6783d0fd0e812bb47d412518d663fa4b7da506041434ea4b39881"
         }
       ]
     },
@@ -182,42 +172,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "ef3d3f1e3a7b75b71f43536dede2c6ee08e3655be652f83eb1e494e66f8aa57b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "tests/execution_coverage.rs"
-            },
-            "selector": "fn[fixture]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "e2b0214f20e53f9f30edee4a72266c0eef28b3b5c6250f832d91fecbd4f85e31"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "tests/execution_coverage.rs"
-            },
-            "selector": "fn[assert_profiles_present]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "c21b7a43e076e28fe8e758a1678e69bfb795995253d6ed0c995523b4338ed0c9"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "19e2b1e61d5027ab192843ceed1beb865e8669c2d0aed71d8b68d8c31680c076"
         }
       ]
     }

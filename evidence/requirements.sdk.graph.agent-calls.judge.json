@@ -1,7 +1,7 @@
 {
   "requirement": "`trust_but_verify` exposes `Ask` and its public `ContextPhase` and\n`NodePhase` state types. The validation context starts a builder:\n\n```rust,ignore\n/// Create an independent request borrowing this context through a shared reference.\npub fn ask<R>(&self) -> Ask<'_, 'd, D, R, ContextPhase>\nwhere\n    R: serde::de::DeserializeOwned + schemars::JsonSchema + Send;\n```\n\nBoth states implement `std::future::IntoFuture` with\n`Output = Result<R, ValidationError<D::Error>>` and a `Send` future for\n`R: serde::de::DeserializeOwned + schemars::JsonSchema + Send`.\nAwaiting executes the assembled request, even with no contexts or node\ninsertions. Building it does not invoke an agent.",
   "determination": true,
-  "rationale": "I judged the tests adequate. I did not read the implementation. I derived the obligations from the requirement text and checked each against the supplied tests in `crates/trust-but-verify/src/graph/validation_tests.rs`.\n\n1. **`ValidationContext::ask(&self)` starts an independent builder over a shared reference.**\n   - `fn[shared_context_allows_independent_concurrent_agent_calls]` runs two `ctx.ask::<Answer>()` requests concurrently on one shared context. A barrier forces both calls to be in flight at once.\n   - It asserts each request gets its own result (`n` of 7 and 11), that two agent requests were made, and that the dependencies are the expected single entry.\n\n2. **Both `ContextPhase` and `NodePhase` implement `IntoFuture` with a `Send` future and the stated `Output`.**\n   - `ContextPhase`: `fn[contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text]` builds a `.context(..).context(..)` builder, calls `into_future()`, and runs `assert_send` on the future. The builder still holds a non-`Send` `Rc` context value.\n   - `NodePhase`: `fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]` adds a context and node insertions, calls `into_future()`, and runs `assert_send`.\n   - Output type: the tests `.unwrap()` the `Ok` value and match `Err(ValidationError::NoAgentConfigured)` and `Err(ValidationError::Graph(\"read\" | \"edges\" | \"render\"))`. These matches show the error is a `ValidationError` carrying the graph error type.\n\n3. **Awaiting executes the assembled request, even with no contexts or node insertions.**\n   - `fn[contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text]` awaits a bare `ctx.ask::<Answer>()` and one with an empty `Vec<String>` context. It asserts the agent received an empty prompt, the fingerprint of `\"\"`, and no node contents.\n   - The `NodePhase` await paths are covered by `fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]`. `fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]` covers an empty or irrelevant successor selection, which awaits successfully with no reads.\n\n4. **Building does not invoke an agent.**\n   - `fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]` drops a `contents_of_current_node()` builder and asserts the agent's `requests` list is empty.\n   - `fn[dropped_builders_and_missing_agents_do_not_resolve_queued_inputs]` drops a builder and asserts that no dependencies were recorded and that no reads or selections occurred.\n   - `fn[contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text]` builds a `ContextPhase` builder and asserts only that rendering happened once. It does not directly assert that the agent was uninvoked at that point. An eager call would still change the later `requests` contents, so this is a minor weakness and not a gap.\n\n5. **Failure paths of awaiting.**\n   - `fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]` and `fn[dropped_builders_and_missing_agents_do_not_resolve_queued_inputs]` assert the error variants (`Graph`, `NoAgentConfigured`) and that no agent request was made.\n\nAll obligations in the subject text map to tests with concrete assertions. I found no gap.",
+  "rationale": "The tests cover each obligation in `requirements.sdk.graph.agent-calls.judge`. I did not read the implementation. The tests in `validation_tests.rs` elide some lines (`…`), so I relied on the visible assertions.\n\n- **`ask` starts an independent builder through a shared reference.** `shared_context_allows_independent_concurrent_agent_calls` starts two `ctx.ask::<Answer>()` requests from one `&ValidationContext` and joins them. Each request has its own inputs, and the test asserts two agent calls with results 7 and 11. A barrier proves they run concurrently.\n- **Both states implement `IntoFuture` with a `Send` future.**\n  - `ContextPhase`: `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` calls `builder.into_future()` on a context-only builder and runs `assert_send` on it. It then awaits the result and unwraps it as the answer type.\n  - `NodePhase`: `explicit_insertions_preserve_order_repetition_and_selection_snapshots` calls `.into_future()` after `contents_of_*`, runs `assert_send(&future)`, awaits it, and checks `answer.n == 7`.\n  - The `Result<R, ValidationError<D::Error>>` output type is checked by the `matches!(…, Err(ValidationError::Graph(..)))` and `NoAgentConfigured` assertions. These appear in `queued_reads_selection_and_rendering_fail_before_agent_invocation` and `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs`. The `.unwrap()` calls elsewhere check the `Ok` side.\n- **Awaiting executes the request, even with no contexts or insertions.** In the contexts test, `ctx.ask::<Answer>().await` and `.context(Vec::<String>::new()).await` each reach the agent. The test asserts the recorded requests have an empty prefix, the matching fingerprint, and no node contents. Node-only builders with empty or unrelated successor edges are awaited in the queued-reads test and succeed.\n- **Building does not invoke an agent.** `queued_reads_selection_and_rendering_fail_before_agent_invocation` drops a builder with queued node reads and asserts the agent's requests are empty. `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` drops a builder and asserts no reads, no selections and no dependencies. Awaiting with no agent configured returns `NoAgentConfigured`.\n- **Queued node inputs resolve only on await, in order.** The explicit-insertions test checks order, repetition and the resolved reads. The queued-reads test covers read, edge and render failures returning `Err` without agent invocation.\n\nThe tests are marked `{test}` for the subject. I found no unexercised obligation and no marking gap.",
   "references": "f4a6a6911b3085a081b20fc75e6f64c38d517244ed26eaf06ba623808fbce4e9",
   "inputs": [
     {
@@ -104,8 +104,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "2960ea17d6cadb1f8171fb93f330634c35b91a08f485cfc1eeb01b6f2ec02137"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "9cbe92178baf6b64f5b753b824d8484aaeaf4cef82c6372f433f35776444e34c"
         }
       ]
     },
@@ -121,8 +121,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "30ceab2121ddfdf47068ebaaa73758bdf2544f0c12badc817f253156ef093753"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "d6e99ab39b78a5458f7c497ed3f69a053fff9f8bb31ded9d41e7f9e70fa0ab90"
         }
       ]
     },
@@ -138,8 +138,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "9bca063d006595ed84b77011974c75c2e751b53a171f60063c650098e1c42a1a"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "eb15fcf83118155b8a9a790a7851de9cd58a337bfb384d07d8fdf0571bbbd6be"
         }
       ]
     },
@@ -155,8 +155,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "326ace612eda4828cac5fc9dd1d283700e550786d1a53a93a7b33d02b41d0f48"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "c1e103cff6f9bbdbf982230e4b2beac870658b9ecab472a2cac25b61da76317f"
         }
       ]
     },
@@ -172,8 +172,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "cee46e0806fccf4bd824ab4d2ae06bf43eff788b48df5c8c006b31383f7cd626"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "16e5d66c127375503160b7357b3aab780341b16eb17adf36510391e372907734"
         }
       ]
     }

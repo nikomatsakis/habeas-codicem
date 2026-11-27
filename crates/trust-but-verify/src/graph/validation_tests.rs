@@ -1158,6 +1158,7 @@ async fn contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text()
     );
 }
 
+// {test}`requirements.sdk.graph.agent-calls.NodePhase`
 // {test}`requirements.sdk.graph.agent-calls.subject_message`
 // {test}`requirements.sdk.graph.agent-calls.named_input`
 #[tokio::test]
@@ -1617,6 +1618,7 @@ async fn concurrent_single_node_validations_keep_separate_traces() {
     }
 }
 
+// {test}`requirements.sdk.graph.running-criteria.validate_node.errors`
 // {test}`requirements.sdk.graph.agent-calls.judge.submission`
 // {test}`requirements.sdk.graph.criteria.execute`
 // {test}`requirements.sdk.graph.running-criteria.ValidationError`

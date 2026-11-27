@@ -274,6 +274,7 @@ mod tests {
         assert!(decode_name("a b").is_err());
     }
 
+    // {test}`requirements.sdk.outlines.selector_parser`
     // {test}`requirements.sdk.outlines.selector_syntax`
     // {test}`requirements.sdk.outlines.Label`
     // {test}`requirements.sdk.outlines.parse_selector`

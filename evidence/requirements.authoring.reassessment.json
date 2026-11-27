@@ -1,7 +1,7 @@
 {
   "requirement": "After applying a round's additions, Habeas MUST check freshness against the\nedited sources. It MUST reassess a subject whose corrections are all satisfied\nwhen the writes changed its assessment inputs. It MUST also reassess any other\nsubject whose previously current evidence those writes made stale, including\ndefinitions, citation reviews, and site reviews outside the initial selection.\nIndependent reassessments MUST run under {cite}`requirements.authoring.concurrency`.\nEach reassessment MUST use fresh inputs and the selected assessment policy.\nOnly a fresh successful assessment establishes `true`.\n\nA subject with a remaining manual instruction or an action that could not be applied MUST pause for\nthe rest of the invocation, even if another edit changes its inputs. Other\nsubjects MUST continue. An already-present marker or stale selector alone MUST\ncause no reassessment. If every requested marker already exists and the inputs\nare unchanged, the negative judgment stands. Repeat while eligible subjects\nremain, with no limit on rounds or automated additions. With `--stdout`, Habeas\nMUST report the named subject's assessment and proposed corrections without\nediting sources or starting a correction-driven reassessment.",
   "determination": false,
-  "rationale": "**Confirmation:** the assessments disagreed\n\nFirst assessment `true`: I found no test-adequacy gap in `requirements.authoring.reassessment`. All five supplied tests carry a `{test}` reference to it. I did not read the implementation or the test server behaviors, and I judged the tests only from the supplied source.\n\nObligation-to-test mapping:\n\n- **Freshness check after a round's additions, and reassessing a subject whose corrections were all satisfied when its inputs changed.**\n  - `tests/authoring_cli.rs#fn[corrections_replay_reference_only_mixed_and_regression_findings]` has a \"reference-only\" case. A failed assessment is applied, reassessed and fails again, is applied again, then reassessed to success. The test asserts `determination == true`, the `(applied)` output and the exact marker placement in the source.\n  - The \"confirm-reassessment\" case runs the reassessment under `--policy confirm` and asserts the reassessment succeeds. It checks that a fresh success establishes `true`.\n  - Other cases in the same test show a failure with an unread or unmatched item keeps `false`.\n- **Reassessing other subjects made stale, including definitions, citation reviews and site reviews outside the initial selection.**\n  - `tests/authoring_batch.rs#fn[reference_edits_reassess_a_skipped_subject_sharing_the_changed_input]` covers a site review plus a requirement. After the edit it asserts that both `src/lib.rs fn[shared]` and `requirements.alpha` are reassessed, and that the evidence is `true` and the repository validates.\n  - `tests/authoring_batch.rs#fn[a_named_reference_edit_refreshes_a_definition_and_a_citation_that_read_the_same_text]` covers a citation review on `notes.txt`. It asserts that each peer sharing the edited text is reassessed after the round, and that validation has no errors.\n- **Independent reassessments run under the cited concurrency requirement.** The batch tests configure concurrency 2 and check the peers are reassessed together, matching order-insensitively. The limit itself belongs to `requirements.authoring.concurrency` and its own tests, so it is not reassessed here.\n- **A subject with a remaining manual instruction or an unapplied action pauses for the rest of the invocation, even if another edit changes its inputs. Other subjects continue.**\n  - `tests/authoring_batch.rs#fn[a_changed_shared_input_does_not_resume_a_paused_subject]` covers both pause causes, a manual instruction and an unreachable or unapplied action.\n  - It asserts the paused `alpha` is assessed exactly twice and stays `false`, even though a shared input changed.\n  - It asserts `beta` is assessed three times, ends `true`, and has its marker applied, so other subjects continue.\n  - The \"mixed\" and \"new-regression\" cases in `corrections_replay_reference_only_mixed_and_regression_findings` assert the \"paused for manual work\" output. They also assert that applied markers are written alongside the manual instruction and that the result stays `false`.\n- **An already-present marker or stale selector alone causes no reassessment, and the negative judgment stands when inputs are unchanged.**\n  - `tests/authoring_cli.rs#fn[stale_and_already_present_references_do_not_retry_unchanged_inputs]` runs both variants. It asserts exactly two model requests, so there is no retry.\n  - It asserts the source is unchanged, or holds only the externally changed text when stale, and that the \"item changed since assessment\" message appears only in the stale variant.\n  - It asserts `determination == false` and that the observed input is recorded.\n  - The \"anchor\" case in the corrections test also asserts the \"already present\" output and no further assessment.\n- **Repeating while eligible subjects remain, with no limit on rounds.** The \"reference-only\" case runs more than one correction round followed by reassessment. The batch tests run several rounds across subjects. A test of a very large round count would only repeat the same loop, and the requirement names no boundary.\n- **`--stdout` reports the assessment and proposed corrections without editing sources or starting a correction-driven reassessment.** The \"stdout\" case asserts the evidence file is unchanged. It asserts the proposed correction is printed and nothing is `(applied)`. It asserts the source has zero markers and that exactly the two scripted requests were made.\n- **Fresh inputs and the selected policy.** The stale variant checks that inputs are re-observed. The confirm-policy case checks the policy is used on reassessment.\n\nSecond assessment `false`: Add a reassessment test that checks the concurrency clause: \"Independent reassessments MUST run under `requirements.authoring.concurrency`\". Use a fixture where one edit makes at least three independent subjects stale, such as the requirement, citation review and site review peers in `tests/authoring_batch.rs#fn[a_named_reference_edit_refreshes_a_definition_and_a_citation_that_read_the_same_text]`. Configure `concurrency` to 2. Have the fake server hold the reassessment requests. For example, use `require_overlap`, a barrier like `Behavior::WarmupBarrier`, or the recorded `peak`/`timeline`. Assert that at least two reassessments overlap and that the peak number of simultaneous requests never exceeds the configured concurrency. — The reassessment tests call `Server::start_with(false, ...)`, so no overlap is required. None of them checks the peak count of simultaneous assessments or the timeline of the reassessment round. `reference_edits_reassess_a_skipped_subject_sharing_the_changed_input` and `a_named_reference_edit_refreshes_a_definition_and_a_citation_that_read_the_same_text` only check which subjects were reassessed. Both would pass if the reassessment round ran sequentially, ignoring `concurrency`. They would also pass if it ran unbounded and exceeded the configured limit. Both behaviors violate the clause that independent reassessments run under `requirements.authoring.concurrency`.\n\nRecorded the second assessment (`false`).",
+  "rationale": "Add a test, or extend `tests/authoring_batch.rs#fn[a_named_reference_edit_refreshes_a_definition_and_a_citation_that_read_the_same_text]` or `reference_edits_reassess_a_skipped_subject_sharing_the_changed_input`, so it checks that a reassessment round runs under the configured concurrency. The fixture server already records `Requests.peak`, the timeline and `first_pair_overlapped`. After the reassessment round, assert that `peak` does not exceed the configured value (2), and that two independent reassessments overlap in flight. Use a fixture where at least three independent peers are stale, or configure a lower limit. — `requirements.authoring.reassessment` says \"Independent reassessments MUST run under `requirements.authoring.concurrency`\". That requirement says in-flight assessments MUST NOT exceed the selected concurrency and that batch work uses asynchronous tasks. No reviewed test covers this for the reassessment round. The reassessment tests set `concurrency = 2` and check which subjects were reassessed. They only check membership in `seen[4..]`, which is order-agnostic, and they never assert `peak` or overlap. A reassessment round that ran its peers strictly serially would pass. So would one that ran them unbounded, for example three peers in flight against a limit of 2. The tests that do assert `peak` and overlap, such as `batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs`, cover the initial batch only. The other obligations are adequately tested. Reassessing subjects with stale evidence is covered by `reference_edits_reassess_a_skipped_subject_sharing_the_changed_input` for a site review and a requirement, and by `a_named_reference_edit_refreshes_a_definition_and_a_citation_that_read_the_same_text` for a citation review. Reassessing a subject whose corrections were all satisfied, repeated rounds, and the selected policy are covered by `corrections_replay_reference_only_mixed_and_regression_findings`, in its reference-only, confirm-reassessment and implementation cases. Pausing is covered by the mixed and new-regression cases and by `a_changed_shared_input_does_not_resume_a_paused_subject`, which also shows other subjects continuing. Already-present and stale markers causing no reassessment is covered by `stale_and_already_present_references_do_not_retry_unchanged_inputs`. `--stdout` is covered by the stdout case.",
   "references": "d22e87db67f875a0704daeb6df763ecf31dbaff0b4a4fb9d03878fea9575af8c",
   "inputs": [
     {
@@ -82,15 +82,25 @@
     },
     {
       "file": "tests/authoring_batch.rs",
+      "item": "struct[Requests]",
+      "hash": "9f8d1de9fdaaec2a71f85b54ce0ba179aab6fe74d1e8fe787e065a4a7bd3d749"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
       "item": "fn[serve]",
       "hash": "484487c4c165a8959345754a04641d146cd811d002c28e9ad2e5dcb7736626f9"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs]",
+      "hash": "d5fe7916120b5e614107b2a33a2e72ace34608dd79154f34093b64929a56c8b3"
     }
   ],
   "corrections": [
     {
       "kind": "manual",
-      "instruction": "Add a reassessment test that checks the concurrency clause: \"Independent reassessments MUST run under `requirements.authoring.concurrency`\". Use a fixture where one edit makes at least three independent subjects stale, such as the requirement, citation review and site review peers in `tests/authoring_batch.rs#fn[a_named_reference_edit_refreshes_a_definition_and_a_citation_that_read_the_same_text]`. Configure `concurrency` to 2. Have the fake server hold the reassessment requests. For example, use `require_overlap`, a barrier like `Behavior::WarmupBarrier`, or the recorded `peak`/`timeline`. Assert that at least two reassessments overlap and that the peak number of simultaneous requests never exceeds the configured concurrency.",
-      "rationale": "The reassessment tests call `Server::start_with(false, ...)`, so no overlap is required. None of them checks the peak count of simultaneous assessments or the timeline of the reassessment round. `reference_edits_reassess_a_skipped_subject_sharing_the_changed_input` and `a_named_reference_edit_refreshes_a_definition_and_a_citation_that_read_the_same_text` only check which subjects were reassessed. Both would pass if the reassessment round ran sequentially, ignoring `concurrency`. They would also pass if it ran unbounded and exceeded the configured limit. Both behaviors violate the clause that independent reassessments run under `requirements.authoring.concurrency`."
+      "instruction": "Add a test, or extend `tests/authoring_batch.rs#fn[a_named_reference_edit_refreshes_a_definition_and_a_citation_that_read_the_same_text]` or `reference_edits_reassess_a_skipped_subject_sharing_the_changed_input`, so it checks that a reassessment round runs under the configured concurrency. The fixture server already records `Requests.peak`, the timeline and `first_pair_overlapped`. After the reassessment round, assert that `peak` does not exceed the configured value (2), and that two independent reassessments overlap in flight. Use a fixture where at least three independent peers are stale, or configure a lower limit.",
+      "rationale": "`requirements.authoring.reassessment` says \"Independent reassessments MUST run under `requirements.authoring.concurrency`\". That requirement says in-flight assessments MUST NOT exceed the selected concurrency and that batch work uses asynchronous tasks. No reviewed test covers this for the reassessment round. The reassessment tests set `concurrency = 2` and check which subjects were reassessed. They only check membership in `seen[4..]`, which is order-agnostic, and they never assert `peak` or overlap. A reassessment round that ran its peers strictly serially would pass. So would one that ran them unbounded, for example three peers in flight against a limit of 2. The tests that do assert `peak` and overlap, such as `batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs`, cover the initial batch only. The other obligations are adequately tested. Reassessing subjects with stale evidence is covered by `reference_edits_reassess_a_skipped_subject_sharing_the_changed_input` for a site review and a requirement, and by `a_named_reference_edit_refreshes_a_definition_and_a_citation_that_read_the_same_text` for a citation review. Reassessing a subject whose corrections were all satisfied, repeated rounds, and the selected policy are covered by `corrections_replay_reference_only_mixed_and_regression_findings`, in its reference-only, confirm-reassessment and implementation cases. Pausing is covered by the mixed and new-regression cases and by `a_changed_shared_input_does_not_resume_a_paused_subject`, which also shows other subjects continuing. Already-present and stale markers causing no reassessment is covered by `stale_and_already_present_references_do_not_retry_unchanged_inputs`. `--stdout` is covered by the stdout case."
     }
   ],
   "format_version": 1,
@@ -234,12 +244,46 @@
               "scheme": "repo",
               "location": "tests/authoring_batch.rs"
             },
+            "selector": "struct[Requests]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "9f8d1de9fdaaec2a71f85b54ce0ba179aab6fe74d1e8fe787e065a4a7bd3d749"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/authoring_batch.rs"
+            },
             "selector": "fn[serve]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "484487c4c165a8959345754a04641d146cd811d002c28e9ad2e5dcb7736626f9"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/authoring_batch.rs"
+            },
+            "selector": "fn[batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "d5fe7916120b5e614107b2a33a2e72ace34608dd79154f34093b64929a56c8b3"
         }
       ]
     }

@@ -1,7 +1,7 @@
 {
   "requirement": "Before starting test execution, Habeas obtains the selected test identities\nfrom nextest using the same prepared test binaries and effective package and\nbinary selection, test filters, partitioning, ignored-test settings, and\nprofile configuration as the execution invocation. Nextest's configured\ndefault filters retain their native meaning. A test identity is its nextest\nbinary identity and test name.\n\nIf preparation or selection discovery fails, the command reports the failure\nwithout replacing saved test results or changing the active build\nconfiguration. An invocation requesting no execution, such as `--no-run`,\nalso leaves those results and the active configuration unchanged.",
   "determination": true,
-  "rationale": "The reviewed tests adequately cover `requirements.test-coverage.storage.selection`. I did not read any implementation source. The expected behavior below comes from the requirement text.\n\n**Selection comes from nextest with the same options as execution**\n- `src/execution_coverage/runner.rs#mod[tests]/fn[listing_preserves_native_filters_and_prepared_execution_keeps_run_options]` builds a full argument list. It then asserts that the listing arguments keep the profile, partition, run-ignored, `-E` filter and libtest arguments after `--`. It also asserts that the listing arguments leave out the build-selection and run-only options (`--workspace`, `-F`, `-p`, `--target-dir`, `--retries`, `-j`).\n- The same test asserts that the build/binary-preparation arguments keep the package, feature and target-dir options. It further asserts that the execution arguments keep the run options and omit the build-selection options.\n- `selected_identities_use_nextests_filter_results_and_reject_incomplete_metadata` checks that `selected_tests` uses nextest's `filter-match` status. It asserts the exact `TestIdentity{binary,test}` values, and the two tests named `same` in different binaries remain distinct. It also rejects missing fields, malformed JSON and a suite whose status is not listed.\n- In `tests/execution_coverage.rs`, `package_binary_partition_and_ignored_selection_replace_only_their_actual_test_identities` runs real nextest invocations and checks the saved `selection` against the expected identities for each of these cases:\n  - `-p`;\n  - `--lib` with an `-E` filter;\n  - `--test processes` with an `-E` filter;\n  - `--run-ignored only`;\n  - `hash:1/2` and `hash:2/2` partitions, whose selections are disjoint and together cover every non-ignored test.\n- Native default-filter and profile behavior is covered by `configured_retries_filters_profiles_and_libtest_arguments_are_preserved`. It configures `default-filter` in the default and focused profiles and asserts the selected identities. It also uses `--profile` and libtest `--exact`.\n- `real_parallel_processes_retries_child_profiles_and_filtered_reruns` asserts the full five-identity selection and the `-E` filtered reruns. It also covers the empty-selection case, which retains the `Empty test selection` diagnostic.\n- `fail_fast_leaves_every_unstarted_selected_test_pending_without_old_measurements` shows that tests selected before execution that never start are recorded as pending.\n\n**Failures and no-run leave saved results and active configuration unchanged**\n- `selection_discovery_failure_preserves_existing_results_and_configuration` swaps in a fake `cargo` whose `nextest list` fails. The run uses `--features alpha`, which would otherwise be an incompatible configuration. It asserts a failing exit, the `selection discovery failed` message, and that `runs(root)` and the attempts are unchanged.\n- `unreadable_build_inputs_fail_preparation_before_any_tests_start` covers a preparation failure. It asserts the `Coverage preparation failed` message and that the saved runs and attempts are unchanged.\n- The tail of `real_parallel_processes_retries_child_profiles_and_filtered_reruns` covers a compile error with a changed `--features alpha` configuration, and `--no-run`. For `--no-run` it asserts the `Compilation-only` message and that the runs and attempts are unchanged. For the compile error it asserts a failing exit and unchanged runs and attempts.\n- The same test also shows that an incompatible configuration replaces results only on a successful run.\n\nTogether these cover each clause: same prepared binaries and options, native default filters, test identity as binary plus test name, failure preservation, and `--no-run`. I found no unacknowledged gap.",
+  "rationale": "I judged the tests against the subject's text only. I did not request implementation source or read the test helpers. I treated `runs(root)` as including each run's saved `configuration`, because the tests compare it with `assert_eq!(runs(root), before)` and read `[\"configuration\"]` from it.\n\n**Obligations and the tests that cover them**\n\n1. **Selection comes from nextest with the same selection inputs as execution.**\n   - `src/execution_coverage/runner.rs#mod[tests]/fn[listing_preserves_native_filters_and_prepared_execution_keeps_run_options]` checks the argument split.\n     - The listing arguments keep `--profile`, `--partition`, `--run-ignored`, `-E` and the libtest arguments after `--`.\n     - The prepared-binary arguments keep `--workspace`, `-F`, `-p` and `--target-dir`, and omit run-only options such as retries and `-j`.\n     - The execution arguments keep the run options and drop the package and workspace selection.\n   - `runner.rs#mod[tests]/fn[selected_identities_use_nextests_filter_results_and_reject_incomplete_metadata]` checks the identity.\n     - Only suites and tests where nextest reports `matches` are selected.\n     - The identity is binary id plus test name, and same-named tests in different binaries stay distinct.\n     - Missing metadata, invalid JSON and a non-`listed` suite status are rejected.\n   - `tests/execution_coverage.rs#fn[package_binary_partition_and_ignored_selection_replace_only_their_actual_test_identities]` runs real nextest.\n     - It covers `-p`, `--lib`, `--test`, `--run-ignored only`, and `hash:1/2` plus `hash:2/2`.\n     - It asserts that the saved selection equals the identities that actually ran.\n     - It asserts that the partitions are disjoint and together cover every non-ignored test.\n     - It asserts that unselected results are unchanged.\n   - `tests/execution_coverage.rs#fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]` asserts the exact five-entry selection with binary ids, and covers `-E`, `--profile focused`, and `--features`.\n\n2. **Configured default filters keep their native meaning.**\n   - `tests/execution_coverage.rs#fn[configured_retries_filters_profiles_and_libtest_arguments_are_preserved]` sets `default-filter` on the default and `focused` profiles.\n   - It also passes `-- --exact second`.\n   - It asserts that the saved selection and the attempts match only the filtered tests.\n\n3. **A test identity is its binary identity plus test name.** The `selected_tests` unit test and the exact `selection` JSON assertions cover this.\n\n4. **A selection discovery failure leaves saved results and the active configuration unchanged.**\n   - `tests/execution_coverage.rs#fn[selection_discovery_failure_preserves_existing_results_and_configuration]` replaces `cargo nextest list` with a failing script.\n   - It uses a different configuration (`--features alpha`) from the saved results.\n   - It asserts a nonzero exit and a \"selection discovery failed\" message.\n   - It asserts that `runs(root)` and the saved attempts are unchanged.\n\n5. **A preparation failure leaves saved results and the active configuration unchanged.**\n   - `tests/execution_coverage.rs#fn[unreadable_build_inputs_fail_preparation_before_any_tests_start]` writes an unreadable input file and changes the configuration.\n   - It asserts a failure with the message \"Coverage preparation failed\".\n   - It asserts that `runs(root)` and the attempts are unchanged.\n   - The real-run test also checks that a build failure (`compile_error!`) with `--features alpha` leaves everything unchanged.\n\n6. **A no-execution invocation (`--no-run`) changes neither results nor configuration.** The real-run test runs `--features alpha --no-run`, which would otherwise change the configuration. It asserts success and a \"Compilation-only\" message. It also asserts that `runs(root)` and the attempts are unchanged.\n\n7. **Selection is obtained before execution starts.** `fail_fast_leaves_every_unstarted_selected_test_pending_without_old_measurements` shows that selected but unstarted tests are recorded as pending. The discovery-failure and preparation-failure tests show that no execution results are written when a failure comes first.\n\nI found no unmarked relevant tests and no untested obligation. There are no acknowledgments or `{fixme}` references to assess.",
   "references": "50efb6de4f934906d2ef434f2d7e106650c611acd2d3e0fafdfe7832e1880840",
   "inputs": [
     {
@@ -64,41 +64,6 @@
       "file": "tests/execution_coverage.rs",
       "item": "fn[unreadable_build_inputs_fail_preparation_before_any_tests_start]",
       "hash": "0c8a0d47e3cbc8645ab6dfa9eb5513dc5ec325fe3631e94d9f4e0d05cb80aa16"
-    },
-    {
-      "file": "src/execution_coverage/runner.rs",
-      "item": "fn[run]",
-      "hash": "6f7b49212d5756b245550399f3a6895dd432fa803419f541915029d484855462"
-    },
-    {
-      "file": "src/execution_coverage/store.rs",
-      "item": "mod[fixtures]/fn[save]",
-      "hash": "41e2a9c2ef7a3f9944dd3bdb52502d33db627a2cb36e5d81c1bc43e0cdff2600"
-    },
-    {
-      "file": "src/execution_coverage/store.rs",
-      "item": "impl[Store]/fn[open]",
-      "hash": "5592192cf45293e202adcb15a426bb54ac8e2c6a694ac7ef947f1c4c802a7cda"
-    },
-    {
-      "file": "tests/execution_coverage.rs",
-      "item": "fn[runs]",
-      "hash": "b44bc87f1b8c2e9f21d0c7fbaf1c94a7bc0f65ba36f58be4f517d641ff88c68c"
-    },
-    {
-      "file": "tests/execution_coverage.rs",
-      "item": "fn[attempts]",
-      "hash": "287d036691b714af306b7235158a2b421f50a3a93d821a3c353529fe015e2abb"
-    },
-    {
-      "file": "tests/execution_coverage.rs",
-      "item": "fn[runs_in]",
-      "hash": "584cc0ecf51b828c3a788db332147e16c17194cee5dd57b70d9cdfec31393713"
-    },
-    {
-      "file": "src/execution_coverage/runner.rs",
-      "item": "fn[nextest_args]",
-      "hash": "663b1a70965fb8c2fc9c31e53362d42778dee28267a8657800383690a6a9d3fa"
     }
   ],
   "format_version": 1,
@@ -150,8 +115,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "8bea44a0db74c9bcaab6193dc54e325be802d44f9588a4a1dc50a5cf23b8750e"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "4b3e391bb6a880da683a79deb2181458dbef7ea0eb3c1087f35e0066957190d9"
         }
       ]
     },
@@ -167,8 +132,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "c83168b61d6afeeb3882eee8e7b9840f5181c31c5708f95bcab3e85a1d6eb3f4"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "9b3ae8c5a61be7e46e7af568f619af026a9841e17fc318804a29162e84db2560"
         }
       ]
     },
@@ -184,8 +149,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "ef3d3f1e3a7b75b71f43536dede2c6ee08e3655be652f83eb1e494e66f8aa57b"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "19e2b1e61d5027ab192843ceed1beb865e8669c2d0aed71d8b68d8c31680c076"
         }
       ]
     },
@@ -201,8 +166,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "e610caf92dbfd549ebf01f7aa8566cd5690b8b400bac8e920dd933947a24022a"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "0332de3ce8dedcbd02dcab2e6f99bffe12063534d0c6d93bb2cc13f240673b7e"
         }
       ]
     },
@@ -218,8 +183,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "eef1935eb92bd1f56cb214c4613ec126c69f1df2b8452e31e80d590e08fe04f1"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "7f57ef552fb8c54136c7f67f354c218be78aaa3f4709ae037415d5e5b8f48cec"
         }
       ]
     },
@@ -235,8 +200,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "42e4fdf0073e985b5a966dd7cb5239d60e55959be07d4ebb42fc49922fecc092"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "3a9b60ccea8386705fbdb3da65af6ecb0a56846c45094b5bfa4acb24fa73588d"
         }
       ]
     },
@@ -252,8 +217,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "15e18da9f1ec9504cea4df97ce5567e7961efb62dfe9ac3f755b401289048c44"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "bbde690dc3a0c68ad64cdbcd68392380f7774e09ed02d907ee98a3fff9fb82ca"
         }
       ]
     },
@@ -269,127 +234,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "a166644f5168956e230a845127833151fdfc040806ad633c7c181f373f79bc88"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/execution_coverage/runner.rs"
-            },
-            "selector": "fn[run]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "df890c1209b62fd545ebe74125dedd202104f0c1a7339dfa543666cedb7e38e8"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/execution_coverage/store.rs"
-            },
-            "selector": "mod[fixtures]/fn[save]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "82ab21b78bafc54fa70b80848c04c9072577e2f2f03cf24c83eef52861665873"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/execution_coverage/store.rs"
-            },
-            "selector": "impl[Store]/fn[open]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "825be9befda85079637867260b714d921fe474677029456e4966de8d28a2091e"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "tests/execution_coverage.rs"
-            },
-            "selector": "fn[runs]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "cc1ba946c9eafa991e4146a8c4052c41ffcfee4a1621d526bfb55fe42451470a"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "tests/execution_coverage.rs"
-            },
-            "selector": "fn[attempts]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "1d98b50be759768d0bdb5e73cca9e6f5732c4dfb74d7007aaaaa98059eaf478e"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "tests/execution_coverage.rs"
-            },
-            "selector": "fn[runs_in]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "741ba693b97071fe8abd1b9d954bb959493d05b347d48e2976051ec0d869dbe9"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/execution_coverage/runner.rs"
-            },
-            "selector": "fn[nextest_args]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "abd63dd360cdcd063ca02aa852967a647b77ff0765e6b65d7a8cdcaaacae746f"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "0c8a0d47e3cbc8645ab6dfa9eb5513dc5ec325fe3631e94d9f4e0d05cb80aa16"
         }
       ]
     }

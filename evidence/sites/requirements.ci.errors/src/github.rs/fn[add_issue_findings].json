@@ -9,7 +9,7 @@
   "applies": true,
   "fixmes": [],
   "determination": true,
-  "rationale": "`src/github.rs#fn[add_issue_findings]` is a site of `requirements.ci.errors`. It holds its validation errors in a local `let mut errors` (a `BTreeSet`) and finally extends `inspection.report.errors` with it. The requirement's obligations for such a site are: after a check fails, still run every later independent check, and don't report one failure twice.\n\nI judged each early-exit match:\n- **`return` when `fixmes.is_empty()`:** this happens before any error is recorded. Every later check works on the `{fixme}` references, so with none there is nothing to check. No failed check is cut short.\n- **First loop, `continue` when `not_open(issue)` is `None`:** this skips an issue that is open or unreadable. That is not a failure, so no check is skipped. When an issue is closed, the loop records both of its findings in the same iteration, so the second is not skipped after the first.\n- **Second loop (evidence records), `continue` for `DefinitionKind::Term`:** terms have no evidence record, so skipping them is not a failure.\n- **Second loop, `value.get(\"determination\")?`:** it sits inside a closure that produces an `Option`. It only means \"no usable FIXME entries in this record\", and the `else { continue }` moves to the next definition. A malformed evidence file is not reported here and does not stop the other checks. It is a parse failure of a different check.\n- **Second loop, other `continue`s (a different requirement name, a non-fixme edge, a fixme inside the requirement's own site, no matching acknowledgment):** these are filters on which records apply. They are not exits after a failure.\n- **Third loop (site reviews), `continue`s when the review has no FIXME entries or the `{fixme}` is not inside the site:** these are the same kind of filter.\n\nNo failure stops a later independent check. The three loops each run no matter what the earlier ones found.\n\nOn duplicates: the errors go into a `BTreeSet`, so identical messages collapse. A closed issue does yield two differently worded messages in the first loop: the `{fixme}` names a closed issue, and the containing item fails because of it. They describe different checks, a bad `{fixme}` and a failing item. The test `closed_and_missing_issues_fail_their_fixmes_items_and_acknowledged_records` expects both, so I did not treat them as one failure reported twice. The stale-record messages are keyed by record path, issue and `{fixme}` location, so they are distinct from each other and from the first-loop messages.\n\nI found no gap against the obligations for this site.",
+  "rationale": "**Applies.** `src/github.rs#fn[add_issue_findings]` declares a local `let mut errors = BTreeSet::new()` and collects validation errors in it. That makes it a site of `requirements.ci.errors`. It is not authoring code that collects errors only to abort.\n\n**Obligations.** After one check fails, a site MUST still run every later independent check, including later checks in the same loop iteration. It MUST NOT report one failure twice.\n\n**Early-exit matches, judged one by one:**\n- The top `return` fires when `fixme_issues` is empty. No `{fixme}` references means no issue-state check has anything to run, and no failure has been recorded yet. This is harmless.\n- The `continue` in the first loop fires when `not_open(issue)` is `None`, so the issue is open or unreadable. No check has failed at that point. When an issue is not open, the loop does not skip anything. It inserts both errors and goes on to the next issue and reference.\n- The two `value.get(\"determination\")?` matches are inside closures that read an evidence or review record. The `?` only makes the closure return `None`. It does not leave the function.\n- The `continue` after a missing or empty FIXME record skips a definition or site that has no FIXME record. There is nothing to check there, so no failure is skipped.\n- The `continue` statements that filter references skip a reference that is not the one being checked. They skip a reference with a different name, a non-fixme reference, or one inside the requirement's own site. They also skip a reference whose acknowledgments do not match the record, or that is not inside the site. These are filters on which items a check covers. They are not exits after a failed check.\n- All findings go into the `errors` set. The function extends `inspection.report.errors` once at the end. A failure found in the first loop therefore does not stop the stale-record checks for definitions or for sites.\n\n**Duplicate reports.** One closed issue produces two messages. One is `{file}:{line}: {fixme} names …`. The other is `{file}:{line}: {item} fails: its {fixme} …`. `requirements.cli.fixme_issues` requires both: it says to report the `{fixme}` itself as an error and also to report the containing item as failing. They are separate required findings, so this is not one failure reported twice. The stale-record messages are keyed to `evidence/...json` or the review path. They are separate checks on different artifacts.\n\nThe site meets its obligations, and I found no gap.",
   "inputs": [
     {
       "file": "src/github.rs",
@@ -142,36 +142,152 @@
       ]
     },
     {
-      "file": "md/requirements/ci.md",
-      "item": "section[CI%20and%20evidence%20validation]/block@ea060db89728",
-      "hash": "229fa32db1399e3c63dc753c74fe6be68db89b3da2abb901de79c40e5bba5c89"
+      "requirements": "requirements.ci.fixme_closed_issue",
+      "matches": [
+        "requirements.ci.fixme_closed_issue"
+      ],
+      "text": [
+        ":::{example} fixme_closed_issue",
+        "A current evidence record has `{\"FIXME\": [\"example/queue#125\"]}`, acknowledged by",
+        "a `{fixme}` naming `example/queue#125`. The issue is then closed, though the",
+        "zero-capacity gap remains. `habeas status` reports the record as stale and lists",
+        "the closed issue, exactly as if an input had changed, and `habeas author --all`",
+        "reassesses it. The reviewer sees the issue's state as closed, so the `{fixme}` no",
+        "longer acknowledges the gap, and the judgment is `false`. Repository validation,",
+        "which does not contact GitHub, still accepts the old record until it is",
+        "reassessed.",
+        "{cite}`requirements.ci.outcomes`",
+        "{cite}`requirements.authoring.github_reads`",
+        "{cite}`requirements.cli.fixme_issues`",
+        ":::"
+      ]
     },
     {
-      "file": "src/github.rs",
-      "item": "mod[tests]/fn[closed_and_missing_issues_fail_their_fixmes_items_and_acknowledged_records]",
-      "hash": "e213bd7e64368bae9faa0ef792652bc2ce55cb0fb991283de8144177e7fd1a0b"
+      "requirements": "requirements.ci.fixme_without_issue",
+      "matches": [
+        "requirements.ci.fixme_without_issue"
+      ],
+      "text": [
+        ":::{example} fixme_without_issue",
+        "The tests adequately check a requirement except for a platform-specific",
+        "test gap recorded in the test source:",
+        "",
+        "```text",
+        "// :::{fixme} requirements.tasks.cancel",
+        "// Cancellation races are not tested on Windows.",
+        "// :::",
+        "```",
+        "",
+        "The reviewer records",
+        "`{\"FIXME\": [\"Cancellation races are not tested on Windows.\"]}`, using the",
+        "reference's body without inventing an issue number. The rationale explains the gap and",
+        "locates the comment in the recorded inputs. CI accepts the evidence when all",
+        "other checks pass.",
+        "{cite}`requirements.ci.outcomes`",
+        "{cite}`requirements.ci.determination`",
+        ":::"
+      ]
+    },
+    {
+      "requirements": "requirements.ci.fixme_stale_input",
+      "matches": [
+        "requirements.ci.fixme_stale_input"
+      ],
+      "text": [
+        ":::{example} fixme_stale_input",
+        "A current evidence record has `{\"FIXME\": [\"example/queue#125\"]}` and passes CI. The code in one",
+        "of its recorded outline inputs then changes. CI rejects the record because the",
+        "input's hash no longer matches, even though its determination is still FIXME. Validation reports the changed input without running a model or",
+        "reassessing the documented gap.",
+        "{cite}`requirements.ci.determination`",
+        "{cite}`requirements.ci.outline_inputs`",
+        ":::"
+      ]
+    },
+    {
+      "requirements": "requirements.ci.diagnostics",
+      "matches": [
+        "requirements.ci.diagnostics"
+      ],
+      "text": [
+        ":::{req} diagnostics",
+        "When stored requirement text differs from the current chapter text, the",
+        "{term}`requirements.ci.validation_error` MUST name the requirement and show a",
+        "compact line-oriented diff, with `-` for recorded lines and `+` for current lines.",
+        "When an outline input's hash differs from its node's current hash, the validation",
+        "error MUST name the file, the selector, and the node's current line range.",
+        "",
+        "```text",
+        "evidence/requirements.ci.outline_inputs.json: requirement text changed (md/requirements.md:43)",
+        "- Habeas SHOULD check input lines.",
+        "+ Habeas MUST check input lines.",
+        "```",
+        ":::"
+      ]
+    },
+    {
+      "requirements": "requirements.cli.fixme_issues",
+      "matches": [
+        "requirements.cli.fixme_issues"
+      ],
+      "text": [
+        ":::{req} fixme_issues",
+        "`habeas status` MUST look up, under {cite}`requirements.authoring.github_reads`,",
+        "every issue that a `:github:` option line of a named or unnamed `{fixme}` under",
+        "{cite}`requirements.references.roles` names, and MUST report each `{fixme}`",
+        "naming an issue that is closed or does not exist as an error, with its file and",
+        "line and the issue. It MUST also report the item that contains that `{fixme}` as",
+        "failing: the outline node containing it, or the requirement or example",
+        "declaration whose body contains it, in the same way it reports an uncovered",
+        "Rust item. When GitHub cannot be reached, the issue MUST be assumed open.",
+        "Repository validation MUST NOT contact GitHub.",
+        ":::"
+      ]
+    },
+    {
+      "requirements": "requirements.authoring.github_reads",
+      "matches": [
+        "requirements.authoring.github_reads"
+      ],
+      "text": [
+        ":::{req} github_reads",
+        "The harness MUST expose a `github` tool with this interface:",
+        "",
+        "```text",
+        "github({ issue: String }) -> Issue",
+        "",
+        "Issue { reference: String, state: \"open\" | \"closed\", title: String, body: String }",
+        "```",
+        "",
+        "`issue` MUST have the form `<owner>/<repo>#<number>`. The tool MUST read the issue",
+        "or pull request through the GitHub API, authenticating with the `GITHUB_TOKEN`",
+        "environment variable when that is set, and MUST return its body redacted under",
+        "{cite}`requirements.authoring.redaction`. GitHub reads cannot be reproduced",
+        "later, so their results MUST NOT be recorded as evidence inputs and MUST NOT",
+        "make evidence stale. Every GitHub read by Habeas, including this tool's, the",
+        "lookups below, and those of {cite}`requirements.cli.fixme_issues`, MUST go",
+        "through one cache under the state root of",
+        "{cite}`requirements.configuration.state_location`, keyed by issue, and MUST",
+        "reuse a cached result less than one hour old instead of contacting GitHub. A malformed reference, a missing issue, or a failed request",
+        "MUST return an explanatory tool error.",
+        "",
+        "When the mandatory inputs contain a `{fixme}` reference under",
+        "{cite}`requirements.references.roles`, or the initial request includes one under",
+        "{cite}`requirements.authoring.fixme_inputs`, the harness MUST look up the state of",
+        "each issue its `:github:` lines name in the same way and MUST supply each state",
+        "with the corresponding source input or acknowledgment as `open` or `closed`;",
+        "when GitHub cannot be reached, the issue MUST be assumed open. These states MUST",
+        "NOT be recorded either. Instead, `habeas status` and `habeas author` MUST treat a recorded FIXME determination as stale, exactly as if one of its inputs had changed, when an issue that one of its acknowledging `{fixme}` references names, or for a site review the `{fixme}` references inside the site, is closed or does not exist; repository validation, which never contacts GitHub, MUST NOT.",
+        "",
+        "The harness MAY take the GitHub API base URL from `HABEAS_GITHUB_API_URL`,",
+        "accepting only `http://127.0.0.1:<port>`, so that tests can use a local server.",
+        ":::"
+      ]
     }
   ],
   "format_version": 1,
   "review_version": "habeas-review-v1",
   "dependencies": [
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/github.rs"
-            },
-            "selector": "fn[add_issue_findings]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "3f758d11e4463870881e996320e20fd858cf17b8f9aeb91d65f92161a1de79ee"
-        }
-      ]
-    },
     {
       "Node": [
         {
@@ -189,6 +305,23 @@
         {
           "scheme": "habeas-input-v1",
           "value": "3f758d11e4463870881e996320e20fd858cf17b8f9aeb91d65f92161a1de79ee"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/github.rs"
+            },
+            "selector": "fn[add_issue_findings]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "297792403c37644dd08e431c5fbd0ed5802a3c8992c4e599c8c78b73436c0e22"
         }
       ]
     },
@@ -217,34 +350,66 @@
     {
       "Node": [
         {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "md/requirements/ci.md"
-            },
-            "selector": "section[CI%20and%20evidence%20validation]/block@ea060db89728"
-          }
+          "Requirement": "requirements.ci.fixme_closed_issue"
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "70d0a2549b6c5a7680654a6f41ecb8b64efd6307143d273599ac07d4658a2ee2"
+          "value": "12268b16234cc3c25cca5bfe43ecfd38b4c5347558ea7e7d24b34932542398f4"
         }
       ]
     },
     {
       "Node": [
         {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/github.rs"
-            },
-            "selector": "mod[tests]/fn[closed_and_missing_issues_fail_their_fixmes_items_and_acknowledged_records]"
-          }
+          "Requirement": "requirements.ci.fixme_without_issue"
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "8ffb93911f268ba4aca9090ec1c8b55d3f64f0c749fa90a7827ab5f744e8a035"
+          "value": "2ac78020c71587c408265fcb05d6356e035c2424c2af1a988c32a6bcdb1c8d1f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.ci.fixme_stale_input"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "120b3b67d069d2cc37242cf0021948d7259e52fcd387a7d599bbbef283db95ef"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.ci.diagnostics"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "0ba7e039f427f42f04213b4638229aab2d7581729effdb573160c890c170d54e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.cli.fixme_issues"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "d21c94a4a4bff559f92273d1b0a75d31a7cc580ac9ba282ea9f6c4d73d81a769"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.authoring.github_reads"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "014c19995c1c4d383dadc0216b7e7d16be2fddaaf30e28ffddda8b59307ec7cc"
         }
       ]
     }

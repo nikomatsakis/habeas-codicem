@@ -1,7 +1,7 @@
 {
   "requirement": "Every {term}`requirements.sdk.application_domain` implements\n`trust_but_verify::domain::Domain`. A domain is cloneable and safe to share between\nexecutions. The following chapters introduce its members one capability at a\ntime.\n\n```rust,ignore\npub trait Domain: Clone + Send + Sync {\n    type Error: Send;\n    type NodeData: Clone + Eq + Hash + Send + Sync;\n    type NodeContent: NodeContents;\n    type EdgeLabel: Clone + Send + Sync;\n\n    fn cache(&self) -> &ValidationCache<Self>;\n    fn node_path(&self, node: &NodeId<Self>) -> NodePath;\n    fn node_content(\n        &self,\n        node: &NodeId<Self>,\n    ) -> Result<Self::NodeContent, Self::Error>;\n    fn outgoing_edges(\n        &self,\n        node: &NodeId<Self>,\n        label: Self::EdgeLabel,\n    ) -> Result<Vec<NodeId<Self>>, Self::Error>;\n    fn load_evidence(\n        &self,\n        node: &NodeId<Self>,\n        criterion: &CriterionPath,\n    ) -> impl Future<Output = Result<Option<Record<Self::NodeData, Self::EdgeLabel>>, Self::Error>> + Send;\n    fn store_evidence(\n        &self,\n        node: &NodeId<Self>,\n        criterion: &CriterionPath,\n        record: &Record<Self::NodeData, Self::EdgeLabel>,\n    ) -> impl Future<Output = Result<(), Self::Error>> + Send;\n\n    fn project_sources(&self) -> Option<SourceProject<Self>> { ... }\n    fn source_node(\n        &self,\n        item: &OutlineData,\n    ) -> Result<Self::NodeData, SourceError> { ... }\n    fn source_address(&self, _data: &Self::NodeData) -> Option<OutlineData> { ... }\n}\n```",
   "determination": true,
-  "rationale": "The tests adequately cover `requirements.sdk.domain`.\n\n**Obligations and tests**\n\n- **Trait shape and bounds.** `Domain` must be `Clone + Send + Sync`. `Error` must be `Send` only. `NodeData` must be `Clone + Eq + Hash + Send + Sync`. `EdgeLabel` must be `Clone + Send + Sync`. `NodeContent` must be `NodeContents`.\n  - `crates/trust-but-verify/tests/contracts.rs#fn[domain_relationships_accept_opaque_types_and_send_only_errors]` defines a `Relationships` domain with opaque node data, label and error types. It implements every required method (`cache`, `node_path`, `node_content`, `outgoing_edges`, `load_evidence`, `store_evidence`).\n  - Its inner `check_bounds::<G: Domain>` function compiles generic code against the declared bounds, so loosening a required bound or adding an extra one breaks the build. It also requires the `load_evidence` and `store_evidence` futures to be `Send`.\n  - The test calls these futures with a non-`Sync` error, which shows that a `Send`-only error is enough.\n  - It asserts `node_path`, `outgoing_edges` and `node_content` results, and that `Error` values are returned.\n- **Default members.** `project_sources`, `source_node` and `source_address` have default bodies.\n  - The same test asserts `project_sources()` is `None` and `source_node` returns `SourceError::Invalid`.\n  - `domain_without_project_sources_leaves_source_tools_disabled` repeats these checks on `Application` and also asserts `source_address` is `None`.\n- **Application domains implement `Domain`.** `Application`, `Memory` and `Relationships` are all used as `Domain` implementations across the contract, agent and validation tests. `public_exports_match_the_appendix` checks that the public export inventory matches the spec and that the shipping `habeas` consumer compiles against the SDK.\n- **Shareable between executions.**\n  - `concurrent_single_node_validations_keep_separate_traces` runs several validators over one shared `Memory` domain concurrently. It asserts a peak concurrency of 3 and the expected stored records.\n  - `concurrent_same_criterion_executions_keep_complete_independent_records` does the same for `Application` with the same criterion.\n  - `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` and `shared_context_allows_independent_concurrent_agent_calls` share one domain between concurrent agent calls.\n  - `later_lighter_agent_calls_preserve_the_contexts_existing_trace` checks that the context is `Send + Sync`.\n  - The `domain::<G>()` bound check covers the type-level `Clone + Send + Sync` requirement.\n\nThe remaining obligations belong to the cited chapters and refining requirements. Examples are the criteria, evidence and agent behavior that several of these tests also carry `{test}` references for. They need no separate test here.\n\nI found no requirement-violating behavior that these tests would accept.",
+  "rationale": "`requirements.sdk.domain` is a trait contract. It has these obligations: the trait's shape and bounds, a cloneable domain that is safe to share between executions, `Send` storage futures, and defaults for the three optional source methods.\n\n- **Bounds and signatures.** `tests/contracts.rs#fn[domain_relationships_accept_opaque_types_and_send_only_errors]` implements `Domain` for a fixture type, `Relationships`. Its error type is `Send` but not `Sync`, and its node data and labels are opaque. The nested `check_bounds<G: Domain>` helper is generic over the trait. It requires these bounds of the generic parameter:\n  - The domain is `Clone + Send + Sync`.\n  - `NodeData` is `Clone + Eq + Hash + Send + Sync`.\n  - `EdgeLabel` is `Clone + Send + Sync`.\n  - `Error` is `Send`.\n  - `NodeContent` is `NodeContents + Send + Sync`.\n  - The `load_evidence` and `store_evidence` futures are `Send`.\n  \n  A weaker or stronger bound would fail to compile. The test calls the required methods with the trait's signatures.\n- **Method behaviour.** The same test checks the following:\n  - `node_content` returns content with `format() == \"1\"` and a fingerprint value of `\"1\"`.\n  - `load_evidence` returns `None` for a missing record, and `store_evidence` succeeds.\n  - `node_path` gives distinct paths for different nodes.\n  - `outgoing_edges` returns the expected successors per label, an empty list for unknown labels, and an error for an invalid node.\n- **Optional-method defaults.** `domain_without_project_sources_leaves_source_tools_disabled` and the `Relationships` assertions both check that `project_sources()` returns `None` and `source_node` returns `SourceError::Invalid`. The first also checks that `source_address` returns `None`. The statement text does not specify `source_node`'s default behaviour, so asserting `Invalid` adds a check rather than leaving a gap.\n- **Cloneable and safe to share between executions.**\n  - `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads`, `shared_context_allows_independent_concurrent_agent_calls` and `concurrent_single_node_validations_keep_separate_traces` use one domain across concurrent executions.\n  - `concurrent_same_criterion_executions_keep_complete_independent_records` also shares a domain, and it asserts that the records stay independent.\n  - `later_lighter_agent_calls_preserve_the_contexts_existing_trace` checks `assert_send_sync` on the context.\n  - `check_bounds` enforces `Clone + Send + Sync` on the domain at compile time.\n- **Domains working end to end.** `deterministic_validation_uses_required_storage_without_an_agent`, `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer`, `criteria_keep_typed_answers_and_persist_only_when_requested` and `src/sdk.rs#mod[tests]/fn[domain_formats_supplied_contents_without_resolving_a_replacement]` use domains for content, edges and evidence storage, and they assert the outcomes.\n\nThe required behaviour is covered, and every test reviewed carries a `{test}` marker. I found no gap.",
   "references": "1219af9c261c7c256deaf030045562c41b04d884087245d89e34d2f09aa8f735",
   "inputs": [
     {
@@ -140,8 +140,8 @@
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/struct[Relationships]",
-      "hash": "52c48247f83aa45bf3eb5a97676597c33fee2202a04365cf1fa9350b983dbe09"
+      "item": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/fn[check_bounds]",
+      "hash": "a5fb9fcb355c9171ac801dc5fb3a2c2492433dcbc58030ddb43c5ef3cee573f4"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
@@ -150,78 +150,8 @@
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/impl[Relationships/Domain]/fn[outgoing_edges]",
-      "hash": "ed3cb458ca0aacb37393b72a190263e5c0e0bd5b02893b059d0ae039a046f446"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/impl[Relationships/Domain]/fn[node_path]",
-      "hash": "382ef9f452b6c64ba01f6237ee4019ea1cdff0c7131cd4b9dcdd5896f48a1b1c"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/impl[Relationships/Domain]/fn[store_evidence]",
-      "hash": "7f1a32a9fe21527fe439ec57ca3351e2ec593e9af04ce4f9b415051474e4428a"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/impl[Relationships/Domain]/fn[load_evidence]",
-      "hash": "6577a9bf5a9ad1bad2857ed32ed0fba7311a04e9c4d27a286d391918e916cee1"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/impl[Relationships/Domain]/fn[node_content]",
-      "hash": "6450e8350b2a86851d4c6fad978aa34726edc16c1bcee7c0341d84df1350ca7f"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/impl[Relationships/Domain]/type[NodeContent]",
-      "hash": "9403fc2c770be7edb9c9efc74f9cb2a7172d333cc9156c862676cbcc13252652"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/impl[Relationships/Domain]/type[Error]",
-      "hash": "88c429640082e807daa9fb0a0b1ac41fb83832d0b09123b2af748bdb558c7cce"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/impl[Relationships/Domain]/type[EdgeLabel]",
-      "hash": "b2a0f9aca70fc413b49070effbf29df5f98bcea8e2a188e6f1646b5f8df67eb7"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/impl[Relationships/Domain]/type[NodeData]",
-      "hash": "0a77ba9ced5caa0f8bcb0fe633f1d170bcdbb545df9ad2c793aa52740a157d5c"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/impl[Relationships/Domain]/fn[cache]",
-      "hash": "b54f3cac1e9a8206672f6b95838e64807cefc89aa7847e1e7630fe3e2a9782b8"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/fn[check_bounds]",
-      "hash": "a5fb9fcb355c9171ac801dc5fb3a2c2492433dcbc58030ddb43c5ef3cee573f4"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/fn[check_bounds]/fn[contents]",
-      "hash": "1cdfc48748881839e1eb712ff332d4eb745569cd8488ed7cf3252e82627e4a66"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/fn[check_bounds]/fn[error]",
-      "hash": "1907bd3e65295c1ffd9887ad2096e9e9e06b809b95b858a0f9483f48e5685df4"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/fn[check_bounds]/fn[label]",
-      "hash": "c0900dd6b2e9466518fb7ed070f52710e39ebb4af6d1d2760c3ffca87237e44b"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/fn[check_bounds]/fn[identity]",
-      "hash": "0b71529ed29d3f46a1b87a0f15bf0786263d753169804dca5ac454d011a94551"
+      "item": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/struct[Relationships]",
+      "hash": "52c48247f83aa45bf3eb5a97676597c33fee2202a04365cf1fa9350b983dbe09"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
@@ -230,8 +160,13 @@
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/fn[successors]",
-      "hash": "fd1be4465ece0aff52a22b5fc1d952aa7607e55ab33396bbc60200dc86437ca0"
+      "item": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/fn[check_bounds]/fn[identity]",
+      "hash": "0b71529ed29d3f46a1b87a0f15bf0786263d753169804dca5ac454d011a94551"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/fn[check_bounds]/fn[label]",
+      "hash": "c0900dd6b2e9466518fb7ed070f52710e39ebb4af6d1d2760c3ffca87237e44b"
     }
   ],
   "format_version": 1,
@@ -511,12 +446,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/tests/contracts.rs"
             },
-            "selector": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/struct[Relationships]"
+            "selector": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/fn[check_bounds]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "52c48247f83aa45bf3eb5a97676597c33fee2202a04365cf1fa9350b983dbe09"
+          "value": "6c814025b882c89c48b5650d81ad0f5e388b8f4c270de102de7193780865099c"
         }
       ]
     },
@@ -545,250 +480,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/tests/contracts.rs"
             },
-            "selector": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/impl[Relationships/Domain]/fn[outgoing_edges]"
+            "selector": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/struct[Relationships]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "ed3cb458ca0aacb37393b72a190263e5c0e0bd5b02893b059d0ae039a046f446"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/impl[Relationships/Domain]/fn[node_path]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "382ef9f452b6c64ba01f6237ee4019ea1cdff0c7131cd4b9dcdd5896f48a1b1c"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/impl[Relationships/Domain]/fn[store_evidence]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "7f1a32a9fe21527fe439ec57ca3351e2ec593e9af04ce4f9b415051474e4428a"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/impl[Relationships/Domain]/fn[load_evidence]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "6577a9bf5a9ad1bad2857ed32ed0fba7311a04e9c4d27a286d391918e916cee1"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/impl[Relationships/Domain]/fn[node_content]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "6450e8350b2a86851d4c6fad978aa34726edc16c1bcee7c0341d84df1350ca7f"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/impl[Relationships/Domain]/type[NodeContent]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "9403fc2c770be7edb9c9efc74f9cb2a7172d333cc9156c862676cbcc13252652"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/impl[Relationships/Domain]/type[Error]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "88c429640082e807daa9fb0a0b1ac41fb83832d0b09123b2af748bdb558c7cce"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/impl[Relationships/Domain]/type[EdgeLabel]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "b2a0f9aca70fc413b49070effbf29df5f98bcea8e2a188e6f1646b5f8df67eb7"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/impl[Relationships/Domain]/type[NodeData]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "0a77ba9ced5caa0f8bcb0fe633f1d170bcdbb545df9ad2c793aa52740a157d5c"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/impl[Relationships/Domain]/fn[cache]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "b54f3cac1e9a8206672f6b95838e64807cefc89aa7847e1e7630fe3e2a9782b8"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/fn[check_bounds]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "6c814025b882c89c48b5650d81ad0f5e388b8f4c270de102de7193780865099c"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/fn[check_bounds]/fn[contents]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "1cdfc48748881839e1eb712ff332d4eb745569cd8488ed7cf3252e82627e4a66"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/fn[check_bounds]/fn[error]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "1907bd3e65295c1ffd9887ad2096e9e9e06b809b95b858a0f9483f48e5685df4"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/fn[check_bounds]/fn[label]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "c0900dd6b2e9466518fb7ed070f52710e39ebb4af6d1d2760c3ffca87237e44b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/fn[check_bounds]/fn[identity]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "0b71529ed29d3f46a1b87a0f15bf0786263d753169804dca5ac454d011a94551"
+          "value": "52c48247f83aa45bf3eb5a97676597c33fee2202a04365cf1fa9350b983dbe09"
         }
       ]
     },
@@ -817,12 +514,29 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/tests/contracts.rs"
             },
-            "selector": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/fn[successors]"
+            "selector": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/fn[check_bounds]/fn[identity]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "fd1be4465ece0aff52a22b5fc1d952aa7607e55ab33396bbc60200dc86437ca0"
+          "value": "0b71529ed29d3f46a1b87a0f15bf0786263d753169804dca5ac454d011a94551"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/contracts.rs"
+            },
+            "selector": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]/fn[check_bounds]/fn[label]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "c0900dd6b2e9466518fb7ed070f52710e39ebb4af6d1d2760c3ffca87237e44b"
         }
       ]
     }

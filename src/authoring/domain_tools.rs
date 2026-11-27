@@ -152,6 +152,7 @@ mod tests {
     use super::*;
     use crate::sites::tests::{RULE, SOURCE, project};
 
+    // {test}`requirements.authoring.tool_descriptions.special_cases`
     // {test}`requirements.authoring.no_line_numbers`
     #[tokio::test]
     async fn named_query_errors_identify_the_source_without_exposing_a_line_number() {

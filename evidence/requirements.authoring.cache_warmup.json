@@ -1,7 +1,7 @@
 {
   "requirement": "So that concurrent assessments find their system prompt cached under\n{cite}`requirements.authoring.cache_checkpoints`, a batch MUST start one\nassessment of each kind it contains before any other of that kind, and start the\nothers once its first conversation with a provider attempt finishes, including a failed conversation.",
-  "determination": true,
-  "rationale": "The tests cover both obligations of `requirements.authoring.cache_warmup`, including the failed-conversation case the text names.\n\n**Obligation 1: start one assessment of each kind before any other of that kind.**\n- The unit test `src/authoring/batch.rs#mod[tests]/fn[each_kind_starts_one_assessment_until_its_first_conversation_finishes]` checks that `CacheWarmup::next` starts one `requirement` and one `example`, flagged `warms=true`. It checks that the next call returns `None` while both kinds are warming.\n- It also checks that an assessment that finished without any request (`finished`) lets the next of its kind warm instead.\n- `src/authoring/batch.rs#mod[tests]/fn[structural_and_test_reviews_warm_separately_without_changing_usage_labels]` checks that structural and behavioural requirements are separate kinds. Each kind gets its own warming assessment, and the second one in each kind waits.\n- `tests/authoring_batch.rs#fn[a_batch_warms_each_kind_with_one_assessment_before_starting_the_others]` runs a real `author --all` against a mock provider. It uses the helper `assert_warmed_first`, which checks that the first request of each kind arrives before any other of that kind. It asserts 4 requirement requests and 2 example requests.\n\n**Obligation 2: start the others once the first conversation finishes, including a failed one.**\n- The unit tests check that `warmed(kind)` releases the waiting subjects with `warms=false`. They also check that a kind stays blocked until its own `warmed`, and that a different kind's `warmed` does not release it.\n- `assert_warmed_first` checks that every other subject of the kind arrived at or after the warming request was answered. The test above also asserts that the post-warmup requests run concurrently (`peak >= 3`), so the others do start once released.\n- A failed first conversation:\n  - `tests/authoring_batch.rs#fn[failed_assessment_keeps_other_results_and_reports_failure]` has the first requirement (`alpha`) fail with a provider error. It asserts that the other results are still produced, and that peers started only after the failure was answered. It also asserts the usage record shows `failed_attempts == 1`.\n  - `tests/authoring_batch.rs#fn[a_failed_first_request_still_releases_its_kind]` throttles the first request once, then retries it. It asserts that peers arrive only after the retry was answered, and that all the others are released and complete.\n\n**Gaps considered.** I found no gap that needs a fix.\n- Every request in the warmup fixtures is a single-request conversation. Tool-call turns within the first conversation are not tied to the release point. The throttle-and-retry test already shows the release waits for the whole conversation, not just the first request. The text's boundaries (one per kind, release on finish, failure also releases, kinds are independent) are all asserted.\n- I read the implementation (`CacheWarmup`, `run_batch`, `UsageLog::observe_usage`) only to understand what the helpers exercise. I derived the expectations from the requirement text.",
+  "determination": false,
+  "rationale": "**Confirmation:** the assessments disagreed\n\nFirst assessment `true`: The tests cover both obligations in `requirements.authoring.cache_warmup`.\n\n**1. One assessment of each kind starts before any other of that kind.**\n- The unit test `src/authoring/batch.rs#mod[tests]/fn[each_kind_starts_one_assessment_until_its_first_conversation_finishes]` checks the scheduler. With a mixed queue, it asserts that only one requirement and one example start (`a` and `c`, both marked as warming) and that nothing else starts after that. It also checks that an assessment that finishes without making a request releases its kind's slot, so the next of that kind starts as the warmer.\n- The unit test `src/authoring/batch.rs#mod[tests]/fn[structural_and_test_reviews_warm_separately_without_changing_usage_labels]` checks that structural requirements and ordinary requirements are separate kinds. Each gets its own warmer, and warming one kind releases only that kind.\n- The integration test `tests/authoring_batch.rs#fn[a_batch_warms_each_kind_with_one_assessment_before_starting_the_others]` runs `author --all` against a mock server. Its helper `assert_warmed_first` asserts that no other assessment of a kind sends a request before the first assessment's first request is answered.\n\n**2. The others start once the first conversation with a provider attempt finishes, including a failed conversation.**\n- In the unit tests, `warmed(kind)` releases the queued assessments of that kind. In the first unit test, `b` and `d` start only after `warmed(\"requirement\")` and are marked as non-warming.\n- In `tests/authoring_batch.rs#fn[a_batch_warms_each_kind_with_one_assessment_before_starting_the_others]`, the barrier behaviour asserts the number of requests per kind, which shows the peers are released. It asserts `peak >= 3`, which shows they then run concurrently.\n- `tests/authoring_batch.rs#fn[failed_assessment_keeps_other_results_and_reports_failure]` covers a failed conversation. The warming `requirements.alpha` fails on its first attempt, with failed_attempts 1 and no retries. The test still asserts that the other requirements complete and that the ordering holds via `assert_warmed_first`.\n- `tests/authoring_batch.rs#fn[a_failed_first_request_still_releases_its_kind]` covers a throttled first request that is retried. It asserts that peers arrive no earlier than the retry's answer, so they wait for the whole conversation and not just the first attempt. It then asserts that they do run, so the failed request does not block the kind.\n\nI found no requirement-violating behaviour that these tests would accept. Every test names `requirements.authoring.cache_warmup` in a {test} reference.\n\nSecond assessment `false`: Add an integration test in `tests/authoring_batch.rs`. It should run `author --all` against a mock server whose first requirement assessment makes a multi-request conversation. The first request should be a tool call, such as the existing `Behavior::ReadEachSubject` or `RepairSharedReferences` flow, and a later request should submit the judgment. The test should assert that no other assessment of that kind reaches the server until after the warming assessment's final request, which ends the conversation, has been answered. The existing `assert_warmed_first` helper only compares peers against the answer time of the first request. It does not check this. — `requirements.authoring.cache_warmup` says the others start 'once its first conversation ... finishes'. Every warmup test uses a single-request conversation: `a_batch_warms_each_kind_with_one_assessment_before_starting_the_others`, `failed_assessment_keeps_other_results_and_reports_failure` and `a_failed_first_request_still_releases_its_kind` all run on `Behavior::WarmupBarrier`, `Behavior::Judgments` or `Behavior::ThrottledOnce`. In those, the mock answers the first successful request with the final judgment. The retry test only shows that a throttled first request does not release the kind. An implementation could call `CacheWarmup::warmed` after the first successful provider response, before the tool-call turns finish. It would pass every reviewed test, because `assert_warmed_first` only compares peers against the first request's answer time. The unit tests `each_kind_starts_one_assessment_until_its_first_conversation_finishes` and `structural_and_test_reviews_warm_separately_without_changing_usage_labels` call `warmed` and `finished` by hand. They cannot show when the batch runner invokes them. The rest of the requirement is covered. This covers one start per kind, kinds warming separately, and failed or retried first conversations releasing the kind. It also covers an assessment that finishes without a request being replaced as the warmer.\n\nRecorded the second assessment (`false`).",
   "references": "c5c9d2da8548a8856dd3dfa7718c8ed52af57203e491cc5213606d5c78db9450",
   "inputs": [
     {
@@ -67,58 +67,25 @@
     },
     {
       "file": "tests/authoring_batch.rs",
-      "item": "enum[Behavior]",
-      "hash": "d8b12e3ff388832a72113b206b705c0e968bc9d7bec208b6a9688c7b1f239ef5"
+      "item": "fn[serve]",
+      "hash": "484487c4c165a8959345754a04641d146cd811d002c28e9ad2e5dcb7736626f9"
     },
     {
       "file": "tests/authoring_batch.rs",
-      "item": "fn[serve]",
-      "hash": "139bc745b9eddf69058940a2548aaaed4baef62f53b4ec2e632e2f7edf68b8d5"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "fn[run_batch]",
-      "hash": "4fe320a80ac86dbc2955644a855d32ec278f2d9c006b4393373215992722aa4c"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "struct[CacheWarmup]",
-      "hash": "a5adf3f890f09da0610db73d84fa44c76a4bcfda1890b5215c8cc5c3936fe1cc"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "impl[CacheWarmup]",
-      "hash": "741d9d7c986e4bf8fba916c4e31902e33988dee86425da4acea97aef93f60f55"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "impl[CacheWarmup]/fn[next]",
-      "hash": "0896c1419219ebb5bb31011b58b1e16984db13561dd4e7df83753c486ebd9665"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "impl[CacheWarmup]/fn[warmed]",
-      "hash": "56cb421b36897d50b51b92345eca41a4ee41fb72f937450bd1460c5e4305a316"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "impl[CacheWarmup]/fn[finished]",
-      "hash": "76203b3aea22c80fd37e0e4741f101aa72728460a4b360eb3c5e09e68074699d"
+      "item": "enum[Behavior]",
+      "hash": "05a5cb0e76c30570ed1896b5ff2d6a8b6bad4c996e9c8a4eecc93b09fd729153"
     },
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[assert_warmed_first]",
       "hash": "5b45b2cf8cf81e3b72927f64bcfbfa9e31100fdd89739661c566a3add963cc6d"
-    },
+    }
+  ],
+  "corrections": [
     {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[prepare_assessment]",
-      "hash": "b9b1641c753d00a2eab6520daf714ccd6a17f7d095f5e60357962570dada2d5c"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "impl[UsageLog]/fn[observe_usage]",
-      "hash": "7fd945ec0877edf48dfc9225c3fa2e1ce22be4d644c710c9ec8c521ac5eacddd"
+      "kind": "manual",
+      "instruction": "Add an integration test in `tests/authoring_batch.rs`. It should run `author --all` against a mock server whose first requirement assessment makes a multi-request conversation. The first request should be a tool call, such as the existing `Behavior::ReadEachSubject` or `RepairSharedReferences` flow, and a later request should submit the judgment. The test should assert that no other assessment of that kind reaches the server until after the warming assessment's final request, which ends the conversation, has been answered. The existing `assert_warmed_first` helper only compares peers against the answer time of the first request. It does not check this.",
+      "rationale": "`requirements.authoring.cache_warmup` says the others start 'once its first conversation ... finishes'. Every warmup test uses a single-request conversation: `a_batch_warms_each_kind_with_one_assessment_before_starting_the_others`, `failed_assessment_keeps_other_results_and_reports_failure` and `a_failed_first_request_still_releases_its_kind` all run on `Behavior::WarmupBarrier`, `Behavior::Judgments` or `Behavior::ThrottledOnce`. In those, the mock answers the first successful request with the final judgment. The retry test only shows that a throttled first request does not release the kind. An implementation could call `CacheWarmup::warmed` after the first successful provider response, before the tool-call turns finish. It would pass every reviewed test, because `assert_warmed_first` only compares peers against the first request's answer time. The unit tests `each_kind_starts_one_assessment_until_its_first_conversation_finishes` and `structural_and_test_reviews_warm_separately_without_changing_usage_labels` call `warmed` and `finished` by hand. They cannot show when the batch runner invokes them. The rest of the requirement is covered. This covers one start per kind, kinds warming separately, and failed or retried first conversations releasing the kind. It also covers an assessment that finishes without a request being replaced as the warmer."
     }
   ],
   "format_version": 1,
@@ -262,12 +229,12 @@
               "scheme": "repo",
               "location": "tests/authoring_batch.rs"
             },
-            "selector": "enum[Behavior]"
+            "selector": "fn[serve]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "d8b12e3ff388832a72113b206b705c0e968bc9d7bec208b6a9688c7b1f239ef5"
+          "value": "484487c4c165a8959345754a04641d146cd811d002c28e9ad2e5dcb7736626f9"
         }
       ]
     },
@@ -279,114 +246,12 @@
               "scheme": "repo",
               "location": "tests/authoring_batch.rs"
             },
-            "selector": "fn[serve]"
+            "selector": "enum[Behavior]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "139bc745b9eddf69058940a2548aaaed4baef62f53b4ec2e632e2f7edf68b8d5"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/batch.rs"
-            },
-            "selector": "fn[run_batch]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "4fe320a80ac86dbc2955644a855d32ec278f2d9c006b4393373215992722aa4c"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/batch.rs"
-            },
-            "selector": "struct[CacheWarmup]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "a5adf3f890f09da0610db73d84fa44c76a4bcfda1890b5215c8cc5c3936fe1cc"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/batch.rs"
-            },
-            "selector": "impl[CacheWarmup]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "c5fdaf06f61731b634ae05dfc5777a29fafd9f39fe58e4cd4d94092c9bf09ddb"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/batch.rs"
-            },
-            "selector": "impl[CacheWarmup]/fn[next]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "0896c1419219ebb5bb31011b58b1e16984db13561dd4e7df83753c486ebd9665"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/batch.rs"
-            },
-            "selector": "impl[CacheWarmup]/fn[warmed]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "56cb421b36897d50b51b92345eca41a4ee41fb72f937450bd1460c5e4305a316"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/batch.rs"
-            },
-            "selector": "impl[CacheWarmup]/fn[finished]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "76203b3aea22c80fd37e0e4741f101aa72728460a4b360eb3c5e09e68074699d"
+          "value": "05a5cb0e76c30570ed1896b5ff2d6a8b6bad4c996e9c8a4eecc93b09fd729153"
         }
       ]
     },
@@ -404,40 +269,6 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "5b45b2cf8cf81e3b72927f64bcfbfa9e31100fdd89739661c566a3add963cc6d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/mod.rs"
-            },
-            "selector": "fn[prepare_assessment]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "b9b1641c753d00a2eab6520daf714ccd6a17f7d095f5e60357962570dada2d5c"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/usage.rs"
-            },
-            "selector": "impl[UsageLog]/fn[observe_usage]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "7fd945ec0877edf48dfc9225c3fa2e1ce22be4d644c710c9ec8c521ac5eacddd"
         }
       ]
     }

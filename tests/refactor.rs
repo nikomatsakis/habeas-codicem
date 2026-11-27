@@ -278,6 +278,7 @@ fn a_function_edited_while_moving_leaves_its_records_stale() {
     assert!(!errors(root).is_empty());
 }
 
+// {test}`requirements.refactor.equivalence`
 // {test}`requirements.refactor.moved_requirement`
 // {test}`requirements.refactor.reference_rewrite`
 // {test}`requirements.refactor.record_files`
@@ -1062,6 +1063,7 @@ fn usage_errors(root: &Path) -> Vec<String> {
         .collect()
 }
 
+// {test}`requirements.refactor.equivalence`
 // {test}`requirements.refactor.definition_inputs`
 // {test}`requirements.refactor.subject_text`
 // {test}`requirements.refactor.reference_rewrite`
@@ -1241,6 +1243,7 @@ fn a_moved_chapter_with_a_new_glob_match_leaves_the_record_stale() {
     );
 }
 
+// {test}`requirements.refactor.equivalence`
 // {test}`requirements.refactor.record_fields`
 #[test]
 fn a_citation_reviews_commentary_follows_a_renamed_requirement() {
@@ -1347,6 +1350,7 @@ fn a_changed_reference_set_is_reported_on_a_record_reading_nothing_moved() {
     assert_eq!(fs::read(&path).unwrap(), before);
 }
 
+// {test}`requirements.refactor.equivalence`
 // {test}`requirements.refactor.subject_text`
 // {test}`requirements.refactor.record_files`
 #[test]

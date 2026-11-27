@@ -2055,6 +2055,7 @@ mod tests {
         }
     }
 
+    // {test}`requirements.examples.index`
     // {test}`requirements.index.declaration_sections`
     // {test}`requirements.index.navigation`
     #[test]
