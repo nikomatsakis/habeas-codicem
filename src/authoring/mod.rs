@@ -1373,6 +1373,7 @@ mod tests {
         }
     }
 
+    // {test}`requirements.authoring.confirmation.disagreement`
     // {test}`requirements.authoring.confirmation.selection`
     #[test]
     fn confirmation_orders_all_judgments_and_preserves_the_selected_payload() {
@@ -1403,14 +1404,25 @@ mod tests {
                 findings,
             }
         }
-        for applies in [None, Some(false), Some(true)] {
+        for (left, right) in [
+            (None, None),
+            (Some(false), Some(false)),
+            (Some(true), Some(true)),
+            (Some(false), Some(true)),
+            (Some(true), Some(false)),
+        ] {
             for first in 0..3 {
                 for second in 0..3 {
                     let chosen = select_assessment(
-                        assessment(first, "first", applies),
-                        assessment(second, "second", applies),
+                        assessment(first, "first", left),
+                        assessment(second, "second", right),
                     );
-                    let author = if first <= second { "first" } else { "second" };
+                    let (author, applies) = if first < second || (first == second && left >= right)
+                    {
+                        ("first", left)
+                    } else {
+                        ("second", right)
+                    };
                     let expected = assessment(first.min(second), author, applies);
                     assert_eq!(chosen.determination, expected.determination);
                     assert_eq!(
@@ -1418,9 +1430,25 @@ mod tests {
                         expected.record["determination"]
                     );
                     let explanation = chosen.record["rationale"].as_str().unwrap();
-                    if first == second {
+                    if first == second && left == right {
                         assert_eq!(explanation, author);
                     } else {
+                        for (label, rank, site, reason) in [
+                            ("First", first, left, "first"),
+                            ("Second", second, right, "second"),
+                        ] {
+                            let judgment = assessment(rank, reason, site).determination;
+                            let applicability = site
+                                .map(|applies| format!(" (applies {applies})"))
+                                .unwrap_or_default();
+                            assert!(
+                                explanation.contains(&format!(
+                                    "{label} assessment `{}`{applicability}: {reason}",
+                                    judgment.kind()
+                                )),
+                                "{explanation}"
+                            );
+                        }
                         assert!(explanation.contains(&format!("Recorded the {author} assessment")));
                     }
                     if chosen.determination == Judgment::False {

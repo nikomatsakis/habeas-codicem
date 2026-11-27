@@ -52,6 +52,9 @@ enum Behavior {
     ReadEachSubject,
     RepairReferences,
     RepairSharedReferences,
+    PausedPeer {
+        unreachable: bool,
+    },
 }
 
 // {cite}`habeas:util`
@@ -275,6 +278,7 @@ fn serve(
             && subject == "example requirements.alpha_case");
     let determination = match (behavior, subject.as_str()) {
         (Behavior::MixedJudgments, "requirement requirements.alpha") => json!(false),
+        (Behavior::WaitAfterFirst, _) => json!(false),
         (Behavior::MixedJudgments, "requirement requirements.beta") => json!({"FIXME": ["#123"]}),
         (Behavior::ClosedIssueIsFalse, _) if prompt.contains("\"state\": \"closed\"") => {
             json!(false)
@@ -296,8 +300,10 @@ fn serve(
         json!({"error": "fixture provider is throttling"})
     } else if failed {
         json!({"error": "fixture model rejected this subject"})
-    } else if (matches!(behavior, Behavior::RepairSharedReferences)
-        || (matches!(behavior, Behavior::RepairReferences) && subject.ends_with("alpha")))
+    } else if (matches!(
+        behavior,
+        Behavior::RepairSharedReferences | Behavior::PausedPeer { .. }
+    ) || (matches!(behavior, Behavior::RepairReferences) && subject.ends_with("alpha")))
         && previous < 2
     {
         let (name, arguments) = if previous == 0 {
@@ -306,9 +312,20 @@ fn serve(
                 json!({"path":"src/lib.rs","location":"fn[shared]"}),
             )
         } else {
+            let correction = match behavior {
+                Behavior::PausedPeer { unreachable: true } if subject.ends_with("alpha") => {
+                    json!({"kind":"add_reference","role":"test","file":"src/lib.rs","selector":"fn[removed]","rationale":"Check the removed boundary."})
+                }
+                Behavior::PausedPeer { unreachable: false } if subject.ends_with("alpha") => {
+                    json!({"kind":"manual","instruction":"Assert the missing boundary.","rationale":"The boundary goes unchecked."})
+                }
+                _ => {
+                    json!({"kind":"add_reference","file":"src/lib.rs","selector":"fn[shared]","role":"test","rationale":"Shared exercises this requirement."})
+                }
+            };
             (
                 "submit_result",
-                json!({"result":{"status":"failed","corrections":[{"kind":"add_reference","file":"src/lib.rs","selector":"fn[shared]","role":"test","rationale":"Shared exercises this requirement."}]}}),
+                json!({"result":{"status":"failed","corrections":[correction]}}),
             )
         };
         json!({"model":"fixture-model","created_at":"2026-01-01T00:00:00Z","message":{"role":"assistant","content":"","tool_calls":[{"id":"fixture","type":"function","function":{"name":name,"arguments":arguments}}]},"done":true,"done_reason":"stop","prompt_eval_count":11,"eval_count":7})
@@ -341,6 +358,10 @@ fn serve(
         if subject.starts_with("requirement ") || subject.starts_with("example ") {
             arguments = match determination {
                 Value::Bool(true) => json!({"status":"success","rationale":rationale}),
+                Value::Bool(false) if matches!(behavior, Behavior::WaitAfterFirst) => {
+                    let name = subject.rsplit('.').next().unwrap();
+                    json!({"status":"failed","corrections":[{"kind":"add_reference","role":"test","file":"src/lib.rs","selector":format!("fn[{name}]"),"rationale":rationale}]})
+                }
                 Value::Bool(false) => {
                     json!({"status":"failed","corrections":[{"kind":"manual","instruction":"Fix the missing check.","rationale":rationale}]})
                 }
@@ -1181,6 +1202,7 @@ fn dumb_terminal_keeps_plain_batch_diagnostics() {
 // {test}`requirements.authoring.concurrency`
 #[cfg(unix)]
 #[test]
+// {test}`requirements.authoring.corrections.apply`
 fn interrupted_terminal_progress_keeps_unstarted_work_incomplete() {
     // Concurrency one is the Ollama default: only one assessment is running.
     for (overlap, concurrency) in [(true, 2), (false, 1)] {
@@ -1193,8 +1215,11 @@ fn interrupted_terminal_progress_keeps_unstarted_work_incomplete() {
 fn assert_interruption_stops_the_batch(overlap: bool, concurrency: usize) {
     let server = Server::start_with(overlap, Behavior::WaitAfterFirst);
     let fixture = Fixture::new(&server.endpoint, Some(concurrency));
+    let source = fixture.project.join("src/lib.rs");
+    let original = fs::read(&source).unwrap();
     let output = fixture.run_in_pty(true, "xterm-256color");
     assert!(!output.status.success(), "{output:?}");
+    assert_eq!(fs::read(&source).unwrap(), original);
     let terminal = String::from_utf8_lossy(&output.stderr);
     let escape = regex::Regex::new(r"\x1b\[[0-?]*[ -/]*[@-~]").unwrap();
     let plain = escape.replace_all(&terminal, "");
@@ -1227,6 +1252,13 @@ fn assert_interruption_stops_the_batch(overlap: bool, concurrency: usize) {
             .count(),
         1
     );
+    let finished = fs::read_dir(fixture.project.join("evidence"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap();
+    let record: Value = serde_json::from_slice(&fs::read(finished.path()).unwrap()).unwrap();
+    assert_eq!(record["corrections"][0]["kind"], "add_reference");
     // The assessment running at the interruption is cancelled without writing.
     assert!(
         usage
@@ -2880,6 +2912,54 @@ fn batch_collects_all_shared_file_findings_before_editing() {
         assert_eq!(
             fixture.evidence(&format!("requirements.{name}"))["determination"],
             true
+        );
+    }
+}
+
+// {test}`requirements.authoring.reassessment`
+#[test]
+fn a_changed_shared_input_does_not_resume_a_paused_subject() {
+    for unreachable in [false, true] {
+        let server = Server::start_with(false, Behavior::PausedPeer { unreachable });
+        let fixture = Fixture::new(&server.endpoint, Some(2));
+        fs::write(
+            fixture.project.join("md/requirements.md"),
+            ":::{req} alpha\nCheck alpha.\n:::\n\n:::{req} beta\nCheck beta.\n:::\n",
+        )
+        .unwrap();
+        let source = fixture.project.join("src/lib.rs");
+        fs::write(&source, "#[test]\nfn shared() {}\n").unwrap();
+        let output = fixture.run(&["author", "--all"]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stderr}");
+        assert!(
+            stderr.contains(if unreachable {
+                "paused with unapplied correction"
+            } else {
+                "Assert the missing boundary."
+            }),
+            "{stderr}"
+        );
+        let seen = server.subjects();
+        assert_eq!(
+            seen.iter().filter(|s| s.ends_with("alpha")).count(),
+            2,
+            "{seen:?}"
+        );
+        assert_eq!(
+            seen.iter().filter(|s| s.ends_with("beta")).count(),
+            3,
+            "{seen:?}"
+        );
+        assert_eq!(
+            fixture.evidence("requirements.alpha")["determination"],
+            false
+        );
+        assert_eq!(fixture.evidence("requirements.beta")["determination"], true);
+        assert!(
+            fs::read_to_string(source)
+                .unwrap()
+                .contains("{test}`requirements.beta`")
         );
     }
 }

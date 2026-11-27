@@ -930,7 +930,8 @@ Submit Success when you find no gap, AcknowledgedGap with entries when every
 real gap is acknowledged, and Failed with corrections otherwise. For a missing
 {test} or {impl} marker, give the role, file and selector in AddReference and
 explain how that item supports the subject. For Manual, give the instruction
-and explain what gap it closes. Include both when both apply.
+and explain what gap it closes. Include both when both apply. Cover every
+unacknowledged gap. A manual instruction does not acknowledge a gap.
 Call submit_result with the chosen variant inside result until it is accepted.
 Set result.status to "success", "acknowledged_gap", or "failed".
 For a failed result, set each correction's kind to "add_reference" or "manual".
@@ -1028,7 +1029,8 @@ Submit Success when you find no gap, AcknowledgedGap with entries when every
 real gap is acknowledged, and Failed with corrections otherwise. For a missing
 {test} or {impl} marker, give the role, file and selector in AddReference and
 explain how that item supports the subject. For Manual, give the instruction
-and explain what gap it closes. Include both when both apply.
+and explain what gap it closes. Include both when both apply. Cover every
+unacknowledged gap. A manual instruction does not acknowledge a gap.
 Call submit_result with the chosen variant inside result until it is accepted.
 Set result.status to "success", "acknowledged_gap", or "failed".
 For a failed result, set each correction's kind to "add_reference" or "manual".

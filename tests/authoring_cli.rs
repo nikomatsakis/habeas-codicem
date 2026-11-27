@@ -418,6 +418,7 @@ fn implementation_discovery_has_no_text_or_evidence_until_the_model_requests_a_r
     );
 }
 
+// {test}`requirements.authoring.persistence.destination`
 // {test}`requirements.authoring.complete_initial_bundle`
 // {test}`requirements.authoring.invocation`
 // {test}`requirements.authoring.additional_read`
@@ -1255,6 +1256,7 @@ fn source_tool_results_use_selectors_and_keep_locations_inside_quoted_code() {
     }
 }
 
+// {test}`requirements.authoring.persistence.destination`
 // {test}`requirements.authoring.negative_assessment`
 // {test}`requirements.sdk.habeas.assessment_policy`
 // {test}`requirements.authoring.usage_storage`
@@ -7231,7 +7233,18 @@ fn corrections_replay_reference_only_mixed_and_regression_findings() {
             serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap()
         };
         assert_eq!(record["determination"], expected, "{case}: {stderr}");
-        assert_eq!(server.finish().len(), count);
+        let requests = server.finish();
+        assert_eq!(requests.len(), count);
+        if case == "mixed" {
+            let prompt = prompt_text(&requests[0].body);
+            for guidance in [
+                "Include both when both apply.",
+                "Cover every\nunacknowledged gap.",
+                "A manual instruction does not acknowledge a gap.",
+            ] {
+                assert!(prompt.contains(guidance), "missing {guidance}");
+            }
+        }
         if case == "anchor" {
             assert!(stderr.contains("already present"));
         }
@@ -7239,6 +7252,8 @@ fn corrections_replay_reference_only_mixed_and_regression_findings() {
             let list = record["corrections"].as_array().unwrap();
             assert_eq!(list.len(), 2);
             let rationale = record["rationale"].as_str().unwrap();
+            assert!(rationale.contains("Add `{test}` to `src/lib.rs#fn[page_id]`"));
+            assert!(rationale.contains(instruction));
             assert!(
                 rationale
                     .find(list[0]["rationale"].as_str().unwrap())
@@ -7268,7 +7283,17 @@ fn corrections_replay_reference_only_mixed_and_regression_findings() {
         let marker = format!("// {{{role}}}`{SUBJECT}`\n");
         let text = fs::read_to_string(&path).unwrap();
         assert_eq!(text.matches(&marker).count(), markers, "{case}: {stderr}");
-        assert_eq!(text.replace(&marker, ""), source);
+        let mut expected_source = source.to_owned();
+        for target in match (role, markers) {
+            ("impl", 1) => &["fn page("][..],
+            ("test", 1) => &["fn page_id("],
+            ("test", 2) => &["fn page_id(", "fn empty_page("],
+            (_, 0) => &[],
+            _ => unreachable!(),
+        } {
+            expected_source = expected_source.replacen(target, &format!("{marker}{target}"), 1);
+        }
+        assert_eq!(text, expected_source, "{case}");
         assert!(record.get("correction_findings").is_none());
         if !expected {
             assert!(!record["corrections"].as_array().unwrap().is_empty());
@@ -7276,6 +7301,7 @@ fn corrections_replay_reference_only_mixed_and_regression_findings() {
     }
 }
 
+// {test}`requirements.authoring.corrections.apply`
 // {test}`requirements.authoring.submission`
 #[test]
 // {test}`requirements.authoring.persistence.fingerprints`
@@ -7341,6 +7367,71 @@ fn stale_and_already_present_references_do_not_retry_unchanged_inputs() {
     }
 }
 
+// {test}`requirements.authoring.persistence.fingerprints`
+#[test]
+fn an_applied_reference_keeps_the_original_read_and_reassessment_records_the_edit() {
+    let record_path = std::sync::Arc::new(std::sync::OnceLock::<PathBuf>::new());
+    let saved_path = record_path.clone();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let mut turn = 0;
+    let read = |selector: &str| {
+        reply(vec![call(
+            "read",
+            "read_node",
+            json!({"path":"src/lib.rs","location":selector}),
+        )])
+    };
+    let correction = json!({"kind":"add_reference", "role":"test", "file":"src/lib.rs", "selector":"fn[check]", "rationale":"Check tests readiness."});
+    let server = Server::start_with(
+        vec![
+            read(""),
+            read("fn[check]"),
+            reply(vec![call(
+                "failed",
+                "submit_result",
+                json!({"result":{"status":"failed","corrections":[correction]}}),
+            )]),
+            read(""),
+            reply(vec![call(
+                "done",
+                "submit_result",
+                json!({"result":{"status":"success","rationale":"Covered."}}),
+            )]),
+        ],
+        move || {
+            turn += 1;
+            if turn == 4 {
+                let bytes = fs::read(saved_path.get().unwrap()).unwrap();
+                sender
+                    .send(serde_json::from_slice::<Value>(&bytes).unwrap())
+                    .unwrap();
+            }
+        },
+    );
+    let fixture = Fixture::new(&server.endpoint);
+    record_path.set(fixture.evidence.clone()).unwrap();
+    fs::write(fixture.project.join("src/lib.rs"), "fn check() {}\n").unwrap();
+    let before_refs = habeas::reference_set_digest_for(&fixture.project, SUBJECT).unwrap();
+    let before = habeas::outline_input(&fixture.project, "src/lib.rs", "").unwrap();
+    let output = fixture.run(&["author", SUBJECT]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(server.finish().len(), 5);
+    let after = habeas::outline_input(&fixture.project, "src/lib.rs", "").unwrap();
+    let after_refs = habeas::reference_set_digest_for(&fixture.project, SUBJECT).unwrap();
+    assert_ne!(before_refs, after_refs);
+    let failed = receiver.try_recv().unwrap();
+    let success: Value = serde_json::from_slice(&fs::read(fixture.evidence).unwrap()).unwrap();
+    for (record, verdict, observed, refs) in [
+        (&failed, false, &before, &before_refs),
+        (&success, true, &after, &after_refs),
+    ] {
+        assert_eq!(record["determination"], verdict);
+        let inputs = record["inputs"].as_array().unwrap();
+        assert!(inputs.contains(observed));
+        assert_eq!(record["references"].as_str(), Some(refs.as_str()));
+    }
+}
+
 // {test}`requirements.authoring.corrections`
 // {test}`requirements.authoring.corrections.rationale`
 #[test]
@@ -7349,6 +7440,10 @@ fn malformed_definition_corrections_preserve_existing_evidence() {
         json!([]),
         json!([{"kind":"manual","instruction":" \t","rationale":"The boundary is untested."}]),
         json!([{"kind":"manual","instruction":"Add an assertion.","rationale":" "}]),
+        json!([{"kind":"manual","instruction":"Add a test."}]),
+        json!([{"kind":"add_reference","role":"test","file":"src/lib.rs","selector":"fn[ready_test]"}]),
+        json!([{"kind":"add_reference","role":"test","file":"src/lib.rs","selector":"fn[ready_test]","rationale":""}]),
+        json!([{"kind":"add_reference","role":"impl","file":"src/lib.rs","selector":"fn[ready]","rationale":" \t"}]),
         json!([{"kind":"other","instruction":"Add a test.","rationale":"Tests are missing."}]),
         json!([{"kind":"manual","instruction":"Add a test.","rationale":"Missing test.","role":"test"}]),
         json!([{"kind":"add_reference","role":"impl","file":"src/lib.rs","rationale":"Linked code implements this."}]),
