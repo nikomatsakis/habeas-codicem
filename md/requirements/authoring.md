@@ -275,12 +275,11 @@ assessments judge by the same rules:
 ```text
 - Derive obligations from the supplied subject and contextual text. Base
   conclusions about tests or other source behavior only on source code you have
-  received: mandatory inputs, items read with the habeas tool, or snippets
-  returned by ripgrep or ast_grep. Close every delivered search with
+  received in mandatory inputs, node reads, or text and structural search results. Close every delivered search with
   finish_search, recording the tags whose snippets you relied on without an
   additional source read. Supplied acknowledgments establish what a {fixme}
   reference says and which issues it names; they do not establish that its
-  claimed gap is real. outline, list_files, and references only locate items;
+  claimed gap is real. Listings and references locate items;
   read any item whose code your conclusion relies on unless a search snippet
   provides the information you need. Comments state intent; check behavior and
   assertions in the code itself.
@@ -320,8 +319,7 @@ assessments judge by the same rules:
   no longer exists within its task's scope is itself a gap.
 - Explain your judgment in a Markdown rationale with source locations, including
   any acknowledged gaps.
-- Give a source location as its file and outline selector, the address the
-  habeas and outline tools use, in backticks: `src/config.rs#fn[load]`, or
+- Give a source location as its file and outline selector, in backticks: `src/config.rs#fn[load]`, or
   `src/config.rs` for a whole file. Name requirements, examples, and
   definitions by full name in backticks. Name functions, types, and tests in
   backticks exactly as they are written. Do not give line numbers: they change
@@ -331,7 +329,8 @@ assessments judge by the same rules:
 
 :::{req} citation_prompt
 A citation review under {cite}`requirements.references.citation_review` MUST use
-the source tools under this chapter and the SDK’s `submit_result({result})` protocol under {cite}`requirements.sdk.graph.agent-harness.submission`. The result contains a boolean determination and a nonempty rationale. Citation assessments and their verifications accept source line numbers in rationales. A citation assessment uses this
+the SDK’s graph and project source tools for exploration under {cite}`requirements.sdk.graph.validation-context.read_node.behavior` and {cite}`requirements.sdk.graph.search.finish_search.behavior`, and the SDK’s `submit_result({result})` protocol under {cite}`requirements.sdk.graph.agent-harness.submission`. The result contains a boolean determination and a nonempty rationale. Citation assessments and their verifications vet the rationale under
+{cite}`requirements.authoring.line_numbers.citation`. A citation assessment uses this
 prompt, replacing `{{item_file}}`, `{{item_selector}}` (with `<root>` for the
 root node), `{{review_kind}}` (`source_item` for ordinary source citations or
 `book_commentary` for a reviewed book passage), `{{citations}}` (the item's
@@ -627,7 +626,7 @@ harness MUST identify a source location by file and outline selector under
 ### Request evidence inputs: `habeas`
 
 :::{req} source_tools
-The harness MUST expose a `habeas` tool accepting exactly one of these request
+For requirement, example, and site reviews and their verifications, the harness MUST expose a `habeas` tool accepting exactly one of these request
 forms. Each form MUST correspond to one existing evidence-input kind:
 
 | Request fields | Evidence input returned | Definition |
@@ -1220,6 +1219,19 @@ other fields; acceptance remains subject to
 the assessment, so
 an assessment rejects at most one submission. The UUID MUST NOT be recorded in
 evidence.
+:::
+
+:::{req} line_numbers.citation
+For each citation assessment and each citation verification, Habeas MUST vet
+`answer.rationale` with {cite}`requirements.sdk.graph.agent-calls.vet_answer`.
+If the rationale contains no source line citation as defined by
+{cite}`requirements.authoring.line_numbers.detection`, the line-number callback
+MUST return `Ok(VetResult::Accept)`. The first time a rationale cites a line
+number, the callback MUST return `Ok(VetResult::CorrectAndTryAgain(message))`.
+The message MUST quote the offending text and ask for the file and outline
+selector under {cite}`requirements.authoring.judgment_rules`. If a later
+submission still cites a line number, the callback MUST end the review by returning a domain error under
+{cite}`requirements.sdk.graph.agent-calls.vet_answer`.
 :::
 
 :::{req} mandatory_inputs
@@ -2189,7 +2201,7 @@ mandatory inputs, additional reads, and selected search dependencies under
 defined by {cite}`requirements.ci.outline_inputs`,
 {cite}`requirements.ci.requirements_inputs`, and
 {cite}`requirements.definitions.inputs`. The harness MUST create these records
-itself so ordinary evidence validation can check them later.
+itself so ordinary evidence validation can check them later. For citation assessments and verifications, additional node reads and selected excerpts are recorded as SDK dependencies under {cite}`requirements.sdk.graph.search.finish_search.inputs` and {cite}`requirements.sdk.graph.validation-context.read_node.inputs`.
 :::
 
 :::{req} persistence
@@ -2222,13 +2234,14 @@ for later review without storing source text, prompts, responses, or rationale.
 :::
 
 :::{req} usage_inputs
-Usage MUST record mandatory input counts and sizes by evidence kind, in UTF-8
-bytes and lines, and the same information for additional inputs requested through
-`habeas` or `ripgrep`. A requirements input MUST also record its number of matched declarations.
-Usage MUST distinguish unique inputs from repeated reads, successful from
-failed reads, and prepared inputs from those actually sent to the model.
-File-discovery calls MUST count as tool calls without recording directory
-listings as evidence or source inputs.
+Each assessment’s usage record MUST report its validator’s `prepared_inputs` and `delivered_inputs` under {cite}`requirements.sdk.graph.running-criteria.UsageStats`. It MUST also report the invocation count and total result bytes for each invoked tool under {cite}`requirements.sdk.graph.running-criteria.ToolUsage.calls` and {cite}`requirements.sdk.graph.running-criteria.ToolUsage.result_bytes`.
+:::
+
+:::{example} file_discovery_usage
+{cite}`requirements.authoring.usage_inputs`
+{cite}`requirements.authoring.file_discovery`
+
+`list_files` returns the name `src/parser.rs`. The assessment counts one `list_files` invocation and the bytes of the whole listing. Showing the filename leaves `prepared_inputs` and `delivered_inputs` unchanged. If the agent then reads a function in `src/parser.rs`, the function’s contents become an evidence input when delivered to the model.
 :::
 
 :::{req} usage_requests.failures
@@ -2236,7 +2249,7 @@ Each assessment’s usage record MUST include its total failed provider attempts
 :::
 
 :::{req} usage_requests
-HC MUST use one {term}`requirements.sdk.graph.running-criteria.validator` per assessment. Its usage record MUST report that validator’s attempt and token totals under {cite}`requirements.sdk.graph.running-criteria.Validator.usage` and its failure and retry counts under {cite}`requirements.authoring.usage_requests.failures`. The record MUST distinguish partial or unavailable token measurements from complete totals and preserve the available cache and reasoning breakdowns. The assessment MUST also report elapsed time and tool-call counts by tool.
+HC MUST use one {term}`requirements.sdk.graph.running-criteria.validator` per assessment. Its usage record MUST report that validator’s attempt and token totals under {cite}`requirements.sdk.graph.running-criteria.Validator.usage` and its failure and retry counts under {cite}`requirements.authoring.usage_requests.failures`. The record MUST distinguish partial or unavailable token measurements from complete totals and preserve the available cache and reasoning breakdowns. The assessment MUST also report elapsed time.
 :::
 
 ### CI without inference

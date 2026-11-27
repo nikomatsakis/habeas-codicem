@@ -195,6 +195,29 @@ impl OutlineCache {
             .clone()
     }
 
+    pub(crate) fn source_node(
+        &self,
+        root: &Path,
+        file: &str,
+        selector: &str,
+    ) -> std::io::Result<trust_but_verify::outline::OutlineContent> {
+        use trust_but_verify::outline::OutlineContent;
+        let path = self
+            .check_project_file(root, file)
+            .map_err(std::io::Error::other)?;
+        let outline = match self
+            .overrides
+            .get(file)
+            .filter(|_| self.project_sources.is_none())
+        {
+            Some(text) => OutlineContent::from_source(&self.validation, path, text.as_str().into()),
+            None => OutlineContent::from_path(&self.validation, path),
+        };
+        outline
+            .and_then(|root| root.select(selector))
+            .map_err(std::io::Error::other)
+    }
+
     /// The retained SDK outline for a permitted file or supplied refactoring snapshot.
     pub(crate) fn snapshot(
         &self,

@@ -1,7 +1,7 @@
 {
   "requirement": "The harness MUST stop retrying a completion request under\n{cite}`requirements.authoring.provider_backoff` when the next attempt would\nstart more than one minute after the first of its consecutive transient\nfailures, including when a provider `Retry-After` delay would pass that point.\nIt MUST then fail the assessment with an error naming the number of attempts\nand the last failure's HTTP status and provider error code, when available.",
   "determination": true,
-  "rationale": "The tests adequately check `requirements.authoring.provider_backoff.limit`.\n\n**Obligations derived from the text**\n1. Stop retrying when the next attempt would start more than one minute after the first consecutive transient failure.\n2. That stop applies even when a provider `Retry-After` delay would pass the one-minute point.\n3. On stopping, fail with an error that names the attempt count and the last failure's HTTP status and provider error code, when available.\n\n**Unit test: `crates/trust-but-verify/src/agent/providers.rs#mod[tests]/fn[retrying_stops_once_a_request_has_failed_for_a_minute]`**\n- **Cut-off with simulated time.** It drives `ProviderBackoff::retry` with simulated time. Each `Wait` advances the clock, and the test asserts that no attempt starts after `start + 60s`. The loop ends in a `Stop`, and more than three attempts were made first, so backoff was really applied.\n- **Boundary.** After a failure at `start`, a second failure at 58s still waits with a delay of at most 2s. This pins the \"not more than a minute\" side.\n- **`Retry-After` boundary.** A `Retry-After` of `60` waits for exactly 60s. A `Retry-After` of `61` stops. This is the exact boundary, and it covers the clause \"including when a provider `Retry-After` delay would pass that point\". A `Retry-After` of `90` also stops at once.\n- **Attempt count.** The message must contain `kept failing for a minute` and `after {attempts+1} attempts`.\n- **Status and code.** The message must contain `HTTP 429 ThrottlingException`.\n- **Partial information.** Three cases check the \"when available\" wording: status only (`HTTP 503`), code only (`ThrottlingException`) and a timeout with neither (`no response within ten minutes`).\n- **First failure.** In each of those three cases, the first failure is made at `start + RETRY_LIMIT`, so the clock is measured from the first failure rather than from process start. A later failure at `start + RETRY_LIMIT*3` stops.\n- **Permanent error.** A permanent 400 `ValidationException` stops with its own error, not the \"kept failing\" error.\n\n**Integration test: `src/authoring/mod.rs#mod[tests]/fn[a_request_failing_for_a_minute_fails_the_assessment]`**\n- It runs the whole assessment with a provider that always returns 503 `ServiceUnavailableException`, under paused tokio time.\n- It asserts that elapsed time stays within `RETRY_LIMIT`.\n- It asserts that more than three attempts were made.\n- It asserts that the assessment error contains `after {attempts} attempts; last failure: HTTP 503 ServiceUnavailableException`, with the attempt count matching the provider's recorded requests.\n- It asserts that the usage log's attempt counts are consistent, and that the last attempt is not marked retried.\n\n**Gaps considered and ruled out**\n- Resetting the clock after a success belongs to the parent `requirements.authoring.provider_backoff`, not to this subject. `ProviderBackoff::retry` only records the first failure time, and a new backoff per completion request is what resets it.\n- I found no obligation in this requirement text without a test that exercises it and asserts the outcome.",
+  "rationale": "The tests adequately check `requirements.authoring.provider_backoff.limit`. I read `ProviderBackoff::retry` in `crates/trust-but-verify/src/agent/backoff.rs` only to understand the inputs. I took the expected behaviour from the requirement text.\n\n**Obligation 1: stop once the next attempt would start more than one minute after the first consecutive transient failure, including when `Retry-After` passes that point.**\n- `retrying_stops_once_a_request_has_failed_for_a_minute` (in `crates/trust-but-verify/src/agent/providers.rs`) feeds repeated 429 `ThrottlingException` failures at simulated times.\n  - It asserts that no accepted wait ever moves the clock past `start + 60s`.\n  - It asserts that the sequence eventually stops after more than 3 waits.\n- The same test covers the boundary two ways:\n  - A failure at 58s is allowed to wait up to 2s, so a start at or before the minute is accepted.\n  - A `Retry-After` of 60 waits exactly 60s, and one of 61 stops. Together these pin the \"more than one minute\" edge from both sides.\n- A `Retry-After` of 90 stops at once, which covers the clause about a provider delay passing the limit.\n- The timeout kind (`TimedOut`, a request with no response) is also exercised as a transient failure in the last-failure cases.\n- A permanent 400 `ValidationException` stops with its own error rather than the \"kept failing\" message, so the limit applies only to transient retries.\n- The end-to-end test `a_request_failing_for_a_minute_fails_the_assessment` (in `src/authoring/mod.rs`) uses a provider that always returns 503. It runs under paused time and asserts that:\n  - elapsed time stays within `RETRY_LIMIT`;\n  - more than 3 attempts were made;\n  - the assessment returns an error, via `unwrap_err`;\n  - the usage log is consistent (`retried` is false on the final request).\n\n**Obligation 2: fail with an error naming the attempt count and the last failure's HTTP status and provider error code, when available.**\n- In the unit test, the message must contain \"kept failing for a minute\", \"after {attempts+1} attempts\", and \"HTTP 429 ThrottlingException\". The count is computed from the loop, so it is checked against the real number of attempts.\n- The \"when available\" cases are covered separately. Status only gives \"last failure: HTTP 503\". Code only gives \"last failure: ThrottlingException\". Neither status nor code gives the timeout text. Each case also asserts that the returned error has kind `TimedOut`.\n- The end-to-end test asserts the exact text \"after {attempts} attempts; last failure: HTTP 503 ServiceUnavailableException\", where `attempts` is the number of requests the provider actually received.\n\n**Other points.**\n- \"Consecutive\" is handled by creating a fresh `ProviderBackoff` per completion request. The reset after a success is the parent `requirements.authoring.provider_backoff` obligation, not part of the limit.\n- Randomised jitter does not make the assertions flaky. The assertions hold for any jitter value in the permitted range.\n\nI found no untested obligation or weak assertion, and no `{fixme}` acknowledgments apply.",
   "references": "f9afcaaa0c2ffbaaa6fcc3741b735fd3412e3bfaa8f983a0e4da23ef111bb507",
   "inputs": [
     {
@@ -73,14 +73,9 @@
       "hash": "e1c81860da438fe05fdd820f404f6218875ff92e01c282db5752fc363ed88f0b"
     },
     {
-      "file": "crates/trust-but-verify/src/agent.rs",
-      "item": "fn[converse]",
-      "hash": "b3877f81002d46e9e04a359e5eca75e2bc6983eb128276241118bc851c2e439a"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[success_resets_backoff_and_retries_keep_history_without_repeating_tools]",
-      "hash": "38575731249476c84c37337b2befc86fe84ffda02823bc3769b50c08e7776c30"
+      "file": "crates/trust-but-verify/src/agent/backoff.rs",
+      "item": "",
+      "hash": "6f88e3faff6fb79623c8133052690cd217868234fdc503870577904366a6050f"
     }
   ],
   "format_version": 1,
@@ -143,8 +138,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "755ed49707b65ba44c51c32ec06c4fa4a929262cbd561239110f27baeb6ea51b"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "31f5e084d12f197a98149c0c86ffe81ac942c81cda7d88368a3f66259ee05cec"
         }
       ]
     },
@@ -160,8 +155,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "810ae1c997d072716488479e764100ae126ab3b4d624dcba2bba40709aebc4c2"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "e06b186cd06b2be4f6d12618b5f29fe686057d9e843d0c54ebfc70e434760932"
         }
       ]
     },
@@ -177,8 +172,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "67ee3985daea02a304805823c3c3c8bd8c253ad8831a2a072a37c21f2cc462a9"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "d9824e66de5a78ce3669fc3e3666a5d1724b9d236fa711e8d6d8bdd69c1cd8ff"
         }
       ]
     },
@@ -188,31 +183,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent.rs"
+              "location": "crates/trust-but-verify/src/agent/backoff.rs"
             },
-            "selector": "fn[converse]"
+            "selector": ""
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "19fbb35053a58b1e5f78767d587203f981026df77d2bb38c37c1b17844458f78"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/mod.rs"
-            },
-            "selector": "mod[tests]/fn[success_resets_backoff_and_retries_keep_history_without_repeating_tools]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "c61e66c4f6cb9c593b44f2fe8d492ef4dbcd6e96826c0fb78b4d08728b0f40a2"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "195eafe199e7841201ffe12b8b6e83b1f2862993575799c3b2822f0498fe9613"
         }
       ]
     }

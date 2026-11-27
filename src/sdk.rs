@@ -386,6 +386,16 @@ impl Domain for HabeasDomain {
             .node_data(*node)
             .ok_or_else(|| std::io::Error::other("unassigned node handle"))?;
         let node = data.as_ref();
+        if let HabeasNode::Source(_) = node {
+            let InputSelector::Outline { file, item } = node.selector()? else {
+                unreachable!()
+            };
+            let outline = self.outlines.source_node(&self.root, &file, &item)?;
+            return Ok(HabeasNodeContent {
+                fingerprint: outline.fingerprint(),
+                text: outline.format(),
+            });
+        }
         let resolved = if let HabeasNode::ReferenceSet(id) = node {
             ResolvedInput {
                 text: vec![self.reference_set(id)?],

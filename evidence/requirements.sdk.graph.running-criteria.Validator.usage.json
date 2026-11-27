@@ -1,8 +1,8 @@
 {
   "requirement": "`usage()` returns the validator’s cumulative usage. Every agent call contributes its usage to the execution that invoked it, including calls that return an error. The validator adds that usage before `verify` or `refresh_evidence` returns, including on `Err`. Reusing current evidence adds no usage. Loading, checking, and storing evidence also leave the counters unchanged.\n\nFor totals across validators that share a domain cache, see {cite}`requirements.sdk.validation-cache.usage`.\n\n```rust,ignore\nimpl<'d, D: Domain> Validator<'d, D> {\n    pub fn usage(&self) -> &UsageStats;\n}\n```",
   "determination": true,
-  "rationale": "The tests adequately check every obligation in `requirements.sdk.graph.running-criteria.Validator.usage`.\n\n**Obligations and the tests that cover them**\n\n- **Cumulative usage, including failed calls.**\n  - `fn[validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse]` in `crates/trust-but-verify/src/agent/tests.rs` runs a scripted agent through three outcomes: a throttled error that is retried, a success with measured tokens, and a terminal `io::Error`.\n  - After the final failing `verify_with_agent` call, it asserts that `validator.usage()` and `graph.cache().usage()` both show `(attempts, retries, failed_attempts) == (3, 1, 2)`.\n  - It asserts `reported` and `missing_attempts` for input, output, cached-input, cache-creation and reasoning tokens. For example, input is 120 reported with 2 missing, and cache-creation has 3 missing.\n  - This shows usage accumulates across several executions on one validator and that failed calls contribute.\n- **Added before return, including on `Err`.** The assertions run immediately after the failing `verify` call returns `Err`, so the failed attempt's usage is already counted.\n- **Reusing current evidence adds nothing.**\n  - The test calls `store_evidence` and then `refresh_evidence` on the stored evidence. `refresh_evidence` reuses it without running an agent.\n  - It asserts the cache has `attempts == 2` after the reuse. The later totals of 3 attempts and 1 retry would be higher if the reuse or the store had added usage.\n- **Loading, checking and storing leave counters unchanged.**\n  - `refresh_evidence` goes through `load_evidence`, `check_inputs` and `store_evidence`, and the same totals rule out any counting there.\n  - The test also checks that a fresh `Validator::new` reports all-zero counters.\n- **Dropped in-flight call.** `fn[dropping_an_inflight_request_preserves_its_attempt]` cancels a pending request with a timeout. It asserts that `validator.usage()` and the cache both show 1 attempt, 0 failed attempts and 1 missing input-token measurement, so the call's usage is still recorded.\n\n**Implementation question I checked**\n\nI read `fn[verify]`, `fn[execute]` and `fn[refresh_evidence]` in `crates/trust-but-verify/src/graph.rs` to see whether `refresh_evidence` is a separate usage path from `verify`. It is not. `verify` calls `execute(criterion, None)`, `execute` accumulates into `self.usage`, and `refresh_evidence` calls `self.verify` on a cache miss. The tests use `verify_with_agent`, which calls the same `execute` with an explicit agent. The `Err` and cumulative checks therefore cover the code that `refresh_evidence` shares.\n\n**Residual points**\n\n- No test makes a `refresh_evidence` call fail inside an agent call. Its only usage-relevant code is the pass-through to `verify`, so this is not a gap.\n- The `requirements.sdk.validation-cache.usage` citation is context only. The same test also asserts the cache totals.\n- `public_exports_match_the_appendix` carries no usage-specific assertion. It is only a `public_api` marking and does not affect this requirement.",
-  "references": "cb0f9e40d1685f5bd33f79cdeeb6f0f1c5cc54ddb418cd2e28b3883fbe3b9497",
+  "rationale": "The reviewed tests adequately cover `requirements.sdk.graph.running-criteria.Validator.usage`.\n\n**Obligations derived from the text**\n1. `usage()` returns cumulative usage.\n2. Every agent call adds its usage to the execution that invoked it, including calls that return an error, retries and failed attempts.\n3. The usage is added before `verify` or `refresh_evidence` returns, including on `Err`.\n4. Reusing current evidence adds no usage.\n5. Loading, checking and storing evidence leave the counters unchanged.\n\n**Coverage**\n- **Cumulative usage and `Err` returns.** `agent/configured.rs#mod[tests]/fn[refreshing_missing_evidence_accounts_for_accepted_and_invalid_answers]` makes two `refresh_evidence` calls through `validator.usage()`.\n  - After the accepted answer, it asserts attempts, prepared inputs, delivered inputs and reported input tokens of (1, 1, 1, 10).\n  - The second call gets an invalid answer and returns `Err`. The test then asserts the totals are (2, 2, 2, 20). That shows cumulative totals, and that usage is recorded when the call returns `Err`.\n- **Failed attempts, retries and reuse.** `agent/tests.rs#fn[validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse]` runs a throttled error followed by a success. It then stores the evidence and calls `refresh_evidence`, which reuses the current evidence.\n  - Before the terminal failure, it asserts the cache shows only 2 attempts and 1 prepared and delivered input. Reuse, store and the load and check inside `refresh_evidence` therefore added nothing.\n  - After the terminal `io::Error`, `verify_with_agent` returns `Err`. `validator.usage()` shows attempts 3, retries 1 and failed attempts 2, with exact token and missing-attempt counts, prepared inputs 2 and delivered inputs 1. So retries, failed attempts and the terminal error all count in the validator's own total.\n  - A fresh `Validator` reports all counters at zero with no tools.\n- **Dropped request.** `agent/tests.rs#fn[dropping_an_inflight_request_preserves_its_attempt]` drops a request mid-flight. It asserts that `validator.usage()` still shows the attempt (1 attempt, 0 failed, 1 missing input-token count). So usage is recorded even when the call never returns normally.\n- **Not relevant.** `tests/public_api.rs#fn[public_exports_match_the_appendix]` checks API exports only. It adds nothing for the behavioral obligations, but nothing depends on it.\n\n**Gaps considered**\n- The reuse and unchanged-counter checks are made on the cache and on the final validator totals, rather than as a before/after comparison of `validator.usage()` at the reuse step. Any extra usage from reuse would still have changed the later totals or the cache snapshot, so I don't count this as a gap.\n- Cross-validator totals belong to the cited `requirements.sdk.validation-cache.usage`, which is context only.\n\nNo gaps found and no {fixme} acknowledgments are needed.",
+  "references": "2c4fb7c4c461051bcbb25155ad546e62886d88b891124060bf8209061743dfc0",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.running-criteria.Validator.usage",
@@ -36,7 +36,7 @@
         "{cite}`requirements.sdk.graph.running-criteria.UsageStats`. A newly constructed",
         "cache starts at zero. Every agent call through the cache or any clone adds its",
         "usage exactly once by the time the call returns, including retries and failed",
-        "attempts. Concurrent calls contribute to the same totals. Reading a snapshot",
+        "attempts. Concurrent calls contribute to the same totals. The snapshot sums tool invocations and result bytes by tool name across validators under {cite}`requirements.sdk.graph.running-criteria.ToolUsage.by_name`. Reading a snapshot",
         "preserves the counters, and later calls leave earlier snapshots unchanged.",
         "",
         "```rust,ignore",
@@ -48,14 +48,19 @@
       ]
     },
     {
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/fn[refreshing_missing_evidence_accounts_for_accepted_and_invalid_answers]",
+      "hash": "87f6498bf113872802ad02ed2072955fdb80f11b5bbe0db5a031e9543db8288a"
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse]",
-      "hash": "06f9aad202e1891a1910f5307439e6bb442a02eba6cd5fcd29b1d1bc22f2aab4"
+      "hash": "52c15d1d0e93301c4d527c00d5c2b47d2c8be8114c9e65409e2746298fcc75e3"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[dropping_an_inflight_request_preserves_its_attempt]",
-      "hash": "0ac0baf53ea311489c403f3750a959dddc8b0cb1b77d05956aca1206d9c39e47"
+      "hash": "ef6fa84ab2321053ec43ba5562ecbe2d7ce7da0691c2e75f2b515b403967786b"
     },
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
@@ -63,29 +68,9 @@
       "hash": "4d6ce6161754fb9e88ad84ef64f9bb131b308298104915179b2c5d573ed2b087"
     },
     {
-      "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "impl[Validator<'d,%20D>]/fn[refresh_evidence]",
-      "hash": "976affca6ada1924cc3d61f461cc801038c946007ba55abe17e7ede184c66f47"
-    },
-    {
       "file": "crates/trust-but-verify/src/agent.rs",
       "item": "fn[verify_with_agent]",
       "hash": "28dcf8f6c6353970cea4aa938825e7738b4d40fce63aa7e9ea2f4d754b4a3408"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "impl[Validator<'d,%20D>]/fn[usage]",
-      "hash": "7a17b4f210316b9881a095d948aa987882257b06cc1b3cfd6e121a789d6f8d45"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "impl[Validator<'d,%20D>]/fn[execute]",
-      "hash": "807a5015afd77dd876f866ed3e422875eef8103383fe82adb04d64b7c839be51"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "impl[Validator<'d,%20D>]/fn[verify]",
-      "hash": "3a2bbdb3f06a33cbff7a1af2c5d08a4f87b3be750b183eba7c1b204ee1e50203"
     }
   ],
   "format_version": 1,
@@ -98,7 +83,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "cb0f9e40d1685f5bd33f79cdeeb6f0f1c5cc54ddb418cd2e28b3883fbe3b9497"
+          "value": "2c4fb7c4c461051bcbb25155ad546e62886d88b891124060bf8209061743dfc0"
         }
       ]
     },
@@ -110,7 +95,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "995afa8096f1011b5ab728523108bdc140f0d88753ad4b99ffac093b9a0cee6f"
+          "value": "b59e1c01ddbe130642f8e00898480dd40d63c8e4c361e3e9dca37fc1248b723a"
         }
       ]
     },
@@ -132,7 +117,24 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "fad3354dc56e3310c6dcec9cca198aabceb8394f0b5cb632aca26a5f34d16cf0"
+          "value": "8d48e3dcb971196d7887d9d71ae19c168e8791c1fdc3aefb1d90e5bd5de8c028"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
+            },
+            "selector": "mod[tests]/fn[refreshing_missing_evidence_accounts_for_accepted_and_invalid_answers]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "87f6498bf113872802ad02ed2072955fdb80f11b5bbe0db5a031e9543db8288a"
         }
       ]
     },
@@ -148,8 +150,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "aa14de1bbe66ad852abe9beb4e6ee331dc55339b410d7ec09bf4960b9d420e14"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "52c15d1d0e93301c4d527c00d5c2b47d2c8be8114c9e65409e2746298fcc75e3"
         }
       ]
     },
@@ -165,8 +167,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "67a2ca02c9ad50098a877c54b718917bf8085c7fd935ebb77cd49577332d833c"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "0d5540119411bbeb047869aa519d1a0fc2ce843e8e00c0803527afecea921d37"
         }
       ]
     },
@@ -182,25 +184,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "ae4819b6e5ac9cd22992cc4254e7868f438e101dbd53f1bd7d443a33ee96f61d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
-            },
-            "selector": "impl[Validator<'d,%20D>]/fn[refresh_evidence]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "b06b71ebc6d7105e92d65444828bb0afe9ecbfa2a52d4e8ded8062fba3a8d447"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "4d6ce6161754fb9e88ad84ef64f9bb131b308298104915179b2c5d573ed2b087"
         }
       ]
     },
@@ -216,59 +201,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "23fc6d0652a1418ed0a24aecd1156dcbc07c7e05a4dfa2ae74e9becd717f94d9"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
-            },
-            "selector": "impl[Validator<'d,%20D>]/fn[usage]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "fdf2915d2b169e94c0833f1edaf1f31c2df0170dcac4a98df6d63175047c0e1d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
-            },
-            "selector": "impl[Validator<'d,%20D>]/fn[execute]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "f3a01b0f10468085f8c1f1c447dcfe9e6a200517adf1674fbd665ba0b90c7e1d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
-            },
-            "selector": "impl[Validator<'d,%20D>]/fn[verify]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "fab49fc9e0687992f3bd058abfcea3d22013a89d1614c727829493d72c719594"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "28dcf8f6c6353970cea4aa938825e7738b4d40fce63aa7e9ea2f4d754b4a3408"
         }
       ]
     }

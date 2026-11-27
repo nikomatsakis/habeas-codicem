@@ -537,8 +537,9 @@ instructing the agent to call `finish_search` before resubmitting. The request
 stays open and retains its submission reminder. Once all delivered searches
 are accounted for under {cite}`requirements.sdk.graph.search.finish_search.behavior`,
 exactly one `submit_result` call whose arguments are an object containing only
-the `result` field supplies that field's value as the accepted answer and ends
-the conversation. Other tool calls in that response are skipped.
+the `result` field supplies that field's value for decoding and vetting under
+{cite}`requirements.sdk.graph.agent-calls.vet_answer`. Acceptance ends the
+conversation. Other tool calls in a response containing a submission are skipped.
 Assistant prose remains conversation text.
 :::
 

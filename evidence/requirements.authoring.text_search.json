@@ -1,7 +1,7 @@
 {
   "requirement": "The harness MUST expose a `ripgrep` tool with this interface:\n\n```text\nripgrep({ pattern: String, path: String = \".\", context: Integer = 2,\n          referencing: Optional<ReferenceScope> }) -> SearchResult\n\nReferenceScope {\n    selection: String,                     // full name or definition glob\n    roles: Array<Role> = [\"impl\", \"test\", \"cite\"],\n    scope: \"node\" | \"file\" = \"file\",\n}\n\nSearchResult {\n    search_id: UUID,\n    instructions: Optional<String>,\n    matches: Array<SearchMatch>,\n}\n\nSearchMatch {\n    tag: String,         // short tag for finish_search\n    file: String,\n    item: String,        // selector of the innermost outline node\n    kind: String,\n    lines: Array<{ text: String, matched: Boolean }>,\n}\n```\n\nThe tool MUST search the requested permitted file or directory using\nripgrep's regular-expression syntax and case-sensitive matching. It MUST search in process using ripgrep's library crates, without\nrequiring an external `rg` executable, and MUST apply source-access policy while\nwalking files rather than filtering results afterwards. It MAY search files in\nparallel; results MUST be ordered by path and then line regardless of\nparallelism, so the same sources always produce the same inputs. The search scope follows {cite}`requirements.sdk.sources.local_provider`.\n`context`\nMUST be nonnegative and specify how many lines before and after each matching\nline to include, defaulting to two on each side. Windows MUST stop at item\nboundaries under {cite}`requirements.authoring.search_accounting.excerpts`,\nand overlapping windows within the same item MUST be merged. The result\nMUST give one entry for each innermost outline node containing a match, where a\nmatch in a comment belongs to the node the comment belongs to under\n{cite}`requirements.references.outline_comments`: the node's file, selector\nunder {cite}`requirements.references.outline_selectors`, kind, and its matching\nand context lines in source order, each marked as matching or not and redacted\nunder {cite}`requirements.authoring.redaction`. Results MUST NOT give line\nnumbers; the model locates and cites code by selector. Separate windows within\none node MUST be distinguishable, such as by an elision line that is not\nmarked as matching. Search results MUST NOT include definitions. Selected snippets MUST contribute\nevidence inputs through {cite}`requirements.authoring.finish_search.inputs`;\nunselected snippets MUST NOT contribute inputs merely through discovery.\nResults and descriptions MUST follow\n{cite}`requirements.authoring.search_accounting.instructions` and\n{cite}`requirements.authoring.finish_search.description`. Setting `context` to zero MUST return only matching lines.\nWith `referencing`, the tool MUST search only sources, within `path`, that carry\na reference in one of `roles` to a requirement or example the `selection`\nmatches under {cite}`requirements.references.definition_globs`, including\nanchors under {cite}`requirements.references.anchors`: with `scope` `node`, only\nthe outline nodes that contain or are named by those references, and with\n`file`, their whole files. A selection matching no requirement or example, or an\nunknown role or scope, MUST return an explanatory tool error. Its model-facing\ndescription MUST explain `referencing`.\nSearch results MUST contain only files visible under\n{cite}`requirements.authoring.source_tools`. A search scoped to a `.gitignore`-excluded\nfile or directory MUST return an empty `matches` array.\nNo matches MUST return an empty array; invalid arguments or a failed search MUST\nreturn an explanatory tool error.",
   "determination": true,
-  "rationale": "I judge the tests adequate for `requirements.authoring.text_search`. All the tests are marked `{test}` for the subject. They are in `src/authoring/tools.rs` under `mod[tests]`, plus one in `tests/authoring_cli.rs`. I did not request implementation source.\n\nObligation-to-test mapping:\n- **Interface and description.** `fn[ripgrep_tool_is_advertised_with_its_interface_and_conventions]` asserts the full parameter schema. That covers `pattern`, `path` default `.`, `context` minimum 0 and default 2, and `referencing` with its `roles` and `scope` enums and defaults. It also checks that the description explains `referencing`, the result shape, the elision, the comment ownership and the empty-match behavior.\n- **Regex syntax and case sensitivity.**\n  - `fn[exact_match_ranges_preserve_regex_anchors_and_skip_unmatched_or_binary_sources]` exercises anchors and `(?i)`.\n  - `fn[search_merges_context_windows_and_respects_ignore_rules]` shows `NEEDLE` does not match `needle`.\n- **Ordering.** `fn[parallel_search_orders_results_by_path_and_line]` writes 40 files in reverse order. It asserts the results are sorted and identical across repeated runs.\n- **Context.**\n  - `fn[context_windows_include_exactly_the_requested_lines_on_each_side]` covers default, 0, 1, 2 and 3.\n  - `fn[search_merges_context_windows_and_respects_ignore_rules]` rejects `context: -1`.\n  - `fn[search_records_nothing_clamps_at_eof_and_reports_failures]` rejects `context: 1.5`.\n  - `context: 0` returns only matching lines in several tests.\n- **Item boundaries, merging and elision.**\n  - `fn[separate_windows_in_one_node_are_divided_by_an_elision_line]` checks the unmatched elision line between separate windows. It checks that adjacent or overlapping windows merge with no elision. It checks that the default context equals context 2.\n  - `fn[search_excerpts_stop_at_byte_boundaries_including_attached_comments_and_attributes]` covers clipping at item boundaries, including items that share a line.\n- **Innermost node and comment ownership.** `fn[search_returns_innermost_nodes_and_comment_owners]` checks nested `fn[outer]/fn[inner]` and a comment match owned by `fn[after]`. It also checks that entries carry no hash.\n- **No line numbers and no definitions.**\n  - Several tests check the entries carry no `line` or `line_start` field.\n  - `fn[search_records_nothing_clamps_at_eof_and_reports_failures]` asserts `definitions` is absent from the result.\n- **Unselected snippets contribute no inputs.** The same test asserts `recorded_inputs()` is empty. `fn[search_merges_context_windows_and_respects_ignore_rules]` asserts `search.inputs` is empty. The positive recording path belongs to the cited `finish_search.inputs` requirement.\n- **Redaction.**\n  - `fn[model_inputs_reads_searches_and_citation_prompts_are_redacted]` checks that search results never leak the token.\n  - `fn[search_excerpts_stop_at_byte_boundaries_including_attached_comments_and_attributes]` checks that search results never leak the token and that `[REDACTED:` appears in them.\n- **Visibility and policy.**\n  - `fn[source_tools_share_sdk_visibility_for_untracked_files]` covers nested `.gitignore` exceptions, an ignored file and an ignored directory. Searches scoped to the ignored file or directory return empty matches.\n  - `fn[search_records_nothing_clamps_at_eof_and_reports_failures]` and `fn[search_merges_context_windows_and_respects_ignore_rules]` cover hidden-but-not-ignored and ignored files.\n  - `fn[outside_symlinks_are_excluded_from_reads_search_and_discovery]` and `fn[unpermitted_requests_outside_the_project_are_recoverable_tool_errors]` cover files outside the project.\n  - `fn[search_normalizes_parent_components_before_following_symlinks]` covers `..` path normalization.\n  - `fn[operating_system_permission_failures_are_ordinary_read_failures]` and the CLI test `fn[explicit_ignored_reads_return_an_error_and_the_assessment_continues]` cover failure handling.\n- **`referencing`.**\n  - `fn[ripgrep_referencing_searches_only_referencing_files_or_nodes]` covers the default roles, which exclude fixme. It covers explicit `fixme` in both scopes, role narrowing and glob selection. It covers `node` versus `file` scope, `path` limiting, and a definition with no references returning an empty array. It covers the errors: selection matching nothing, unknown role, unknown scope, and malformed arguments.\n  - `fn[ripgrep_node_scope_searches_only_the_node_a_selector_anchor_names]` covers `:impl:` selector anchors, with node scope clipping and a stale selector.\n  - `fn[text_search_selects_example_test_references_and_test_anchors]` covers example `{test}` references and `:test:` anchors.\n- **Errors.**\n  - Invalid regex, wrong types, an unexpected argument and an unparseable matched file each return an explanatory error in `fn[search_records_nothing_clamps_at_eof_and_reports_failures]`.\n  - `fn[parallel_search_orders_results_by_path_and_line]` also asserts an invalid pattern errors.\n  - No matches returns `[]`, in `fn[search_merges_context_windows_and_respects_ignore_rules]`.\n\nItems not separately tested:\n- \"In process without an `rg` executable\" has no test of its own. It is an implementation-architecture property with no behavioral branch, and a test would depend on process-wide state such as `PATH`. It is covered indirectly because every search test runs without any external `rg`.\n- The `instructions` text and the `finish_search` description are obligations of the cited requirements. They are not reassessed here, and the ripgrep description test checks that the \"Before submitting, call finish_search\" guidance is present.\n\nI found no plausible requirement-violating behavior that these tests would accept.",
+  "rationale": "The reviewed tests in `src/authoring/tools.rs` cover each obligation of `requirements.authoring.text_search` that is assessed here. Obligations that belong to cited requirements are delegated to those requirements and not reassessed.\n\n**Interface and descriptions**\n- `ripgrep_tool_is_advertised_with_its_interface_and_conventions` asserts the exact parameter schema. That covers `pattern`, `path`, `context` (minimum 0, default 2), and `referencing` with `selection`, `roles` and `scope` defaults.\n- The same test asserts the description phrases: `referencing` is explained, the regex and case rules are stated, and the finish_search guidance is present.\n\n**Regex and case sensitivity**\n- `exact_match_ranges_preserve_regex_anchors_and_skip_unmatched_or_binary_sources` tests regex anchors, `(?i)`, and `.*$`.\n- `search_merges_context_windows_and_respects_ignore_rules` shows `NEEDLE` finds nothing, and that `[` is an error.\n\n**Context handling**\n- `context_windows_include_exactly_the_requested_lines_on_each_side` checks default, 0, 1, 2 and 3 against exact expected lines.\n- `search_merges_context_windows_and_respects_ignore_rules` checks that a negative `context` is an error. `search_records_nothing_clamps_at_eof_and_reports_failures` checks that a fractional `context` is an error.\n- `separate_windows_in_one_node_are_divided_by_an_elision_line` checks that:\n  - non-adjacent windows are separated by an unmarked elision line;\n  - overlapping windows merge into 8 lines with no duplicates or elision;\n  - the default result equals the `context` 2 result.\n- `search_records_nothing_clamps_at_eof_and_reports_failures` and `search_excerpts_stop_at_byte_boundaries_including_attached_comments_and_attributes` check that windows stop at item boundaries, including attached comments and attributes. The second also checks clipping within a line shared by sibling items, and redaction.\n\n**Result shape and nodes**\n- `search_returns_innermost_nodes_and_comment_owners` checks one entry per innermost node and that a comment match belongs to the following item. It also checks the exact entry shape and that there is no hash.\n- `search_merges_context_windows_and_respects_ignore_rules` checks the absence of line numbers.\n- `search_records_nothing_clamps_at_eof_and_reports_failures` checks that no definitions are returned and nothing is recorded by discovery alone.\n- `search_merges_context_windows_and_respects_ignore_rules` also asserts that `search.inputs` is empty after a search.\n\n**Ordering**\n- `parallel_search_orders_results_by_path_and_line` writes 40 files in reverse order. It asserts that results are sorted, and that five repeated runs give identical matches with different `search_id`s.\n\n**Source visibility**\n- `source_tools_share_sdk_visibility_for_untracked_files` covers nested `.gitignore` exceptions, allow and disallow config, and searches scoped to an ignored file or directory returning empty `matches`.\n- `outside_symlinks_are_excluded_from_reads_search_and_discovery`, `unpermitted_requests_outside_the_project_are_recoverable_tool_errors` and `search_normalizes_parent_components_before_following_symlinks` cover paths outside the project and symlink handling.\n- `search_records_nothing_clamps_at_eof_and_reports_failures` covers hidden-but-not-ignored directories.\n\n**Redaction**\n- `model_inputs_reads_searches_and_citation_prompts_are_redacted` checks that search results, including a pattern that matches the credential itself, never contain the token.\n- `search_excerpts_stop_at_byte_boundaries_including_attached_comments_and_attributes` checks that a `[REDACTED:` marker appears in the excerpt.\n\n**Errors**\n- `search_records_nothing_clamps_at_eof_and_reports_failures` covers invalid argument types, an unknown argument, an invalid pattern, and a matched file with a syntax error. It checks the error message each time.\n- `operating_system_permission_failures_are_ordinary_read_failures` covers permission failures.\n- `search_merges_context_windows_and_respects_ignore_rules` and `parallel_search_orders_results_by_path_and_line` check that no matches returns `[]`.\n\n**`referencing`**\n- `ripgrep_referencing_searches_only_referencing_files_or_nodes` covers:\n  - default roles selecting whole files, the `fixme` role, and glob selection;\n  - role narrowing, `scope` file versus node with context stopping at node boundaries, and `path` limiting the search;\n  - a definition with no references returning an empty array;\n  - errors for an unmatched selection, an unknown role, an unknown scope, a malformed `roles`, an extra key, a missing `selection`, and a non-object `referencing`.\n- `text_search_selects_example_test_references_and_test_anchors` covers example `:test:` anchors and references.\n- `ripgrep_node_scope_searches_only_the_node_a_selector_anchor_names` covers `path#selector` anchors at node and file scope, and a stale selector naming no node.\n\n**Delegated or exempt**\n- The `instructions` field content is covered by the cited `search_accounting.instructions` and `first_result` requirements. Their tests, in `src/authoring/pages.rs` and `src/authoring/searches.rs`, assert it.\n- Recording evidence inputs for selected tags belongs to `finish_search.inputs`.\n- \"In process without an external `rg`\" is a design property with no conditional behavior, so it needs no test of its own.\n- \"Apply policy while walking rather than afterwards\" is observable only through the visibility outcomes, which are tested.\n\nI found no unaddressed obligation, and no counterexample that the tests would accept.",
   "references": "fd881c6884755eb2f38aa23339142747020c94daef863fa87a8973009a43702f",
   "inputs": [
     {
@@ -265,7 +265,7 @@
       ],
       "text": [
         ":::{req} source_tools",
-        "The harness MUST expose a `habeas` tool accepting exactly one of these request",
+        "For requirement, example, and site reviews and their verifications, the harness MUST expose a `habeas` tool accepting exactly one of these request",
         "forms. Each form MUST correspond to one existing evidence-input kind:",
         "",
         "| Request fields | Evidence input returned | Definition |",
@@ -412,6 +412,16 @@
       "file": "tests/authoring_cli.rs",
       "item": "fn[explicit_ignored_reads_return_an_error_and_the_assessment_continues]",
       "hash": "ee325fca425850948ea341be58192271b22d16f8034e2ede96059fa9bc5a154b"
+    },
+    {
+      "file": "src/authoring/pages.rs",
+      "item": "mod[tests]/fn[search_pages_are_accounted_only_when_delivered_and_replay_stays_closed]",
+      "hash": "fced27a0d0336097ee5f91dd80435b4ae4358a5128dda301ed3cc72ee8923c77"
+    },
+    {
+      "file": "src/authoring/searches.rs",
+      "item": "mod[tests]/fn[delivered_searches_including_empty_results_need_explicit_completion]",
+      "hash": "ef8818cf96c3d012e634ba0ad4fc4b272b76f4392e90a2288630f39e822a1325"
     }
   ],
   "format_version": 1,
@@ -568,7 +578,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "5978548b0b185885054aa0b4d20a071c0791fd9d9e5bdc0293f6ae0989722dce"
+          "value": "eadfacc183a48031ccd56f07e5d15f406a4f232c9b1095465d5f0af784659c7c"
         }
       ]
     },
@@ -584,8 +594,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "a492b2e4f9fd26254cabc9c0d42231c6d32f2c7fbcb9e262f4c3bd9d1747dcd7"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "f3452d5f588d29dee28793990b52e75075f5ec683fccf42c8161a83186f61768"
         }
       ]
     },
@@ -601,8 +611,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "f898debb1bf88f8a6af6dc38e78de6f34e47658239ca4b76aa407ccf7521a05c"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "8076f855cdb64d410db5de78fd3cc3fb7d4cb795f60940a9e587aca302034b79"
         }
       ]
     },
@@ -618,8 +628,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "797526b91d98bd0aaad0509fe450d5a4a1adc1896063edd49c995c04fd86bc4a"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "2070f063e1823f7f8637127f1eee257a213cbf48d3305ba74285387f3b5ec222"
         }
       ]
     },
@@ -635,8 +645,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "ba669b389796f05e479b9da9057bfac9cfd1899b8013c5aa869518f05283a308"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "0caa909ab005c5d715bd7e511dde6af360ce7df9c9285ed55551bf9307bbd690"
         }
       ]
     },
@@ -652,8 +662,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "765ea72ff36e3edb0d5c14d688880702246c8589290cd11c83318aacdac6ddad"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "29ed642c5fc351d3132c00e2c2b0d69a0bb94d150de1c5464f02b87de63c0a67"
         }
       ]
     },
@@ -669,8 +679,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "288f0683ee31e62c0feeea69fc8cca90d8557371f6a596041de346031db87626"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b93994dd4cec47a3fe5fd047115c87981354ba8e486fd694171eec0158fab6cb"
         }
       ]
     },
@@ -686,8 +696,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "70efb7e6cbe68a14d7245ce81b8e6dae0679bbd34a086a96d1f05b02c96f6706"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "667fdf54aaa85d27ec44a0fe68dd81e847b67e3234173cab1b5525fba26c2063"
         }
       ]
     },
@@ -703,8 +713,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "ef0f2ec250e5bc5c1216a60346cbbc8e5a5e0576d2404c34b291e3738c4d75a1"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "531ac9ae29b6c5f013326caa36329217abe22eeb31e71e67842a5bcfd231deae"
         }
       ]
     },
@@ -720,8 +730,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "864923672fb9e1c2471f799b8cdc2fde4248405038afc2d6e1223bbb10108fbd"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "59cc8980f086db91063722854f8b19bdcb058db675be275c73dc8550109a3e42"
         }
       ]
     },
@@ -737,8 +747,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "32a61bac19b1a31621499a223b281f1d6b28ab9b1ce0fd34c25b3b5629f30090"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "c48848e09f9c5533574ec4a7eab17c2aeae6fcbb48b663c12b5cbb53b06969d2"
         }
       ]
     },
@@ -754,8 +764,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "52beb50be973580f59aee6ec5d5acdceaa1d113ff88dc7cc0b82047e09135859"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "9bd671c4cca80ddbb4c696a8e889aea5862111be5bf0caeb7096a08e4dd123e2"
         }
       ]
     },
@@ -771,8 +781,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "374c1176ef3f13d7e4eae8e3a3bfcb3091f24c66923f8e43af0cc71132ed6670"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "68feb971fd4dd7857db9633adac71f0362ee81cbab0cf114a17de4411962bfdd"
         }
       ]
     },
@@ -788,8 +798,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "a518dc8804434008440796595efbb3a95596a317a5bc439892dc77be4a1a8dec"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "5ef6fe641747a66fe8d93753bde27869e88c28409f019d2e4cbe113417940a5a"
         }
       ]
     },
@@ -805,8 +815,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "0987c2d2aa49f4cf602bfc486ba36c2204d135dd4b548ec3a5284e4ecf7e2237"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "c387082334cbe34d997c2c325270f62f2d88899f1303113f349c405da14e6a41"
         }
       ]
     },
@@ -822,8 +832,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "5c254a606892254f0b3ac0c8db471af9c04f13de7a6a8fa1d537d06c6afdca52"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "800cf53dadb439f8eb7dee2e4a29aaf664a7f348394bd5c049f9121bc2df56ed"
         }
       ]
     },
@@ -839,8 +849,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "b8df3059108d055c35135fb061063c152ad9f61ccd52a85aea7785ec8a4e566b"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "d518079d7202bf87c0ded4b140ad4deed13e1fbd78d21f825d6694138d0f7277"
         }
       ]
     },
@@ -856,8 +866,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "030053dc152054ef0f7c8a23e7d7f0e5e767d3ccd3efa56f14b295bfb5938ebc"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "41f9814107dfbb850ef4bf7c6be5e22bfa5189b382f6e68c374ab1b6a0865861"
         }
       ]
     },
@@ -873,8 +883,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "0f34b5c88b472c8b2d3cb12c03b55562a0adb45ccc8884ba1288f733114917c3"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "9d9eb1126d0e768c4d216bde41614dbaac8538e560f36942e708e8fdeb611ed8"
         }
       ]
     },
@@ -890,8 +900,42 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "f4f675e0efeab596a175b87c4719ec8d02998d8f6813535a3f8b53f0464c5a90"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "ee325fca425850948ea341be58192271b22d16f8034e2ede96059fa9bc5a154b"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/pages.rs"
+            },
+            "selector": "mod[tests]/fn[search_pages_are_accounted_only_when_delivered_and_replay_stays_closed]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "fced27a0d0336097ee5f91dd80435b4ae4358a5128dda301ed3cc72ee8923c77"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/searches.rs"
+            },
+            "selector": "mod[tests]/fn[delivered_searches_including_empty_results_need_explicit_completion]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "ef8818cf96c3d012e634ba0ad4fc4b272b76f4392e90a2288630f39e822a1325"
         }
       ]
     }

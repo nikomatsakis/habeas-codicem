@@ -905,6 +905,9 @@ mod tests {
         assert_eq!(reads["o/r#2"], IssueRead::Missing);
         assert!(matches!(reads["o/r#3"], IssueRead::Failed(_)));
         assert_eq!(github.count(), 3);
+        for request in github.requests.lock().unwrap().iter() {
+            assert!(!request.to_ascii_lowercase().contains("\nauthorization:"));
+        }
         // Definitive results are reused; the failure is retried.
         let again = issues.read_all(["o/r#1".to_owned(), "o/r#2".to_owned(), "o/r#3".to_owned()]);
         assert_eq!(again["o/r#1"], reads["o/r#1"]);

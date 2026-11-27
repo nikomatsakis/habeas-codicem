@@ -49,8 +49,13 @@ impl<N: Clone, L: Clone> Pages<N, L> {
             .into_iter()
             .map(|part| {
                 let mut page = metadata.clone();
+                let inputs = match field {
+                    "text" => 1,
+                    "matches" => part.as_array().map_or(0, Vec::len),
+                    _ => 0,
+                };
                 page[field] = part;
-                page
+                (page, inputs)
             })
             .collect();
         self.retain(pages, dependencies)
@@ -71,7 +76,7 @@ impl<N: Clone, L: Clone> Pages<N, L> {
                 let mut page = metadata.clone();
                 page["text"] = text.next().unwrap_or_else(|| json!(""));
                 page["children"] = children.next().unwrap_or_else(|| json!([]));
-                page
+                (page, 1)
             })
             .collect();
         self.retain(pages, vec![dependency])
@@ -79,17 +84,18 @@ impl<N: Clone, L: Clone> Pages<N, L> {
 
     fn retain(
         &mut self,
-        pages: Vec<Value>,
+        pages: Vec<(Value, usize)>,
         dependencies: Vec<Dependency<N, L>>,
     ) -> ToolDelivery<N, L> {
         // Build backwards so replaying a page always yields the same successor.
         let mut next = None;
-        for (index, mut page) in pages.into_iter().enumerate().rev() {
+        for (index, (mut page, input_count)) in pages.into_iter().enumerate().rev() {
             if let Some(uuid) = next {
                 page["next"] = Value::String(uuid);
             }
             let delivery = ToolDelivery {
                 text: page.to_string(),
+                input_count,
                 dependencies: dependencies.clone(),
             };
             if index == 0 {
@@ -121,6 +127,7 @@ impl<N: Clone, L: Clone> Pages<N, L> {
             .enumerate()
             .rev()
         {
+            let input_count = chunk.len();
             let id = Uuid::new_v4();
             let mut observations = BTreeMap::new();
             let mut matches = Vec::new();
@@ -147,6 +154,7 @@ impl<N: Clone, L: Clone> Pages<N, L> {
             );
             let delivery = ToolDelivery {
                 text: page.to_string(),
+                input_count,
                 dependencies: vec![],
             };
             if index == 0 {
@@ -196,6 +204,7 @@ impl<N: Clone, L: Clone> Pages<N, L> {
         page.finished = true;
         Ok(ToolDelivery {
             text: json!({"search_id":search_id,"finished":true}).to_string(),
+            input_count: 0,
             dependencies,
         })
     }

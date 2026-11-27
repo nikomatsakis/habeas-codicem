@@ -167,6 +167,22 @@ model = "tiny:latest"
     assert_eq!(UserConfig::parse(&serialized, path).unwrap(), config);
 }
 
+// {test}`requirements.configuration.serialization`
+#[test]
+fn explicit_connection_settings_survive_serialization() {
+    let path = Path::new("settings.toml");
+    for backend in ["openai", "ollama"] {
+        let source = format!(
+            "version = 1\n[authoring.configs.test]\nbackend = '{backend}'\nmodel = 'fixture'\nendpoint = 'https://fixture.invalid'\napi_key_env = 'FIXTURE_KEY'\n"
+        );
+        let config = UserConfig::parse(&source, path).unwrap();
+        let serialized = config.to_toml().unwrap();
+        assert!(serialized.contains("https://fixture.invalid"));
+        assert!(serialized.contains("FIXTURE_KEY"));
+        assert_eq!(UserConfig::parse(&serialized, path).unwrap(), config);
+    }
+}
+
 // {test}`requirements.authoring.concurrency`
 // {test}`requirements.authoring.configuration_structure`
 // {test}`requirements.authoring.configuration_serialization`

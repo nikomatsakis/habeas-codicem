@@ -1,7 +1,7 @@
 {
-  "requirement": "HC MUST use one {term}`requirements.sdk.graph.running-criteria.validator` per assessment. Its usage record MUST report that validator’s attempt and token totals under {cite}`requirements.sdk.graph.running-criteria.Validator.usage` and its failure and retry counts under {cite}`requirements.authoring.usage_requests.failures`. The record MUST distinguish partial or unavailable token measurements from complete totals and preserve the available cache and reasoning breakdowns. The assessment MUST also report elapsed time and tool-call counts by tool.",
+  "requirement": "HC MUST use one {term}`requirements.sdk.graph.running-criteria.validator` per assessment. Its usage record MUST report that validator’s attempt and token totals under {cite}`requirements.sdk.graph.running-criteria.Validator.usage` and its failure and retry counts under {cite}`requirements.authoring.usage_requests.failures`. The record MUST distinguish partial or unavailable token measurements from complete totals and preserve the available cache and reasoning breakdowns. The assessment MUST also report elapsed time.",
   "determination": true,
-  "rationale": "**Obligations derived from `requirements.authoring.usage_requests`**\n1. One validator is used per assessment.\n2. The usage record reports the validator's attempt and token totals (`Validator.usage`).\n3. The record reports the validator's failure and retry counts (`usage_requests.failures`).\n4. The record distinguishes partial or unavailable token measurements from complete totals.\n5. The record preserves the available cache and reasoning breakdowns.\n6. The assessment reports elapsed time.\n7. The assessment reports tool-call counts by tool.\n\n**Coverage**\n- **Validator totals, failures and retries.**\n  - `src/authoring/mod.rs#mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]` runs five 429 failures followed by one success.\n  - It asserts `provider_usage` for `attempts` (6), `retries` (5) and `failed_attempts` (5). The failures were recovered by a retry, as the failures clause requires.\n  - It asserts every token category as `{reported, missing_attempts}`: input 100/5, output 15/5, cached 20/5, cache_creation 0/6 and reasoning 0/5.\n  - That covers the validator totals, partial and unavailable measurements, and the cache and reasoning breakdowns.\n  - `src/authoring/sdk.rs#impl[AssessmentUsage<'_,%20'_>/Drop]/fn[drop]` copies `validator.usage()` into `provider_usage`, and this test confirms that path.\n  - `unanswered_requests_are_abandoned_and_retried` and `success_resets_backoff_and_retries_keep_history_without_repeating_tools` cover request counts and outcomes over abandoned and retried requests. `failed_submission_can_be_confirmed_on_a_later_attempt` covers the failure record and its `retried` flag.\n- **Complete versus partial or unavailable tokens.**\n  - `src/authoring/usage.rs#mod[tests]/fn[token_totals_keep_subsets_separate_and_missing_counters_unknown]` asserts that `tokens.complete` is false while a request is in flight and true once all requests are measured. It asserts false again after an unmeasured failed request.\n  - It also checks that the cache, cache-creation and reasoning sums stay separate and that missing counters are null.\n  - `partial_failure_retains_available_totals_and_optional_measurements` checks that an optional counter measured in only some requests stays complete=false, and that absent counters stay null.\n  - `cancelled_request_persists_elapsed_time_and_incomplete_totals` checks incomplete totals on cancellation.\n- **Cache and reasoning breakdowns end to end.**\n  - `tests/authoring_cli.rs#fn[claude_requests_carry_cache_checkpoints_and_record_cache_usage]` asserts per-request and total cached and cache-creation tokens.\n  - `tests/authoring_cli.rs#fn[openai_responses_replays_tool_calls_and_records_usage]` asserts the cached (6) and reasoning (4) totals.\n  - The Ollama and Bedrock CLI tests assert the input and output totals and `complete`.\n- **Elapsed time.** `completed_requests_and_the_run_record_elapsed_time` asserts the exact per-request elapsed value and that the run elapsed time covers the elapsed time of the request. `cancelled_request_persists_elapsed_time_and_incomplete_totals` checks that an elapsed value is kept for a cancelled request.\n- **Tool-call counts by tool.** `tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text` asserts per-tool `tool_calls`, `tool_failures` and `tool_skipped`. The CLI tests (`ollama_cli_…`, `explicit_ignored_reads_…`, `bedrock_cli_…`) assert per-tool counts in real runs.\n- **One validator per assessment.**\n  - No test asserts it directly.\n  - It is structural: `src/authoring/sdk.rs#fn[run]` constructs a single `Validator::new` and wraps it in `AssessmentUsage`.\n  - A violation, such as a validator recreated on retry, would drop earlier counts. The throttled test's exact totals (6 attempts and 5 retries) would catch that.\n\n**Cited requirement and context**\n- The `Validator.usage` and `usage_requests.failures` obligations are applied in the subject's case by the throttled test, as above.\n- I did not reassess the cited requirements' own tests. Terminal-failure retention belongs to the `usage_requests.failures` review.\n\nI found no established gap, and the acknowledgments list is empty.",
+  "rationale": "I judge the tests adequate for `requirements.authoring.usage_requests`.\n\n**One validator per assessment, and its usage in the record.**\n- `src/authoring/sdk.rs#fn[run]` builds one `Validator` inside `AssessmentUsage`. The `drop` impl copies `validator.usage()` into the log's `provider_usage`. I read both to see how the validator's usage reaches the record.\n- `throttled_requests_retry_unchanged_and_record_every_attempt` in `src/authoring/mod.rs` runs a full `assess` call with 5 throttled failures and a final success. It asserts these `provider_usage` fields:\n  - `attempts == 6`, `retries == 5` and `failed_attempts == 5`.\n  - Per-category token totals as `{reported, missing_attempts}` for `input_tokens`, `output_tokens`, `cached_input_tokens`, `cache_creation_input_tokens` and `reasoning_tokens`.\n  - `prepared_inputs` and `delivered_inputs`.\n- The structural \"one validator\" wording has no dedicated test. A second validator would not give these totals, so I treat the totals as adequate evidence.\n\n**Failure and retry counts.**\n- The same throttled test checks the per-request failure records (`http_status`, `error_code`, `retried: true`) and that the final request has no `failure`.\n- `failed_submission_can_be_confirmed_on_a_later_attempt` in `src/authoring/usage.rs` checks `retried` flipping from false to true.\n- The requirement cites `usage_requests.failures` for these counts. That requirement has its own tests, and I did not reassess them here.\n\n**Partial or unavailable token measurements versus complete totals, and cache and reasoning breakdowns.**\n- `token_totals_keep_subsets_separate_and_missing_counters_unknown` covers these cases:\n  - An in-flight request gives `complete == false`.\n  - Two measured requests give `complete == true` with summed input, output, cached, cache-creation and reasoning counts.\n  - A failed request with no usage makes `complete` false while the earlier totals are kept.\n- `partial_failure_retains_available_totals_and_optional_measurements` checks that optional counters stay null when never reported, and that a reported `cached_input` of 0 is kept.\n- The throttled test checks the missing-attempt counts for partial totals.\n- `claude_requests_carry_cache_checkpoints_and_record_cache_usage` asserts per-request and total cache read and write tokens.\n- `openai_responses_replays_tool_calls_and_records_usage` asserts cached and reasoning totals.\n- The Ollama and Bedrock CLI tests assert input and output totals and `complete`.\n- `cancelled_request_persists_elapsed_time_and_incomplete_totals` covers incomplete totals after cancellation.\n\n**Elapsed time.**\n- `completed_requests_and_the_run_record_elapsed_time` asserts per-request `elapsed_ms == 20` and run `elapsed_ms >= 50`. It also asserts that the run elapsed time is at least the request elapsed time and that the request value is unchanged after `finish`.\n- `cancelled_request_persists_elapsed_time_and_incomplete_totals` asserts elapsed time on a cancelled request.\n- Elapsed time is not asserted on a full CLI run. The behaviour is unconditional and is covered at the log level, so I do not count this as a gap.\n\n**Terminal failure.** Totals survive a terminal failure in `token_totals_keep_subsets_separate_and_missing_counters_unknown`, which ends with `finish(\"failed\")` and still reports the earlier totals. The failure-count side is delegated to `usage_requests.failures`.\n\nI found no unacknowledged gaps, and there are no `{fixme}` acknowledgments to account for.",
   "references": "690ccd5d774a163bfa61c7627bb1240393187d61c644988217fdf8ac050a5d06",
   "inputs": [
     {
@@ -11,7 +11,7 @@
       ],
       "text": [
         ":::{req} usage_requests",
-        "HC MUST use one {term}`requirements.sdk.graph.running-criteria.validator` per assessment. Its usage record MUST report that validator’s attempt and token totals under {cite}`requirements.sdk.graph.running-criteria.Validator.usage` and its failure and retry counts under {cite}`requirements.authoring.usage_requests.failures`. The record MUST distinguish partial or unavailable token measurements from complete totals and preserve the available cache and reasoning breakdowns. The assessment MUST also report elapsed time and tool-call counts by tool.",
+        "HC MUST use one {term}`requirements.sdk.graph.running-criteria.validator` per assessment. Its usage record MUST report that validator’s attempt and token totals under {cite}`requirements.sdk.graph.running-criteria.Validator.usage` and its failure and retry counts under {cite}`requirements.authoring.usage_requests.failures`. The record MUST distinguish partial or unavailable token measurements from complete totals and preserve the available cache and reasoning breakdowns. The assessment MUST also report elapsed time.",
         ":::"
       ]
     },
@@ -54,7 +54,7 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]",
-      "hash": "fc067cfdb4e0024051fa07ab52d182903c5f055bb761bb431b2ba1a7e9f0b9eb"
+      "hash": "12b07397b4005a8954a87c7f61f47d3b8514528fc8bec502ce2956345a55b1c2"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -64,7 +64,7 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "mod[tests]/fn[success_resets_backoff_and_retries_keep_history_without_repeating_tools]",
-      "hash": "38575731249476c84c37337b2befc86fe84ffda02823bc3769b50c08e7776c30"
+      "hash": "387b5e4cf366002b5ce28c06d280abe1c72e1c70fb84925323c4d105d7d474cb"
     },
     {
       "file": "src/authoring/usage.rs",
@@ -89,17 +89,17 @@
     {
       "file": "src/authoring/usage.rs",
       "item": "mod[tests]/fn[tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text]",
-      "hash": "1fe174e669a960b594539f9439ae08128fde9ad55f75b4b2b02fcb4cc7052a29"
+      "hash": "b9e832a2f3d8de3a90eafdd26a36c5c4dc75975286aa387a2141c40d72383852"
     },
     {
       "file": "src/authoring/usage.rs",
       "item": "mod[tests]/fn[failed_submission_can_be_confirmed_on_a_later_attempt]",
-      "hash": "e2bc10dd2de55edbf962870c9ccab8f0f579028360aff091eaaac2af8955acf6"
+      "hash": "df6d48c78872ac53dc2c64121d9027381003fdc31937196bb11ecfb69bb9f3ff"
     },
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]",
-      "hash": "431b1b1c6f0c314531419dd15112e2dcf2e9ce29d8132e062160032c0a3059d5"
+      "hash": "54f4cef9e806649948c3d0e8878c431a510814eaab641e418e8a2aafa2dfe245"
     },
     {
       "file": "tests/authoring_cli.rs",
@@ -109,7 +109,7 @@
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]",
-      "hash": "2e2a791c290c4f45eb18114ffc8fa09f28adb412175ccb6f9f778c957bf969ca"
+      "hash": "83f65b59b82cb5fc3271cb57ac2ea0d207689e1585463b931b74940baefa2144"
     },
     {
       "file": "tests/authoring_cli.rs",
@@ -133,13 +133,8 @@
     },
     {
       "file": "src/authoring/sdk.rs",
-      "item": "struct[AssessmentUsage]",
-      "hash": "3998e8e008872a235ecc35726fae13c93b5e6250d96d7bdaf547bc73e4023344"
-    },
-    {
-      "file": "src/authoring/sdk.rs",
       "item": "impl[AssessmentUsage<'_,%20'_>/Drop]/fn[drop]",
-      "hash": "557578456f93aed45f1bdb8431c197582a95a681edb4e75bba5eae46f73cf556"
+      "hash": "867aa652615c7682432bb0adcb4f3b36db09f7924be9082af2231c10fe6cc4bb"
     },
     {
       "file": "src/authoring/sdk.rs",
@@ -147,9 +142,24 @@
       "hash": "772309af88cd17aa84a53f681725ef1fa0a041fa1f20db59a4b950a7ad5dbbf2"
     },
     {
+      "file": "src/authoring/sdk.rs",
+      "item": "struct[AssessmentUsage]",
+      "hash": "3998e8e008872a235ecc35726fae13c93b5e6250d96d7bdaf547bc73e4023344"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[finish]",
+      "hash": "3e6cbcdde4e58eb9825dadcd3d6e6a186a9fa3df4b1e88d542691db4663f70f0"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[converse_observed]",
+      "hash": "c82469aade51b874f9f86cfbe0d922715cb9acfa13db39ebd2f50bc8420470de"
+    },
+    {
       "file": "src/authoring/mod.rs",
       "item": "mod[tests]/fn[permanent_provider_failure_returns_without_waiting_or_retrying]",
-      "hash": "784268b1023c4407878033008298f02d5c1f5780b9ca80e6c6327da37bae1fe5"
+      "hash": "c6d3d6fd3bf84d8e21b1ee6a5cb12f6bca1fbce2ddf9e3fa30aaec1c0ca55b74"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -195,7 +205,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9b7f21227d6b8cf8704ecdae31a8e58bcdec3843e20a549b817adb97c9ac8e0a"
+          "value": "34c4ff8b9a0b685ebe84fa9977ea05229707a9232d6e4610f9dc6dd54229f10c"
         }
       ]
     },
@@ -233,8 +243,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "40e28997102492c81578a789614660dbcf3615f98f98883c0f0a00ae0d53c20c"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "843d31090f51e321289a9fc32bd4f4a4734f693ee195c896035374308fb2e66f"
         }
       ]
     },
@@ -250,8 +260,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "111ce681b9a80a1328c5ec665737d456942a3f48e5a3c8dc237640d521c6318d"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "12b07397b4005a8954a87c7f61f47d3b8514528fc8bec502ce2956345a55b1c2"
         }
       ]
     },
@@ -267,8 +277,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "05fec60cfa108b79f9cc8a1b30e77e8868ef1b998bfcd83982f7b91d8f72da69"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "e0a717e1b66fe7bbd67e81884047901ed911f047dd1858a8f79df32b049eb9f6"
         }
       ]
     },
@@ -284,8 +294,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "c61e66c4f6cb9c593b44f2fe8d492ef4dbcd6e96826c0fb78b4d08728b0f40a2"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "387b5e4cf366002b5ce28c06d280abe1c72e1c70fb84925323c4d105d7d474cb"
         }
       ]
     },
@@ -301,8 +311,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "33af1dd651f8ed5428e918ae99e90d610b702e4a4471468a99f111ce4d0ba863"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "5fca4db806b5b1d67ff048ba06c225bc65f2504782e9d94dbbc970385c5a6060"
         }
       ]
     },
@@ -318,8 +328,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "c87cef650936eb7d809a70770c2f08bbce89745e66b3f59edf36e1d402b969a7"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "80752fd0c6551caa5ebda1ef9eef0e678fd25d72e7b3961381313faccc35437c"
         }
       ]
     },
@@ -335,8 +345,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "13f4a85c402868234d1fbc155f921edd50ccaf0e8d2d1a4d535282c94aec002b"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "543d25a3569825bed5a345fc629e4bd2c0dc860e844bd61dac1eff36309fb8cb"
         }
       ]
     },
@@ -352,8 +362,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "fed6d7905bc8751e9481afdd4955d3b0d6af2c4ead3e9f59ded633f1c0e5fd74"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "f4762c3ae110838e776281deca0775d9b2b4bc557a9eebdd88870318d4ad8ab3"
         }
       ]
     },
@@ -369,8 +379,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "ee64b8fb07fcdb919719406fee5958be2684e32823554e4136933a6a9eaec0c0"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b9e832a2f3d8de3a90eafdd26a36c5c4dc75975286aa387a2141c40d72383852"
         }
       ]
     },
@@ -386,8 +396,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "98860f8701681af1853cdf2066c9bcb62a8d22af4acc7792d30b6e5fc4ebb33a"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "df6d48c78872ac53dc2c64121d9027381003fdc31937196bb11ecfb69bb9f3ff"
         }
       ]
     },
@@ -403,8 +413,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "11c82d7b9346bfb24542e10b6851069926343cfea0dc76f3a7ec5baf71a854a9"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "54f4cef9e806649948c3d0e8878c431a510814eaab641e418e8a2aafa2dfe245"
         }
       ]
     },
@@ -420,8 +430,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "f4f675e0efeab596a175b87c4719ec8d02998d8f6813535a3f8b53f0464c5a90"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "ee325fca425850948ea341be58192271b22d16f8034e2ede96059fa9bc5a154b"
         }
       ]
     },
@@ -437,8 +447,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "2820318d5efef52b310da05a9786ac2cfe5fe8e36b1abbefd2dce4923c5d31db"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "83f65b59b82cb5fc3271cb57ac2ea0d207689e1585463b931b74940baefa2144"
         }
       ]
     },
@@ -454,8 +464,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "a85e2a3af2f50fd3e86d13a050174be041799305458a9fcf780bac45029279a4"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "fcc040320986b468979b19528211cffdd8c894ce64fe1d5fc122210a0400aa57"
         }
       ]
     },
@@ -471,8 +481,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "e50dd67c6c198e8d09dcd3d098598cd3eb3bf43e0f016b5f45d2d560e6a7e980"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "5cb2d7a02d1d58973389d766cc6c9e126b7f18b5965253c2d8f532b09bd268c5"
         }
       ]
     },
@@ -495,29 +505,12 @@
               "scheme": "repo",
               "location": "src/authoring/sdk.rs"
             },
-            "selector": "struct[AssessmentUsage]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "4c9cc3c3dcc425f85bfe49b97e77df754f0130c17e9dc8318d8fd9c5e2fab252"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/sdk.rs"
-            },
             "selector": "impl[AssessmentUsage<'_,%20'_>/Drop]/fn[drop]"
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "620b7afef5982d4e7534cd98cfa977c5e95fa3b88916d935bb27b11258cca4b2"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "867aa652615c7682432bb0adcb4f3b36db09f7924be9082af2231c10fe6cc4bb"
         }
       ]
     },
@@ -533,8 +526,59 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "4a112ad75622db6e56100c3315dc4298523b7660e096945cd15dec1784a0e1c1"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "26160a58aef24ac2a26c2ea228410ded50ef79efec26107777fcb206355aa744"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/sdk.rs"
+            },
+            "selector": "struct[AssessmentUsage]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "3998e8e008872a235ecc35726fae13c93b5e6250d96d7bdaf547bc73e4023344"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/usage.rs"
+            },
+            "selector": "impl[UsageLog]/fn[finish]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "3e6cbcdde4e58eb9825dadcd3d6e6a186a9fa3df4b1e88d542691db4663f70f0"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/mod.rs"
+            },
+            "selector": "fn[converse_observed]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "1900d9d802df9c07d1396235cf17ec67f3c09f07df939fbddadfca749d0f237d"
         }
       ]
     },
@@ -550,8 +594,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "78b06a579d07df2b2526804375e47fe6e9e6f89e36b5649a5a366fe8f947c759"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "c6d3d6fd3bf84d8e21b1ee6a5cb12f6bca1fbce2ddf9e3fa30aaec1c0ca55b74"
         }
       ]
     },
@@ -567,8 +611,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "810ae1c997d072716488479e764100ae126ab3b4d624dcba2bba40709aebc4c2"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "e06b186cd06b2be4f6d12618b5f29fe686057d9e843d0c54ebfc70e434760932"
         }
       ]
     },
@@ -584,8 +628,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "b6eacfeb4d4c4bbc22f264867d856df8ac3694ab42d455e12cfa870cac0cff79"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "21da7eaec693a2603c92cb16aba9df7e7d7c820baafefae7611f6fc7fcf20124"
         }
       ]
     }

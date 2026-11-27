@@ -335,14 +335,17 @@ pub trait Criterion<D: Domain>: Send + Sized {
     ) -> impl Future<Output = Result<Self::Ok, ValidationError<D::Error>>> + Send;
 }
 
-/// Provider attempts and token measurements accumulated during validation.
+/// Provider, input, and tool usage accumulated during validation.
 // {impl}`requirements.sdk.graph.running-criteria.UsageStats`
-#[derive(Clone, Copy, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 #[non_exhaustive]
 pub struct UsageStats {
     pub attempts: u64,
     pub retries: u64,
     pub failed_attempts: u64,
+    pub prepared_inputs: u64,
+    pub delivered_inputs: u64,
+    pub tools: std::collections::BTreeMap<String, ToolUsage>,
     pub input_tokens: TokenCount,
     pub output_tokens: TokenCount,
     pub cached_input_tokens: TokenCount,
@@ -358,6 +361,9 @@ impl UsageStats {
     ) -> Self {
         Self {
             attempts: 1,
+            prepared_inputs: 0,
+            delivered_inputs: 0,
+            tools: Default::default(),
             retries: u64::from(retry),
             failed_attempts: u64::from(failed),
             input_tokens: TokenCount::measurement(usage.and_then(|u| u.input_tokens)),
@@ -371,8 +377,15 @@ impl UsageStats {
     }
 
     pub(crate) fn accumulate(&mut self, other: &Self) {
+        for (name, delta) in &other.tools {
+            let tool = self.tools.entry(name.clone()).or_default();
+            tool.calls += delta.calls;
+            tool.result_bytes += delta.result_bytes;
+        }
         self.attempts += other.attempts;
         self.retries += other.retries;
+        self.prepared_inputs += other.prepared_inputs;
+        self.delivered_inputs += other.delivered_inputs;
         self.failed_attempts += other.failed_attempts;
         self.input_tokens.accumulate(other.input_tokens);
         self.output_tokens.accumulate(other.output_tokens);
@@ -382,6 +395,15 @@ impl UsageStats {
             .accumulate(other.cache_creation_input_tokens);
         self.reasoning_tokens.accumulate(other.reasoning_tokens);
     }
+}
+
+/// Invocations and UTF-8 result bytes accumulated for one tool.
+// {impl}`requirements.sdk.graph.running-criteria.ToolUsage`
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+#[non_exhaustive]
+pub struct ToolUsage {
+    pub calls: u64,
+    pub result_bytes: u64,
 }
 
 /// Measured tokens and the number of attempts without a measurement for this category.

@@ -156,12 +156,19 @@ impl<'d, D: Domain> Validator<'d, D> {
 
 `UsageStats` exposes the following totals. `attempts` counts each request sent to the provider once. `retries` counts attempts that repeat a failed request. `failed_attempts` counts attempts that returned a provider error, including those followed by a successful retry.
 
+`prepared_inputs` counts inputs prepared for agent messages. Each node inserted in the opening message counts once. Each requested `read_node` page and each `outgoing_edges` result counts once, including repeated reads. A requested search page counts one input per excerpt on that page. Source listings, search finalization, and opaque custom-tool results contribute zero.
+
+`delivered_inputs` counts those inputs when the provider first responds successfully to the request carrying them. Each input counts once across retries and subsequent turns that replay the same conversation history. For example, if the opening message supplies three nodes and the provider fails permanently before replying, usage records three prepared inputs and zero delivered inputs.
+
 ```rust,ignore
 #[non_exhaustive]
 pub struct UsageStats {
     pub attempts: u64,
     pub retries: u64,
     pub failed_attempts: u64,
+    pub prepared_inputs: u64,
+    pub delivered_inputs: u64,
+    pub tools: BTreeMap<String, ToolUsage>,
     pub input_tokens: TokenCount,
     pub output_tokens: TokenCount,
     pub cached_input_tokens: TokenCount,
@@ -174,11 +181,59 @@ Trait implementations
 
 ```rust,ignore
 impl Clone for UsageStats;
-impl Copy for UsageStats;
 impl Debug for UsageStats;
 impl Default for UsageStats;
 impl Serialize for UsageStats;
 ```
+:::
+
+:::{req} ToolUsage
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+`ToolUsage` holds the cumulative usage for one tool.
+
+```rust,ignore
+#[non_exhaustive]
+pub struct ToolUsage {
+    pub calls: u64,
+    pub result_bytes: u64,
+}
+```
+
+Trait implementations
+
+```rust,ignore
+impl Clone for ToolUsage;
+impl Copy for ToolUsage;
+impl Debug for ToolUsage;
+impl Default for ToolUsage;
+impl Serialize for ToolUsage;
+```
+:::
+
+:::{req} ToolUsage.by_name
+`UsageStats::tools` starts empty and holds one entry per invoked tool, keyed by name. This includes built-in and registered tools.
+:::
+
+:::{req} ToolUsage.calls
+Each invocation increments the tool’s `calls` by one, including an invocation that returns an error. Skipped calls leave usage unchanged.
+:::
+
+:::{req} ToolUsage.result_bytes
+Each invocation adds the UTF-8 byte length of its result text to the tool’s `result_bytes`, measured before the provider encodes the request. Error messages count by the same rule. An invocation that produces no result text adds zero bytes.
+:::
+
+:::{req} ToolUsage.replay
+Sending a previously prepared result again during a provider retry or a later conversation turn leaves the tool’s `calls` and `result_bytes` unchanged.
+:::
+
+:::{example} usage_by_tool
+{cite}`requirements.sdk.graph.running-criteria.ToolUsage.by_name`
+{cite}`requirements.sdk.graph.running-criteria.ToolUsage.calls`
+{cite}`requirements.sdk.graph.running-criteria.ToolUsage.result_bytes`
+{cite}`requirements.sdk.graph.running-criteria.ToolUsage.replay`
+
+An agent invokes `read_node` twice, receiving 640 bytes of result text each time. A registered `lookup` tool returns the error text `absent`, and the provider request carrying that result is retried. The validator reports two calls and 1,280 result bytes for `read_node`, and one call and six result bytes for `lookup`.
 :::
 
 :::{req} TokenCount

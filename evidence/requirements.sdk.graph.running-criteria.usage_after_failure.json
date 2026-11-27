@@ -1,7 +1,7 @@
 {
   "example": "{cite}`requirements.sdk.graph.running-criteria.Validator.usage`\n{cite}`requirements.sdk.graph.running-criteria.UsageStats`\n{cite}`requirements.sdk.graph.running-criteria.TokenCount`\n\nOne provider request fails with throttling and supplies no token counts. Its retry succeeds and reports 120 input tokens. A second `verify` on the same validator fails after one provider attempt, also without token counts. After the second `verify` returns `Err`, `validator.usage()` shows three attempts, one retry, and two failed attempts. `input_tokens.reported` is 120 and `input_tokens.missing_attempts` is two. A fresh validator borrowing the same domain starts with zero in all five of those counters.",
   "determination": true,
-  "rationale": "The example `usage_after_failure` describes a concrete case. A throttled request with no token counts is retried and succeeds with 120 input tokens. A second `verify` then fails after one attempt without token counts. The expected outcomes are three attempts, one retry and two failed attempts. They also include `input_tokens.reported` of 120 and `missing_attempts` of 2, and a fresh validator on the same domain starting at zero in all five counters.\n\nThe test `validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse` in `crates/trust-but-verify/src/agent/tests.rs` carries a `{test}` reference to the example. It checks each outcome:\n- **Setup:** The scripted provider returns `Err(throttled())`, then an answer with 120 input tokens, then `Err(io::Error::other(\"terminal\"))`. `throttled()` is a 429 ThrottlingException. The first `verify_with_agent` call succeeds, which exercises the failure and retry. The first error has no usage, so input tokens are missing for it.\n- **First verify:** It asserts `before_failure.attempts == 2`, which pins the first execution at one failed attempt plus one retry.\n- **Second verify:** The test asserts the second `verify_with_agent` call is `is_err()`. That call hits the terminal error with no token counts.\n- **Totals:** After the failure, `validator.usage()` is checked, and so is the cache total. It asserts `(attempts, retries, failed_attempts) == (3, 1, 2)`. It asserts `(input_tokens.reported, input_tokens.missing_attempts) == (120, 2)`. These assertions run after `Err` is returned, so they show usage is added on the error path.\n- **Fresh validator:** `Validator::new(&graph)` borrows the same domain. The test asserts zero for attempts, retries and failed attempts. It also asserts reported and missing_attempts of zero for all five token categories. This covers the \"zero in all five counters\" outcome, including the validator-scoped versus cache-scoped distinction.\n\nThe test also covers reuse of evidence (`store_evidence` and `refresh_evidence`), which adds nothing to the counters. It checks the output, cached, cache-creation and reasoning counts as well. The reasoning check treats a reported zero as a measurement, which matches `TokenCount`. Nothing in the example is left unasserted, and I found no assertion that contradicts it.",
+  "rationale": "The example is a concrete case with stated outcomes. `validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse` in `crates/trust-but-verify/src/agent/tests.rs` carries a {test} reference to it and covers each part.\n\n**Setup.** The `Scenario` supplies `Err(throttled())`, then `Ok(answer)`, then `Err(io::Error::other(\"terminal\"))`.\n- `throttled()` is a 429 ThrottlingException error, so it supplies no token counts.\n- `answer` reports 120 input tokens.\n- The first `verify_with_agent` call therefore makes one failed attempt and one successful retry.\n- The second `verify_with_agent` call hits the terminal error after a single attempt, and the test asserts `.is_err()`.\n- The test also stores the evidence and calls `refresh_evidence` between the two verifies. This checks that reusing current evidence adds no usage (`attempts` stays 2 and `failed_attempts` stays 1). The example doesn't require this, but it does no harm.\n\n**Assertions after the second `verify` returns `Err`.**\n- `validator.usage()` and the shared cache usage both show `(attempts, retries, failed_attempts) == (3, 1, 2)`.\n- `input_tokens` is `(reported 120, missing_attempts 2)`.\n- Output, cached, cache-creation and reasoning counts are also checked, including that a reported zero counts as a measurement. These go beyond the example without contradicting it.\n\n**Fresh validator.** `Validator::new(&graph)` borrows the same graph/domain. The test asserts that all of its counters are zero: `attempts`, `retries`, `failed_attempts`, and the reported and missing counts for every token category. That includes the five counters the example names.\n\n**Helper.** `verify_with_agent` simply calls `validator.execute(criterion, Some(agent))`, so the test runs the real validator path.\n\nI found no gaps.",
   "references": "1cc886b9d37ea6ff09a0c86238e8ec7c34c889f119ee47df5f0d260cbe3655ec",
   "inputs": [
     {
@@ -49,12 +49,19 @@
         "",
         "`UsageStats` exposes the following totals. `attempts` counts each request sent to the provider once. `retries` counts attempts that repeat a failed request. `failed_attempts` counts attempts that returned a provider error, including those followed by a successful retry.",
         "",
+        "`prepared_inputs` counts inputs prepared for agent messages. Each node inserted in the opening message counts once. Each requested `read_node` page and each `outgoing_edges` result counts once, including repeated reads. A requested search page counts one input per excerpt on that page. Source listings, search finalization, and opaque custom-tool results contribute zero.",
+        "",
+        "`delivered_inputs` counts those inputs when the provider first responds successfully to the request carrying them. Each input counts once across retries and subsequent turns that replay the same conversation history. For example, if the opening message supplies three nodes and the provider fails permanently before replying, usage records three prepared inputs and zero delivered inputs.",
+        "",
         "```rust,ignore",
         "#[non_exhaustive]",
         "pub struct UsageStats {",
         "    pub attempts: u64,",
         "    pub retries: u64,",
         "    pub failed_attempts: u64,",
+        "    pub prepared_inputs: u64,",
+        "    pub delivered_inputs: u64,",
+        "    pub tools: BTreeMap<String, ToolUsage>,",
         "    pub input_tokens: TokenCount,",
         "    pub output_tokens: TokenCount,",
         "    pub cached_input_tokens: TokenCount,",
@@ -67,7 +74,6 @@
         "",
         "```rust,ignore",
         "impl Clone for UsageStats;",
-        "impl Copy for UsageStats;",
         "impl Debug for UsageStats;",
         "impl Default for UsageStats;",
         "impl Serialize for UsageStats;",
@@ -108,7 +114,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse]",
-      "hash": "06f9aad202e1891a1910f5307439e6bb442a02eba6cd5fcd29b1d1bc22f2aab4"
+      "hash": "52c15d1d0e93301c4d527c00d5c2b47d2c8be8114c9e65409e2746298fcc75e3"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -176,7 +182,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9496a0a1bb5ba887bc3d325318b36a281216fb59c5e8c539712c3f87d72b04d0"
+          "value": "acada9370a9aa5e46ab48f6bd6c3b337f00d357491ac0b8fc97a4a1bb1811196"
         }
       ]
     },
@@ -203,8 +209,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "aa14de1bbe66ad852abe9beb4e6ee331dc55339b410d7ec09bf4960b9d420e14"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "52c15d1d0e93301c4d527c00d5c2b47d2c8be8114c9e65409e2746298fcc75e3"
         }
       ]
     },
@@ -220,8 +226,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "a17e9452378c83173d5107348630f5703214f8edef73f788cf14caf238b0ad08"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "d49510a1c83cae1dc199f63550e423a2e178985ae50054383bc4a28fe93c4afd"
         }
       ]
     },
@@ -237,8 +243,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "23fc6d0652a1418ed0a24aecd1156dcbc07c7e05a4dfa2ae74e9becd717f94d9"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "28dcf8f6c6353970cea4aa938825e7738b4d40fce63aa7e9ea2f4d754b4a3408"
         }
       ]
     }

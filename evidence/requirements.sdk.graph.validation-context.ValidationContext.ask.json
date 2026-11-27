@@ -1,7 +1,7 @@
 {
   "requirement": "Start an agent request that will decode its submitted answer as `R`. Its graph tools share the dependency list used by direct reads under {cite}`requirements.sdk.graph.validation-context.shared_context`.\n\n```rust,ignore\nimpl<'d, D: Domain> ValidationContext<'d, D> {\n    pub fn ask<R>(&self) -> Ask<'_, 'd, D, R, ContextPhase>\n    where\n        R: DeserializeOwned + JsonSchema + Send;\n}\n```",
   "determination": true,
-  "rationale": "The reviewed tests adequately check `requirements.sdk.graph.validation-context.ValidationContext.ask`.\n\n**Obligations drawn from the text**\n1. `ctx.ask::<R>()` starts an agent request, returning an `Ask` builder. The signature requires `R: DeserializeOwned + JsonSchema + Send`.\n2. The submitted answer is decoded as `R`.\n3. The request's graph tools record their reads in the same dependency list that direct reads use. This is the cited `shared_context` behavior: direct reads and tool reads interleave in one `ValidationContext`.\n\n**Test mapping**\n- `crates/trust-but-verify/src/graph/validation_tests.rs#fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]` calls `ctx.ask::<Answer>()` and awaits the future.\n  - It asserts `assert_send(&future)`, which covers the `Send` bound.\n  - It asserts that `answer.n == 7`, so the submitted JSON is decoded into `R`.\n  - It asserts that the request's result schema is the `JsonSchema`-derived one (`properties.n.type == \"integer\"`).\n  - The mock `Agent::run` in `impl[MockAgent/Agent<Memory>]` calls `inspection.record_read` for each input. The test then asserts that `ctx.dependencies()` holds the `OutgoingEdges` entry followed by the deduplicated `Node` entries for 1, 3 and 2. These entries were recorded during the agent run, so the agent's tool path writes into the caller's context rather than a separate one.\n- `fn[later_lighter_agent_calls_preserve_the_contexts_existing_trace]` covers the interleaving.\n  - It performs a direct `ctx.read`, then `ctx.ask()` with inputs, then another direct read.\n  - It asserts that the single dependency list contains all of them in order: direct before, agent-recorded edge and node, direct after.\n  - A second `ask` with no inputs leaves `ctx.dependencies()` unchanged.\n  - `ctx.finish` returns the persisted form of that same shared list.\n  - Here `ask()` has its `R` inferred from the `let _: Answer` binding, and the test checks that `ctx` is `Send + Sync`.\n- `crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]` covers the exported API surface. It is only marginally relevant, but it is not needed for the behavior above.\n\n**Delegated or out of scope**\n- The rule that a subsequent verification starts with an empty dependency list belongs to `shared_context`. It is a cited requirement and is not reassessed here.\n- Decode-failure behavior is not part of this requirement's text. The mock's `invalid` mode exists for other requirements.\n\n**Residual note**\nThe tests use a mock agent that calls `record_read` to stand in for real tool reads. That is a reasonable test double for checking that the `inspection` context handed to the agent is the caller's own context. I found no unmet obligation or missing boundary in the requirement's text.",
+  "rationale": "**Obligations derived from `ValidationContext.ask`**\n1. `ask::<R>()` starts an agent request whose submitted answer is decoded as `R`. `R` is `DeserializeOwned + JsonSchema + Send`, and the builder is in `ContextPhase`.\n2. The request's graph tools share the dependency list that direct reads use. This is the cited `shared_context` requirement. During one `verify`, direct reads and agent-served reads record into the same `ValidationContext`.\n\n**Test mapping**\n- `graph/validation_tests.rs#fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]` calls `ctx.ask::<Answer>()`, then `.context(..)`, then the content insertions, then `.into_future()`.\n  - `assert_send(&future)` checks the `Send` obligation.\n  - `answer.n == 7` shows the submitted JSON is decoded as `R`.\n  - `requests[0].3[\"properties\"][\"n\"][\"type\"] == \"integer\"` shows the result schema is derived from `R`.\n  - The final `ctx.dependencies()` equality shows the request's reads land in the starting context's own dependency list. The `MockAgent` records them through the `inspection` context it is handed. The dependencies are the edge selection plus the node fingerprints for nodes 1, 3 and 2.\n- `graph/validation_tests.rs#fn[later_lighter_agent_calls_preserve_the_contexts_existing_trace]` covers the shared-list case directly.\n  - It does a direct `ctx.read` of node 2.\n  - It then runs `ask()` with inferred `R`, with node and successor insertions.\n  - It then does another direct read of node 3.\n  - The asserted trace has the direct read, the ask's reads, and the later direct read in one ordered list. This is the `shared_context` example of direct and agent reads together.\n  - A later `ask()` with no insertions leaves `ctx.dependencies()` unchanged. `finish` then persists exactly that list.\n- `tests/public_api.rs#fn[public_exports_match_the_appendix]` covers the exported surface. The `ask` signature, including the `ContextPhase` return type and the `R` bounds, is also checked at compile time by every call site.\n\n**Marking and scope**\n- The tests that exercise real tool-served reads sharing the list are `agent/tests.rs#fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]` and `agent/configured.rs#fn[verify_returns_direct_and_tool_reads_in_one_trace]`.\n- They carry `{test}` references to `shared_context`, not to `ask`.\n- `shared_context` is a cited requirement here, so its own tests are not reassessed.\n- The marked `ask` tests already show that `ask` hands its own context to the agent. The agent's reads land in the same list as direct reads.\n- Invalid-answer handling (`invalid_typed_submission_is_an_agent_error`) belongs to the `Ask` execution requirements, not to the `ask` constructor.\n\n**Conclusion**\nThe marked tests assert every obligation in the `ask` text with concrete outcomes: decoding as `R`, the `R` schema, `Send`, and the shared dependency list. I found no gap, and there are no acknowledgments.",
   "references": "2ff717cd8f2736ce5dff075a1b281e7c79cd60d94a17dfcf7cb59b40e4ad036d",
   "inputs": [
     {
@@ -57,12 +57,17 @@
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "impl[MockAgent/Agent<Memory>]",
-      "hash": "22ff311e90c3a22547f68da7afbbf29529fd90905127138101a003aa6c2b730e"
+      "hash": "311347e0c4f8257b069c4f1ef1060e5852562327aabf61f52f1919a4f0cb9877"
     },
     {
       "file": "crates/trust-but-verify/src/procedure.rs",
       "item": "impl[ValidationContext<'d,%20D>]#3/fn[ask]",
-      "hash": "d9a60d50f0b840ec20b6a28f2f101abb5fe48bf743b7a81ba471cfb1b7de3f20"
+      "hash": "6fccff398b820412b2dabdb1c4fac08db8ae2c7f4018d96efcab34d4c0e4e2ca"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "struct[MockAgent]",
+      "hash": "a2b03d553c5723ab44f987ef287218fde7ba2d2d485fbd72fdbcd8a9dd358e36"
     }
   ],
   "format_version": 1,
@@ -125,8 +130,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "30ceab2121ddfdf47068ebaaa73758bdf2544f0c12badc817f253156ef093753"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "d6e99ab39b78a5458f7c497ed3f69a053fff9f8bb31ded9d41e7f9e70fa0ab90"
         }
       ]
     },
@@ -142,8 +147,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "7f6922d1e943699b21437e44e466f43cba36d557fb8812dbe86de0df53a205b0"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "6684804bd1c7f6ac2d750825ff2831ced13bf76b9c74cdda2ca3d32a6fb174ef"
         }
       ]
     },
@@ -159,8 +164,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "ae4819b6e5ac9cd22992cc4254e7868f438e101dbd53f1bd7d443a33ee96f61d"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "4d6ce6161754fb9e88ad84ef64f9bb131b308298104915179b2c5d573ed2b087"
         }
       ]
     },
@@ -176,8 +181,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "04fe77d6e6187eb839a18085f1752cbde4d2d6ffa3b5abc6eb710df3d9095612"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "c7ac5cb55541123209701ab467507b6829a1f656e8cc87d69ca72fd83a2344c2"
         }
       ]
     },
@@ -193,8 +198,25 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "1d9367d754e75a8c5866eb59cf8c64fd8830f09eedab383a330c6d08dff3a41e"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "6fccff398b820412b2dabdb1c4fac08db8ae2c7f4018d96efcab34d4c0e4e2ca"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+            },
+            "selector": "struct[MockAgent]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "a2b03d553c5723ab44f987ef287218fde7ba2d2d485fbd72fdbcd8a9dd358e36"
         }
       ]
     }

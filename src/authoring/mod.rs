@@ -572,7 +572,6 @@ async fn assess_subject(
     policy: AssessmentPolicy,
 ) -> io::Result<(Judgment, Value)> {
     usage.record.subject_kind = Some(sources.subject_kind.noun().into());
-    usage.prepared("mandatory", sources.mandatory_inputs());
     usage.save()?;
     let first = assess(provider, &mut sources, usage).await?;
     // Under `once`, the single assessment is recorded.
@@ -771,7 +770,6 @@ fn followup_sources(
 ) -> io::Result<AssessmentSources> {
     let sources = subject.domain_sources(domain.clone())?;
     usage.record.subject_kind = Some(sources.subject_kind.noun().into());
-    usage.prepared("mandatory", sources.mandatory_inputs());
     usage.save()?;
     Ok(sources)
 }
@@ -1386,7 +1384,7 @@ async fn verify(
     sdk::verify(provider, sources, usage, determination, rationale).await
 }
 
-type InputObserver<'a> = dyn Fn(&[Value]) + Send + Sync + 'a;
+type InputObserver<'a> = dyn Fn(&[Value]) -> io::Result<()> + Send + Sync + 'a;
 
 /// One conversation: sends the prompt with the source tools and the named
 /// submission tool, delivers tool results until a submission is accepted,
@@ -1415,7 +1413,7 @@ type InputObserver<'a> = dyn Fn(&[Value]) + Send + Sync + 'a;
 // {impl}`requirements.authoring.submission.searches.recovery`
 // {impl}`requirements.authoring.submission.searches.line_numbers`
 // {impl}`requirements.authoring.submission.searches.accompanying_calls`
-async fn converse_observed<T: Send>(
+async fn converse_observed(
     inspection: &trust_but_verify::request::ValidationContext<'_, crate::sdk::HabeasDomain>,
     provider: &impl CompletionProvider,
     sources: &mut AssessmentSources,
@@ -1428,9 +1426,17 @@ async fn converse_observed<T: Send>(
     >,
     result_schema: Value,
     (submit, site): (&str, bool),
-    parse: impl Fn(&Value) -> io::Result<T> + Send,
+    parse: impl Fn(&Value) -> io::Result<Value> + Send,
     observer: Option<&InputObserver<'_>>,
-) -> io::Result<T> {
+    finish: impl FnMut(
+        Value,
+    ) -> Result<
+        trust_but_verify::agent_runtime::Submission<()>,
+        trust_but_verify::agent_runtime::AgentError<io::Error>,
+    > + Send,
+) -> Result<(), trust_but_verify::agent_runtime::AgentError<io::Error>> {
+    use trust_but_verify::domain::Domain;
+    let project = sources.domain.project_sources();
     let pending = sources.mandatory_inputs().to_vec();
     let mut adapter = HabeasConversation {
         sources,
@@ -1447,10 +1453,12 @@ async fn converse_observed<T: Send>(
         inspection,
         provider,
         &mut adapter,
+        project.as_ref(),
         prompt.request(),
         opening_inputs,
         result_schema,
         submit,
+        finish,
     )
     .await
 }
@@ -1474,15 +1482,7 @@ impl<T: Send, F: Fn(&Value) -> io::Result<T> + Send> trust_but_verify::agent_run
     type Output = T;
 
     // {cite}`habeas:util`
-    fn tools(&self, submission: Option<ToolDefinition>) -> io::Result<Vec<ToolDefinition>> {
-        if let Some(submission) = submission {
-            let mut tools: Vec<ToolDefinition> = tools::definitions()
-                .into_iter()
-                .map(serde_json::from_value)
-                .collect::<Result<_, _>>()?;
-            tools.push(submission);
-            return Ok(tools);
-        }
+    fn tools(&self, _: Option<ToolDefinition>) -> io::Result<Vec<ToolDefinition>> {
         tool_definitions_with(self.submit, self.site)
     }
     fn submit(
@@ -1512,7 +1512,7 @@ impl<T: Send, F: Fn(&Value) -> io::Result<T> + Send> trust_but_verify::agent_run
             line_numbers::Outcome::Reject(message) => Ok(Submission::Retry(message)),
         }
     }
-    async fn dispatch(&mut self, name: &str, arguments: &Value) -> io::Result<String> {
+    async fn dispatch(&mut self, name: &str, arguments: &Value) -> io::Result<(String, usize)> {
         let delivery = tools::dispatch_paged(self.sources, &mut self.pages, name, arguments)
             .map_err(|error| {
                 io::Error::new(
@@ -1520,23 +1520,30 @@ impl<T: Send, F: Fn(&Value) -> io::Result<T> + Send> trust_but_verify::agent_run
                     line_numbers::without_source_lines(&error.to_string()),
                 )
             })?;
+        let mut inputs = 0;
         if name == "finish_search" {
             self.sources.record_inputs(&delivery.inputs);
             if let Some(observer) = self.observer {
-                observer(&delivery.inputs);
+                observer(&delivery.inputs)?;
             }
         } else {
-            self.usage.prepared(name, &delivery.inputs);
+            inputs = delivery.inputs.len();
             self.pending.extend(delivery.inputs);
         }
-        self.usage.search_result(&delivery.result);
-        Ok(delivery.result.to_string())
+        // Source search pages carry one input per excerpt.
+        if let Some(matches) = delivery.result["matches"].as_array() {
+            inputs += matches
+                .iter()
+                .filter(|entry| entry["lines"].is_array())
+                .count();
+        }
+        Ok((delivery.result.to_string(), inputs))
     }
     // {cite}`habeas:util`
     fn delivered(&mut self) -> io::Result<()> {
         self.sources.record_inputs(&self.pending);
         if let Some(observer) = self.observer {
-            observer(&self.pending);
+            observer(&self.pending)?;
         }
         self.pending.clear();
         Ok(())
@@ -1997,7 +2004,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(recorded, (0..=last).collect::<Vec<_>>());
         let log: Value = serde_json::from_str(&fs::read_to_string(&usage.path).unwrap()).unwrap();
-        assert_eq!(log["tool_calls"]["next_page"], 1);
+        assert_eq!(log["provider_usage"]["tools"]["next_page"]["calls"], 1);
     }
 
     // {test}`requirements.authoring.no_line_numbers`
@@ -2224,9 +2231,7 @@ mod tests {
         let project = inputs::tests::project();
         let sources = AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
         let state = tempfile::tempdir().unwrap();
-        let mut usage =
-            UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
-        usage.prepared("mandatory", sources.mandatory_inputs());
+        let usage = UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
         (project, state, sources, usage)
     }
 
@@ -2270,6 +2275,13 @@ mod tests {
         assert_eq!(log["provider_usage"]["attempts"], 6);
         assert_eq!(log["provider_usage"]["retries"], 5);
         assert_eq!(log["provider_usage"]["failed_attempts"], 5);
+        let graph_inputs = sources
+            .model_mandatory_inputs()
+            .iter()
+            .filter(|input| crate::inputs::InputSelector::from_input(input).is_some())
+            .count();
+        assert_eq!(log["provider_usage"]["prepared_inputs"], graph_inputs);
+        assert_eq!(log["provider_usage"]["delivered_inputs"], graph_inputs);
         assert_eq!(log["request_count"], 6);
         for attempt in 0..5 {
             assert_eq!(log["requests"][attempt]["outcome"], "failed");
@@ -2281,16 +2293,20 @@ mod tests {
         }
         assert!(log["requests"][5].get("failure").is_none());
         assert_eq!(log["requests"][5]["outcome"], "completed");
-        assert_eq!(log["tool_calls"]["submit_judgment"], 1);
-        for input in log["inputs"].as_array().unwrap() {
-            assert_eq!(input["submitted_in_request"], 0);
-            assert_eq!(input["sent_in_request"], 5);
-        }
+        assert_eq!(
+            log["provider_usage"]["tools"]["submit_judgment"]["calls"],
+            1
+        );
+        assert_eq!(
+            log["provider_usage"]["tools"]["submit_judgment"],
+            json!({"calls": 1, "result_bytes": 0})
+        );
     }
 
     // {test}`requirements.authoring.provider_backoff`
     // {test}`requirements.authoring.usage_requests.failures`
     #[tokio::test(start_paused = true)]
+    // {test}`requirements.authoring.usage_inputs`
     async fn permanent_provider_failure_returns_without_waiting_or_retrying() {
         let (_project, _state, mut sources, mut usage) = retry_fixture();
         let provider = ThrottledProvider {
@@ -2309,6 +2325,8 @@ mod tests {
         // The failure is recorded as not retried.
         let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();
         assert_eq!(log["provider_usage"]["attempts"], 1);
+        assert!(log["provider_usage"]["prepared_inputs"].as_u64().unwrap() > 0);
+        assert_eq!(log["provider_usage"]["delivered_inputs"], 0);
         assert_eq!(log["provider_usage"]["failed_attempts"], 1);
         assert_eq!(log["provider_usage"]["retries"], 0);
         assert_eq!(
@@ -2461,6 +2479,7 @@ mod tests {
     // {test}`requirements.authoring.provider_backoff`
     // {test}`requirements.authoring.usage_requests`
     #[tokio::test(start_paused = true)]
+    // {test}`requirements.sdk.graph.running-criteria.ToolUsage.replay`
     async fn success_resets_backoff_and_retries_keep_history_without_repeating_tools() {
         let (project, _state, mut sources, mut usage) = retry_fixture();
         fs::write(project.path().join("src/lib.rs"), "fn run() {}\n").unwrap();
@@ -2489,7 +2508,10 @@ mod tests {
         // The read ran once, and its input was recorded after the retried
         // request succeeded.
         let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();
-        assert_eq!(log["tool_calls"]["habeas"], 1, "{log:#}");
+        assert_eq!(
+            log["provider_usage"]["tools"]["habeas"]["calls"], 1,
+            "{log:#}"
+        );
         assert_eq!(log["request_count"], 4);
         let inputs = record["inputs"].as_array().unwrap();
         assert!(
@@ -2667,6 +2689,63 @@ mod tests {
                 Value::Null,
             )
             .with_finish_reason(FinishReason::ToolCalls))
+        }
+    }
+
+    // {test}`requirements.authoring.file_discovery_usage`
+    // {test}`requirements.authoring.usage_inputs`
+    #[tokio::test]
+    async fn listing_files_counts_result_bytes_and_reading_a_function_adds_an_input() {
+        let project = inputs::tests::project();
+        let state = tempfile::tempdir().unwrap();
+        fs::write(project.path().join("src/parser.rs"), "fn parse() {}\n").unwrap();
+        let listing = json!([{"kind":"file", "path":"src/parser.rs"}]).to_string();
+        for read in [false, true] {
+            let mut turns = vec![vec![("list_files", json!({"path":"src"}))]];
+            if read {
+                turns.push(vec![(
+                    "habeas",
+                    json!({"file":"src/parser.rs", "item":"fn[parse]"}),
+                )]);
+            }
+            turns.push(vec![
+                (
+                    "submit_judgment",
+                    json!({"determination":true,"rationale":"Ready."}),
+                ),
+                ("ripgrep", json!({"pattern":"parse"})),
+            ]);
+            let provider = ScriptedProvider {
+                turns,
+                requests: Mutex::default(),
+            };
+            let mut sources =
+                AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
+            let opening = sources
+                .model_mandatory_inputs()
+                .iter()
+                .filter(|input| crate::inputs::InputSelector::from_input(input).is_some())
+                .count() as u64;
+            let mut usage =
+                UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
+            let (_, evidence) = assess(&provider, &mut sources, &mut usage).await.unwrap();
+            let stats = &usage.record.provider_usage;
+            assert!(
+                !stats.tools.contains_key("ripgrep"),
+                "the search accompanying submission was skipped"
+            );
+            assert_eq!(stats.tools["list_files"].calls, 1);
+            assert_eq!(stats.tools["list_files"].result_bytes, listing.len() as u64);
+            assert_eq!(stats.prepared_inputs, opening + u64::from(read));
+            assert_eq!(stats.delivered_inputs, stats.prepared_inputs);
+            assert_eq!(
+                evidence["inputs"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|i| i["file"] == "src/parser.rs" && i["item"] == "fn[parse]"),
+                read
+            );
         }
     }
 
@@ -2864,7 +2943,7 @@ mod tests {
             );
             let log: Value =
                 serde_json::from_str(&fs::read_to_string(&usage.path).unwrap()).unwrap();
-            assert_eq!(log["tool_calls"]["finish_search"], 3);
+            assert_eq!(log["provider_usage"]["tools"]["finish_search"]["calls"], 2);
             assert_eq!(log["tool_skipped"]["finish_search"], 1);
             assert_eq!(log["tool_skipped"]["habeas"], 1);
             assert_eq!(log["tool_skipped"]["ripgrep"], 1);
@@ -3262,8 +3341,8 @@ mod tests {
             "{errors:?}"
         );
         let log: Value = serde_json::from_str(&fs::read_to_string(&usage.path).unwrap()).unwrap();
-        assert!(log["tool_calls"].get("habeas").is_none());
-        assert_eq!(log["tool_calls"]["finish_search"], 1);
+        assert!(log["provider_usage"]["tools"].get("habeas").is_none());
+        assert_eq!(log["provider_usage"]["tools"]["finish_search"]["calls"], 1);
     }
 
     // {cite}`habeas:util`
@@ -3817,9 +3896,96 @@ mod tests {
         assert_eq!(record["rationale"], "Fresh assessment.");
     }
 
+    // {test}`requirements.authoring.citation_prompt`
+    // {test}`requirements.authoring.delivered_inputs`
+    #[tokio::test]
+    async fn citation_review_tracks_sdk_reads_and_only_selected_excerpts() {
+        use SearchAction::{Call, Finish};
+        let project = inputs::tests::project();
+        fs::write(
+            project.path().join("src/lib.rs"),
+            "// {cite}`requirements.ready`\nfn reviewed() {}\n",
+        )
+        .unwrap();
+        let path = project.path().join("src/details.rs");
+        let source = "fn direct() {}\nfn selected() { needle(); }\nfn unused() { needle(); }\n";
+        fs::write(&path, source).unwrap();
+        let subject = AuthoringSubject::parse("citations:src/lib.rs#fn[reviewed]");
+        let mut sources = subject.sources(project.path()).unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let mut usage = UsageLog::start(state.path(), project.path(), &subject.label()).unwrap();
+        let submit = || {
+            Call(
+                "submit_result",
+                json!({"result":{"determination":true,"rationale":"The helper supports the citation."}}),
+            )
+        };
+        let provider = SearchProvider {
+            submit: "submit_result",
+            turns: vec![
+                vec![
+                    Call(
+                        "read_node",
+                        json!({"path":"src/details.rs","location":"fn[direct]"}),
+                    ),
+                    Call(
+                        "search_text",
+                        json!({"path":"src/details.rs","pattern":"needle"}),
+                    ),
+                ],
+                vec![submit()],
+                vec![Finish(0, vec!["1"])],
+                vec![submit()],
+            ],
+            requests: Mutex::default(),
+        };
+        let (_, evidence) = assess(&provider, &mut sources, &mut usage).await.unwrap();
+        assert!(
+            provider.requests.lock().unwrap()[2]
+                .to_string()
+                .contains("Call finish_search")
+        );
+        let (_, deps) = crate::evidence_format::versioned_fields(&evidence).unwrap();
+        let mut observed = Vec::new();
+        for dep in deps {
+            if let trust_but_verify::graph::Dependency::Node(crate::sdk::HabeasNode::Source(id), _) =
+                dep
+                && id.resource.location == "src/details.rs"
+            {
+                observed.push(id.selector);
+            }
+        }
+        observed.sort();
+        assert_eq!(observed, ["fn[direct]", "fn[selected]"]);
+        let node = crate::sdk::HabeasNode::review_subject(&subject);
+        let record = crate::evidence_format::decode(&evidence, &node).unwrap();
+        let is_current = || {
+            record
+                .is_current(
+                    &crate::sdk::HabeasDomain::discover(project.path()).unwrap(),
+                    &crate::sdk::review_version(),
+                )
+                .unwrap()
+        };
+        assert!(is_current());
+        fs::write(
+            &path,
+            source.replace("fn unused() { needle(); }", "fn unused() {}"),
+        )
+        .unwrap();
+        assert!(is_current());
+        fs::write(
+            &path,
+            source.replace("fn selected() { needle(); }", "fn selected() {}"),
+        )
+        .unwrap();
+        assert!(!is_current());
+    }
+
     // {test}`requirements.authoring.confirmation`
     // {test}`requirements.authoring.usage_storage`
     // {test}`requirements.authoring.citation_prompt`
+    // {test}`requirements.authoring.line_numbers.citation`
     #[tokio::test]
     async fn citation_reviews_are_confirmed_with_fresh_targeted_conversations() {
         let project = inputs::tests::project();
@@ -3834,6 +4000,7 @@ mod tests {
         let mut usage = UsageLog::start(state.path(), project.path(), &subject.label()).unwrap();
         let provider = RecordingProvider::new(vec![
             citation_judgment(true, "First citation review at src/lib.rs:1."),
+            citation_judgment(true, "First citation review of `src/lib.rs#fn[helper]`."),
             citation_judgment(true, "Second citation review."),
         ]);
         let (_, record) = assess_subject(
@@ -3850,17 +4017,28 @@ mod tests {
         assert_eq!(record["item"], "fn[helper]");
         assert_eq!(
             record["rationale"],
-            "First citation review at src/lib.rs:1."
+            "First citation review of `src/lib.rs#fn[helper]`."
         );
         let prompts = provider.prompts();
-        assert_eq!(prompts.len(), 2);
+        assert_eq!(prompts.len(), 3);
+        let correction = provider.requests.lock().unwrap()[1]["chat_history"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()
+            .to_string();
+        assert!(
+            correction.contains(r#"The rationale cites a line number (\"src/lib.rs:1\")"#),
+            "{correction}"
+        );
+        assert!(correction.contains("file and outline selector"));
         assert!(
             prompts
                 .iter()
                 .all(|(text, _)| text.contains("Item under review: src/lib.rs fn[helper]"))
         );
         assert!(
-            !prompts[1]
+            !prompts[2]
                 .0
                 .contains("First citation review at src/lib.rs:1.")
         );
@@ -3870,6 +4048,63 @@ mod tests {
             .collect();
         assert_eq!(logs.len(), 2);
         assert_ne!(logs[0]["run_id"], logs[1]["run_id"]);
+    }
+
+    // {test}`requirements.authoring.confirmation`
+    // {test}`requirements.authoring.verifier_prompt`
+    // {test}`requirements.authoring.line_numbers.citation`
+    #[tokio::test]
+    async fn disagreeing_citation_assessments_record_the_corrected_verification() {
+        let project = inputs::tests::project();
+        fs::write(
+            project.path().join("src/lib.rs"),
+            "// {cite}`requirements.ready`\nfn helper() {}\n",
+        )
+        .unwrap();
+        let subject = AuthoringSubject::parse("citations:src/lib.rs#fn[helper]");
+        let state = tempfile::tempdir().unwrap();
+        let mut usage = UsageLog::start(state.path(), project.path(), &subject.label()).unwrap();
+        let verifier = |rationale: &str| {
+            (
+                "submit_result",
+                json!({"result": {
+                    "real":true,"acknowledged":false,"acknowledgments":[],"rationale":rationale
+                }}),
+            )
+        };
+        let provider = RecordingProvider::new(vec![
+            citation_judgment(true, "Fully covered."),
+            citation_judgment(false, "The cited function omits a check."),
+            verifier("The check is missing on line 2."),
+            verifier("`src/lib.rs#fn[helper]` omits the check."),
+        ]);
+        let (_, record) = assess_subject(
+            &provider,
+            project.path(),
+            state.path(),
+            &subject,
+            subject.sources(project.path()).unwrap(),
+            &mut usage,
+            AssessmentPolicy::Confirm,
+        )
+        .await
+        .unwrap();
+        assert_eq!(record["determination"], false);
+        let rationale = record["rationale"].as_str().unwrap();
+        assert!(rationale.starts_with("The cited function omits a check."));
+        assert!(rationale.contains("the assessments disagreed"));
+        assert!(rationale.contains("`src/lib.rs#fn[helper]` omits the check."));
+        assert!(!rationale.contains("line 2"));
+        let prompts = provider.prompts();
+        assert_eq!(prompts.len(), 4);
+        assert!(prompts[2].0.contains("The cited function omits a check."));
+        assert!(prompts[2].0.contains("src/lib.rs"));
+        assert_eq!(
+            fs::read_dir(state.path().join("authoring/usage"))
+                .unwrap()
+                .count(),
+            3
+        );
     }
 
     // {test}`requirements.authoring.citation_prompt`
@@ -3913,8 +4148,9 @@ mod tests {
 
     // {test}`requirements.authoring.verifier_prompt`
     // {test}`requirements.authoring.citation_prompt`
+    // {test}`requirements.authoring.line_numbers.citation`
     #[tokio::test]
-    async fn citation_verification_accepts_a_line_reference_in_one_submission() {
+    async fn citation_verification_fails_on_a_repeated_line_reference() {
         let project = inputs::tests::project();
         fs::write(
             project.path().join("src/lib.rs"),
@@ -3926,13 +4162,14 @@ mod tests {
         let state = tempfile::tempdir().unwrap();
         let mut log = UsageLog::start(state.path(), project.path(), &subject.label()).unwrap();
         let rationale = "The implementation on line 2 supports the citation.";
-        let provider = RecordingProvider::new(vec![(
+        let submission = (
             "submit_result",
             json!({"result":{
                 "real":false,"acknowledged":false,"acknowledgments":[],"rationale":rationale
             }}),
-        )]);
-        let answer = verify(
+        );
+        let provider = RecordingProvider::new(vec![submission.clone(), submission]);
+        let error = verify(
             &provider,
             &mut sources,
             &mut log,
@@ -3940,10 +4177,12 @@ mod tests {
             "A claimed gap.",
         )
         .await
-        .unwrap();
-        assert_eq!(answer.rationale, rationale);
+        .err()
+        .expect("repeat citation should fail");
+        assert!(error.to_string().contains("still cites a line number"));
         let requests = provider.requests.lock().unwrap();
-        assert_eq!(requests.len(), 1);
+        assert_eq!(requests.len(), 2);
+        assert!(requests[1].to_string().contains("line 2"));
         let submit = requests[0]["tools"]
             .as_array()
             .unwrap()
@@ -4634,7 +4873,22 @@ mod tests {
         let provider = RecordingProvider::new(vec![citation_judgment(true, "Both are sensible.")]);
         let (_, record) = assess(&provider, &mut sources, &mut usage).await.unwrap();
         let prompts = provider.prompts();
-        assert!(prompts[0].1.iter().any(|name| name == "submit_result"));
+        let mut tools = prompts[0].1.clone();
+        tools.sort();
+        assert_eq!(
+            tools,
+            [
+                "finish_search",
+                "get_next_page",
+                "list_sources",
+                "outgoing_edges",
+                "outline_source",
+                "read_node",
+                "search_structure",
+                "search_text",
+                "submit_result"
+            ]
+        );
         assert!(!prompts[0].1.iter().any(|name| name == "submit_judgment"));
         let duplicate = citation_judgment(true, "Both are sensible.");
         let duplicate_provider = ScriptedProvider {

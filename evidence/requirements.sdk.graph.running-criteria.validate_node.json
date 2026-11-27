@@ -1,7 +1,7 @@
 {
   "requirement": "Every call constructs a fresh `ValidationContext` identifying the source node\nand calls `Criterion::execute` with that context. Its completed answer, including\na negative assessment, and captured dependencies form the returned `Fingerprinted`\nunder {cite}`requirements.sdk.graph.evidence.inputs`.",
   "determination": true,
-  "rationale": "I judge the tests adequate for `requirements.sdk.graph.running-criteria.validate_node`. I did not request implementation source. The cited `requirements.sdk.graph.evidence.inputs` supplies the shape of the returned `Fingerprinted`, which the same tests also check.\n\nThe requirement splits into four obligations.\n\n1. **Each call builds a fresh `ValidationContext`, so traces are not shared across calls.**\n   - `concurrent_single_node_validations_keep_separate_traces` in `graph/validation_tests.rs` runs three verifications concurrently. It asserts that each stored record holds only that node's own `Node` and `OutgoingEdges` dependencies. It also asserts a concurrency peak of 3, so the isolation check is not trivially serial.\n   - `agent_executions_isolate_conversations_and_dependency_traces` in `agent/tests.rs` runs two concurrent verifications on the same graph. It asserts exact, separate dependency lists for alpha and beta, and that alpha's list contains none of beta's `OutgoingEdges` or node-2 entries.\n   - `historical_freshness_reads_do_not_enter_the_replacement_trace` reuses one validator for `check_inputs`, which reads node 2, and then `verify`. It asserts the reads are `[2, 1]` but the stored dependencies are only `[Node(1, root)]`. That shows the earlier read did not leak into the new context.\n   - `input_checking_and_execution_keep_separate_observations` in `tests/contracts.rs` makes the same check from the other side. After `check_inputs` and a failed load, the new execution's record has only its own node-2 dependency.\n\n2. **The context identifies the source node.**\n   - In `agent_edge_tools_record_selections_without_validating_targets`, the `EdgeReview` criterion branches on `ctx.node_id()` equalling node 1. It asks the agent only in that case, so a wrong source node would change the outcome.\n   - The recorded dependencies in that test are keyed to node 1.\n   - `concurrent_single_node_validations_keep_separate_traces` asserts that each record's dependencies are keyed to the node being verified.\n\n3. **`Criterion::execute` is called with that context.**\n   - The reading, edge-tool and agent dependencies recorded in the tests above can only arise from the context passed into `execute`.\n   - `criteria_keep_typed_answers_and_persist_only_when_requested` asserts that `executions` counts one run per `verify`: `(1, 0)` after the first call and `(4, 3)` at the end. It also asserts that saved records are ignored, so `verify` always executes.\n\n4. **The completed answer, including a negative assessment, and the captured dependencies form the returned `Fingerprinted`.**\n   - `caller_reuses_negative_answers_and_compares_revisions_explicitly` asserts `!value.output().result`, that nothing is stored until requested, and that the empty dependencies persist.\n   - `criteria_keep_typed_answers_and_persist_only_when_requested` asserts `value.output() == &negative`, plus `source_node_id`, `criterion_path`, `version` and empty `dependencies`.\n   - `changing_one_criteria_input_does_not_invalidate_another` asserts a negative replacement answer together with the exact `Node(3)` dependency.\n   - `domain_persists_and_reuses_a_negative_validation_through_the_sdk` in `src/authoring/sdk.rs` asserts a negative judgment is returned, stored, reloaded and non-empty in dependencies.\n\nI found no unreferenced relevant tests and no gaps.",
+  "rationale": "I judge that the marked tests adequately check `requirements.sdk.graph.running-criteria.validate_node`. I did not request implementation source. The tests give enough evidence on each obligation.\n\n**Obligations and the tests that cover them**\n\n1. **A fresh `ValidationContext` per call, identifying the source node.**\n   - `concurrent_single_node_validations_keep_separate_traces` runs three verifications at once. It asserts that each stored record holds only its own node's `Dependency::Node` and `OutgoingEdges` entries. That shows each call has its own context and that the context identifies its own source node.\n   - `historical_freshness_reads_do_not_enter_the_replacement_trace` calls `check_inputs` on a validator, which reads node 2, and then calls `verify` on that same validator. The stored dependencies are only `[Node(1, \"root\")]`. State carried over from an earlier operation would break this.\n   - `agent_executions_isolate_conversations_and_dependency_traces` runs two same-node, same-criterion executions concurrently. It asserts that alpha's dependencies differ from beta's, because beta follows an edge and alpha does not.\n   - `agent_edge_tools_record_selections_without_validating_targets` checks per-context dependency capture and that a failed or rejected tool call adds no dependency.\n\n2. **`Criterion::execute` is called with that context.** Several tests only pass if `execute` ran with the context supplied by `verify`:\n   - `criteria_keep_typed_answers_and_persist_only_when_requested` asserts the execution counts. It also asserts that no saved record is used during execution.\n   - `input_checking_and_execution_keep_separate_observations` asserts that reads made inside `execute` appear as the dependencies.\n   - `changing_one_criteria_input_does_not_invalidate_another` and `validation_and_answer_need_send_without_sync` also exercise `execute` through `verify`.\n\n3. **The completed answer, including a negative assessment, forms the returned `Fingerprinted`.**\n   - `caller_reuses_negative_answers_and_compares_revisions_explicitly` asserts `!value.output().result` from `verify`. It also checks the criterion version.\n   - `criteria_keep_typed_answers_and_persist_only_when_requested` asserts `value.output() == &negative`, `source_node_id`, `criterion_path`, `version`, and empty dependencies. It covers typed outputs of several kinds.\n   - `domain_persists_and_reuses_a_negative_validation_through_the_sdk` shows a negative `determination: false` answer returned unchanged by `verify_with_agent`.\n   - `validation_and_answer_need_send_without_sync` and `input_checking_and_execution_keep_separate_observations` assert that other output values are returned correctly.\n\n4. **Captured dependencies form the returned `Fingerprinted`** (under the cited `requirements.sdk.graph.evidence.inputs`).\n   - The tests above assert `dependencies()` or the stored dependencies for node reads, outgoing-edge selections, and empty traces.\n   - `changing_one_criteria_input_does_not_invalidate_another` and `input_checking_and_execution_keep_separate_observations` assert that the replacement's dependencies are exactly the fresh reads.\n\n**Gaps:** none. The requirement states no error path, so I did not require one. A violating implementation would fail these tests. Examples are reusing a context across calls, dropping a negative answer, or omitting or misattributing dependencies.",
   "references": "41e6dcdbfd470c9ed07409b2b2f48fe8beedbca3371b0415019824d74a5b9d64",
   "inputs": [
     {
@@ -50,7 +50,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[agent_executions_isolate_conversations_and_dependency_traces]",
-      "hash": "bc002f615fc9d34843968bf5d623070ae0e47d49742cd8ffd45b5868e494a857"
+      "hash": "056d0e24c13d4598d0ca252b07b88f5943e47267f99859790a84f3575cf78f38"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -158,8 +158,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "9aa1073d5ee002f1d6850b22d808b6c689324d5d67f2256a70dd5deeb91dd982"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "056d0e24c13d4598d0ca252b07b88f5943e47267f99859790a84f3575cf78f38"
         }
       ]
     },
@@ -175,8 +175,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "334491ad721d43076eef1db4692d0f635df245ff55e675eb45ef1a45a1dd7f43"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b1c00c1e246a9d3cad5d832802238ee07b4387536a473825251974c9a82c5923"
         }
       ]
     },
@@ -192,8 +192,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "c24394029c6167c614cb4fdd86c3dff8bab9dfd220c8c149ebcc9e9b9692ad29"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "94241f1b60474ad3dd5ec6c7b17e44b2d7ed0723861f7bd6d8b6e88446038024"
         }
       ]
     },
@@ -209,8 +209,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "33fe32033234ab722c1a97539319554106d9f7b74dbfcccafac552743ff8d105"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "4050d7164d344983064df2ae023af8d39fc28f0cfe0437e2e558d3f65111498c"
         }
       ]
     },
@@ -226,8 +226,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "a158b933c1595082748de465ad9b4c1e4b4f58e0a50d16d56d2efcede1795db4"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "5013e59de848fef5d0de348958c93db5e4030fbf79d55559833aeaca30e2e544"
         }
       ]
     },
@@ -243,8 +243,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "b2aa59812b415b1de724515125462a57ef9f47d53921320f7a17a982d8e93a7b"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "f47c40151c7d8ba4e5cd3b84d1c8d19288a02beb3f6148a79bdbcf6bc857964c"
         }
       ]
     },
@@ -260,8 +260,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "3e625b62eef1073fd4d9fe0eb45b3f91ca56b19fce4677b38cf10cdfecd3ca8d"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "5e0c5d4bf17a4bd3acb69b36972940c3aebec22800b81b85faa413f5e6d28c3e"
         }
       ]
     },
@@ -277,8 +277,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "1be88acc5d93539e00453f63d723b8561938751e9a85767100ce738321c94a8d"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "18077299d4d19283dc23552df4fc72593db7ed97af1357da34df047c6438cfff"
         }
       ]
     },
@@ -294,8 +294,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "185edd9bc444aee35803058de24cd8929e8f70024e6a62a3c08a8a4fdc688c3c"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "2bf006acebdb8fc3df250c66c66a218d7e2e7d0edd1566f398067c9a9012f735"
         }
       ]
     },
@@ -311,8 +311,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "8fc4b1827f0e77c8cf2cc2b8a86bf3c354ea3c3c6faa5f2f028b67a412df608f"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "f646cec767628cbb0b64492348a20651b5df513feaea369f5e1fdc33ef470ff7"
         }
       ]
     }

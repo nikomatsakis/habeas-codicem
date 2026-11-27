@@ -15,6 +15,7 @@ use serde_json::json;
 #[derive(Clone)]
 pub struct ToolDelivery<N, L = ()> {
     pub text: String,
+    pub input_count: usize,
     pub dependencies: Vec<Dependency<N, L>>,
 }
 
@@ -198,20 +199,20 @@ where
     // {impl}`requirements.sdk.graph.agent-harness.submission`
     fn run<'a>(
         &'a self,
-        request: AgentRequest<NodeId<D>>,
+        request: AgentRequest<'a, NodeId<D>, D::Error>,
         inspection: &'a ValidationContext<'_, D>,
-    ) -> BoxFuture<'a, Result<Value, std::io::Error>> {
-        self.run_with_domain_tools(request, inspection, &[])
+    ) -> BoxFuture<'a, Result<(), super::AgentError<D::Error>>> {
+        Box::pin(self.run_with_domain_tools(request, inspection, &[]))
     }
 }
 
 impl<P: CompletionProvider, T> ToolAgent<P, T> {
-    pub(super) fn run_with_domain_tools<'a, D>(
-        &'a self,
-        request: AgentRequest<NodeId<D>>,
-        inspection: &'a ValidationContext<'_, D>,
-        domain_tools: &'a [std::sync::Arc<dyn crate::agent::RegisteredTool<D>>],
-    ) -> BoxFuture<'a, io::Result<Value>>
+    pub(super) async fn run_with_domain_tools<D>(
+        &self,
+        request: AgentRequest<'_, NodeId<D>, D::Error>,
+        inspection: &ValidationContext<'_, D>,
+        domain_tools: &[std::sync::Arc<dyn crate::agent::RegisteredTool<D>>],
+    ) -> Result<(), super::AgentError<D::Error>>
     where
         D: Domain,
         D::NodeData: serde::Serialize + serde::de::DeserializeOwned + schemars::JsonSchema,
@@ -219,51 +220,61 @@ impl<P: CompletionProvider, T> ToolAgent<P, T> {
         D::Error: std::fmt::Display,
         T: ToolFactory<D>,
     {
-        Box::pin(async move {
-            let submit = request.submission_name.clone();
-            let tools = SessionTools::new(self.tools.session());
-            let current = serde_json::to_string(&request.current_node)?;
-            let mut texts = Vec::new();
-            for input in &request.inputs {
-                let reference = serde_json::to_string(&input.node)?;
-                texts.push(format!("{}\nNode: {reference}", input.text));
-            }
-            let subject = format!(
-                "{}\n\nFinish by calling {submit} with {{\"result\": ...}}. Text alone is not a result. You may inspect nodes by domain ID with read_node and outgoing_edges.\nCurrent node: {current}",
-                texts.join("\n\n")
-            );
-            let mut session = GraphSession {
-                inspection,
-                domain_tools,
-                tools,
-                pending: Vec::new(),
-            };
-            // The exact reusable prefix is the provider's leading preamble.
-            let mut opening = CompletionRequest::new(Message::user(subject));
-            if !request.prefix.is_empty() {
-                opening = opening.preamble(request.prefix);
-            }
-            converse(
-                inspection,
-                &self.provider,
-                &mut session,
-                opening,
-                request.inputs,
-                request.result_schema,
-                &submit,
-            )
-            .await
-        })
+        let submit = request.submission_name.clone();
+        let tools = SessionTools::new(self.tools.session());
+        let current = serde_json::to_string(&request.current_node).map_err(io::Error::other)?;
+        let mut texts = Vec::new();
+        for input in &request.inputs {
+            let reference = serde_json::to_string(&input.node).map_err(io::Error::other)?;
+            texts.push(format!("{}\nNode: {reference}", input.text));
+        }
+        let subject = format!(
+            "{}\n\nFinish by calling {submit} with {{\"result\": ...}}. Text alone is not a result. You may inspect nodes by domain ID with read_node and outgoing_edges.\nCurrent node: {current}",
+            texts.join("\n\n")
+        );
+        let mut session = GraphSession::new(inspection, domain_tools, tools);
+        // The exact reusable prefix is the provider's leading preamble.
+        let mut opening = CompletionRequest::new(Message::user(subject));
+        if !request.prefix.is_empty() {
+            opening = opening.preamble(request.prefix);
+        }
+        converse(
+            inspection,
+            &self.provider,
+            &mut session,
+            None,
+            opening,
+            request.inputs,
+            request.result_schema,
+            &submit,
+            request.finish,
+        )
+        .await
     }
 }
 
 // {cite}`habeas:util`
 // {impl}`requirements.sdk.graph.validation-context.shared_context`
-struct GraphSession<'a, 'd, D: Domain> {
+pub(super) struct GraphSession<'a, 'd, D: Domain> {
     inspection: &'a ValidationContext<'d, D>,
     domain_tools: &'a [std::sync::Arc<dyn crate::agent::RegisteredTool<D>>],
     tools: SessionTools<'a, D>,
     pending: Vec<Dependency<NodeId<D>, D::EdgeLabel>>,
+}
+
+impl<'a, 'd, D: Domain> GraphSession<'a, 'd, D> {
+    pub(super) fn new(
+        inspection: &'a ValidationContext<'d, D>,
+        domain_tools: &'a [std::sync::Arc<dyn crate::agent::RegisteredTool<D>>],
+        tools: SessionTools<'a, D>,
+    ) -> Self {
+        Self {
+            inspection,
+            domain_tools,
+            tools,
+            pending: Vec::new(),
+        }
+    }
 }
 
 impl<D> Conversation for GraphSession<'_, '_, D>
@@ -336,12 +347,12 @@ where
     // {impl}`requirements.sdk.graph.validation-context.outgoing_edges.inputs`
     // {impl}`requirements.sdk.graph.validation-context.pages.behavior`
     // {impl}`requirements.sdk.graph.validation-context.pages.inputs`
-    async fn dispatch(&mut self, name: &str, arguments: &Value) -> io::Result<String> {
+    async fn dispatch(&mut self, name: &str, arguments: &Value) -> io::Result<(String, usize)> {
         match name {
             "read_node" => {
                 let delivery = self.tools.read_node(self.inspection, arguments)?;
                 self.pending.extend(delivery.dependencies);
-                Ok(delivery.text)
+                Ok((delivery.text, delivery.input_count))
             }
             "outgoing_edges" => {
                 let node = node_argument(
@@ -358,16 +369,19 @@ where
                 let targets = serde_json::to_value(snapshot.content)?;
                 self.pending
                     .push(Dependency::OutgoingEdges(node, label, snapshot.fingerprint));
-                Ok(json!({"targets":targets}).to_string())
+                Ok((json!({"targets":targets}).to_string(), 1))
             }
             _ => {
                 // {impl}`requirements.sdk.graph.agent-harness.domain_tool_inputs`
                 if let Some(tool) = self.domain_tools.iter().find(|tool| tool.name() == name) {
-                    return tool.call(self.inspection, arguments).await;
+                    return tool
+                        .call(self.inspection, arguments)
+                        .await
+                        .map(|text| (text, 0));
                 }
                 let delivery = self.tools.dispatch(name, arguments).await?;
                 self.pending.extend(delivery.dependencies);
-                Ok(delivery.text)
+                Ok((delivery.text, delivery.input_count))
             }
         }
     }
@@ -524,11 +538,11 @@ pub(super) fn node_parameters<N: schemars::JsonSchema, Data: schemars::JsonSchem
 ) -> Value {
     let mut generator = schemars::SchemaGenerator::default();
     let mut parameters = json!({
-        "type":"object", "oneOf":[
-            {"required":["node"],"not":{"anyOf":[{"required":["path"]},{"required":["location"]}]}},
-            {"required":["data"],"not":{"anyOf":[{"required":["node"]},{"required":["path"]},{"required":["location"]}]}},
-            {"required":["path"],"not":{"anyOf":[{"required":["node"]},{"required":["data"]}]}}
-        ], "properties":{"node":generator.subschema_for::<N>(),"data":generator.subschema_for::<Data>(),"path":{"type":"string"},"location":{"type":"string"}}
+        "type":"object",
+        "if":{"required":["path"]},
+        "then":{"not":{"anyOf":[{"required":["node"]},{"required":["data"]}]}},
+        "else":{"anyOf":[{"required":["node"]},{"required":["data"]}],"not":{"required":["location"]}},
+        "properties":{"node":generator.subschema_for::<N>(),"data":generator.subschema_for::<Data>(),"path":{"type":"string"},"location":{"type":"string"}}
     });
     if let Some(label) = label_schema {
         parameters["required"] = json!(["label"]);

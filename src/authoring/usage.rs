@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -7,7 +7,6 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use rig_core::completion::Usage;
 use serde::Serialize;
-use serde_json::{Value, json};
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -35,27 +34,12 @@ pub(super) struct UsageRecord {
     pub determination: Option<String>,
     pub evidence_output: &'static str,
     pub evidence_written: bool,
-    inputs: Vec<InputUsage>,
     requests: Vec<RequestUsage>,
-    tool_calls: BTreeMap<String, usize>,
     tool_failures: BTreeMap<String, usize>,
     tool_skipped: BTreeMap<String, usize>,
     pub(super) provider_usage: trust_but_verify::graph::UsageStats,
     request_count: usize,
-    tool_call_count: usize,
     tokens: TokenCounts,
-}
-
-#[derive(Serialize)]
-struct InputUsage {
-    origin: String,
-    kind: &'static str,
-    bytes: usize,
-    lines: usize,
-    components: usize,
-    unique: bool,
-    submitted_in_request: Option<usize>,
-    sent_in_request: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -93,7 +77,6 @@ pub(super) struct UsageLog {
     pub record: UsageRecord,
     pub path: PathBuf,
     started: Instant,
-    seen: BTreeSet<String>,
     active_request: Option<(usize, Instant)>,
     /// Called once, when the conversation's first provider request
     /// finishes, whether or not it succeeded.
@@ -126,7 +109,7 @@ impl UsageLog {
             })?;
         let log = Self {
             record: UsageRecord {
-                version: 1,
+                version: 2,
                 run_id,
                 project_root: root.to_owned(),
                 subject: subject.to_owned(),
@@ -143,19 +126,15 @@ impl UsageLog {
                 determination: None,
                 evidence_output: "file",
                 evidence_written: false,
-                inputs: Vec::new(),
                 requests: Vec::new(),
-                tool_calls: BTreeMap::new(),
                 tool_failures: BTreeMap::new(),
                 tool_skipped: BTreeMap::new(),
                 provider_usage: Default::default(),
                 request_count: 0,
-                tool_call_count: 0,
                 tokens: TokenCounts::default(),
             },
             path,
             started: Instant::now(),
-            seen: BTreeSet::new(),
             active_request: None,
             first_request_finished: None,
         };
@@ -168,70 +147,8 @@ impl UsageLog {
         next.first_request_finished = self.first_request_finished.take();
     }
 
-    /// Search snippets contribute usage metadata, never evidence inputs.
-    // {impl}`requirements.authoring.usage_inputs`
-    pub(super) fn search_result(&mut self, result: &Value) {
-        for entry in result["matches"].as_array().into_iter().flatten() {
-            let Some(lines) = entry["lines"].as_array() else {
-                continue;
-            };
-            let text: Vec<_> = lines
-                .iter()
-                .filter_map(|line| line["text"].as_str())
-                .collect();
-            let input =
-                json!({"search": true, "file": entry["file"], "item": entry["item"], "text": text});
-            self.prepared("ripgrep", &[input]);
-        }
-    }
-
-    pub(super) fn prepared(&mut self, origin: &str, inputs: &[Value]) {
-        for input in inputs {
-            let kind = if input.get("search").is_some() {
-                "search"
-            } else if input.get("item").is_some() {
-                "outline"
-            } else if input.get("requirements").is_some() {
-                "requirements"
-            } else if input.get("builtin").is_some() {
-                // A built-in's fixed text, supplied but not recorded as evidence.
-                "builtin"
-            } else {
-                "definition"
-            };
-            let text = input["text"]
-                .as_array()
-                .map(Vec::as_slice)
-                .unwrap_or_default();
-            let bytes = text
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::len)
-                .sum::<usize>()
-                + text.len().saturating_sub(1);
-            self.record.inputs.push(InputUsage {
-                origin: origin.to_owned(),
-                kind,
-                bytes,
-                lines: text.len(),
-                components: input
-                    .get("matches")
-                    .and_then(Value::as_array)
-                    .map_or(1, Vec::len),
-                unique: self.seen.insert(input.to_string()),
-                submitted_in_request: None,
-                sent_in_request: None,
-            });
-        }
-    }
-
     pub(super) fn begin_request(&mut self) -> io::Result<usize> {
         let index = self.record.requests.len();
-        for input in &mut self.record.inputs {
-            if input.submitted_in_request.is_none() {
-                input.submitted_in_request = Some(index);
-            }
-        }
         self.record.requests.push(RequestUsage {
             outcome: "unfinished".into(),
             elapsed_ms: 0,
@@ -269,13 +186,6 @@ impl UsageLog {
         failure: Option<(Option<u16>, Option<String>)>,
     ) -> io::Result<()> {
         let tokens = usage.map(TokenCounts::from_usage).unwrap_or_default();
-        if usage.is_some() {
-            for input in &mut self.record.inputs {
-                if input.sent_in_request.is_none() && input.submitted_in_request.is_some() {
-                    input.sent_in_request = Some(index);
-                }
-            }
-        }
         self.record.requests[index] = RequestUsage {
             outcome: if usage.is_some() {
                 "completed"
@@ -302,8 +212,6 @@ impl UsageLog {
 
     pub(super) fn tool(&mut self, name: &str, failed: bool) {
         let name = tool_name(name);
-        *self.record.tool_calls.entry(name.to_owned()).or_default() += 1;
-        self.record.tool_call_count += 1;
         if failed {
             *self
                 .record
@@ -315,9 +223,7 @@ impl UsageLog {
 
     pub(super) fn skipped_tool(&mut self, name: &str) {
         let name = tool_name(name);
-        *self.record.tool_calls.entry(name.to_owned()).or_default() += 1;
         *self.record.tool_skipped.entry(name.to_owned()).or_default() += 1;
-        self.record.tool_call_count += 1;
     }
 
     // {impl}`requirements.configuration.state_location`
@@ -425,7 +331,7 @@ fn timestamp() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{Value, json};
     use std::time::Duration;
 
     // {cite}`habeas:util`
@@ -452,104 +358,6 @@ mod tests {
         log.end_request(second, 1, Some(&Usage::new()), None)
             .unwrap();
         assert_eq!(calls.load(Ordering::Relaxed), 1);
-    }
-
-    // {test}`requirements.authoring.usage_inputs`
-    // {test}`requirements.authoring.usage_storage`
-    #[test]
-    fn input_metadata_counts_components_and_reads_without_persisting_source() {
-        let state = tempfile::tempdir().unwrap();
-        let mut log =
-            UsageLog::start(state.path(), Path::new("/project"), "requirements.case").unwrap();
-        let file = json!({
-            "file": "private-source-file.rs", "item": "fn[private_item]", "hash": "0".repeat(64),
-            "kind": "fn", "line_start": 1, "line_end": 2,
-            "text": ["λ", "DO_NOT_LOG_SOURCE"]
-        });
-        let requirements = json!({
-            "requirements": "private.match.*",
-            "matches": ["private.match.a", "private.match.b"],
-            "text": ["PRIVATE_REQUIREMENT_TEXT"]
-        });
-        log.prepared("mandatory", &[file.clone(), requirements]);
-        log.prepared("habeas", &[file]);
-        let search = json!({"matches":[{"file":"private-source-file.rs","item":"fn[private_item]","lines":[{"text":"λ"},{"text":"DO_NOT_LOG_SOURCE"}]}]});
-        log.search_result(&search);
-        log.search_result(&search);
-
-        log.save().unwrap();
-        let prepared = persisted(&log);
-        assert_eq!(prepared["inputs"][0]["kind"], "outline");
-        assert_eq!(prepared["inputs"][0]["bytes"], "λ\nDO_NOT_LOG_SOURCE".len());
-        assert_eq!(prepared["inputs"][0]["lines"], 2);
-        assert_eq!(prepared["inputs"][1]["components"], 2);
-        assert_eq!(prepared["inputs"][1]["kind"], "requirements");
-        assert_eq!(
-            prepared["inputs"][1]["bytes"],
-            "PRIVATE_REQUIREMENT_TEXT".len()
-        );
-        assert_eq!(prepared["inputs"][1]["lines"], 1);
-        assert_eq!(prepared["inputs"][0]["unique"], true);
-        assert_eq!(prepared["inputs"][2]["unique"], false);
-        assert_eq!(prepared["inputs"][2]["origin"], "habeas");
-        assert!(prepared["inputs"][0]["submitted_in_request"].is_null());
-        assert!(prepared["inputs"][0]["sent_in_request"].is_null());
-        assert_eq!(prepared["inputs"][3]["kind"], "search");
-        assert_eq!(prepared["inputs"][3]["bytes"], "λ\nDO_NOT_LOG_SOURCE".len());
-        assert_eq!(prepared["inputs"][3]["lines"], 2);
-        assert_eq!(prepared["inputs"][3]["unique"], true);
-        assert_eq!(prepared["inputs"][4]["unique"], false);
-        assert!(prepared["inputs"][3]["sent_in_request"].is_null());
-        log.prepared(
-            "habeas",
-            &[
-                json!({"definition":"private.term","text":["PRIVATE_TERM_TEXT","λ"]}),
-                json!({"builtin":"habeas:util","text":["PRIVATE_BUILTIN_TEXT"]}),
-            ],
-        );
-        log.save().unwrap();
-        let kinds = persisted(&log);
-        assert_eq!(kinds["inputs"][5]["kind"], "definition");
-        assert_eq!(kinds["inputs"][5]["bytes"], "PRIVATE_TERM_TEXT\nλ".len());
-        assert_eq!(kinds["inputs"][5]["lines"], 2);
-        assert_eq!(kinds["inputs"][6]["kind"], "builtin");
-        assert_eq!(kinds["inputs"][6]["bytes"], "PRIVATE_BUILTIN_TEXT".len());
-        assert_eq!(kinds["inputs"][6]["lines"], 1);
-        let index = log.begin_request().unwrap();
-        let submitted = persisted(&log);
-        assert_eq!(submitted["inputs"][0]["submitted_in_request"], index);
-        assert!(submitted["inputs"][0]["sent_in_request"].is_null());
-        log.end_request(index, 7, Some(&Usage::new()), None)
-            .unwrap();
-        log.record.determination = Some("FIXME".into());
-        log.record.evidence_written = true;
-        log.finish("completed").unwrap();
-        let sent = persisted(&log);
-        assert_eq!(sent["inputs"][0]["sent_in_request"], index);
-        assert_eq!(sent["inputs"][3]["sent_in_request"], index);
-        assert_eq!(sent["requests"][0]["outcome"], "completed");
-        assert_eq!(sent["outcome"], "completed");
-        assert_eq!(sent["determination"], "FIXME");
-        assert_eq!(sent["evidence_written"], true);
-        assert!(sent["tokens"]["input"].is_null());
-        assert!(sent["tokens"]["output"].is_null());
-        assert_eq!(sent["tokens"]["complete"], false);
-        let serialized = fs::read_to_string(&log.path).unwrap();
-        for private in [
-            "DO_NOT_LOG_SOURCE",
-            "PRIVATE_REQUIREMENT_TEXT",
-            "private-source-file.rs",
-            "private_item",
-            "private.match",
-            "private.term",
-            "PRIVATE_TERM_TEXT",
-            "PRIVATE_BUILTIN_TEXT",
-        ] {
-            assert!(
-                !serialized.contains(private),
-                "stored source content: {private}"
-            );
-        }
     }
 
     // {test}`requirements.authoring.usage_requests`
@@ -725,7 +533,6 @@ mod tests {
     }
 
     // {test}`requirements.authoring.usage_requests`
-    // {test}`requirements.authoring.usage_inputs`
     // {test}`requirements.authoring.usage_storage`
     #[test]
     fn tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text() {
@@ -742,24 +549,22 @@ mod tests {
         log.skipped_tool("OTHER_MODEL_TEXT");
         log.finish("completed").unwrap();
         let value = persisted(&log);
-        assert_eq!(value["tool_call_count"], 8);
-        assert_eq!(value["tool_calls"]["list_files"], 1);
-        assert_eq!(value["tool_calls"]["ast_grep"], 1);
-        assert_eq!(value["tool_calls"]["github"], 1);
-        assert_eq!(value["tool_calls"]["outline"], 1);
         assert_eq!(value["tool_failures"]["habeas"], 1);
         assert_eq!(value["tool_skipped"]["ripgrep"], 1);
-        assert_eq!(value["tool_calls"]["unknown"], 2);
         assert_eq!(value["tool_failures"]["unknown"], 1);
         assert_eq!(value["tool_skipped"]["unknown"], 1);
-        assert!(value["inputs"].as_array().unwrap().is_empty());
+        assert!(
+            value["provider_usage"]["tools"]
+                .as_object()
+                .unwrap()
+                .is_empty()
+        );
         assert!(value["tokens"]["input"].is_null());
         assert_eq!(value["tokens"]["complete"], false);
         let serialized = fs::read_to_string(&log.path).unwrap();
         assert!(!serialized.contains("MODEL_TEXT"));
     }
 
-    // {test}`requirements.authoring.usage_inputs`
     // {test}`requirements.authoring.usage_requests`
     // {test}`requirements.authoring.usage_requests.failures`
     #[test]
@@ -767,10 +572,6 @@ mod tests {
         let state = tempfile::tempdir().unwrap();
         let mut log =
             UsageLog::start(state.path(), Path::new("/project"), "requirements.case").unwrap();
-        log.prepared(
-            "mandatory",
-            &[json!({"file": "source", "text": ["source content"]})],
-        );
         let first = log.begin_request().unwrap();
         log.end_request(
             first,
@@ -779,7 +580,6 @@ mod tests {
             Some((Some(429), Some("ThrottlingException".to_owned()))),
         )
         .unwrap();
-        assert!(persisted(&log)["inputs"][0]["sent_in_request"].is_null());
         // A failed request records its status, code, and retry, but no
         // message text.
         assert_eq!(
@@ -795,8 +595,6 @@ mod tests {
         log.end_request(retry, 3, Some(&Usage::new()), None)
             .unwrap();
         let value = persisted(&log);
-        assert_eq!(value["inputs"][0]["submitted_in_request"], first);
-        assert_eq!(value["inputs"][0]["sent_in_request"], retry);
         assert_eq!(value["request_count"], 2);
     }
 }

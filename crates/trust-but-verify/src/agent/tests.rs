@@ -529,9 +529,24 @@ async fn agent_executions_isolate_conversations_and_dependency_traces() {
     .await
     .unwrap();
     let (alpha, beta) = (alpha.unwrap(), beta.unwrap());
+    // The two prompt labels distinguish executions of the same criterion.
+    assert_eq!(alpha.criterion_path(), beta.criterion_path());
+    assert_eq!(alpha.source_node_id(), beta.source_node_id());
     assert_eq!(alpha_validator.usage().attempts, 3);
     assert_eq!(beta_validator.usage().attempts, 3);
     assert_eq!(cache.usage().attempts, 6);
+    assert!(initial.tools.is_empty());
+    let totals = cache.usage().tools;
+    assert_eq!(totals.len(), 3);
+    for name in ["read_node", "get_next_page", "submit_result"] {
+        let a = &alpha_validator.usage().tools[name];
+        let b = &beta_validator.usage().tools[name];
+        assert_eq!((a.calls, b.calls, totals[name].calls), (1, 1, 2));
+        assert_eq!(totals[name].result_bytes, a.result_bytes + b.result_bytes);
+        if name != "submit_result" {
+            assert!(a.result_bytes > 0 && b.result_bytes > 0);
+        }
+    }
     assert_eq!(initial.attempts, 0);
     assert_eq!(alpha.output(), "alpha");
     assert_eq!(beta.output(), "beta");
@@ -938,10 +953,104 @@ async fn typed_submission_references_resolve_and_invalid_results_are_agent_error
         let agent = ToolAgent::new(Script::new(vec![Some(calls)]));
         let ctx = ValidationContext::with_agent(&graph, graph.cache().intern_node(Node(1)), &agent);
         assert!(matches!(
-            ctx.ask::<bool>().await,
+            ctx.ask::<bool>()
+                .vet_answer(|_| panic!("invalid submission reached vetting"))
+                .await,
             Err(ValidationError::Agent(_))
         ));
     }
+}
+
+// {test}`requirements.sdk.graph.agent-calls.vet_answer`
+// {test}`requirements.sdk.graph.agent-calls.vet_answer.ok`
+// {test}`requirements.sdk.graph.agent-calls.vet_answer.corrections`
+// {test}`requirements.sdk.graph.agent-calls.VetResult`
+// {test}`requirements.sdk.graph.agent-calls.judge.submission`
+#[tokio::test]
+async fn vetting_collects_corrections_and_rechecks_every_callback() {
+    use crate::request::VetResult::*;
+    let graph = Memory::new("source".into());
+    let agent = ToolAgent::new(Script::new(vec![
+        Some(vec![("submit_result", json!({"result":false}))]),
+        Some(vec![("submit_result", json!({"result":true}))]),
+    ]));
+    let ctx = ValidationContext::with_agent(&graph, graph.cache().intern_node(Node(1)), &agent);
+    let mut seen = Vec::new();
+    let answer = ctx
+        .ask::<bool>()
+        .vet_answer(|answer| {
+            seen.push(*answer);
+            Ok(Accept)
+        })
+        .contents_of_current_node()
+        .vet_answer(|answer| {
+            Ok(if *answer {
+                Accept
+            } else {
+                CorrectAndTryAgain("first correction".into())
+            })
+        })
+        .vet_answer({
+            let mut first = true;
+            move |_| {
+                Ok(if std::mem::take(&mut first) {
+                    CorrectAndTryAgain("second correction".into())
+                } else {
+                    Accept
+                })
+            }
+        })
+        .await
+        .unwrap();
+    assert!(answer);
+    assert_eq!(seen, [false, true]);
+    let requests = agent.provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests[1]
+            .chat_history
+            .starts_with(&requests[0].chat_history)
+    );
+    assert!(matches!(
+        &requests[1].chat_history[requests[0].chat_history.len()],
+        Message::Assistant { .. }
+    ));
+    let Some(Message::User { content }) = requests[1].chat_history.last() else {
+        panic!("expected a tool response with the corrections");
+    };
+    assert_eq!(content.len(), 1);
+    let UserContent::ToolResult(result) = &content[0] else {
+        panic!("expected submit_result feedback")
+    };
+    let feedback = serde_json::to_string(result).unwrap();
+    assert!(feedback.contains("resubmit"));
+    assert!(
+        feedback.contains(r"first correction\nsecond correction"),
+        "{feedback}"
+    );
+}
+
+// {test}`requirements.sdk.graph.agent-calls.vet_answer`
+// {test}`requirements.sdk.graph.agent-calls.judge.submission`
+#[tokio::test]
+async fn vetting_preserves_domain_errors_and_skips_later_callbacks() {
+    use crate::request::VetResult;
+    let graph = Memory::new("source".into());
+    let agent = ToolAgent::new(Script::new(vec![Some(vec![(
+        "submit_result",
+        json!({"result":false}),
+    )])]));
+    let ctx = ValidationContext::with_agent(&graph, graph.cache().intern_node(Node(1)), &agent);
+    let result = ctx
+        .ask::<bool>()
+        .vet_answer(|_| Ok(VetResult::CorrectAndTryAgain("amend".into())))
+        .vet_answer(|_| Err(io::Error::from_raw_os_error(42)))
+        .vet_answer(|_| panic!("called after domain error"))
+        .await;
+    assert!(
+        matches!(result, Err(ValidationError::Graph(error)) if error.raw_os_error() == Some(42))
+    );
+    assert_eq!(agent.provider.requests.lock().unwrap().len(), 1);
 }
 
 // {test}`requirements.sdk.graph.validation-context.read_node.behavior`
@@ -985,6 +1094,7 @@ async fn read_node_accepts_a_domain_id_first_supplied_by_the_agent() {
 // {test}`requirements.sdk.graph.agent-harness.fixed_tools`
 #[tokio::test]
 // {test}`requirements.sdk.graph.validation-context.node_reference`
+// {test}`requirements.sdk.graph.running-criteria.UsageStats`
 async fn graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery() {
     let graph = Memory::new("x".repeat(18_000));
     let agent = ToolAgent::new(Script::new(vec![
@@ -995,6 +1105,8 @@ async fn graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record
     ]));
     let ctx = ValidationContext::with_agent(&graph, graph.cache().intern_node(Node(1)), &agent);
     assert!(ctx.ask::<bool>().await.unwrap());
+    let usage = graph.cache().usage();
+    assert_eq!((usage.prepared_inputs, usage.delivered_inputs), (3, 3));
     let observations = ctx.dependencies();
     assert_eq!(observations.len(), 2);
     assert!(
@@ -1028,6 +1140,39 @@ async fn graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record
     let ctx = ValidationContext::with_agent(&graph, graph.cache().intern_node(Node(1)), &failed);
     assert!(ctx.ask::<bool>().contents_of_current_node().await.is_err());
     assert_eq!(ctx.dependencies().len(), 1);
+    let usage = graph.cache().usage();
+    assert_eq!((usage.prepared_inputs, usage.delivered_inputs), (6, 4));
+}
+
+// {test}`requirements.sdk.graph.running-criteria.UsageStats`
+#[tokio::test]
+async fn inputs_count_each_opening_insertion_and_each_repeated_node_read() {
+    let graph = Memory::new("content".into());
+    let node = graph.cache().intern_node(Node(1));
+    let failed = ToolAgent::new(Script::new(vec![None]));
+    let ctx = ValidationContext::with_agent(&graph, node, &failed);
+    assert!(
+        ctx.ask::<bool>()
+            .contents_of_current_node()
+            .contents_of_successors(Label)
+            .contents_of_current_node()
+            .await
+            .is_err()
+    );
+    let stats = graph.cache().usage();
+    assert_eq!((stats.prepared_inputs, stats.delivered_inputs), (3, 0));
+
+    let agent = ToolAgent::new(Script::new(vec![
+        Some(vec![
+            ("read_node", json!({"node":node})),
+            ("read_node", json!({"node":node})),
+        ]),
+        Some(vec![("submit_result", json!({"result":true}))]),
+    ]));
+    let ctx = ValidationContext::with_agent(&graph, node, &agent);
+    assert!(ctx.ask::<bool>().await.unwrap());
+    let stats = graph.cache().usage();
+    assert_eq!((stats.prepared_inputs, stats.delivered_inputs), (5, 2));
 }
 
 // {test}`requirements.sdk.sources.provider_observations`
@@ -1264,6 +1409,7 @@ async fn assistant_text_and_provider_failure_cannot_become_typed_results() {
 }
 
 // {test}`requirements.sdk.graph.agent-harness.submission.acceptance`
+// {test}`requirements.sdk.graph.agent-calls.vet_answer.ok`
 #[tokio::test]
 async fn one_submission_accepts_only_its_value_and_skips_other_calls_and_prose() {
     let graph = Memory::new("source".into());
@@ -1288,6 +1434,7 @@ async fn one_submission_accepts_only_its_value_and_skips_other_calls_and_prose()
 // {test}`requirements.sdk.graph.agent-harness.submission.acceptance`
 // {test}`requirements.sdk.graph.agent-harness.submission.reminder`
 #[tokio::test]
+// {test}`requirements.sdk.graph.running-criteria.ToolUsage.calls`
 async fn count_is_checked_before_arguments_and_one_reminder_allows_recovery() {
     let graph = Memory::new("source".into());
     let agent = ToolAgent::new(Script::new(vec![
@@ -1301,6 +1448,10 @@ async fn count_is_checked_before_arguments_and_one_reminder_allows_recovery() {
     ]));
     let ctx = ValidationContext::with_agent(&graph, graph.cache().intern_node(Node(1)), &agent);
     assert!(ctx.ask::<bool>().await.unwrap());
+    let tools = graph.cache().usage().tools;
+    assert_eq!(tools["read_node"].calls, 1);
+    assert_eq!(tools["submit_result"].calls, 1);
+    assert_eq!(tools["submit_result"].result_bytes, 0);
     assert_eq!(*graph.reads.lock().unwrap(), [1]);
     assert_eq!(ctx.dependencies().len(), 1);
     let requests = agent.provider.requests.lock().unwrap();
@@ -1621,12 +1772,19 @@ async fn validators_keep_measured_tokens_after_failed_attempts_and_evidence_reus
     validator.refresh_evidence(question()).await.unwrap();
     let before_failure = graph.cache().usage();
     assert_eq!(before_failure.attempts, 2);
+    assert_eq!(
+        (
+            before_failure.prepared_inputs,
+            before_failure.delivered_inputs
+        ),
+        (1, 1)
+    );
     assert!(
         verify_with_agent(&mut validator, &agent, question())
             .await
             .is_err()
     );
-    for stats in [*validator.usage(), graph.cache().usage()] {
+    for stats in [validator.usage().clone(), graph.cache().usage()] {
         assert_eq!(
             (stats.attempts, stats.retries, stats.failed_attempts),
             (3, 1, 2)
@@ -1645,6 +1803,7 @@ async fn validators_keep_measured_tokens_after_failed_attempts_and_evidence_reus
             ),
             (15, 2)
         );
+        assert_eq!((stats.prepared_inputs, stats.delivered_inputs), (2, 1));
         assert_eq!(stats.cached_input_tokens.reported, 20);
         assert_eq!(stats.cache_creation_input_tokens.missing_attempts, 3);
         assert_eq!(
@@ -1657,6 +1816,8 @@ async fn validators_keep_measured_tokens_after_failed_attempts_and_evidence_reus
     }
     let fresh = Validator::new(&graph);
     let zero = fresh.usage();
+    assert!(zero.tools.is_empty());
+    assert_eq!((zero.prepared_inputs, zero.delivered_inputs), (0, 0));
     assert_eq!(
         (zero.attempts, zero.retries, zero.failed_attempts),
         (0, 0, 0)
@@ -1728,6 +1889,7 @@ async fn cache_retains_usage_across_validators_and_sums_each_token_category() {
         assert_eq!(second.usage().attempts, 1);
     }
     let total = cache.usage();
+    assert_eq!((total.prepared_inputs, total.delivered_inputs), (2, 2));
     assert_eq!(graph.cache().usage().attempts, 3);
     assert_eq!(peer.cache().usage().attempts, 3);
     assert_eq!(
@@ -1771,7 +1933,7 @@ async fn dropping_an_inflight_request_preserves_its_attempt() {
         .await
         .is_err()
     );
-    for stats in [*validator.usage(), graph.cache().usage()] {
+    for stats in [validator.usage().clone(), graph.cache().usage()] {
         assert_eq!(
             (
                 stats.attempts,
@@ -1898,9 +2060,12 @@ impl Conversation for MinimalConversation {
     type Output = bool;
     // {cite}`habeas:util`
     fn tools(&self, submission: Option<ToolDefinition>) -> io::Result<Vec<ToolDefinition>> {
-        let mut tools = vec![serde_json::from_value(
-            json!({"name":"lookup","description":"fixture lookup","parameters":{"type":"object"}}),
-        )?];
+        let mut tools = Vec::new();
+        for name in ["lookup", "read_node"] {
+            tools.push(serde_json::from_value(
+                json!({"name":name,"description":"fixture tool","parameters":{"type":"object"}}),
+            )?);
+        }
         tools.extend(submission);
         Ok(tools)
     }
@@ -1910,11 +2075,14 @@ impl Conversation for MinimalConversation {
         Ok(Submission::Accepted(arguments.as_bool().unwrap()))
     }
     // {cite}`habeas:util`
-    async fn dispatch(&mut self, name: &str, arguments: &Value) -> io::Result<String> {
-        assert_eq!(name, "lookup");
-        assert_eq!(arguments, &json!({"key":"value"}));
+    async fn dispatch(&mut self, name: &str, arguments: &Value) -> io::Result<(String, usize)> {
         self.dispatched += 1;
-        Ok("fixture answer".into())
+        match (name, arguments.get("key").and_then(Value::as_str)) {
+            ("read_node", _) => Ok(("λ".repeat(320), 1)),
+            ("lookup", Some("value")) => Ok(("fixture answer".into(), 0)),
+            ("lookup", _) => Err(io::Error::other("absent")),
+            _ => panic!("unexpected tool {name}"),
+        }
     }
     // {cite}`habeas:util`
     fn cut_off(&mut self, response: &CompletionResponse, limit: u64) -> Vec<Message> {
@@ -1926,12 +2094,61 @@ impl Conversation for MinimalConversation {
     }
 }
 
+// {test}`requirements.sdk.graph.running-criteria.ToolUsage.calls`
+// {test}`requirements.sdk.graph.running-criteria.ToolUsage.result_bytes`
+// {test}`requirements.sdk.graph.running-criteria.usage_by_tool`
+// {test}`requirements.sdk.graph.running-criteria.ToolUsage.replay`
+#[tokio::test(start_paused = true)]
+async fn tool_usage_counts_utf8_results_and_errors_once_across_retries() {
+    let provider = Scenario::new(vec![
+        Ok(tool_turn(
+            FinishReason::ToolCalls,
+            vec![
+                ("read_node", json!({})),
+                ("read_node", json!({})),
+                ("lookup", json!({"key":"missing"})),
+            ],
+        )),
+        Err(throttled()),
+        Ok(tool_turn(
+            FinishReason::ToolCalls,
+            vec![("submit_result", json!({"result":true}))],
+        )),
+    ]);
+    let domain = Memory::new(String::new());
+    let ctx = ValidationContext::new(&domain, domain.cache().intern_node(Node(0)));
+    let mut session = MinimalConversation::default();
+    converse(
+        &ctx,
+        &provider,
+        &mut session,
+        None,
+        CompletionRequest::new("review"),
+        Vec::new(),
+        json!({"type":"boolean"}),
+        "submit_result",
+        |answer| Ok(Submission::Accepted(answer)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(domain.cache().usage().tools).unwrap(),
+        json!({
+            "read_node":{"calls":2,"result_bytes":1280},
+            "lookup":{"calls":1,"result_bytes":6},
+            "submit_result":{"calls":1,"result_bytes":0}
+        })
+    );
+}
+
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
 // {test}`requirements.authoring.provider_backoff`
 // {test}`requirements.authoring.output_limit`
 // {test}`requirements.authoring.submission_count`
 // {test}`requirements.sdk.graph.running-criteria.UsageStats`
 #[tokio::test(start_paused = true)]
+// {test}`requirements.sdk.graph.running-criteria.ToolUsage.calls`
+// {test}`requirements.sdk.graph.running-criteria.ToolUsage.replay`
 async fn generic_conversations_can_use_default_telemetry_through_retry_and_continuation() {
     let provider = Scenario::new(vec![
         Err(throttled()),
@@ -1962,10 +2179,12 @@ async fn generic_conversations_can_use_default_telemetry_through_retry_and_conti
             &ctx,
             &provider,
             &mut session,
+            None,
             CompletionRequest::new("review"),
             Vec::new(),
             json!({"type":"boolean"}),
-            "submit_result"
+            "submit_result",
+            |answer| Ok(Submission::Accepted(answer)),
         )
         .await
         .unwrap()
@@ -1977,6 +2196,13 @@ async fn generic_conversations_can_use_default_telemetry_through_retry_and_conti
         (4, 1, 1)
     );
     assert_eq!(session.dispatched, 1);
+    assert_eq!(usage.tools["lookup"].calls, 1);
+    assert_eq!(
+        usage.tools["lookup"].result_bytes,
+        "fixture answer".len() as u64
+    );
+    assert_eq!(usage.tools["submit_result"].calls, 1);
+    assert_eq!(usage.tools["submit_result"].result_bytes, 0);
     let requests = provider.requests.lock().unwrap();
     assert_eq!(requests.len(), 4);
     assert_eq!(
@@ -2292,6 +2518,7 @@ impl ToolSession<Memory> for CounterSession {
             self.count += 1;
             Ok(ToolDelivery {
                 text: format!("counter={}", self.count),
+                input_count: 0,
                 dependencies: vec![],
             })
         })

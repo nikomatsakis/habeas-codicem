@@ -344,6 +344,10 @@ impl AssessmentSources {
         let root = domain.root.to_path_buf();
         let access = std::sync::Arc::new(SourceAccess::new(&root));
         domain.outlines = domain.outlines.for_authoring(access.clone());
+        domain.outlines.validation = domain
+            .outlines
+            .validation
+            .with_sources(trust_but_verify::sources::Sources::new(&root));
         let definitions = domain.definitions.clone();
         let outlines = domain.outlines.clone();
         let catalog = outlines.reference_catalog(&root);

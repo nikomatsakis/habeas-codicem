@@ -8,6 +8,7 @@ use crate::{
     sdk::{HabeasDomain, HabeasEdgeLabel, HabeasNode, input_fingerprint},
 };
 use std::sync::{Arc, Mutex};
+use trust_but_verify::agent_runtime::AgentError;
 use trust_but_verify::domain::Domain;
 #[cfg(test)]
 use trust_but_verify::domain::NodeContents;
@@ -19,6 +20,7 @@ use trust_but_verify::graph::ValidationError;
 use trust_but_verify::request::Agent;
 use trust_but_verify::request::AgentRequest;
 use trust_but_verify::request::ValidationContext;
+use trust_but_verify::request::VetResult;
 
 // {cite}`habeas:util`
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -42,6 +44,26 @@ struct VerificationAnswer {
     rationale: String,
     #[schemars(skip)]
     applies: Option<bool>,
+}
+
+// {impl}`requirements.authoring.line_numbers.citation`
+fn vet_citation_rationale<R>(rationale: fn(&R) -> &str) -> impl FnMut(&R) -> io::Result<VetResult> {
+    let mut requested_correction = false;
+    move |answer| {
+        let Some(citation) = line_numbers::cited(rationale(answer)) else {
+            return Ok(VetResult::Accept);
+        };
+        if requested_correction {
+            return Err(io::Error::other(format!(
+                "The revised rationale still cites a line number ({citation:?})."
+            )));
+        }
+        requested_correction = true;
+        Ok(VetResult::CorrectAndTryAgain(format!(
+            "The rationale cites a line number ({citation:?}). {}",
+            location_guidance()
+        )))
+    }
 }
 
 // {cite}`habeas:util`
@@ -108,6 +130,9 @@ impl Criterion<HabeasDomain> for Review<'_> {
                     if matches!(data.as_ref(), HabeasNode::Source(_)) {
                         let answer = ctx
                             .ask::<ReviewAnswer<bool>>()
+                            .vet_answer(vet_citation_rationale(|answer: &ReviewAnswer<bool>| {
+                                &answer.rationale
+                            }))
                             .context(&graph.system)
                             .contents_of_current_node()
                             .await?;
@@ -156,6 +181,12 @@ impl Criterion<HabeasDomain> for Review<'_> {
                     request
                         .contents_of_successors(HabeasEdgeLabel::Mandatory)
                         .await?
+                } else if matches!(data.as_ref(), HabeasNode::Source(_)) {
+                    request
+                        .vet_answer(vet_citation_rationale(|answer: &VerificationAnswer| {
+                            &answer.rationale
+                        }))
+                        .await?
                 } else {
                     request.await?
                 };
@@ -181,10 +212,10 @@ where
 {
     fn run<'a>(
         &'a self,
-        request: AgentRequest<NodeId<HabeasDomain>>,
+        request: AgentRequest<'a, NodeId<HabeasDomain>, io::Error>,
         inspection: &'a ValidationContext<'_, HabeasDomain>,
     ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Value, std::io::Error>> + Send + 'a>,
+        Box<dyn std::future::Future<Output = Result<(), AgentError<io::Error>>> + Send + 'a>,
     > {
         Box::pin(async move {
             let graph = &self.1;
@@ -199,12 +230,8 @@ where
             let result = async {
                 let mut mandatory = sources.model_mandatory_inputs();
                 for input in &request.inputs {
-                    let mut rendered: Value =
-                        serde_json::from_str(&input.text).map_err(io::Error::other)?;
-                    let selector = cache
-                        .node_data(input.node)
-                        .expect("supplied node")
-                        .selector()?;
+                    let data = cache.node_data(input.node).expect("supplied node");
+                    let selector = data.selector()?;
                     let target = mandatory
                         .iter_mut()
                         .find(|value| InputSelector::from_input(value).as_ref() == Some(&selector))
@@ -213,6 +240,12 @@ where
                                 "SDK selected an input outside this review's mandatory set",
                             )
                         })?;
+                    if matches!(data.as_ref(), HabeasNode::Source(_)) {
+                        target["text"] = json!(input.text.lines().collect::<Vec<_>>());
+                        continue;
+                    }
+                    let mut rendered: Value =
+                        serde_json::from_str(&input.text).map_err(io::Error::other)?;
                     if let Some(issues) = target.get("github_issues") {
                         rendered["github_issues"] = issues.clone();
                     }
@@ -226,19 +259,23 @@ where
                 };
                 prompt.system = request.prefix;
                 let site = matches!(sources.subject_kind, AssessmentKind::Site(..));
-                let observe = |inputs: &[Value]| {
+                let citation = matches!(sources.subject_kind, AssessmentKind::Citation(_));
+                let observe = |inputs: &[Value]| -> io::Result<()> {
                     for input in inputs {
                         if input.get("builtin").is_some() {
                             continue;
                         }
                         let input = recorded_input(input);
                         if let Some(selector) = InputSelector::from_input(&input) {
-                            inspection.observe_read(
-                                cache.intern_node(HabeasNode::from(&selector)),
-                                input_fingerprint(&input),
-                            );
+                            let node = cache.intern_node(HabeasNode::from(&selector));
+                            if citation || matches!(selector, InputSelector::Outline { .. }) {
+                                inspection.read(&node)?;
+                            } else {
+                                inspection.observe_read(node, input_fingerprint(&input));
+                            }
                         }
                     }
+                    Ok(())
                 };
                 let accepted = |arguments: &Value| {
                     match &graph.operation {
@@ -275,19 +312,21 @@ where
                     (submit, site),
                     accepted,
                     Some(&observe),
+                    request.finish,
                 )
                 .await?;
-                Ok::<_, io::Error>(value)
+                Ok::<_, AgentError<io::Error>>(value)
             }
             .await;
             *graph.conversation.lock().expect("review lease lock") = Some((sources, usage));
             match result {
                 Ok(value) => Ok(value),
-                Err(error) => {
+                Err(AgentError::Conversation(error)) => {
                     let message = error.to_string();
                     *graph.agent_failure.lock().expect("review error lock") = Some(error);
-                    Err(io::Error::other(message))
+                    Err(io::Error::other(message).into())
                 }
+                Err(error) => Err(error),
             }
         })
     }
@@ -348,8 +387,9 @@ struct AssessmentUsage<'d, 'log> {
 
 impl Drop for AssessmentUsage<'_, '_> {
     // {impl}`requirements.authoring.usage_requests`
+    // {impl}`requirements.authoring.usage_inputs`
     fn drop(&mut self) {
-        self.log.record.provider_usage = *self.validator.usage();
+        self.log.record.provider_usage = self.validator.usage().clone();
     }
 }
 
@@ -510,12 +550,8 @@ mod tests {
         assert!(inspection.dependencies().is_empty());
         let delivered = inspection.read(&source).unwrap();
         assert_eq!(
-            serde_json::from_str::<Value>(&delivered.format()).unwrap(),
-            selector.to_model_input(
-                &selector
-                    .resolve(&graph.root, &graph.definitions, &graph.outlines)
-                    .unwrap()
-            )
+            delivered.format(),
+            snapshot.select("fn[helper]").unwrap().format()
         );
         assert!(delivered.format().contains("call();"));
         assert_eq!(
@@ -821,12 +857,16 @@ mod tests {
                 .find(|input| input["item"] == item)
                 .unwrap();
             let node = HabeasNode::from(&InputSelector::from_input(input).unwrap());
+            let graph = HabeasDomain::discover(root.path()).unwrap();
+            let snapshot = graph
+                .node_content(&graph.cache().intern_node(node.clone()))
+                .unwrap();
             assert!(
                 record
                     .dependencies
                     .contains(&trust_but_verify::graph::Dependency::Node(
                         node,
-                        input_fingerprint(input)
+                        snapshot.fingerprint()
                     ))
             );
         }

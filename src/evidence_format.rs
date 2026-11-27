@@ -367,15 +367,20 @@ pub(crate) fn check_native(
                 {
                     record.output["references"].as_str() != Some(&fingerprint.value)
                 }
-                Dependency::Node(node, fingerprint) => !record.output["inputs"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .any(|input| {
-                        crate::inputs::InputSelector::from_input(input).is_some_and(|selector| {
-                            node.selector().ok().as_ref() == Some(&selector)
-                        }) && input_fingerprint(input) == *fingerprint
-                    }),
+                Dependency::Node(node, fingerprint) => {
+                    let Ok(selector) = node.selector() else { return true };
+                    if record.output["inputs"].as_array().into_iter().flatten().any(|input| {
+                        crate::inputs::InputSelector::from_input(input).as_ref() == Some(&selector)
+                            && input_fingerprint(input) == *fingerprint
+                    }) { return false; }
+                    // Historical source reads hashed the full evidence input. Compare those
+                    // digests using their original representation, even without a matching input field.
+                    if matches!(node, HabeasNode::Source(_)) && fingerprint.scheme == "habeas-input-v1" {
+                        return !selector.resolve(&domain.root, &domain.definitions, &domain.outlines)
+                            .is_ok_and(|resolved| input_fingerprint(&selector.to_input(&resolved)) == *fingerprint);
+                    }
+                    true
+                }
                 Dependency::OutgoingEdges(node, _label, fingerprint) => {
                     !(node == subject
                         && matches!(subject, HabeasNode::Requirement(_))

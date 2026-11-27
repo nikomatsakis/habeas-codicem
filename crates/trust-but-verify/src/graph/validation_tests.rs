@@ -372,9 +372,10 @@ struct MockAgent {
 impl Agent<Memory> for MockAgent {
     fn run<'a>(
         &'a self,
-        request: AgentRequest<NodeId<Memory>>,
+        request: AgentRequest<'a, NodeId<Memory>, <Memory as Domain>::Error>,
         inspection: &'a ValidationContext<'_, Memory>,
-    ) -> BoxFuture<'a, Result<Value, std::io::Error>> {
+    ) -> BoxFuture<'a, Result<(), crate::agent_runtime::AgentError<<Memory as Domain>::Error>>>
+    {
         Box::pin(async move {
             if let Some(barrier) = &self.barrier {
                 barrier.wait().await;
@@ -403,11 +404,15 @@ impl Agent<Memory> for MockAgent {
                     .collect(),
                 request.result_schema,
             ));
-            Ok(if self.invalid {
+            let result = if self.invalid {
                 json!({"n": "wrong"})
             } else {
                 json!({"n": n})
-            })
+            };
+            match (request.finish)(result)? {
+                crate::agent_runtime::Submission::Accepted(()) => Ok(()),
+                crate::agent_runtime::Submission::Retry(_) => panic!("unexpected correction"),
+            }
         })
     }
 }

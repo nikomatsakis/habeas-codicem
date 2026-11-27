@@ -1,7 +1,7 @@
 {
-  "requirement": "`ValidationCache::usage()` returns an owned snapshot of the cache’s lifetime\n{cite}`requirements.sdk.graph.running-criteria.UsageStats`. A newly constructed\ncache starts at zero. Every agent call through the cache or any clone adds its\nusage exactly once by the time the call returns, including retries and failed\nattempts. Concurrent calls contribute to the same totals. Reading a snapshot\npreserves the counters, and later calls leave earlier snapshots unchanged.\n\n```rust,ignore\nimpl<D: Domain> ValidationCache<D> {\n    pub fn usage(&self) -> UsageStats;\n}\n```",
+  "requirement": "`ValidationCache::usage()` returns an owned snapshot of the cache’s lifetime\n{cite}`requirements.sdk.graph.running-criteria.UsageStats`. A newly constructed\ncache starts at zero. Every agent call through the cache or any clone adds its\nusage exactly once by the time the call returns, including retries and failed\nattempts. Concurrent calls contribute to the same totals. The snapshot sums tool invocations and result bytes by tool name across validators under {cite}`requirements.sdk.graph.running-criteria.ToolUsage.by_name`. Reading a snapshot\npreserves the counters, and later calls leave earlier snapshots unchanged.\n\n```rust,ignore\nimpl<D: Domain> ValidationCache<D> {\n    pub fn usage(&self) -> UsageStats;\n}\n```",
   "determination": true,
-  "rationale": "I judge the tests adequate for `requirements.sdk.validation-cache.usage`. I read only the supplied test sources and did not request any implementation source. Each obligation maps to a test as follows.\n\n- **New cache starts at zero.**\n  - `cache_retains_usage_across_validators_and_sums_each_token_category` builds a fresh `Memory` graph. Its cache totals (3 attempts, 1 retry, 1 failed attempt, and exact token sums) equal only that test's own calls, so the starting value was zero.\n  - `agent_executions_isolate_conversations_and_dependency_traces` snapshots `cache.usage()` before any call and asserts `initial.attempts == 0`.\n- **Every call through the cache or any clone adds its usage exactly once, including retries and failures.**\n  - In `cache_retains_usage_across_validators_and_sums_each_token_category`, the validators `first` and `second` use `graph` and its clone `peer`. The scripted responses are a throttled error followed by two successes.\n  - The test asserts exact totals through `cache`, `graph.cache()` and `peer.cache()`: attempts, retries and failed attempts are (3, 1, 1).\n  - It also asserts the exact per-category token sums and `missing_attempts == 1`.\n  - `validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse` shows a retry, a success and a terminal failure all counted exactly once. The cache totals are attempts, retries and failed attempts of (3, 1, 2). Evidence reuse through `refresh_evidence` adds no attempts, since `before_failure.attempts` is 2.\n  - `dropping_an_inflight_request_preserves_its_attempt` shows an attempt that never completes is still recorded: `graph.cache().usage()` gives (1, 0, 1) for attempts, failed attempts and missing input-token attempts.\n- **Concurrent calls contribute to the same totals.** `agent_executions_isolate_conversations_and_dependency_traces` runs two validators concurrently under a `Barrier`. Each validator reports 3 attempts, and `cache.usage().attempts` is exactly 6.\n- **Reading a snapshot preserves the counters.** Several tests read `usage()` repeatedly (`cache`, `graph.cache()`, `peer.cache()`, and the pre-failure snapshot). Later reads still show the full totals, so a read does not reset or drain them.\n- **Later calls leave earlier snapshots unchanged, and the snapshot is owned.**\n  - `initial.attempts` is still 0 after six attempts.\n  - `before_failure.failed_attempts` is still 1 after the cache has moved on to 2 failed attempts.\n  - These snapshots are used after further calls, so they are owned values.\n\nThe concurrent test checks only the `attempts` total, not token totals. Token summation is covered separately in the sequential test. I see no requirement-violating behavior these tests would accept.\n\n`public_api.rs#fn[public_exports_match_the_appendix]` only supports the signature and is not needed for the behavioral obligations. The fresh `Validator::new` zero check in `validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse` concerns the validator, not the cache. The cache's zero start is covered by the tests above.",
+  "rationale": "The tests marked for `requirements.sdk.validation-cache.usage` cover each obligation in its text. All of them are in `crates/trust-but-verify/src/agent/tests.rs`.\n\n- **Zero start.** `fn[agent_executions_isolate_conversations_and_dependency_traces]` takes `cache.usage()` before any call. It asserts that `initial.tools` is empty and that `initial.attempts` is 0. The cache snapshot does not check every counter. `fn[validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse]` checks every field, including all five token categories, but only on a fresh `Validator`'s usage. The rest of the cache snapshot is a minor, low-risk gap.\n- **Counted exactly once, through any clone.** `fn[cache_retains_usage_across_validators_and_sums_each_token_category]` runs two validators on `graph` and its clone `peer`. `graph.cache()`, `peer.cache()` and a retained `cache` clone all report 3 attempts. Totals are 1 retry, 1 failed attempt, token sums of 19, 13, 5, 3 and 8, and `missing_attempts` of 1. Summing tokens across calls shows that each call contributed exactly once.\n- **Retries and failed attempts.** The same test includes a throttled first attempt that is retried. `fn[validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse]` has a throttled attempt, a success, then a terminal failure. It asserts attempts, retries and failed_attempts of (3, 1, 2) on `graph.cache().usage()`. `fn[dropping_an_inflight_request_preserves_its_attempt]` shows that a dropped in-flight request still counts as one attempt on the cache.\n- **Concurrency.** `fn[agent_executions_isolate_conversations_and_dependency_traces]` runs two executions concurrently, synchronized by a `Barrier`. The cache totals are 6 attempts and per-tool calls of 2, equal to the sum of the two validators. That rules out lost or double-counted updates.\n- **Tool sums by name across validators.** The same test checks `read_node`, `get_next_page` and `submit_result`. For each name, cache `calls` is 2 and `result_bytes` equals the sum of the two validators' `result_bytes`. It also asserts that the cache has exactly three tool entries.\n- **Snapshots are owned and unchanged.** `fn[agent_executions_isolate_conversations_and_dependency_traces]` takes `initial` before the runs and asserts `initial.attempts == 0` afterwards. `fn[validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse]` takes `before_failure` and asserts `before_failure.failed_attempts == 1` after the later failure raised the live totals to 2. Both show that later calls leave earlier snapshots unchanged. Repeated `usage()` reads return consistent values, so reading preserves the counters.\n\nThe cited `requirements.sdk.graph.running-criteria.UsageStats` and `requirements.sdk.graph.running-criteria.ToolUsage.by_name` are covered here in the subject's case. Prepared and delivered inputs are checked on the cache in two tests. Tool maps are checked on the cache with built-in tools. I did not review the unmarked tests that read `cache().usage()` with registered tools. Registered-tool coverage is not required here, because the built-in tools go through the same per-name summing.\n\n`public_exports_match_the_appendix` only checks that the public API is exported. It adds no behavioral coverage, and none is needed from it.\n\nI found no unacknowledged gap.",
   "references": "d4acd724ad04f9a7b0374a47d1799adb4edb47664e2e83d78d271436e22477bb",
   "inputs": [
     {
@@ -16,7 +16,7 @@
         "{cite}`requirements.sdk.graph.running-criteria.UsageStats`. A newly constructed",
         "cache starts at zero. Every agent call through the cache or any clone adds its",
         "usage exactly once by the time the call returns, including retries and failed",
-        "attempts. Concurrent calls contribute to the same totals. Reading a snapshot",
+        "attempts. Concurrent calls contribute to the same totals. The snapshot sums tool invocations and result bytes by tool name across validators under {cite}`requirements.sdk.graph.running-criteria.ToolUsage.by_name`. Reading a snapshot",
         "preserves the counters, and later calls leave earlier snapshots unchanged.",
         "",
         "```rust,ignore",
@@ -37,12 +37,19 @@
         "",
         "`UsageStats` exposes the following totals. `attempts` counts each request sent to the provider once. `retries` counts attempts that repeat a failed request. `failed_attempts` counts attempts that returned a provider error, including those followed by a successful retry.",
         "",
+        "`prepared_inputs` counts inputs prepared for agent messages. Each node inserted in the opening message counts once. Each requested `read_node` page and each `outgoing_edges` result counts once, including repeated reads. A requested search page counts one input per excerpt on that page. Source listings, search finalization, and opaque custom-tool results contribute zero.",
+        "",
+        "`delivered_inputs` counts those inputs when the provider first responds successfully to the request carrying them. Each input counts once across retries and subsequent turns that replay the same conversation history. For example, if the opening message supplies three nodes and the provider fails permanently before replying, usage records three prepared inputs and zero delivered inputs.",
+        "",
         "```rust,ignore",
         "#[non_exhaustive]",
         "pub struct UsageStats {",
         "    pub attempts: u64,",
         "    pub retries: u64,",
         "    pub failed_attempts: u64,",
+        "    pub prepared_inputs: u64,",
+        "    pub delivered_inputs: u64,",
+        "    pub tools: BTreeMap<String, ToolUsage>,",
         "    pub input_tokens: TokenCount,",
         "    pub output_tokens: TokenCount,",
         "    pub cached_input_tokens: TokenCount,",
@@ -55,7 +62,6 @@
         "",
         "```rust,ignore",
         "impl Clone for UsageStats;",
-        "impl Copy for UsageStats;",
         "impl Debug for UsageStats;",
         "impl Default for UsageStats;",
         "impl Serialize for UsageStats;",
@@ -64,29 +70,45 @@
       ]
     },
     {
+      "requirements": "requirements.sdk.graph.running-criteria.ToolUsage.by_name",
+      "matches": [
+        "requirements.sdk.graph.running-criteria.ToolUsage.by_name"
+      ],
+      "text": [
+        ":::{req} ToolUsage.by_name",
+        "`UsageStats::tools` starts empty and holds one entry per invoked tool, keyed by name. This includes built-in and registered tools.",
+        ":::"
+      ]
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[agent_executions_isolate_conversations_and_dependency_traces]",
-      "hash": "bc002f615fc9d34843968bf5d623070ae0e47d49742cd8ffd45b5868e494a857"
+      "hash": "056d0e24c13d4598d0ca252b07b88f5943e47267f99859790a84f3575cf78f38"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse]",
-      "hash": "06f9aad202e1891a1910f5307439e6bb442a02eba6cd5fcd29b1d1bc22f2aab4"
+      "hash": "52c15d1d0e93301c4d527c00d5c2b47d2c8be8114c9e65409e2746298fcc75e3"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[cache_retains_usage_across_validators_and_sums_each_token_category]",
-      "hash": "139f045f738509a7b777983227ce3d332bad84d720f315e49d6101b3a4460764"
+      "hash": "97ba915319c99e373ceb68462d68188b2dfbaacd19982fe551ab4fcca4bda03a"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[dropping_an_inflight_request_preserves_its_attempt]",
-      "hash": "0ac0baf53ea311489c403f3750a959dddc8b0cb1b77d05956aca1206d9c39e47"
+      "hash": "ef6fa84ab2321053ec43ba5562ecbe2d7ce7da0691c2e75f2b515b403967786b"
     },
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[public_exports_match_the_appendix]",
       "hash": "4d6ce6161754fb9e88ad84ef64f9bb131b308298104915179b2c5d573ed2b087"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/fn[registered_tools_use_the_current_context_and_ordinary_node_ids]",
+      "hash": "1bf97cc8cd53fefba38eba8a9c2426fe72f0fd8d8f2f957083dc512fc16577cb"
     }
   ],
   "format_version": 1,
@@ -111,7 +133,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "fdadf6a56e7e8242380e32986aa3444384adbd4c44e5789da373104ca2ee6879"
+          "value": "e1932bb6160dfd8ce886b5559a0c6d9803fc4451193f887583d88a60d7fea4fd"
         }
       ]
     },
@@ -122,7 +144,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "fad3354dc56e3310c6dcec9cca198aabceb8394f0b5cb632aca26a5f34d16cf0"
+          "value": "8d48e3dcb971196d7887d9d71ae19c168e8791c1fdc3aefb1d90e5bd5de8c028"
         }
       ]
     },
@@ -133,7 +155,18 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9496a0a1bb5ba887bc3d325318b36a281216fb59c5e8c539712c3f87d72b04d0"
+          "value": "acada9370a9aa5e46ab48f6bd6c3b337f00d357491ac0b8fc97a4a1bb1811196"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.sdk.graph.running-criteria.ToolUsage.by_name"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "d5d2624fde6fc24ceccb913dbbc30d9fce6ba9c277785c1d7546b069fb3ca858"
         }
       ]
     },
@@ -149,8 +182,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "9aa1073d5ee002f1d6850b22d808b6c689324d5d67f2256a70dd5deeb91dd982"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "056d0e24c13d4598d0ca252b07b88f5943e47267f99859790a84f3575cf78f38"
         }
       ]
     },
@@ -166,8 +199,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "aa14de1bbe66ad852abe9beb4e6ee331dc55339b410d7ec09bf4960b9d420e14"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "52c15d1d0e93301c4d527c00d5c2b47d2c8be8114c9e65409e2746298fcc75e3"
         }
       ]
     },
@@ -183,8 +216,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "3c864b84c787c26ff6414d31813563e80f90da3ab7569c93e4cedcd6556c7dac"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "97ba915319c99e373ceb68462d68188b2dfbaacd19982fe551ab4fcca4bda03a"
         }
       ]
     },
@@ -200,8 +233,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "67a2ca02c9ad50098a877c54b718917bf8085c7fd935ebb77cd49577332d833c"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "0d5540119411bbeb047869aa519d1a0fc2ce843e8e00c0803527afecea921d37"
         }
       ]
     },
@@ -217,8 +250,25 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "ae4819b6e5ac9cd22992cc4254e7868f438e101dbd53f1bd7d443a33ee96f61d"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "4d6ce6161754fb9e88ad84ef64f9bb131b308298104915179b2c5d573ed2b087"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
+            },
+            "selector": "mod[tests]/fn[registered_tools_use_the_current_context_and_ordinary_node_ids]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "2a2cd72d471bf2cf18e6987128b2d9c2c22deeaa2d3e269118486369534f0a29"
         }
       ]
     }

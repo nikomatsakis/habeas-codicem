@@ -360,7 +360,10 @@ fn implementation_discovery_has_no_text_or_evidence_until_the_model_requests_a_r
             .count(),
         1
     );
-    assert!(!fixture.usage()["inputs"].to_string().contains("references"));
+    assert_eq!(
+        fixture.usage()["provider_usage"]["tools"]["references"]["calls"],
+        1
+    );
 }
 
 // {test}`requirements.authoring.complete_initial_bundle`
@@ -591,55 +594,52 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     assert_eq!(usage["determination"], "FIXME");
     assert_eq!(usage["evidence_written"], true);
     assert_eq!(usage["request_count"], 3);
-    assert_eq!(usage["tool_call_count"], 7);
-    assert_eq!(usage["tool_calls"]["habeas"], 3);
+    assert_eq!(usage["provider_usage"]["tools"]["habeas"]["calls"], 3);
     assert_eq!(usage["tool_failures"]["habeas"], 1);
     // The directory listing counts as a tool call but is not an input.
-    assert_eq!(usage["tool_calls"]["list_files"], 1);
-    assert_eq!(usage["tool_calls"]["ripgrep"], 1);
-    assert_eq!(usage["tool_calls"]["finish_search"], 1);
-    let usage_inputs = usage["inputs"].as_array().unwrap();
-    assert!(
-        !usage_inputs
-            .iter()
-            .any(|input| input["origin"] == "list_files"),
-        "{usage_inputs:?}"
+    assert_eq!(usage["provider_usage"]["tools"]["list_files"]["calls"], 1);
+    assert_eq!(usage["provider_usage"]["tools"]["ripgrep"]["calls"], 1);
+    assert_eq!(
+        usage["provider_usage"]["tools"]["finish_search"]["calls"],
+        1
     );
-    // Search snippets count toward usage, without becoming evidence inputs.
-    assert!(
-        usage_inputs.iter().any(|input| input["origin"] == "ripgrep"
-            && input["kind"] == "search"
-            && input["bytes"].as_u64().unwrap() > 0
-            && input["lines"].as_u64().unwrap() > 0),
-        "{usage_inputs:?}"
-    );
-    assert!(
-        usage_inputs
+    let mandatory: Vec<Value> =
+        serde_json::from_str(prompt.rsplit_once("# Mandatory inputs").unwrap().1.trim()).unwrap();
+    let opening = mandatory
+        .iter()
+        .filter(|input| input.get("builtin").is_none())
+        .count();
+    let result = |index: usize| {
+        serde_json::from_str::<Value>(results[index]["content"].as_str().unwrap()).unwrap()
+    };
+    let search_inputs = result(1)["matches"].as_array().unwrap().len();
+    assert!(search_inputs > 0);
+    let mut expected_inputs = opening + search_inputs;
+    for index in [2, 3] {
+        let read = result(index);
+        expected_inputs += read["inputs"].as_array().unwrap().len()
+            + read["definitions"].as_array().map_or(0, Vec::len);
+    }
+    assert_eq!(usage["provider_usage"]["prepared_inputs"], expected_inputs);
+    assert_eq!(usage["provider_usage"]["delivered_inputs"], expected_inputs);
+    let tools = &usage["provider_usage"]["tools"];
+    for (name, range) in [("list_files", 0..1), ("ripgrep", 1..2), ("habeas", 2..5)] {
+        let bytes: usize = results[range.clone()]
             .iter()
-            .any(|input| input["origin"] == "habeas" && input["unique"] == true),
-        "{usage_inputs:?}"
+            .map(|message| message["content"].as_str().unwrap().len())
+            .sum();
+        assert_eq!(
+            tools[name],
+            json!({"calls": range.len(), "result_bytes": bytes})
+        );
+    }
+    assert_eq!(
+        tools["submit_judgment"],
+        json!({"calls": 1, "result_bytes": 0})
     );
     assert_eq!(usage["tokens"]["input"], 33);
     assert_eq!(usage["tokens"]["output"], 21);
     assert_eq!(usage["tokens"]["complete"], true);
-    assert!(
-        usage["inputs"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|input| input["origin"] == "habeas"
-                && input["unique"] == false
-                && input["sent_in_request"] == 1)
-    );
-    assert!(
-        usage["inputs"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|input| input["origin"] == "mandatory"
-                && input["kind"] == "definition"
-                && input["bytes"].as_u64().unwrap() > 0)
-    );
     let serialized = usage.to_string();
     for secret in [
         "SECRET_REQUIREMENT_TEXT",
@@ -800,6 +800,7 @@ fn authoring_uses_nearest_workspace_configuration_without_a_user_file() {
 // {test}`requirements.authoring.invocation`
 // {test}`requirements.authoring.configuration`
 #[test]
+// {test}`requirements.authoring.configuration_precedence`
 fn an_explicit_configuration_selects_the_nondefault_workspace_profile() {
     let server = Server::start(vec![reply(vec![call(
         "submit",
@@ -1330,7 +1331,7 @@ fn usage_record_identifies_its_run_and_unusable_state_is_reported() {
         format!("{run_id}.json"),
         "the record is named after its run"
     );
-    assert_eq!(usage["version"], 1);
+    assert_eq!(usage["version"], 2);
     assert_eq!(
         usage["project_root"],
         fixture.project.canonicalize().unwrap().to_str().unwrap()
@@ -1619,6 +1620,7 @@ fn stdout_emits_only_evidence_json_without_changing_project_files() {
 // {test}`requirements.authoring.submission`
 // {test}`requirements.authoring.usage_storage`
 #[test]
+// {test}`requirements.authoring.invocation`
 fn missing_duplicate_and_invalid_submissions_preserve_existing_evidence() {
     let valid =
         json!({"determination":true,"rationale":"The reviewed sources support the subject."});
@@ -1969,8 +1971,11 @@ fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {
         assert_eq!(usage["tokens"]["input"], 38);
         assert_eq!(usage["tokens"]["output"], 10);
         assert_eq!(usage["request_count"], 2);
-        assert_eq!(usage["tool_calls"]["habeas"], 1);
-        assert_eq!(usage["tool_calls"]["submit_judgment"], 1);
+        assert_eq!(usage["provider_usage"]["tools"]["habeas"]["calls"], 1);
+        assert_eq!(
+            usage["provider_usage"]["tools"]["submit_judgment"]["calls"],
+            1
+        );
         assert_eq!(usage["outcome"], "completed");
     }
 }
@@ -2268,7 +2273,10 @@ fn a_response_cut_off_at_the_output_limit_is_continued_once() {
     // Both requests are recorded, and the cut-off call never ran.
     assert_eq!(usage["request_count"], 2);
     assert_eq!(usage["requests"].as_array().unwrap().len(), 2);
-    assert_eq!(usage["tool_calls"]["submit_judgment"], 2);
+    assert_eq!(
+        usage["provider_usage"]["tools"]["submit_judgment"]["calls"],
+        1
+    );
     assert_eq!(usage["tool_skipped"]["submit_judgment"], 1);
     assert_eq!(usage["tool_skipped"]["habeas"], 1);
     assert_eq!(usage["outcome"], "completed");

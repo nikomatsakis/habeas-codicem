@@ -1,7 +1,7 @@
 {
   "requirement": "An otherwise valid submission of a judgment or verification MUST be\nrejected while any search remains outstanding.",
   "determination": true,
-  "rationale": "**Obligation.** `requirements.authoring.submission.searches` has one obligation. An otherwise valid `submit_judgment` or `submit_verification` call must be rejected while any search is still outstanding. The example `requirements.authoring.search_accounting.recovery` adds that the error names the outstanding UUIDs. It also adds that finishing only some searches keeps submission rejected, and that finishing the empty search with `used: []` lets a valid submission through.\n\n**Test.** `src/authoring/mod.rs#mod[tests]/fn[every_submission_kind_waits_for_all_searches_and_can_recover]` covers this. It is marked `{test}` for the subject and for the recovery example.\n\n- **Both submission kinds.** The test loops over `submit_judgment` and `submit_verification`. Judgment goes through `assess` and verification through `verify`. Each uses valid submission arguments, so the submission is otherwise valid.\n- **Setup.** Two searches are delivered: a `ripgrep` search with matches and an `ast_grep` search with none.\n- **Both searches open, submit in the same response.**\n  - The response calls `finish_search` for the first search, then `habeas` and `ripgrep`, then submits.\n  - The test asserts the follow-up message says \"not run: the response also made a submission\".\n  - It asserts the message contains both search UUIDs, \"Call finish_search for every listed search_id\" and \"then resubmit\".\n  - The test asserts that the `fn[untouched]` input was not recorded. It also asserts the skipped-call counts for `finish_search`, `habeas` and `ripgrep` in the usage log.\n- **Partial finish, then standalone submit.** The first search is finished, then submit is called alone. The test asserts the rejection contains \"outstanding searches\" and the second UUID, and not the first UUID.\n- **Recovery.** `Finish(1, vec![])` closes the empty search. The next submit is accepted: `assess` returns evidence and `verify` returns `real == false`. The test asserts exactly 6 provider requests, so the earlier submissions were rejected and the last one succeeded.\n\n**Coverage.** Both submission kinds are rejected with one outstanding search (standalone call) and with two outstanding searches (the blocked same-response call). Acceptance after all searches are finished is checked, including finishing an empty search with `used: []`. The assertions check the error content and the follow-up behaviour, not just that the code ran.\n\n**Possible gap.** No scenario submits alone while both searches are still outstanding. The blocked-submission message already names both UUIDs, and the standalone rejection is tested with one outstanding. The requirement does not distinguish these cases, so this is not a gap.\n\n**Verdict.** No gaps found.",
+  "rationale": "The one marked test, `src/authoring/mod.rs#mod[tests]/fn[every_submission_kind_waits_for_all_searches_and_can_recover]`, adequately checks `requirements.authoring.submission.searches`. It carries a {test} reference to the subject and to `requirements.authoring.search_accounting.recovery`. I judged it from the supplied test source only and requested no implementation source.\n\nThe subject has one obligation: an otherwise valid submission of a judgment or verification must be rejected while any search is outstanding. The test maps to it as follows.\n\n- **Both submission kinds.** The test loops over `submit_judgment` and `submit_verification`. Each kind gets a valid payload: a true determination with a rationale, or a `real`/`acknowledged`/`acknowledgments`/`rationale` object. So the \"otherwise valid\" condition holds, and both kinds named in the requirement are covered.\n- **Searches outstanding.** Turn 1 issues two searches, a `ripgrep` call and an `ast_grep` call that has no matches. Both are delivered and neither is finished, which matches the example's case of one empty search.\n- **Rejection with every search outstanding.** In turn 2 the model submits in the same response as its other calls. The test asserts that the resulting message says \"not run: the response also made a submission\". It also asserts that the message contains both search UUIDs and tells the model to call `finish_search` for every listed `search_id` and then resubmit. The skipped `finish_search` in that response leaves both searches open. The test also checks the skipped-tool counters in the usage log. This shows a valid submission is not accepted with both searches outstanding. The `evidence`/result assertions would not be reached otherwise.\n- **Rejection with a partial finish.** Turn 3 finishes only the first search. In turn 4 the model submits on its own. The test asserts that the latest request contains \"outstanding searches\", omits the first UUID and includes the second UUID. It also asserts exactly 6 requests. A submission accepted at turn 4 would end the run early, so the request count proves the submission was rejected.\n- **Recovery.** Turn 5 finishes the empty search with `Finish(1, vec![])`. Turn 6 resubmits, and the run now completes. The judgment path unwraps `assess` and checks the evidence. The verification path checks `!result.real`. This matches the example's requirement that finishing the empty search with `used: []` permits a later valid submission.\n- **No side effects from the rejected submissions.** The test checks that the recorded input `fn[untouched]` was never recorded and that `fn[helper]` was recorded exactly once. It also checks the `finish_search` call count and the failure totals.\n\nI found no gap. The one case the test doesn't hit is a standalone submission, with no other calls in the same response, while both searches are outstanding. That case follows the same outstanding-search rule and is covered by the partial-finish check. The accompanying-call case does exercise the all-outstanding state. The error text and recovery behaviour are the business of the related `.diagnostic` and `.recovery` requirements that the same test also marks, not of the subject.",
   "references": "0b92ce65da3baaa6e233a5928de0b03a8866abff437a36963fb87c147798d278",
   "inputs": [
     {
@@ -35,7 +35,22 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "mod[tests]/fn[every_submission_kind_waits_for_all_searches_and_can_recover]",
-      "hash": "60d551ab18bb5f9e40cfe2f6787b877c68108f44dc56705de8b83afe45041995"
+      "hash": "642897fc93451501e4a1044c56977faf95950acb9300e0aa72b219bf6f17ed48"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "impl[HabeasConversation<'_,%20F>/trust_but_verify::agent_runtime::Conversation]/fn[submit]",
+      "hash": "8a243d29a5592e0b351fd66dc35ee89ec6c41c1428cd9bed8ae6d0907e0d5700"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[a_bad_tag_returns_a_recoverable_error_without_closing_the_search]",
+      "hash": "90daa0a98011dae62c4c0bc3a7e3ce34b9d2ef0b23397d2fc391a948e3c90d0a"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[search_gate_preserves_line_number_correction_and_uuid_resubmission]",
+      "hash": "947956f5eaee989aef719dd9e9d7f659a9c636d55fdfc8d9ad334825c3260bca"
     }
   ],
   "format_version": 1,
@@ -98,8 +113,59 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "b3b0d4935bf55c0597f7f6a53191efa8589310889e807508f2a3edacb7cbf6f3"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "51b47aa9ed91fb0b51cfbea251213b72e94c35eccf060ee8a177a55d6a02da0c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/mod.rs"
+            },
+            "selector": "impl[HabeasConversation<'_,%20F>/trust_but_verify::agent_runtime::Conversation]/fn[submit]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "7d1702dbd1862671a9eb151e3a303559c3ffdea416a97c2b39ff6e14ed7c900c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/mod.rs"
+            },
+            "selector": "mod[tests]/fn[a_bad_tag_returns_a_recoverable_error_without_closing_the_search]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "c9bb036454d1d839c50094ba35b7300b9a566735932bc6c5764008c219efdcd0"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/mod.rs"
+            },
+            "selector": "mod[tests]/fn[search_gate_preserves_line_number_correction_and_uuid_resubmission]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "20c93ed9052d18ff0ce9af8d7cea99e8277a718726f93a191e1659b22099e5db"
         }
       ]
     }

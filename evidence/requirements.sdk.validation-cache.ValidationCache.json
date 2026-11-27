@@ -1,8 +1,8 @@
 {
   "requirement": "`trust_but_verify::domain::ValidationCache` is a concrete, cloneable type.\nCloning it shares its state and takes constant time in the number of interned nodes and cached outlines.\n\n```rust,ignore\npub struct ValidationCache<D: Domain> { /* private fields */ }\n```\n\nTrait implementations\n\n```rust,ignore\nimpl<D: Domain> Clone for ValidationCache<D>;\nimpl<D: Domain> Default for ValidationCache<D>;\n```",
   "determination": true,
-  "rationale": "The two marked tests adequately check `requirements.sdk.validation-cache.ValidationCache`.\n\n**Obligations derived from the text:**\n1. `ValidationCache` is a concrete, cloneable type.\n2. Cloning it shares its state.\n3. Cloning takes constant time in the number of interned nodes and cached outlines.\n4. It has `Clone` and `Default` implementations.\n\n**Mapping to tests:**\n- **Concrete type:** both tests in `crates/trust-but-verify/tests/contracts.rs` name `ValidationCache::<Application>::new()` directly.\n- **Cloning shares state, outlines:** `fn[domain_clones_share_the_first_successful_outline_for_each_path]` builds `Application(.., cache)` and clones it into `peer`. `Application` derives `Clone`, so that clones the cache field. It then makes these assertions:\n  - A file read through the original cache, and later changed or deleted, still resolves through `peer.cache()` and `domain.cache()` to the first snapshot.\n  - `std::ptr::eq(snapshot.outline(), cached.outline())` holds.\n  - A file first read through `peer` stays visible after it is removed from disk.\n  - Together these rule out a clone that deep-copies the outline map.\n- **Cloning shares state, nodes:** `fn[clones_interning_the_same_data_concurrently_get_one_handle]` interns `Node(42)` from four clones and requires all four ids to be equal. It also asserts `cache.node_data(ids[0])` on the original returns `Some(Node(42))`, and that `Node(43)` gets a different id. A deep-copying clone would leave the original's node table empty, so this fails for it.\n- **`Default` impl:** `Application` derives `Default`, which uses `ValidationCache::default()`. In the first test, `Application::default().cache()` is observed to be independent. It sees the edited file (`fn second`) rather than the first cached outline. This checks that `Default` gives a fresh, unshared cache.\n- **`Clone` impl:** the `Clone` derive on `Application` and the explicit `cache.clone()` calls exercise it.\n- **Constant time:** I read `impl[ValidationCache<D>/Clone]` in `crates/trust-but-verify/src/domain.rs`. It only clones each `Arc` or `Option<Arc>` field, with no conditionals and no per-node or per-outline work. This is the pass-through case the testing criteria exempt, and a wall-clock timing test would be flaky. The first-test assertions on shared outlines (and the second test's assertions on shared nodes) would catch any regression to a deep copy, which is the only way constant time could be lost.\n\n**Not covered by a dedicated test:**\n- Sharing of `usage` and `source_addresses` is not asserted, but the clone code for those fields is the same plain `Arc` clone.\n\nNo gaps are acknowledged or needed.",
-  "references": "d46aef514d6d2f3f14600cbf1fddb51bfeea9479235d550ae2b812139c11de46",
+  "rationale": "**Obligations from `requirements.sdk.validation-cache.ValidationCache`:**\n1. It is a concrete, cloneable type that implements `Clone` and `Default`.\n2. Cloning shares state.\n3. Cloning takes constant time in the number of interned nodes and cached outlines.\n\n**Implementation structure (read only to see which fields exist).** `ValidationCache` in `crates/trust-but-verify/src/domain.rs` has six fields: `usage`, `nodes`, `source_addresses`, `outlines`, `sources` and `agent`. Its `Clone` impl only clones each of those (`Arc`s or `Option<Arc>`s). Constant time and shared state therefore come down to every field being shared rather than copied.\n\n**Test mapping:**\n- **Shared state, the `Arc`-backed fields.**\n  - `agent/configured.rs#mod[tests]/fn[cloning_a_configured_cache_shares_its_agent_sources_and_observations]` builds a cache with an agent and sources, clones it, and asserts `Arc::ptr_eq` for `agent`, `sources`, `source_addresses`, `outlines` and `usage`.\n  - These assertions also back the constant-time clause. Pointer equality on every field means a clone copies no per-node or per-outline data.\n- **Shared state, the `nodes` field.**\n  - `nodes` is private, so the pointer test cannot reach it.\n  - `tests/contracts.rs#fn[clones_interning_the_same_data_concurrently_get_one_handle]` covers it by behaviour. Four clones intern `Node(42)` concurrently and all get the same id.\n  - The original cache then resolves `node_data(ids[0])` to `Some(Node(42))`. That would fail if the clones had separate node sets.\n  - Interning `Node(43)` gives a different id.\n- **Shared state, the outline cache, through a domain clone.** `tests/contracts.rs#fn[domain_clones_share_the_first_successful_outline_for_each_path]` clones a domain that holds the cache and checks four things:\n  - The peer sees the first snapshot of the path even after the file changed or was deleted.\n  - A file first loaded through the peer is visible from the original.\n  - `std::ptr::eq` shows the cached outline is the same object.\n  - A retained snapshot outlives the dropped caches.\n- **`Default`.** `ValidationCache::<Application>::new()` calls `Self::default()`, and the outline contract test uses it. That exercises the `Default` impl and the resulting empty, working cache.\n- **Concrete type.** The tests use it directly as a concrete `ValidationCache<Application>`, and `Clone` is used throughout.\n\n**Gaps.** I found none. The constant-time clause has no timing test, and none is needed. It follows from the `Arc` pointer-sharing assertions, and a timing test would depend on real elapsed time. The `Default` impl is exercised only through `new`, which is a thin delegation. A copied or independent state in any field would be caught by the pointer-equality assertions or the behavioural sharing assertions above.",
+  "references": "c2a8b90e353cf33236991b840ba8f9ac38820328a669ed81b01cf1dee086b606",
   "inputs": [
     {
       "requirements": "requirements.sdk.validation-cache.ValidationCache",
@@ -29,6 +29,11 @@
       ]
     },
     {
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/fn[cloning_a_configured_cache_shares_its_agent_sources_and_observations]",
+      "hash": "f608bd427b4819223a2e9eb6dfb13a024bbee91ae8eff815249229e89ffdaf4a"
+    },
+    {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[domain_clones_share_the_first_successful_outline_for_each_path]",
       "hash": "8d23083a928e31077562998a61a6295b9bf5cfe0cb9fdd56fd8611417fccd59c"
@@ -49,24 +54,19 @@
       "hash": "3486b3f261348c5513733af981c8944eb87fccea635a35b5141a35e7703ca8d0"
     },
     {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "struct[Application]",
-      "hash": "f5308299caaa5e45d1f4c773bbd0660309b69cf530e71209953481f70a231a10"
-    },
-    {
       "file": "crates/trust-but-verify/src/domain.rs",
       "item": "impl[ValidationCache<D>/Default]",
       "hash": "d905401bfc060c4a092379515e1f11dd117caf1eb82cc4f4b50b1eda05f2ca9f"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "fn[agent_executions_isolate_conversations_and_dependency_traces]",
-      "hash": "bc002f615fc9d34843968bf5d623070ae0e47d49742cd8ffd45b5868e494a857"
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "impl[ValidationCache<D>]/fn[new]",
+      "hash": "f798b8c396de11b9436085988d2aef5bc55e3c80804b4daeccfc75d9a2b06c01"
     },
     {
       "file": "crates/trust-but-verify/src/domain.rs",
-      "item": "impl[ValidationCache<D>/Clone]/fn[clone]",
-      "hash": "2a234fd49297f9c1bb1ca3deecbd848da49383a0d8eda254c3b80febdbbb56d6"
+      "item": "impl[ValidationCache<D>/Default]/fn[default]",
+      "hash": "deec6f4eb70d26d6ad9a664e758474efa29fb5fcb5a79769d07c9e6378d52ead"
     }
   ],
   "format_version": 1,
@@ -79,7 +79,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "d46aef514d6d2f3f14600cbf1fddb51bfeea9479235d550ae2b812139c11de46"
+          "value": "c2a8b90e353cf33236991b840ba8f9ac38820328a669ed81b01cf1dee086b606"
         }
       ]
     },
@@ -91,7 +91,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "cf43f77be1d16fbfd01151df584605cac237fcb3d41ccfd183a327ab52380761"
+          "value": "2eb32408d3dbcda60ae0f1307a7b2414ecb1e602132bf53714afb1bd1a95a9b3"
         }
       ]
     },
@@ -112,14 +112,31 @@
           "Source": {
             "resource": {
               "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
+            },
+            "selector": "mod[tests]/fn[cloning_a_configured_cache_shares_its_agent_sources_and_observations]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "f608bd427b4819223a2e9eb6dfb13a024bbee91ae8eff815249229e89ffdaf4a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
               "location": "crates/trust-but-verify/tests/contracts.rs"
             },
             "selector": "fn[domain_clones_share_the_first_successful_outline_for_each_path]"
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "4391ed2d9458c1579809e8aedcf94cf32a21c743c419e0b87f99d98a1e6cdac9"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "8d23083a928e31077562998a61a6295b9bf5cfe0cb9fdd56fd8611417fccd59c"
         }
       ]
     },
@@ -135,8 +152,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "0b52712ed94ed86a016a5f8175b9b7188ecbfbe4b8e66e633fd14737c2c2170e"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "af70883e072934496676ba4654ee8959ac98216b72e6c9f5912d3e8459f22951"
         }
       ]
     },
@@ -152,8 +169,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "3271ee1a64200767da6fac98ede9f193ebe65e31a392984956e719987993d58c"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "59a1685bcb72103a9b5f6dd2487d6a9ae1fc23b25867b10188cb310a34c24128"
         }
       ]
     },
@@ -169,25 +186,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "df3c6997f2fe95d0c496ac3c024243dd383af47def4480d37af0b7a454c43b2e"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "struct[Application]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "d9ed851a002e5f8f267d6df2c4a0952e5717012a80da6a16d0686641fb044713"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "7764f01c023ec5b5e779312d5d06e84cd4d8605e323ef136a09bdcdec4249006"
         }
       ]
     },
@@ -203,25 +203,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "7c8a8568464aa507f69399b7af4e8727374d30f646b4f782a60cd939ffff9b34"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "fn[agent_executions_isolate_conversations_and_dependency_traces]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "9aa1073d5ee002f1d6850b22d808b6c689324d5d67f2256a70dd5deeb91dd982"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "5722c68eebc6fe36901e47e314f12d2b5ec8265c16c81a76f2d5043ecc60fadd"
         }
       ]
     },
@@ -233,12 +216,29 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/domain.rs"
             },
-            "selector": "impl[ValidationCache<D>/Clone]/fn[clone]"
+            "selector": "impl[ValidationCache<D>]/fn[new]"
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "c7129ecdf4b85c4aecfc847a69555743d8489aef6be4ec94a7f57daae26f4516"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "f798b8c396de11b9436085988d2aef5bc55e3c80804b4daeccfc75d9a2b06c01"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "impl[ValidationCache<D>/Default]/fn[default]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "deec6f4eb70d26d6ad9a664e758474efa29fb5fcb5a79769d07c9e6378d52ead"
         }
       ]
     }

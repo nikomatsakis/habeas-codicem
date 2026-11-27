@@ -5,6 +5,7 @@ use crate::procedure::Agent;
 use crate::procedure::AgentRequest;
 use crate::request::ValidationContext;
 use futures::future::BoxFuture;
+#[cfg(test)]
 use serde_json::Value;
 use std::{io, sync::Arc};
 use tokio::sync::OnceCell;
@@ -27,9 +28,9 @@ where
     // {impl}`requirements.sdk.graph.agent-harness.tool_agent.provider_failure`
     fn run<'a>(
         &'a self,
-        request: AgentRequest<NodeId<D>>,
+        request: AgentRequest<'a, NodeId<D>, D::Error>,
         inspection: &'a ValidationContext<'_, D>,
-    ) -> BoxFuture<'a, Result<Value, io::Error>> {
+    ) -> BoxFuture<'a, Result<(), super::AgentError<D::Error>>> {
         Box::pin(async move {
             let configured = inspection
                 .graph()
@@ -522,6 +523,9 @@ mod tests {
     // {test}`requirements.sdk.graph.agent-harness.domain_tool_inputs`
     // {test}`requirements.sdk.graph.agent-harness.lookup_requirements`
     #[tokio::test]
+    // {test}`requirements.sdk.graph.running-criteria.UsageStats`
+    // {test}`requirements.sdk.graph.running-criteria.ToolUsage.by_name`
+    // {test}`requirements.sdk.graph.running-criteria.ToolUsage.result_bytes`
     async fn registered_tools_use_the_current_context_and_ordinary_node_ids() {
         use serde_json::json;
         let (backend, server) = local_backend(vec![
@@ -553,7 +557,14 @@ mod tests {
             peer.cache()
                 .intern_node(LookupNode::Requirement("subject".into())),
         );
+        assert!(domain.cache().usage().tools.is_empty());
         assert!(cx.ask::<bool>().await.unwrap());
+        let stats = domain.cache().usage();
+        assert_eq!(
+            stats.tools.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["inspect", "lookup_requirements", "submit_result"]
+        );
+        assert_eq!((stats.prepared_inputs, stats.delivered_inputs), (0, 0));
         assert!(matches!(
             &cx.dependencies()[..],
             [validation::Dependency::Node(node, hash), validation::Dependency::OutgoingEdges(edges, label, _)] if node == &domain.cache().intern_node(outline.clone()) && hash == &domain.node_content(&domain.cache().intern_node(outline.clone())).unwrap().fingerprint() && edges == &domain.cache().intern_node(outline.clone()) && label == "related"
@@ -626,6 +637,12 @@ mod tests {
             serde_json::from_str::<Value>(output(1)).unwrap(),
             json!([1, 2])
         );
+        assert_eq!(stats.tools["lookup_requirements"].calls, 2);
+        assert_eq!(
+            stats.tools["lookup_requirements"].result_bytes,
+            (output(1).len() + output(2).len()) as u64
+        );
+        assert_eq!(stats.tools["inspect"].result_bytes, output(3).len() as u64);
         assert!(output(2).contains("invalid type"));
         assert_eq!(
             serde_json::from_str::<String>(output(3)).unwrap(),
@@ -638,6 +655,27 @@ mod tests {
                 .iter()
                 .any(|tool| tool["name"] == "inspect" || tool["name"] == "lookup_requirements")
         );
+    }
+
+    // {test}`requirements.sdk.validation-cache.ValidationCache`
+    #[test]
+    fn cloning_a_configured_cache_shares_its_agent_sources_and_observations() {
+        let cache = crate::domain::ValidationCache::<TestDomain>::with_agent(AgentConfig::Bedrock(
+            super::super::BedrockConfig::new("fixture".into()),
+        ))
+        .with_sources(crate::sources::Sources::new("."));
+        let peer = cache.clone();
+        assert!(Arc::ptr_eq(
+            cache.agent.as_ref().unwrap(),
+            peer.agent.as_ref().unwrap()
+        ));
+        assert!(Arc::ptr_eq(
+            cache.sources.as_ref().unwrap(),
+            peer.sources.as_ref().unwrap()
+        ));
+        assert!(Arc::ptr_eq(&cache.source_addresses, &peer.source_addresses));
+        assert!(Arc::ptr_eq(&cache.outlines, &peer.outlines));
+        assert!(Arc::ptr_eq(&cache.usage, &peer.usage));
     }
 
     struct ReadSelection;
@@ -912,6 +950,57 @@ mod tests {
             );
         }
         assert!(server.join().unwrap().is_empty());
+    }
+
+    // {test}`requirements.sdk.graph.running-criteria.Validator.usage`
+    #[tokio::test]
+    async fn refreshing_missing_evidence_accounts_for_accepted_and_invalid_answers() {
+        let (backend, server) = local_backend(vec![
+            ("submit_result", serde_json::json!({"result":true})),
+            (
+                "submit_result",
+                serde_json::json!({"result":"invalid boolean"}),
+            ),
+        ]);
+        let domain = TestDomain(
+            Default::default(),
+            Default::default(),
+            crate::domain::ValidationCache::with_agent(backend),
+        );
+        let node = domain.cache().intern_node(TestNode { id: 1 });
+        let mut validator = validation::Validator::new(&domain);
+        validator
+            .refresh_evidence(Question(true, node))
+            .await
+            .unwrap();
+        let usage = validator.usage();
+        assert_eq!(
+            (
+                usage.attempts,
+                usage.prepared_inputs,
+                usage.delivered_inputs,
+                usage.input_tokens.reported
+            ),
+            (1, 1, 1, 10)
+        );
+        domain.0.lock().unwrap().take();
+        assert!(
+            validator
+                .refresh_evidence(Question(true, node))
+                .await
+                .is_err()
+        );
+        let usage = validator.usage();
+        assert_eq!(
+            (
+                usage.attempts,
+                usage.prepared_inputs,
+                usage.delivered_inputs,
+                usage.input_tokens.reported
+            ),
+            (2, 2, 2, 20)
+        );
+        assert_eq!(server.join().unwrap().len(), 2);
     }
 
     fn local_backend(
@@ -1263,6 +1352,7 @@ mod tests {
     // {test}`requirements.sdk.graph.running-criteria.evaluate_criterion`
     #[tokio::test]
     // {test}`requirements.sdk.graph.validation-context.shared_context`
+    // {test}`requirements.sdk.graph.running-criteria.UsageStats`
     async fn configured_agent_uses_domain_source_tools_in_independent_executions() {
         use std::{
             io::{Read, Write},
@@ -1472,7 +1562,8 @@ mod tests {
         );
         for _ in 0..2 {
             domain.1.lock().unwrap().clear();
-            let answer = validation::Validator::new(&domain)
+            let mut validator = validation::Validator::new(&domain);
+            let answer = validator
                 .verify(Question(
                     true,
                     domain.cache().intern_node(TestNode { id: 1 }),
@@ -1480,6 +1571,10 @@ mod tests {
                 .await
                 .unwrap();
             assert!(*answer.output());
+            // One opening node, two node reads and three search excerpts. Listings,
+            // rejected calls and repeated search finalization supply no inputs.
+            let stats = validator.usage();
+            assert_eq!((stats.prepared_inputs, stats.delivered_inputs), (6, 6));
             assert_eq!(
                 answer.dependencies(),
                 &[

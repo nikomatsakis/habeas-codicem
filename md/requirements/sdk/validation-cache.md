@@ -133,7 +133,7 @@ model settings.
 {cite}`requirements.sdk.graph.running-criteria.UsageStats`. A newly constructed
 cache starts at zero. Every agent call through the cache or any clone adds its
 usage exactly once by the time the call returns, including retries and failed
-attempts. Concurrent calls contribute to the same totals. Reading a snapshot
+attempts. Concurrent calls contribute to the same totals. The snapshot sums tool invocations and result bytes by tool name across validators under {cite}`requirements.sdk.graph.running-criteria.ToolUsage.by_name`. Reading a snapshot
 preserves the counters, and later calls leave earlier snapshots unchanged.
 
 ```rust,ignore

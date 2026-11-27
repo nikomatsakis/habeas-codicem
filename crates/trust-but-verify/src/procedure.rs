@@ -1,5 +1,6 @@
 //! Typed agent calls with reusable context followed by explicit node inputs.
 
+use crate::agent_runtime::{AgentError, Submission};
 use crate::domain::Domain;
 use crate::domain::NodeContents;
 use crate::domain::NodeId;
@@ -85,7 +86,8 @@ pub struct PreparedInput<N> {
 // {cite}`habeas:util`
 /// The conversation loop records the prepared inputs on delivery of its opening prompt.
 #[doc(hidden)]
-pub struct AgentRequest<N> {
+pub struct AgentRequest<'a, N, E> {
+    pub finish: &'a mut (dyn FnMut(Value) -> Result<Submission<()>, AgentError<E>> + Send),
     pub current_node: N,
     pub prefix: String,
     pub prefix_fingerprint: Fingerprint,
@@ -100,9 +102,9 @@ pub trait Agent<D: Domain>: Send + Sync {
     // {cite}`habeas:util`
     fn run<'a>(
         &'a self,
-        request: AgentRequest<NodeId<D>>,
+        request: AgentRequest<'a, NodeId<D>, D::Error>,
         inspection: &'a ValidationContext<'_, D>,
-    ) -> BoxFuture<'a, Result<Value, std::io::Error>>;
+    ) -> BoxFuture<'a, Result<(), AgentError<D::Error>>>;
 }
 
 // {impl}`requirements.sdk.graph.agent-calls.author_procedure`
@@ -221,6 +223,25 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
         Ok(snapshot)
     }
 
+    // {impl}`requirements.sdk.graph.running-criteria.UsageStats`
+    pub(crate) fn record_usage(&self, delta: &UsageStats) {
+        self.update_usage(|usage| usage.accumulate(delta));
+    }
+
+    pub(crate) fn update_usage(&self, update: impl Fn(&mut UsageStats)) {
+        if let Some(local) = &self.usage {
+            update(&mut local.lock().expect("usage lock poisoned"));
+        }
+        update(
+            &mut self
+                .graph()
+                .cache()
+                .usage
+                .lock()
+                .expect("usage lock poisoned"),
+        );
+    }
+
     /// Prepare a relationship result without claiming delivery.
     // {cite}`habeas:util`
     pub(crate) fn prepare_edges(
@@ -336,6 +357,7 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
             ctx: self,
             contexts: Vec::new(),
             insertions: Vec::new(),
+            callbacks: Vec::new(),
             state: PhantomData,
         }
     }
@@ -368,10 +390,20 @@ enum Insertion<L> {
     Successors(L, fn(&L, &L) -> bool),
 }
 
+/// The outcome of one check on a decoded agent answer.
+// {impl}`requirements.sdk.graph.agent-calls.VetResult`
+pub enum VetResult {
+    Accept,
+    CorrectAndTryAgain(String),
+}
+
+type Vet<'a, R, E> = Box<dyn FnMut(&R) -> Result<VetResult, E> + Send + 'a>;
+
 // {impl}`requirements.sdk.graph.agent-calls.judge`
 pub struct Ask<'a, 'd, D: Domain, R, P> {
     ctx: &'a ValidationContext<'d, D>,
     contexts: Vec<String>,
+    callbacks: Vec<Vet<'a, R, D::Error>>,
     insertions: Vec<Insertion<D::EdgeLabel>>,
     state: PhantomData<fn() -> (R, P)>,
 }
@@ -385,11 +417,22 @@ impl<'a, 'd, D: Domain, R> Ask<'a, 'd, D, R, ContextPhase> {
 }
 
 impl<'a, 'd, D: Domain, R, P> Ask<'a, 'd, D, R, P> {
+    /// Append a check to run on each decoded submission in this conversation.
+    // {impl}`requirements.sdk.graph.agent-calls.vet_answer`
+    pub fn vet_answer(
+        mut self,
+        vet: impl FnMut(&R) -> Result<VetResult, D::Error> + Send + 'a,
+    ) -> Self {
+        self.callbacks.push(Box::new(vet));
+        self
+    }
+
     // {cite}`habeas:util`
     fn into_node_phase(self) -> Ask<'a, 'd, D, R, NodePhase> {
         Ask {
             ctx: self.ctx,
             contexts: self.contexts,
+            callbacks: self.callbacks,
             insertions: self.insertions,
             state: PhantomData,
         }
@@ -425,6 +468,9 @@ where
     // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
     // {impl}`requirements.sdk.graph.agent-calls.model_capability`
     // {impl}`requirements.sdk.graph.validation-context.shared_context`
+    // {impl}`requirements.sdk.graph.agent-calls.vet_answer`
+    // {impl}`requirements.sdk.graph.agent-calls.vet_answer.ok`
+    // {impl}`requirements.sdk.graph.agent-calls.vet_answer.corrections`
     async fn execute(self) -> Result<R, ValidationError<D::Error>> {
         let agent = self
             .ctx
@@ -461,6 +507,10 @@ where
                 let text = crate::redaction::Redaction::of_text(&formatted)
                     .apply(&formatted)
                     .into_owned();
+                self.ctx.record_usage(&UsageStats {
+                    prepared_inputs: 1,
+                    ..Default::default()
+                });
                 inputs.push(PreparedInput {
                     node,
                     text,
@@ -470,7 +520,29 @@ where
         }
         let prefix = self.contexts.join("\n\n");
         let prefix_fingerprint = context_fingerprint(&prefix);
+        let mut callbacks = self.callbacks;
+        let mut accepted = None;
+        let mut finish = |value| {
+            let answer = serde_json::from_value(value).map_err(std::io::Error::other)?;
+            let mut corrections = Vec::new();
+            for vet in &mut callbacks {
+                match vet(&answer).map_err(AgentError::Domain)? {
+                    VetResult::Accept => (),
+                    VetResult::CorrectAndTryAgain(message) => corrections.push(message),
+                }
+            }
+            if corrections.is_empty() {
+                accepted = Some(answer);
+                Ok(Submission::Accepted(()))
+            } else {
+                Ok(Submission::Retry(format!(
+                    "{}\nPlease correct these issues and resubmit the result.",
+                    corrections.join("\n")
+                )))
+            }
+        };
         let request = AgentRequest {
+            finish: &mut finish,
             current_node: self.ctx.node,
             prefix,
             prefix_fingerprint,
@@ -479,11 +551,16 @@ where
                 .map_err(|error| ValidationError::Agent(error.to_string()))?,
             submission_name: "submit_result".into(),
         };
-        let value = agent
+        agent
             .run(request, self.ctx)
             .await
-            .map_err(|error| ValidationError::Agent(error.to_string()))?;
-        serde_json::from_value(value).map_err(|error| ValidationError::Agent(error.to_string()))
+            .map_err(|error| match error {
+                AgentError::Domain(error) => ValidationError::Graph(error),
+                AgentError::Conversation(error) => ValidationError::Agent(error.to_string()),
+            })?;
+        accepted.ok_or_else(|| {
+            ValidationError::Agent("agent completed without an accepted answer".into())
+        })
     }
 }
 

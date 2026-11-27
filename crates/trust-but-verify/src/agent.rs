@@ -110,6 +110,20 @@ pub enum Submission<T> {
     Retry(String),
 }
 
+/// Keeps domain failures from answer vetting distinct from provider and protocol failures.
+#[doc(hidden)]
+#[derive(Debug)]
+pub enum AgentError<E> {
+    Conversation(io::Error),
+    Domain(E),
+}
+
+impl<E> From<io::Error> for AgentError<E> {
+    fn from(error: io::Error) -> Self {
+        Self::Conversation(error)
+    }
+}
+
 /// One call's state. A factory can create independent sessions for concurrent
 /// calls while their delivered reads contribute to the same inspection trace.
 #[doc(hidden)]
@@ -121,11 +135,12 @@ pub trait Conversation: Send {
     // {cite}`habeas:util`
     fn submit(&mut self, name: &str, arguments: &Value) -> io::Result<Submission<Self::Output>>;
     // {cite}`habeas:util`
+    /// Return the tool message and the number of new inputs it carries.
     fn dispatch(
         &mut self,
         name: &str,
         arguments: &Value,
-    ) -> impl Future<Output = io::Result<String>> + Send;
+    ) -> impl Future<Output = io::Result<(String, usize)>> + Send;
     // {cite}`habeas:util`
     fn delivered(&mut self) -> io::Result<()> {
         Ok(())
@@ -170,19 +185,7 @@ impl<D: crate::domain::Domain> Drop for ProviderAttempt<'_, '_, D> {
     // {impl}`requirements.sdk.validation-cache.usage`
     // {impl}`requirements.sdk.graph.running-criteria.Validator.usage`
     fn drop(&mut self) {
-        if let Some(local) = &self.context.usage {
-            local
-                .lock()
-                .expect("usage lock poisoned")
-                .accumulate(&self.usage);
-        }
-        self.context
-            .graph()
-            .cache()
-            .usage
-            .lock()
-            .expect("usage lock poisoned")
-            .accumulate(&self.usage);
+        self.context.record_usage(&self.usage);
     }
 }
 
@@ -192,20 +195,51 @@ impl<D: crate::domain::Domain> Drop for ProviderAttempt<'_, '_, D> {
 // {impl}`requirements.authoring.submission_count`
 // {impl}`requirements.authoring.provider_backoff`
 // {impl}`requirements.authoring.output_limit`
+// {impl}`requirements.sdk.graph.running-criteria.UsageStats`
+// {impl}`requirements.sdk.graph.running-criteria.ToolUsage.by_name`
+// {impl}`requirements.sdk.graph.running-criteria.ToolUsage.calls`
+// {impl}`requirements.sdk.graph.running-criteria.ToolUsage.result_bytes`
+// {impl}`requirements.sdk.graph.running-criteria.ToolUsage.replay`
 #[doc(hidden)]
-pub async fn converse<P: CompletionProvider, C: Conversation, D: crate::domain::Domain>(
+pub async fn converse<P: CompletionProvider, C: Conversation, D: crate::domain::Domain, T>(
     context: &crate::request::ValidationContext<'_, D>,
     provider: &P,
     session: &mut C,
+    project: Option<&crate::sources::SourceProject<D>>,
     mut request: CompletionRequest,
     opening_inputs: Vec<crate::request::PreparedInput<crate::domain::NodeId<D>>>,
     result_schema: Value,
     submit: &str,
-) -> io::Result<C::Output> {
+    mut finish: impl FnMut(C::Output) -> Result<Submission<T>, AgentError<D::Error>> + Send,
+) -> Result<T, AgentError<D::Error>>
+where
+    D::NodeData: serde::Serialize + serde::de::DeserializeOwned + schemars::JsonSchema,
+    D::EdgeLabel: serde::de::DeserializeOwned + schemars::JsonSchema + PartialEq,
+    D::Error: std::fmt::Display,
+{
+    let mut graph_tools = project.map(|project| {
+        tools::GraphSession::new(context, &[], tools::SessionTools::new(project.session()))
+    });
     let standard_submission = submit == "submit_result";
     let tool = standard_submission.then(|| tools::submission_tool(result_schema));
-    request.tools = session.tools(tool)?;
+    request.tools = match &graph_tools {
+        Some(graph) => graph.tools(tool)?,
+        None => session.tools(tool)?,
+    };
+    // Only names from the configured tool list belong in usage records.
+    // Record entry before dispatch so cancellation retains the invocation.
+    let begin_tool = |name: &str| {
+        context.update_usage(|usage| usage.tools.entry(name.to_owned()).or_default().calls += 1);
+    };
+    let record_result = |name: &str, text: &str| {
+        context.update_usage(|usage| {
+            if let Some(tool) = usage.tools.get_mut(name) {
+                tool.result_bytes += text.len() as u64;
+            }
+        });
+    };
     let mut backoff = ProviderBackoff::default();
+    let mut pending_inputs = opening_inputs.len() as u64;
     let mut opening_inputs = opening_inputs.into_iter();
     let mut retrying = false;
     let mut continued = false;
@@ -234,6 +268,9 @@ pub async fn converse<P: CompletionProvider, C: Conversation, D: crate::domain::
             response.is_err(),
             response.as_ref().ok().map(|r| &r.usage),
         );
+        if response.is_ok() {
+            attempt.usage.delivered_inputs = std::mem::take(&mut pending_inputs);
+        }
         drop(attempt);
         session.end_request(index, started.elapsed(), &response)?;
         let response = match response {
@@ -245,13 +282,16 @@ pub async fn converse<P: CompletionProvider, C: Conversation, D: crate::domain::
                     tokio::time::sleep(delay).await;
                     continue;
                 }
-                Retry::Stop(error) => return Err(error),
+                Retry::Stop(error) => return Err(error.into()),
             },
         };
         retrying = false;
         backoff = ProviderBackoff::default();
         for input in opening_inputs.by_ref() {
             context.record_read(input.node, input.fingerprint);
+        }
+        if let Some(graph) = &mut graph_tools {
+            graph.delivered()?;
         }
         session.delivered()?;
         if matches!(response.finish_reason(), Some(FinishReason::Length)) {
@@ -260,12 +300,12 @@ pub async fn converse<P: CompletionProvider, C: Conversation, D: crate::domain::
             {
                 return Err(io::Error::other(
                     "the model's response was incomplete: the conversation exceeded the model's context window",
-                ));
+                ).into());
             }
             if continued {
                 return Err(io::Error::other(
                     "the model's response was incomplete: it reached the output limit again after one continuation",
-                ));
+                ).into());
             }
             let limit = provider.output_limit().ok_or_else(|| io::Error::other(
                 "the model's response was incomplete: it reached an output limit the configuration does not set"))?;
@@ -281,7 +321,7 @@ pub async fn converse<P: CompletionProvider, C: Conversation, D: crate::domain::
             Some(&response.stop()),
             response.finish_reason().as_ref(),
         ) {
-            return Err(io::Error::other(error));
+            return Err(io::Error::other(error).into());
         }
         let calls: Vec<_> = response.tool_calls().cloned().collect();
         let submissions: Vec<_> = calls
@@ -294,7 +334,7 @@ pub async fn converse<P: CompletionProvider, C: Conversation, D: crate::domain::
                 return Err(io::Error::other(format!(
                     "model must invoke {submit} exactly once, even after a reminder; {} submissions received",
                     submissions.len()
-                )));
+                )).into());
             }
             reminded = true;
             request.chat_history.extend(response.message());
@@ -331,15 +371,30 @@ pub async fn converse<P: CompletionProvider, C: Conversation, D: crate::domain::
                 }
                 return Err(io::Error::other(format!(
                     "{submit} must be invoked exactly once; multiple submissions received"
-                )));
+                ))
+                .into());
             }
+            begin_tool(submit);
             let arguments = Value::Object(submissions[0].function.arguments.clone());
             let submitted = if standard_submission {
                 tools::submitted_value(&arguments)
             } else {
                 Ok(arguments)
             };
-            match submitted.and_then(|value| session.submit(submit, &value)) {
+            let submission = submitted.and_then(|value| {
+                if let Some(graph) = &mut graph_tools
+                    && let Submission::Retry(message) = graph.submit(submit, &value)?
+                {
+                    return Ok(Submission::Retry(message));
+                }
+                session.submit(submit, &value)
+            });
+            let vetted = match submission {
+                Ok(Submission::Accepted(value)) => finish(value),
+                Ok(Submission::Retry(message)) => Ok(Submission::Retry(message)),
+                Err(error) => Err(error.into()),
+            };
+            match vetted {
                 Ok(Submission::Accepted(value)) => {
                     session.tool(submit, false);
                     return Ok(value);
@@ -350,6 +405,7 @@ pub async fn converse<P: CompletionProvider, C: Conversation, D: crate::domain::
                 }
                 Ok(Submission::Retry(message)) => {
                     session.tool(submit, true);
+                    record_result(submit, &message);
                     request.chat_history.push(
                         response
                             .message()
@@ -380,17 +436,37 @@ pub async fn converse<P: CompletionProvider, C: Conversation, D: crate::domain::
         let mut results = Vec::new();
         for call in calls {
             let name = call.function.name.as_str();
-            let result = match session
-                .dispatch(name, &Value::Object(call.function.arguments.clone()))
-                .await
-            {
-                Ok(text) => {
+            let arguments = Value::Object(call.function.arguments.clone());
+            let known = request.tools.iter().any(|tool| tool.name == name);
+            if known {
+                begin_tool(name);
+            }
+            let delivery = match &mut graph_tools {
+                Some(graph) => graph.dispatch(name, &arguments).await,
+                None => session.dispatch(name, &arguments).await,
+            };
+            let result = match delivery {
+                Ok((text, inputs)) => {
+                    if inputs > 0 {
+                        pending_inputs += inputs as u64;
+                        context.record_usage(&crate::graph::UsageStats {
+                            prepared_inputs: inputs as u64,
+                            ..Default::default()
+                        });
+                    }
+                    if known {
+                        record_result(name, &text);
+                    }
                     session.tool(name, false);
                     call.result(vec![ToolResultContent::text(text)])
                 }
                 Err(error) => {
                     session.tool(name, true);
-                    call.error_result(vec![ToolResultContent::text(error.to_string())])
+                    let text = error.to_string();
+                    if known {
+                        record_result(name, &text);
+                    }
+                    call.error_result(vec![ToolResultContent::text(text)])
                 }
             };
             results.push(result);

@@ -264,6 +264,7 @@ mod tests {
 
     // {test}`requirements.sdk.validation-cache.with_sources`
     #[tokio::test]
+    // {test}`requirements.sdk.sources.provider.attachment`
     async fn attached_sources_map_a_nested_rust_method_to_its_domain_identity() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -511,6 +512,7 @@ mod tests {
     // {test}`requirements.sdk.graph.search.search_text.mcp`
     #[tokio::test]
     // {test}`requirements.sdk.graph.search.agent_search`
+    // {test}`requirements.sdk.graph.running-criteria.UsageStats`
     async fn search_obligations_follow_delivery_and_keep_the_original_snapshot() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("source.txt");
@@ -641,6 +643,7 @@ mod tests {
         let matches = first["matches"].as_array().unwrap();
         let tags: std::collections::BTreeSet<_> =
             matches.iter().map(|m| m["tag"].as_str().unwrap()).collect();
+        assert_eq!(result.input_count, matches.len());
         assert!(matches.len() > 1);
         assert_eq!(tags.len(), matches.len());
         assert!(first.get("instructions").is_none());
@@ -664,6 +667,10 @@ mod tests {
         std::fs::write(&path, "changed after search").unwrap();
         let delivery = session.dispatch("get_next_page", &next).await.unwrap();
         let second: Value = serde_json::from_str(&delivery.text).unwrap();
+        assert_eq!(
+            delivery.input_count,
+            second["matches"].as_array().unwrap().len()
+        );
         assert!(second.get("instructions").is_none());
         assert_ne!(first["search_id"], second["search_id"]);
         assert!(
@@ -676,6 +683,7 @@ mod tests {
         let selected = finish(&first, json!([first["matches"][0]["tag"]]));
         for _ in 0..2 {
             let closed = session.dispatch("finish_search", &selected).await.unwrap();
+            assert_eq!(closed.input_count, 0);
             assert_eq!(
                 closed.dependencies,
                 [Dependency::Node(
@@ -694,6 +702,54 @@ mod tests {
         );
         assert!(session.outstanding_searches().is_empty());
         assert_eq!(tools.domain.0.lock().unwrap().reads, 0);
+    }
+
+    // {test}`requirements.sdk.graph.search.search_structure.mcp`
+    // {test}`requirements.sdk.graph.running-criteria.UsageStats`
+    #[tokio::test]
+    async fn structural_search_counts_each_visible_excerpt_across_pages() {
+        let root = tempfile::tempdir().unwrap();
+        let code: String = (0..200)
+            .map(|n| format!("fn f{n}() {{ call(); }}\n"))
+            .collect();
+        std::fs::write(root.path().join("code.rs"), code).unwrap();
+        let domain = project("");
+        let tools = ProjectSources {
+            sources: Sources::new(root.path()).into(),
+            domain: domain.clone().into(),
+        };
+        let mut session = SessionTools::new(tools.session());
+        let mut delivery = session
+            .dispatch(
+                "search_structure",
+                &json!({"language":"rust","rule":{"rule":{"pattern":"call()"}}}),
+            )
+            .await
+            .unwrap();
+        let mut seen = 0;
+        loop {
+            let page: Value = serde_json::from_str(&delivery.text).unwrap();
+            assert_eq!(page["complete"], true);
+            assert_eq!(page.get("instructions").is_some(), seen == 0);
+            let matches = page["matches"].as_array().unwrap();
+            assert_eq!(delivery.input_count, matches.len());
+            assert!(!matches.is_empty() && matches.len() < 200);
+            for (index, hit) in matches.iter().enumerate() {
+                let selector = format!("fn[f{seen}]");
+                let node = domain.cache().intern_node(format!("code.rs#{selector}"));
+                assert_eq!(
+                    hit,
+                    &json!({"node":node,"file":"code.rs","selector":selector,"tag":(index+1).to_string(),"excerpt":"call()"})
+                );
+                seen += 1;
+            }
+            let Some(next) = page.get("next") else { break };
+            delivery = session
+                .dispatch("get_next_page", &json!({"uuid":next}))
+                .await
+                .unwrap();
+        }
+        assert_eq!(seen, 200);
     }
 
     // {test}`requirements.sdk.graph.validation-context.pages.behavior`

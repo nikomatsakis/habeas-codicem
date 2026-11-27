@@ -1,8 +1,8 @@
 {
-  "requirement": "`UsageStats` exposes the following totals. `attempts` counts each request sent to the provider once. `retries` counts attempts that repeat a failed request. `failed_attempts` counts attempts that returned a provider error, including those followed by a successful retry.\n\n```rust,ignore\n#[non_exhaustive]\npub struct UsageStats {\n    pub attempts: u64,\n    pub retries: u64,\n    pub failed_attempts: u64,\n    pub input_tokens: TokenCount,\n    pub output_tokens: TokenCount,\n    pub cached_input_tokens: TokenCount,\n    pub cache_creation_input_tokens: TokenCount,\n    pub reasoning_tokens: TokenCount,\n}\n```\n\nTrait implementations\n\n```rust,ignore\nimpl Clone for UsageStats;\nimpl Copy for UsageStats;\nimpl Debug for UsageStats;\nimpl Default for UsageStats;\nimpl Serialize for UsageStats;\n```",
+  "requirement": "`UsageStats` exposes the following totals. `attempts` counts each request sent to the provider once. `retries` counts attempts that repeat a failed request. `failed_attempts` counts attempts that returned a provider error, including those followed by a successful retry.\n\n`prepared_inputs` counts inputs prepared for agent messages. Each node inserted in the opening message counts once. Each requested `read_node` page and each `outgoing_edges` result counts once, including repeated reads. A requested search page counts one input per excerpt on that page. Source listings, search finalization, and opaque custom-tool results contribute zero.\n\n`delivered_inputs` counts those inputs when the provider first responds successfully to the request carrying them. Each input counts once across retries and subsequent turns that replay the same conversation history. For example, if the opening message supplies three nodes and the provider fails permanently before replying, usage records three prepared inputs and zero delivered inputs.\n\n```rust,ignore\n#[non_exhaustive]\npub struct UsageStats {\n    pub attempts: u64,\n    pub retries: u64,\n    pub failed_attempts: u64,\n    pub prepared_inputs: u64,\n    pub delivered_inputs: u64,\n    pub tools: BTreeMap<String, ToolUsage>,\n    pub input_tokens: TokenCount,\n    pub output_tokens: TokenCount,\n    pub cached_input_tokens: TokenCount,\n    pub cache_creation_input_tokens: TokenCount,\n    pub reasoning_tokens: TokenCount,\n}\n```\n\nTrait implementations\n\n```rust,ignore\nimpl Clone for UsageStats;\nimpl Debug for UsageStats;\nimpl Default for UsageStats;\nimpl Serialize for UsageStats;\n```",
   "determination": true,
-  "rationale": "The tests adequately check `requirements.sdk.graph.running-criteria.UsageStats`.\n\n**Obligations:**\n- `attempts` counts each request sent to the provider once.\n- `retries` counts attempts that repeat a failed request.\n- `failed_attempts` counts attempts that returned a provider error, including those followed by a successful retry.\n- The struct has the listed fields and is `#[non_exhaustive]`.\n- It implements `Clone`, `Copy`, `Debug`, `Default` and `Serialize`.\n\n**Coverage:**\n- **Retried failure followed by success.** `crates/trust-but-verify/src/agent/tests.rs#fn[validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse]` runs a throttled error, then a success, then a terminal non-retryable error.\n  - It asserts `(attempts, retries, failed_attempts)` of `(1 failure, 2 attempts)` after the first call, which shows the failed attempt that was retried is counted in `failed_attempts`.\n  - It asserts `(3, 1, 2)` after the terminal error. That shows a failed attempt that is not retried is not counted as a retry.\n  - It checks the same totals on both `validator.usage()` and `graph.cache().usage()`, and checks the token-count fields.\n  - It also asserts that a fresh validator's stats are all zero. `*validator.usage()` copies the struct, so `Copy` is exercised.\n- **Shared totals across validators.** `fn[cache_retains_usage_across_validators_and_sums_each_token_category]` asserts totals of `(3, 1, 1)` across two validators. It also asserts each token-category sum, so the five `TokenCount` fields are distinct and correctly aggregated.\n- **Continuations.** `fn[generic_conversations_can_use_default_telemetry_through_retry_and_continuation]` asserts `(4, 1, 1)`. A tool turn and a length continuation count as fresh attempts, not retries, so each request is counted once.\n- **Repeated failures and serialization.** `src/authoring/mod.rs#mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]` has five throttled failures, then a success.\n  - It asserts `attempts` is 6, `retries` is 5 and `failed_attempts` is 5.\n  - It asserts the per-category `{reported, missing_attempts}` values.\n  - It reads these from the serialized JSON log, where `provider_usage` is a `UsageStats` (`src/authoring/usage.rs#struct[UsageRecord]`). That exercises `Serialize` and the field names.\n- **Other authoring tests.** `permanent_provider_failure_returns_without_waiting_or_retrying`, `a_request_failing_for_a_minute_fails_the_assessment` and `cancelling_during_backoff_prevents_another_request` check `attempts`, `retries` and `failed_attempts` for a non-retried failure, a run of failures, and a cancelled backoff. Their `{test}` markings are not shown, but they add no new obligation.\n- **Public surface.** `crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]` covers the export of the type and its fields.\n\n**Untested trait impls.** `Clone`, `Debug` and `Default` are plain `#[derive(Clone, Copy, Debug, Default, Serialize)]` in `crates/trust-but-verify/src/graph.rs#struct[UsageStats]`. They have no conditionals or transformations. `Default` is indirectly shown by the zeroed fresh validator and the `Default::default()` initialisation in the log.\n\nI found no plausible requirement-violating behavior that these tests would accept. Examples are counting a retried failure out of `failed_attempts`, counting a continuation as a retry, counting a non-retried failure as a retry, or double-counting attempts. No `{fixme}` acknowledgments are involved.",
-  "references": "2e5116da8e41f81143f2192fb37549d2a0323135a3d396eff1c125f7a322947a",
+  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.graph.running-criteria.UsageStats`. I did not request implementation source, because the test assertions were enough to map each clause. Each clause below maps to a marked test.\n\n**Request counters**\n- `attempts`, `retries` and `failed_attempts` are asserted in `validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse`. Its scenario is a throttled failure, then a success, then a terminal failure, and it expects (3, 1, 2). That covers both the retried failure and the terminal one.\n- `cache_retains_usage_across_validators_and_sums_each_token_category` expects (3, 1, 1), so a failure followed by a successful retry still counts as a failed attempt.\n- `generic_conversations_can_use_default_telemetry_through_retry_and_continuation` expects (4, 1, 1) across retry and continuation.\n- `throttled_requests_retry_unchanged_and_record_every_attempt` in `src/authoring/mod.rs` expects 6 attempts, 5 retries and 5 failed attempts. It reads them from the serialized `provider_usage` log.\n\n**`prepared_inputs`**\n- `inputs_count_each_opening_insertion_and_each_repeated_node_read` covers two opening insertions of the same node plus a `contents_of_successors` insertion, expecting 3 prepared and 0 delivered after a permanent failure. This is the spec's example. It also covers two repeated `read_node` calls, giving totals of 5 prepared and 2 delivered.\n- `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` covers `outgoing_edges`, `read_node` and the `get_next_page` page, each counted once, with totals (3, 3).\n- Its failure legs show that prepared but undelivered inputs are not delivered, giving totals (6, 4).\n- `configured_agent_uses_domain_source_tools_in_independent_executions` expects (6, 6): one opening node, two node reads and three search excerpts. A source listing, a rejected `read_node`, an empty search and repeated `finish_search` calls add nothing. It runs twice, so counts are independent per execution.\n- `search_obligations_follow_delivery_and_keep_the_original_snapshot` asserts `input_count` equals the number of matches for a page and for a next page. It asserts `input_count` is 0 for `finish_search`, including repeated finalization.\n- `structural_search_counts_each_visible_excerpt_across_pages` asserts `input_count` equals the matches on every page of a paged structural search.\n- `registered_tools_use_the_current_context_and_ordinary_node_ids` asserts (0, 0) while opaque custom tools (`lookup_requirements`, `inspect`) return results, so those results contribute zero.\n\n**`delivered_inputs`**\n- The tests show delivery happens only on a successful provider response. The permanent-failure case gives 0 delivered.\n- The retry case in `validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse` gives (1, 1): a retry does not double-count.\n- Multi-turn replay does not double-count: in the 32-request run in `configured_agent_uses_domain_source_tools_in_independent_executions`, inputs prepared in earlier turns are not recounted on later requests.\n- `throttled_requests_retry_unchanged_and_record_every_attempt` expects delivered equal to prepared after 5 failures and one success.\n\n**Struct and trait impls**\n- `validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse` asserts the zeroed fresh state for every field, which exercises `Default`.\n- The same test calls `.clone()` on `validator.usage()`.\n- The authoring test checks the serialized `provider_usage` fields, which exercises `Serialize`.\n- `public_exports_match_the_appendix` checks the public export.\n- The `tools` field and the `TokenCount` fields are delegated to their own requirements, `ToolUsage.*` and `TokenCount`. The tests also exercise them here.\n- `Debug` is an unconditional trait impl, so it needs no dedicated test.\n\nI found no requirement-violating behavior that these tests would accept, and no relevant test is missing a `{test}` reference.",
+  "references": "5bd7d888589a839dea054938c5e41c8083e0a5ee1dd025c122b77d9f1b9ac6d9",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.running-criteria.UsageStats",
@@ -14,12 +14,19 @@
         "",
         "`UsageStats` exposes the following totals. `attempts` counts each request sent to the provider once. `retries` counts attempts that repeat a failed request. `failed_attempts` counts attempts that returned a provider error, including those followed by a successful retry.",
         "",
+        "`prepared_inputs` counts inputs prepared for agent messages. Each node inserted in the opening message counts once. Each requested `read_node` page and each `outgoing_edges` result counts once, including repeated reads. A requested search page counts one input per excerpt on that page. Source listings, search finalization, and opaque custom-tool results contribute zero.",
+        "",
+        "`delivered_inputs` counts those inputs when the provider first responds successfully to the request carrying them. Each input counts once across retries and subsequent turns that replay the same conversation history. For example, if the opening message supplies three nodes and the provider fails permanently before replying, usage records three prepared inputs and zero delivered inputs.",
+        "",
         "```rust,ignore",
         "#[non_exhaustive]",
         "pub struct UsageStats {",
         "    pub attempts: u64,",
         "    pub retries: u64,",
         "    pub failed_attempts: u64,",
+        "    pub prepared_inputs: u64,",
+        "    pub delivered_inputs: u64,",
+        "    pub tools: BTreeMap<String, ToolUsage>,",
         "    pub input_tokens: TokenCount,",
         "    pub output_tokens: TokenCount,",
         "    pub cached_input_tokens: TokenCount,",
@@ -32,7 +39,6 @@
         "",
         "```rust,ignore",
         "impl Clone for UsageStats;",
-        "impl Copy for UsageStats;",
         "impl Debug for UsageStats;",
         "impl Default for UsageStats;",
         "impl Serialize for UsageStats;",
@@ -41,59 +47,59 @@
       ]
     },
     {
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/fn[registered_tools_use_the_current_context_and_ordinary_node_ids]",
+      "hash": "1bf97cc8cd53fefba38eba8a9c2426fe72f0fd8d8f2f957083dc512fc16577cb"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]",
+      "hash": "c128684d8f511e40b199c52736d9cf930af4e4efdeb7fe26a17164c6d3635ef7"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]",
+      "hash": "ae174164270435b945ebc49fa48717ef762ca2f76ae833920a87e59a3b09d7ad"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "mod[tests]/fn[structural_search_counts_each_visible_excerpt_across_pages]",
+      "hash": "443bfe6669729111e6d1f4fdfc93a491158fdf24ae6d6eb7c207f919aab7620e"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]",
+      "hash": "c7885e4745b0ff03722c7fce69141d3f4f47d1b948da6955f161cac7606bae4d"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "fn[inputs_count_each_opening_insertion_and_each_repeated_node_read]",
+      "hash": "398ff409fa778b37015ad178c715273ecec5ca1714c041cfdc3099c22d9b063a"
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse]",
-      "hash": "06f9aad202e1891a1910f5307439e6bb442a02eba6cd5fcd29b1d1bc22f2aab4"
+      "hash": "52c15d1d0e93301c4d527c00d5c2b47d2c8be8114c9e65409e2746298fcc75e3"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[cache_retains_usage_across_validators_and_sums_each_token_category]",
-      "hash": "139f045f738509a7b777983227ce3d332bad84d720f315e49d6101b3a4460764"
+      "hash": "97ba915319c99e373ceb68462d68188b2dfbaacd19982fe551ab4fcca4bda03a"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[generic_conversations_can_use_default_telemetry_through_retry_and_continuation]",
-      "hash": "9a6b52c352bf3f5b67cb3e87ec0b8c859a0a3c3ed1ade3acda97b73c76d58c76"
+      "hash": "8f59b1548b4995b53a1b66580b0c237e4dfa6c0bc5d715986f06e41e193ef379"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]",
-      "hash": "fc067cfdb4e0024051fa07ab52d182903c5f055bb761bb431b2ba1a7e9f0b9eb"
+      "hash": "12b07397b4005a8954a87c7f61f47d3b8514528fc8bec502ce2956345a55b1c2"
     },
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[public_exports_match_the_appendix]",
       "hash": "4d6ce6161754fb9e88ad84ef64f9bb131b308298104915179b2c5d573ed2b087"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[permanent_provider_failure_returns_without_waiting_or_retrying]",
-      "hash": "784268b1023c4407878033008298f02d5c1f5780b9ca80e6c6327da37bae1fe5"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[a_request_failing_for_a_minute_fails_the_assessment]",
-      "hash": "e06b186cd06b2be4f6d12618b5f29fe686057d9e843d0c54ebfc70e434760932"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[cancelling_during_backoff_prevents_another_request]",
-      "hash": "21da7eaec693a2603c92cb16aba9df7e7d7c820baafefae7611f6fc7fcf20124"
-    },
-    {
-      "file": "src/authoring/sdk.rs",
-      "item": "impl[AssessmentUsage<'_,%20'_>/Drop]/fn[drop]",
-      "hash": "557578456f93aed45f1bdb8431c197582a95a681edb4e75bba5eae46f73cf556"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "struct[UsageRecord]",
-      "hash": "392773d9486c1a93a841ac1fbe209e1dbd2de04b1eaf4dbe303ca8ebc2fa165d"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "struct[UsageStats]",
-      "hash": "c9780f826db30fe99e7bbfc55d43ccdf8e906dff9b0e6d1a03438c107637a120"
     }
   ],
   "format_version": 1,
@@ -106,7 +112,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "2e5116da8e41f81143f2192fb37549d2a0323135a3d396eff1c125f7a322947a"
+          "value": "5bd7d888589a839dea054938c5e41c8083e0a5ee1dd025c122b77d9f1b9ac6d9"
         }
       ]
     },
@@ -118,7 +124,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "c79fd9f822d6e783f7de826724f36b9b2727fdb3c2055c7239e8052b0ebe9ed4"
+          "value": "bc1160dc951e691da0c86dedce39e093da16b2f73610306c0838c9cb39a0ba36"
         }
       ]
     },
@@ -129,7 +135,109 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9496a0a1bb5ba887bc3d325318b36a281216fb59c5e8c539712c3f87d72b04d0"
+          "value": "acada9370a9aa5e46ab48f6bd6c3b337f00d357491ac0b8fc97a4a1bb1811196"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
+            },
+            "selector": "mod[tests]/fn[registered_tools_use_the_current_context_and_ordinary_node_ids]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "2a2cd72d471bf2cf18e6987128b2d9c2c22deeaa2d3e269118486369534f0a29"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
+            },
+            "selector": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "da13b86e29be9c84f6439d22e6ad6656b7fe185b9002ca9c3490741263a0af6f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "ae174164270435b945ebc49fa48717ef762ca2f76ae833920a87e59a3b09d7ad"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "mod[tests]/fn[structural_search_counts_each_visible_excerpt_across_pages]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "443bfe6669729111e6d1f4fdfc93a491158fdf24ae6d6eb7c207f919aab7620e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
+            },
+            "selector": "fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "c7885e4745b0ff03722c7fce69141d3f4f47d1b948da6955f161cac7606bae4d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
+            },
+            "selector": "fn[inputs_count_each_opening_insertion_and_each_repeated_node_read]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "398ff409fa778b37015ad178c715273ecec5ca1714c041cfdc3099c22d9b063a"
         }
       ]
     },
@@ -145,8 +253,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "aa14de1bbe66ad852abe9beb4e6ee331dc55339b410d7ec09bf4960b9d420e14"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "52c15d1d0e93301c4d527c00d5c2b47d2c8be8114c9e65409e2746298fcc75e3"
         }
       ]
     },
@@ -162,8 +270,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "3c864b84c787c26ff6414d31813563e80f90da3ab7569c93e4cedcd6556c7dac"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "97ba915319c99e373ceb68462d68188b2dfbaacd19982fe551ab4fcca4bda03a"
         }
       ]
     },
@@ -179,8 +287,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "1d1831983f81fa59d1caa938f7b684e4eb4af3b5e014911f965e6bda6516e71e"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "8f59b1548b4995b53a1b66580b0c237e4dfa6c0bc5d715986f06e41e193ef379"
         }
       ]
     },
@@ -196,8 +304,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "111ce681b9a80a1328c5ec665737d456942a3f48e5a3c8dc237640d521c6318d"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "12b07397b4005a8954a87c7f61f47d3b8514528fc8bec502ce2956345a55b1c2"
         }
       ]
     },
@@ -213,110 +321,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "ae4819b6e5ac9cd22992cc4254e7868f438e101dbd53f1bd7d443a33ee96f61d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/mod.rs"
-            },
-            "selector": "mod[tests]/fn[permanent_provider_failure_returns_without_waiting_or_retrying]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "78b06a579d07df2b2526804375e47fe6e9e6f89e36b5649a5a366fe8f947c759"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/mod.rs"
-            },
-            "selector": "mod[tests]/fn[a_request_failing_for_a_minute_fails_the_assessment]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "810ae1c997d072716488479e764100ae126ab3b4d624dcba2bba40709aebc4c2"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/mod.rs"
-            },
-            "selector": "mod[tests]/fn[cancelling_during_backoff_prevents_another_request]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "b6eacfeb4d4c4bbc22f264867d856df8ac3694ab42d455e12cfa870cac0cff79"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/sdk.rs"
-            },
-            "selector": "impl[AssessmentUsage<'_,%20'_>/Drop]/fn[drop]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "620b7afef5982d4e7534cd98cfa977c5e95fa3b88916d935bb27b11258cca4b2"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/usage.rs"
-            },
-            "selector": "struct[UsageRecord]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "d41e365aa90dad72f6dd4b10d6f3ea7dc7fc7e860b13e72d238c4d04abd92e7a"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
-            },
-            "selector": "struct[UsageStats]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "68c126f51f189c1df60bca905943d9b19be14cc7c3bc07ad506afa90f177c1dd"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "4d6ce6161754fb9e88ad84ef64f9bb131b308298104915179b2c5d573ed2b087"
         }
       ]
     }

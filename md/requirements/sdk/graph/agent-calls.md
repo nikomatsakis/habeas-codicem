@@ -122,6 +122,10 @@ impl<'a, 'd, D: Domain, R> Ask<'a, 'd, D, R, ContextPhase> {
 }
 
 impl<'a, 'd, D: Domain, R, P> Ask<'a, 'd, D, R, P> {
+    pub fn vet_answer(
+        self,
+        vet: impl FnMut(&R) -> Result<VetResult, D::Error> + Send + 'a,
+    ) -> Self;
     pub fn contents_of_current_node(self) -> Ask<'a, 'd, D, R, NodePhase>;
     pub fn contents_of_successors(
         self,
@@ -290,23 +294,73 @@ The prefix fingerprint follows
 
 The result type describes the answer the agent should submit. The supplied
 harness exposes a structured submission tool with that schema, and awaiting
-the builder decodes the accepted submission into `R`.
+the builder returns the accepted `R`.
 
 :::{req} judge.submission
-Awaiting the builder returns the harness's accepted result deserialized into
-`R`. The harness obtains the submitted value under
+Awaiting the builder returns the decoded `R` that passes answer vetting under
+{cite}`requirements.sdk.graph.agent-calls.vet_answer`. The harness obtains the submitted value under
 {cite}`requirements.sdk.graph.agent-harness.submission.acceptance`.
 :::
 
 :::{req} judge.submission.decoding
-If the accepted result cannot be deserialized into `R`, awaiting the builder
-returns `ValidationError::Agent`.
+If the submitted result cannot be deserialized into `R`, the call ends with
+`ValidationError::Agent` before invoking any vetting callbacks.
 :::
 
 [Agent harness](agent-harness.md#submit-a-structured-answer) defines the submission
 tool, its schema, and its reminder and error behavior. The criterion can interpret
 the typed answer and make another ask request; its application owns the assessment
 policy.
+
+## Vet a submitted answer
+
+:::{definition} vetting
+:phrase: vetting
+
+*Vetting* is the application’s check of a decoded agent answer before the
+conversation ends. It lets the application accept the answer or tell the
+agent what to correct in its next submission.
+:::
+
+:::{req} VetResult
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+A `VetResult` reports whether one callback accepts the typed answer or
+requests a correction.
+
+```rust,ignore
+pub enum VetResult {
+    Accept,
+    CorrectAndTryAgain(String),
+}
+```
+:::
+
+:::{req} vet_answer
+Each call to `Ask::vet_answer` appends an independent `FnMut` callback to this
+request in either builder phase.
+
+For each decoded submission, the harness invokes the callbacks in registration
+order with the same `&R`, stopping at the first `Err`. Each callback retains
+its state across submissions in the same conversation.
+
+If any callback returns `Err(error)`, the harness MUST stop running callbacks
+and end the conversation immediately, even if an earlier callback requested a
+correction. Awaiting the `Ask` MUST return
+`Err(ValidationError::Graph(error))` carrying the original `D::Error`.
+:::
+
+:::{req} vet_answer.ok
+If every `vet_answer` callback invoked by {cite}`requirements.sdk.graph.agent-calls.vet_answer` returns `Ok(VetResult::Accept)`, or the request has no callbacks, the answer is successfully submitted and the agent conversation ends.
+:::
+
+:::{req} vet_answer.corrections
+If all callbacks return `Ok(_)` and any callback returns `Ok(VetResult::CorrectAndTryAgain(message))`, the answer is not recorded.
+
+The harness collects the correction messages in registration order.
+`submit_result` returns the newline-separated messages in one tool response
+and asks the agent to resubmit in the same conversation.
+:::
 
 ## Combine inputs from several calls
 

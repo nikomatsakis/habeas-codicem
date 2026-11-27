@@ -106,7 +106,7 @@ impl<D: Domain> ValidationCache<D> {
     /// Snapshot provider usage across all clones of this cache.
     // {impl}`requirements.sdk.validation-cache.usage`
     pub fn usage(&self) -> UsageStats {
-        *self.usage.lock().expect("usage lock poisoned")
+        self.usage.lock().expect("usage lock poisoned").clone()
     }
 
     /// Return the handle for this durable identity in this cache.

@@ -150,11 +150,17 @@ documented TBV public API.
       - `attempts`
       - `retries`
       - `failed_attempts`
+      - `prepared_inputs`
+      - `delivered_inputs`
+      - `tools`
       - `input_tokens`
       - `output_tokens`
       - `cached_input_tokens`
       - `cache_creation_input_tokens`
       - `reasoning_tokens`
+    - `struct ToolUsage` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.ToolUsage)
+      - `calls`
+      - `result_bytes`
     - `struct TokenCount` — [Declaration](graph/running-criteria.md#habeas-req-requirements.sdk.graph.running-criteria.TokenCount)
       - `reported`
       - `missing_attempts`
@@ -247,8 +253,10 @@ documented TBV public API.
   - `mod request` — [Agent calls](graph/agent-calls.md)
     - `struct Ask` — [Declaration](graph/agent-calls.md#habeas-req-requirements.sdk.graph.agent-calls.Ask) · [Build a request](graph/agent-calls.md#build-a-request)
       - `context()`
+      - `vet_answer()`
       - `contents_of_current_node()`
       - `contents_of_successors()`
+    - `enum VetResult` — [Declaration](graph/agent-calls.md#habeas-req-requirements.sdk.graph.agent-calls.VetResult) · [Vet a submitted answer](graph/agent-calls.md#vet-a-submitted-answer)
     - `struct ContextPhase` — [Declaration](graph/agent-calls.md#habeas-req-requirements.sdk.graph.agent-calls.ContextPhase) · [Build a request](graph/agent-calls.md#build-a-request)
     - `struct NodePhase` — [Declaration](graph/agent-calls.md#habeas-req-requirements.sdk.graph.agent-calls.NodePhase) · [Build a request](graph/agent-calls.md#build-a-request)
     - `struct ValidationContext` — [Declaration](graph/validation-context.md#habeas-req-requirements.sdk.graph.validation-context.ValidationContext)

@@ -1,7 +1,7 @@
 {
   "requirement": "A `Criterion::execute` invocation receives one `Send + Sync`\n`ValidationContext<'d, D>` for `D: Domain`, with tracked `inspection(&self)`\nand the `ask(&self)` builder under\n{cite}`requirements.sdk.graph.agent-calls.judge`.\n\nEach awaited ask builder runs its own conversation and returns its own submitted\nanswer. The context combines delivered node contents, tool reads, direct\ninspection reads, and recorded edge selections into one dependency trace for\nthe criterion. It records the node identities and fingerprints of the supplied\ncontents. A later call that selects fewer nodes, or none, preserves earlier\ninputs. An unawaited builder contributes no\nagent-delivery dependencies.\n\nShared references support concurrent calls: builders, conversations, and\nsubmission state remain independent, while updates to the trace are synchronized.\nCalls can run concurrently without holding an exclusive context borrow across\nan agent interaction or locking the whole context for the conversation.\n\nThe same context supports deterministic criteria under\n{cite}`requirements.sdk.graph.criteria.deterministic_procedures`.",
   "determination": true,
-  "rationale": "I judged this from the supplied test source only and did not request implementation source. Each obligation in `requirements.sdk.graph.agent-calls.author_procedure` maps to at least one marked test with assertions that enforce it.\n\n- **Shared `Send + Sync` context with tracked inspection and `ask`.**\n  - `later_lighter_agent_calls_preserve_the_contexts_existing_trace` asserts `assert_send_sync(&ctx)`.\n  - The same test calls `ctx.read(...)` directly for tracked inspection and calls `ctx.ask()`.\n  - `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` asserts that the builder's future is `Send`.\n- **Each awaited builder runs its own conversation and returns its own answer.**\n  - `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` runs two `ask` calls concurrently with `futures::join!` against a two-party barrier. The barrier forces real overlap, and a timeout guards against a hang.\n  - It asserts that \"alpha\" and \"beta\" each get their own answer and their own call counts.\n  - `agent_executions_isolate_conversations_and_dependency_traces` checks isolated conversations and per-execution dependency traces.\n  - `shared_context_allows_independent_concurrent_agent_calls` checks independent answers (7 and 11) from concurrent calls on one shared `&ctx`. This also shows that no exclusive borrow is held across an agent interaction.\n- **One combined trace of delivered contents, tool reads, direct reads and edge selections, with node identities and fingerprints.**\n  - `later_lighter_agent_calls_preserve_the_contexts_existing_trace` asserts the exact trace: direct reads, an `OutgoingEdges` entry, a delivered `Node` entry, and a later direct read. It also asserts that `finish` persists the same dependencies.\n  - `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` asserts that tool-driven `outgoing_edges` and `read_node` calls record `OutgoingEdges` and `Node` dependencies with the right fingerprints. It also asserts that failed deliveries record nothing.\n  - `node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents` asserts that undelivered contents are not recorded.\n  - The concurrent test merges the traces of both asks into three dependencies.\n- **A later call selecting fewer nodes, or none, preserves earlier inputs.** In `later_lighter_agent_calls_preserve_the_contexts_existing_trace`, the later `ask().context(\"lighter\")` call leaves `ctx.dependencies()` equal to `retained`.\n- **An unawaited builder contributes no agent-delivery dependencies.**\n  - `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` drops a builder and asserts that the trace is empty and that no reads or selections happened.\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` asserts that a dropped builder makes no agent request.\n- **Independent submission state and synchronized trace updates.** The concurrent tests cover these. Both asks write to one shared trace, and both are fully recorded with no loss.\n- **Deterministic criteria (cited).** `deterministic_validation_uses_required_storage_without_an_agent` runs a `Review` criterion through `Validator::verify` with no agent configured. It asserts the computed output and the stored `Node` dependency. It also asserts that `ask` without an agent returns `NoAgentConfigured`.\n\nI found no uncovered obligation. The remaining marked tests, `generic_conversations_can_use_default_telemetry_through_retry_and_continuation` and `confirmed_evidence_retains_reads_from_both_assessments_and_the_verifier`, give extra supporting coverage.",
+  "rationale": "I judge the marked tests adequate for `requirements.sdk.graph.agent-calls.author_procedure`. I did not request implementation source or read the elided portions of the tests. My mapping of obligations to tests:\n\n- **Send + Sync context with tracked inspection and `ask`.** `later_lighter_agent_calls_preserve_the_contexts_existing_trace` calls `assert_send_sync(&ctx)`. It also exercises direct `ctx.read` inspection together with `ctx.ask()`. `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` asserts the `ask` future is `Send`.\n- **Each awaited builder has its own conversation and its own answer.**\n  - `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` joins two `ctx.ask::<String>()` calls behind a two-party barrier. It asserts \"alpha\" and \"beta\" come back separately and that each conversation made 3 calls.\n  - `agent_executions_isolate_conversations_and_dependency_traces` runs two executions concurrently. It asserts separate usage counts and outputs, and separate stored dependency records.\n  - `shared_context_allows_independent_concurrent_agent_calls` asserts the answers 7 and 11 under a barrier with a timeout. That proves the calls run concurrently on a shared `&ctx`.\n- **One trace combining delivered contents, tool reads, direct reads and edge selections.**\n  - `later_lighter_agent_calls_preserve_the_contexts_existing_trace` asserts the exact trace for a direct read, successor edges and current-node contents. These are `Dependency::Node` and `Dependency::OutgoingEdges` entries with fingerprints.\n  - `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` covers tool reads (`outgoing_edges`, `read_node`, `get_next_page`). It asserts the recorded edges and node fingerprints. It also asserts that a failed or undelivered ask records nothing, or only what was delivered.\n  - `node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents` asserts that tool errors leave the dependency list empty.\n- **A later call selecting fewer nodes, or none, preserves earlier inputs.** In `later_lighter_agent_calls_preserve_the_contexts_existing_trace`, a later `ask().context(\"lighter\")` call with no nodes leaves `ctx.dependencies()` equal to the earlier `retained` trace. `finish` then yields the persisted dependencies.\n- **An unawaited builder contributes no agent-delivery dependencies.**\n  - `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` drops a builder and asserts the dependencies are empty and no reads happened.\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` also drops a builder and asserts no agent request was made.\n- **Shared references, independent submission state, and a synchronized trace without an exclusive borrow.** The concurrent tests above call `futures::join!` on `&ctx` while the two conversations rendezvous at a barrier. They then assert the merged trace contains the dependencies from both calls.\n- **Deterministic criteria.** `deterministic_validation_uses_required_storage_without_an_agent` runs a `Review` criterion through `verify`. It asserts the computed output and the stored `Dependency::Node`, with no agent configured. It also asserts that `ask` without an agent returns `NoAgentConfigured`.\n\nThe assertions are strong: they check exact dependency vectors and fingerprints, and per-conversation call counts. They would reject behaviors such as shared conversation state, lost trace updates, dropped earlier inputs, or recording dependencies for undelivered builders. Each obligation maps to at least one marked test, so I found no unacknowledged gap.",
   "references": "42e431bb67eb10a98b0b42c0476f1077271a3105a4690c25f74e92598c431b48",
   "inputs": [
     {
@@ -80,12 +80,12 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[agent_executions_isolate_conversations_and_dependency_traces]",
-      "hash": "bc002f615fc9d34843968bf5d623070ae0e47d49742cd8ffd45b5868e494a857"
+      "hash": "056d0e24c13d4598d0ca252b07b88f5943e47267f99859790a84f3575cf78f38"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]",
-      "hash": "6816c3e20ad4c2a25fe0d22c59b3b443360f48b3c428d152fbf6b8fc786aefe1"
+      "hash": "c7885e4745b0ff03722c7fce69141d3f4f47d1b948da6955f161cac7606bae4d"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -100,7 +100,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[generic_conversations_can_use_default_telemetry_through_retry_and_continuation]",
-      "hash": "9a6b52c352bf3f5b67cb3e87ec0b8c859a0a3c3ed1ade3acda97b73c76d58c76"
+      "hash": "8f59b1548b4995b53a1b66580b0c237e4dfa6c0bc5d715986f06e41e193ef379"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
@@ -130,7 +130,7 @@
     {
       "file": "src/authoring/sdk.rs",
       "item": "mod[tests]/fn[confirmed_evidence_retains_reads_from_both_assessments_and_the_verifier]",
-      "hash": "ff4d27bb2e75f1dab61287bfb7fbf50e1914f6ab4a7a0fb3e9efd926827d091d"
+      "hash": "4e8803d52e7baa6737e36ba29032728f193b50f5f0396b794f1b16607868dae8"
     }
   ],
   "format_version": 1,
@@ -204,8 +204,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "48a915bd09b5009c59ae08da015119046223c6fa314af6572c8062782a4759d3"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "07f3a94cd585fd150e0944575c24f6d3538f7ec6c1f07277c24bb2f20ee7fd87"
         }
       ]
     },
@@ -221,8 +221,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "9aa1073d5ee002f1d6850b22d808b6c689324d5d67f2256a70dd5deeb91dd982"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "056d0e24c13d4598d0ca252b07b88f5943e47267f99859790a84f3575cf78f38"
         }
       ]
     },
@@ -238,8 +238,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "0e4c0139880454966fac2bc04043d6b7e3f2ffe3e977b0ad8e64aa7bd51012e0"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "c7885e4745b0ff03722c7fce69141d3f4f47d1b948da6955f161cac7606bae4d"
         }
       ]
     },
@@ -255,8 +255,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "a1973d45464b99414240d422952dd92e55809e39b804c0a6502fa99c9eeda77c"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "744f61b15e6acace9d745f474ecd3efd0733907389f6bc82870a8a9ea5769173"
         }
       ]
     },
@@ -272,8 +272,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "a68310a9cae20ec19c7ca60ed1d63d01aadc55ff03e95047f162ad34940c9ffe"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "421d302372b0b1869b776dbeb21275e6942dae97306c67651f019c874d362a04"
         }
       ]
     },
@@ -289,8 +289,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "1d1831983f81fa59d1caa938f7b684e4eb4af3b5e014911f965e6bda6516e71e"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "8f59b1548b4995b53a1b66580b0c237e4dfa6c0bc5d715986f06e41e193ef379"
         }
       ]
     },
@@ -306,8 +306,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "2960ea17d6cadb1f8171fb93f330634c35b91a08f485cfc1eeb01b6f2ec02137"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "9cbe92178baf6b64f5b753b824d8484aaeaf4cef82c6372f433f35776444e34c"
         }
       ]
     },
@@ -323,8 +323,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "9bca063d006595ed84b77011974c75c2e751b53a171f60063c650098e1c42a1a"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "eb15fcf83118155b8a9a790a7851de9cd58a337bfb384d07d8fdf0571bbbd6be"
         }
       ]
     },
@@ -340,8 +340,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "326ace612eda4828cac5fc9dd1d283700e550786d1a53a93a7b33d02b41d0f48"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "c1e103cff6f9bbdbf982230e4b2beac870658b9ecab472a2cac25b61da76317f"
         }
       ]
     },
@@ -357,8 +357,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "7f6922d1e943699b21437e44e466f43cba36d557fb8812dbe86de0df53a205b0"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "6684804bd1c7f6ac2d750825ff2831ced13bf76b9c74cdda2ca3d32a6fb174ef"
         }
       ]
     },
@@ -374,8 +374,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "cee46e0806fccf4bd824ab4d2ae06bf43eff788b48df5c8c006b31383f7cd626"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "16e5d66c127375503160b7357b3aab780341b16eb17adf36510391e372907734"
         }
       ]
     },
@@ -391,8 +391,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "2045e056e2a4deb792c79001ea04a87c08a0de4398e489d89349331450484834"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "4e8803d52e7baa6737e36ba29032728f193b50f5f0396b794f1b16607868dae8"
         }
       ]
     }
