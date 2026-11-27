@@ -186,10 +186,15 @@ information needed for requirement, example, citation, and site reviews.
 | Information retained | Purpose |
 | --- | --- |
 | Recorded subject identity and text, determination, and rationale | Identify the review and its answer. |
+| Corrections from a failed requirement or example assessment | Preserve actionable findings under {cite}`requirements.authoring.corrections`. |
 | Reference-set digests | Detect changes to the references supporting it. |
 | Citation roles and commentary | Preserve the citation's reviewed meaning. |
 | Site queries and applicability | Preserve the scope and outcome of a site review. |
 | Recorded input information | Check the inputs applicable to that review kind. |
+
+Older negative records without a correction list MUST remain readable.
+Correction lists describe findings from the recorded assessment. Loading a record
+MUST NOT execute its corrections.
 
 Equivalent information receives the same application validation in both legacy
 and versioned records. Versioned fields can live in application-owned output and SDK
@@ -231,7 +236,7 @@ Conversion writes only through a write-capable migration or authoring path.
 Loading for `load_evidence`, CI, status inspection, or book rendering leaves
 evidence files unchanged. Authoring with `--stdout` performs no in-place
 conversion and creates or changes no evidence files or directories under
-{cite}`requirements.authoring.persistence`.
+{cite}`requirements.authoring.persistence.destination`.
 :::
 
 :::{req} evidence_conversion.atomic

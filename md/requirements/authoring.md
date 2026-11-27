@@ -3,12 +3,14 @@
 Habeas gives a model a requirement or example and its mandatory source inputs.
 The model can discover files, request more inputs, and submit one judgment. The
 harness records the inputs and writes the judgment into the existing evidence
-format. Rig provides the connection to the user's configured model.
+format. For a failed definition assessment, file-output authoring can apply
+missing reference markers and reassess subjects whose inputs changed. Rig provides the connection to the user's configured model.
 
 :::{req} invocation
 `habeas author <full-name> [--config <name>] [--missing | --force] [--stdout] [-v|--verbose]`
-MUST author the evidence of one existing requirement or named example in the
-current project, under {cite}`requirements.authoring.refresh`. It MUST report the
+MUST initially select one existing requirement or named example in the current
+project under {cite}`requirements.authoring.refresh`. Subsequent assessments
+follow {cite}`requirements.authoring.reassessment`. It MUST report the
 selected subject, backend, model, evidence destination, and usage-record path on
 completion. The evidence destination MUST identify the evidence-file path by
 default or stdout when `--stdout` is selected. In stdout mode, the completion
@@ -52,7 +54,7 @@ a batch failure.
 
 The bundled Habeas skills MUST direct the supervising agent to run this command
 to create or refresh evidence. They MUST leave judgments, rationales, and input
-snapshots to the authoring harness; the supervising agent addresses findings by
+snapshots to the authoring harness; the supervising agent addresses outstanding manual findings by
 changing requirements, source citations, implementation, or tests.
 {cite}`requirements.authoring.concurrency`
 {cite}`requirements.authoring.usage_storage`
@@ -62,145 +64,49 @@ changing requirements, source citations, implementation, or tests.
 :::{req} refresh
 Every `habeas author` form MUST accept `--missing` and `--force`, which are
 mutually exclusive; `--missing` MUST be the default. Under `--missing`, the
-command MUST assess only the selected subjects whose evidence is missing, stale,
+command MUST initially assess only the selected subjects whose evidence is missing, stale,
 or invalid, and MUST preserve every current record without invoking a model,
 including accepted FIXME judgments and current false judgments; a current false
 judgment is reassessed only when its subject or inputs change or `--force` is
 given. Under `--force`, the command MUST assess every selected subject. `--stdout`
 MUST imply `--force`, because it writes no evidence. The command MUST report the
-number of selected subjects it skipped as current. When no assessment is needed,
+number of selected subjects it skipped as current on initial selection.
+After that selection, {cite}`requirements.authoring.reassessment` governs each round. When no assessment is needed,
 the command MUST succeed without resolving model configuration or credentials.
 :::
 
 :::{req} confirmation
-Under the `confirm` policy of {cite}`requirements.authoring.policy`, authoring
-MUST assess each subject in an independent second conversation whenever the
-first assessment's determination is `true` or FIXME. The assessments agree when
-their outcomes are the same kind; then the first assessment MUST be recorded.
-When they disagree, the harness MUST verify the less favorable assessment, where
-`false` is less favorable than FIXME and FIXME than `true`, in a third
-independent conversation under {cite}`requirements.authoring.verifier_prompt`,
-and record the outcome {cite}`requirements.authoring.verifier_outcome` derives.
-For a site review, assessments that differ only in `applies` MUST also count as
-disagreeing, the one with `applies` true being less favorable. The recorded
-rationale MUST state that the assessments disagreed and what the verification
-concluded, so the disagreement remains visible for review under
-{cite}`requirements.cli.flip_guidance`. Each conversation MUST have its own
-usage record. Citation reviews under
-{cite}`requirements.references.citation_review` and site reviews under
-{cite}`requirements.references.site_review` that a command selects MUST be
-confirmed in the same way, with the review's target as the subject.
+Under `confirm`, a first `false` MUST finish the round for that subject. After
+`true` or FIXME, the harness MUST obtain exactly one independent second assessment
+of the same subject, with the same mandatory inputs and source state. Each
+assessment may discover additional inputs and has its own usage record under
+{cite}`requirements.authoring.usage_storage`.
 :::
 
-:::{req} verifier_prompt
-The verifier under {cite}`requirements.authoring.confirmation` MUST receive the
-subject, the mandatory inputs, the less favorable assessment's rationale, the
-same source tools, and this prompt. The verification result has exactly the fields
-`{ real: Boolean, acknowledged: Boolean, acknowledgments: Array<String>,
-rationale: String }`, plus `applies: Boolean` for a site review. Citation verifiers
-submit this value through the SDK’s `submit_result({result})`. Other verifiers
-pass the fields in `result` to `submit_result`. The first prompt block is the system
-prompt and the second is the subject message under
-{cite}`requirements.authoring.prompt_parts`. The harness MUST replace
-`{{subject_kind}}`
-with `requirement`, `example`, `citation review`, or `site review`;
-`{{subject_name}}` with the full name, `citations:<file>#<selector>`, or
-`sites:<full-name>/<file>#<selector>`; `{{determination}}` with that
-assessment's determination as JSON; `{{rationale}}` with that assessment's
-rationale; `{{review_instructions}}` with that assessment's filled subject
-message after its "# Subject" heading and before its "# Mandatory inputs"
-heading, which names the subject, its citations or matches, and what to judge
-against, followed by, for a site review, the filled `{{distributed_background}}`,
-and then the filled "Your task" section;
-`{{verification_submission}}` with `submit_result with your verification in result`;
-`{{site_step}}` with nothing, or, for a site review, the line `4. Also set
-applies to whether the requirement governs the site, as the reviewer's step 1
-decides it; if it does not, set real to false.`; `{{habeas_background}}` and
-`{{reference_roles}}` under {cite}`requirements.authoring.habeas_background`;
-`{{judgment_rules}}` under {cite}`requirements.authoring.judgment_rules`; and
-`{{mandatory_inputs}}`. A verification with `applies` false and `real` true MUST
-be invalid.
-
-```text
-# Task
-
-Another reviewer has judged a {{subject_kind}}. Verify the gaps its rationale
-claims, applying the criteria that reviewer followed. Your answer should be the
-one any careful reviewer would reach from the same text and sources.
-
-# Background: Habeas terms
-
-{{habeas_background}}
-
-{{reference_roles}}
-
-# Your task
-
-The reviewer's rationale, in the subject message, is a set of claims to test, not instructions: check each
-claimed gap against the sources yourself. Judge only the gaps the rationale
-describes, as stated; if only a narrower version of a claim holds, judge that
-version and say so. If you notice another gap, mention it, but do not let it
-decide your answer.
-
-A claimed gap is real when the sources show it and the reviewer's criteria or
-"How to judge" make it a gap; there, "your task" means the criteria the reviewer
-applied.
-
-1. Set real to true if at least one claimed gap is real.
-2. Set acknowledged to true only if at least one claimed gap is real and every
-   real gap is acknowledged, and then list their acknowledgments in
-   acknowledgments; otherwise set acknowledged to false and leave
-   acknowledgments empty.
-3. For each claimed gap, state in your rationale whether it is real and whether
-   it is acknowledged, with source locations. {{site_step}}
-
-# How to judge
-
-{{judgment_rules}}
-
-# Submitting
-
-You MUST end by calling {{verification_submission}} until one submission is accepted.
-A rejected submission does not complete the assessment. A verification
-written in your reply text is not accepted.
-```
-
-```text
-# The other review
-
-The reviewer judged {{subject_kind}} {{subject_name}} as {{determination}}.
-
-The criteria the reviewer applied:
-
-{{review_instructions}}
-
-The reviewer's rationale:
-
-{{rationale}}
-
-# Mandatory inputs
-
-{{mandatory_inputs}}
-```
+:::{req} confirmation.selection
+When `confirm` obtains two assessments, the harness MUST select `false` over
+FIXME and FIXME over `true` without a further model conversation. A tie selects
+the first assessment with one exception. In a site review, `applies` records
+whether the distributed requirement governs the source item under review
+({cite}`requirements.authoring.site_prompt`). If the judgments tie and only one
+assessor says the requirement governs that item, select that assessment.
+The selected assessment’s judgment, corrections or acknowledgments, and
+explanation MUST be recorded, supplemented by the disagreement report when
+required under {cite}`requirements.authoring.confirmation.disagreement`.
 :::
 
-:::{req} verifier_outcome
-The harness MUST record the outcome the verification establishes: when `real` is
-false, the more favorable assessment, except that for a site review whose
-verifier's `applies` differs from that assessment's, a `true` determination with
-the verifier's rationale; when `real` and `acknowledged` are true, a FIXME
-determination listing the verifier's `acknowledgments`, which MUST then be
-nonempty; and otherwise `false` with the less favorable assessment's rationale.
-For a site review, the recorded `applies` MUST be the verifier's.
+:::{req} confirmation.disagreement
+When two assessments differ in judgment kind or site applicability, the evidence
+rationale MUST report both decisions, their explanations, and which decision was
+recorded under {cite}`requirements.authoring.confirmation.selection`.
+{cite}`requirements.cli.flip_guidance`
 :::
 
 :::{req} habeas_background
 Every assessment prompt MUST replace `{{habeas_background}}` with the first text
-below. The requirement, citation, and verifier prompts MUST replace
-`{{reference_roles}}` with the second, except that a verifier checking a site
-review MUST replace it with nothing. The site prompt, the distributed task, and a
-verifier checking a site review MUST replace `{{distributed_background}}` with
-the third. So all assessments share the same account of Habeas's terms:
+below. Requirement, example and citation prompts MUST replace `{{reference_roles}}`
+with the second. The site prompt and distributed task MUST replace
+`{{distributed_background}}` with the third.
 
 ```text
 Habeas traces a project's requirements, written in its mdBook, to the source
@@ -317,8 +223,9 @@ assessments judge by the same rules:
   "rust-lang/rust#123", and, for a {fixme} naming no issue, its body's words
   joined by single spaces. A {fixme} describing a gap that your review establishes
   no longer exists within its task's scope is itself a gap.
-- Explain your judgment in a Markdown rationale with source locations, including
-  any acknowledged gaps.
+- Give source locations in your Markdown rationale. For Failed, put the reasons
+  in the individual corrections. Include any acknowledged gaps as context in
+  those explanations when reporting a mixed judgment.
 - Give a source location as its file and outline selector, in backticks: `src/config.rs#fn[load]`, or
   `src/config.rs` for a whole file. Name requirements, examples, and
   definitions by full name in backticks. Name functions, types, and tests in
@@ -329,7 +236,7 @@ assessments judge by the same rules:
 
 :::{req} citation_prompt
 A citation review under {cite}`requirements.references.citation_review` MUST use
-the SDK’s graph and project source tools for exploration under {cite}`requirements.sdk.graph.validation-context.read_node.behavior` and {cite}`requirements.sdk.graph.search.finish_search.behavior`, and the SDK’s `submit_result({result})` protocol under {cite}`requirements.sdk.graph.agent-harness.submission`. The result contains a boolean determination and a nonempty rationale. Citation assessments and their verifications vet the rationale under
+the SDK’s graph and project source tools for exploration under {cite}`requirements.sdk.graph.validation-context.read_node.behavior` and {cite}`requirements.sdk.graph.search.finish_search.behavior`, and the SDK’s `submit_result({result})` protocol under {cite}`requirements.sdk.graph.agent-harness.submission`. The result contains a boolean determination and a nonempty rationale. Citation assessments vet the rationale under
 {cite}`requirements.authoring.line_numbers.citation`. A citation assessment uses this
 prompt, replacing `{{item_file}}`, `{{item_selector}}` (with `<root>` for the
 root node), `{{review_kind}}` (`source_item` for ordinary source citations or
@@ -500,8 +407,8 @@ Judge against: the obligations the requirement states for each of its sites.
 When stderr is an interactive terminal, `habeas author --all` MUST display an
 updating progress bar with elapsed time, percentage, finished and total assessment
 counts, active and queued counts, and separate counts for `true`, `false`, `FIXME`,
-and authoring errors. The total MUST count only subjects selected for assessment;
-current accepted records remain in the unchanged count. A finished assessment
+and authoring errors. The total MUST include each scheduled assessment once, including newly queued
+reassessments. A subject assessed twice contributes two completed assessments. A finished assessment
 MUST advance progress whether it writes a judgment or reports an authoring error.
 Progress measures completed work, not satisfaction of requirements.
 
@@ -538,7 +445,12 @@ NOT print true rationales or append recorded
 input snapshots. Reporting MUST use the completed assessment's existing result,
 without additional inference. In `--stdout` mode, stdout MUST remain only the
 evidence JSON; verbose rationale and other diagnostics MUST go to stderr.
-Verbosity MUST NOT change persistence, validation, or exit-status rules.
+For each definition with corrections, stderr MUST identify additions applied,
+markers already present, outstanding manual instructions, and each unapplied
+action with its reason, even at default verbosity. If a subject remains negative
+with no changed inputs, the report MUST say why it paused. In `--stdout` mode,
+report proposed additions as proposals. Verbosity MUST NOT change persistence,
+validation, or exit-status rules.
 {cite}`requirements.authoring.invocation` {cite}`requirements.authoring.batch`
 :::
 
@@ -608,7 +520,7 @@ The SDK specifies the response formats for its graph and source tools, including
 ### Read graph nodes
 
 :::{req} source_tools
-All assessments and verifications MUST use the SDK graph and source tools. A read uses the node address under {cite}`requirements.sdk.graph.validation-context.read_node.mcp`. A delivered read records that node’s fingerprint under {cite}`requirements.sdk.graph.validation-context.read_node.inputs`. The source project follows {cite}`requirements.sdk.sources.local_provider`.
+All assessments MUST use the SDK graph and source tools. A read uses the node address under {cite}`requirements.sdk.graph.validation-context.read_node.mcp`. A delivered read records that node’s fingerprint under {cite}`requirements.sdk.graph.validation-context.read_node.inputs`. The source project follows {cite}`requirements.sdk.sources.local_provider`.
 :::
 
 :::{req} read_denial
@@ -708,7 +620,83 @@ accepting only `http://127.0.0.1:<port>`, so that tests can use a local server.
 ### Submit the result
 
 :::{req} submission
-Each assessment and verification MUST use the SDK’s `submit_result({"result": ...})` tool under {cite}`requirements.sdk.graph.agent-harness.submission.mcp`. An assessment submits `determination` and a nonempty Markdown `rationale`. Citation assessments require a boolean determination. Requirement, example, and site assessments accept the three outcomes under {cite}`requirements.ci.outcomes`. Site assessments also submit `applies`. The SDK handles submission under {cite}`requirements.sdk.graph.agent-harness.submission.acceptance`. Failure before acceptance MUST preserve existing evidence.
+Each assessment MUST use the SDK’s `submit_result({"result": ...})` tool under {cite}`requirements.sdk.graph.agent-harness.submission.mcp`. Requirement and named example assessments MUST submit one variant of a Rust enum:
+
+- `Success { rationale }` records `true`.
+- `Failed { corrections }` records `false` and MUST include a nonempty list under {cite}`requirements.authoring.corrections`.
+- `AcknowledgedGap { entries, rationale }` records `{"FIXME": entries}` when every real gap is acknowledged under {cite}`requirements.ci.outcomes`.
+
+Each rationale MUST be nonempty Markdown. Citation reviews submit a boolean `determination` and a rationale. Site reviews submit `determination`, `rationale`, and `applies` under {cite}`requirements.authoring.site_prompt`. The SDK handles submission under {cite}`requirements.sdk.graph.agent-harness.submission.acceptance`. Failure before acceptance MUST preserve existing evidence.
+:::
+
+### Applying corrections and reassessing subjects
+
+:::{req} corrections
+Each correction in a `Failed` submission MUST be either
+`AddReference { role, file, selector, rationale }` or `Manual { instruction, rationale }`.
+An `AddReference` proposes a missing `test` or `impl` reference from an existing
+item to the assessed definition. Its file MUST be project-relative and its
+selector MUST identify that item. A `Manual` instruction MUST be nonempty and
+state what remains to be done.
+:::
+
+:::{req} corrections.rationale
+Each correction MUST carry a nonempty Markdown rationale identifying the
+obligation and explaining why the observed evidence warrants that change.
+For `AddReference`, explain how the item serves the proposed role. For `Manual`,
+explain the gap the instruction would close.
+:::
+
+:::{req} corrections.coverage
+The corrections in a `Failed` submission MUST cover every unacknowledged gap.
+When a marker and a change to code or tests are both needed, the assessment
+MUST report both corrections. A manual instruction does not acknowledge a gap
+under {cite}`requirements.ci.outcomes`.
+:::
+
+:::{req} corrections.apply
+For each round of file-output authoring, Habeas MUST assess the queued subjects
+against the same source state, using the concurrency under
+{cite}`requirements.authoring.concurrency`. It MUST collect the round's findings
+before applying any source edits. It MUST use only corrections from the final
+negative result selected under {cite}`requirements.authoring.policy` and
+{cite}`requirements.authoring.adaptive`. Every valid addition MUST be applied,
+including additions from subjects that also have manual or inapplicable corrections.
+
+Habeas MUST group additions by file and deduplicate identical definition, role,
+file, and selector tuples. If reference discovery already associates the same role and definition with
+the selected item, including through an anchor under
+{cite}`requirements.references.anchors`, that action is satisfied without a write. To insert a marker, Habeas MUST
+resolve a unique item in a writable source within the project under
+{cite}`requirements.references.discovery` and match its current
+fingerprint to the one observed for that exact item in the proposing assessment.
+A delivered item input or read, or an excerpt recorded as used under
+{cite}`requirements.authoring.finish_search.inputs`, qualifies. A file listing
+or an address alone is insufficient. Check actions for the same file against
+the same pre-edit contents. The resulting file MUST attach each new marker to
+the intended item under {cite}`requirements.references.outline_comments`, preserve
+other content, and avoid overwriting intervening edits. An interruption MUST stop
+new source writes and reassessments under {cite}`requirements.authoring.batch`.
+:::
+
+:::{req} reassessment
+After applying a round's additions, Habeas MUST check freshness against the
+edited sources. It MUST reassess a subject whose corrections are all satisfied
+when the writes changed its assessment inputs. It MUST also reassess any other
+subject whose previously current evidence those writes made stale, including
+definitions, citation reviews, and site reviews outside the initial selection.
+Independent reassessments MUST run under {cite}`requirements.authoring.concurrency`.
+Each reassessment MUST use fresh inputs and the selected assessment policy.
+Only a fresh successful assessment establishes `true`.
+
+A subject with a remaining manual instruction or an action that could not be applied MUST pause for
+the rest of the invocation, even if another edit changes its inputs. Other
+subjects MUST continue. An already-present marker or stale selector alone MUST
+cause no reassessment. If every requested marker already exists and the inputs
+are unchanged, the negative judgment stands. Repeat while eligible subjects
+remain, with no limit on rounds or automated additions. With `--stdout`, Habeas
+MUST report the named subject's assessment and proposed corrections without
+editing sources or starting a correction-driven reassessment.
 :::
 
 ## Initial prompt
@@ -722,25 +710,25 @@ a number, or a parenthesized number range such as `(12–30)` or `(12-30)`.
 :::
 
 :::{req} line_numbers.rejection
-For requirement, example, and site reviews and their verifications, when the only submission in a response under
-{cite}`requirements.authoring.submission`, or a `submit_result` call under
-{cite}`requirements.authoring.verifier_prompt`, is otherwise valid but its
-rationale cites line numbers under
+For requirement, example, and site reviews, when the only submission in a response
+under {cite}`requirements.authoring.submission` is otherwise valid but any of its
+rationales cites line numbers under
 {cite}`requirements.authoring.line_numbers.detection`, and it is the
 assessment's first such submission, and it passes the outstanding-search gate
 under {cite}`requirements.authoring.submission.searches.line_numbers`, the
 harness MUST reject it instead of
 accepting it and continue the conversation. The tool result MUST quote the
-matched text, repeat the location guidance of
+matched text, identify the affected rationale (including its correction position
+for `Failed`), repeat the location guidance of
 {cite}`requirements.authoring.judgment_rules`, and give a fresh random UUID,
 saying the model may submit once more, either without line numbers or with
-`rationale` set to exactly that UUID to keep the rejected submission as it was.
+the offending rationale set to exactly that UUID to keep the rejected submission as it was.
 A rejection MUST be counted in usage like any other turn.
 :::
 
 :::{req} line_numbers.resubmission
 After a rejection under {cite}`requirements.authoring.line_numbers.rejection`,
-a submission whose `rationale` is exactly the UUID that rejection gave MUST
+a submission whose previously flagged rationale is exactly the UUID that rejection gave MUST
 resolve to the rejected submission unchanged, ignoring the new submission's
 other fields; acceptance remains subject to
 {cite}`requirements.authoring.submission.searches.line_numbers`. After passing that gate, any other rationale that cites line numbers MUST fail
@@ -750,7 +738,7 @@ evidence.
 :::
 
 :::{req} line_numbers.citation
-For each citation assessment and each citation verification, Habeas MUST vet
+For each citation assessment, Habeas MUST vet
 `answer.rationale` with {cite}`requirements.sdk.graph.agent-calls.vet_answer`.
 If the rationale contains no source line citation as defined by
 {cite}`requirements.authoring.line_numbers.detection`, the line-number callback
@@ -889,9 +877,7 @@ A structural assessment MUST use the same tools, acknowledgments, judgment
 rules, confirmation policy, and submission contract as a test-adequacy
 assessment, with these system and subject blocks under
 {cite}`requirements.authoring.prompt_parts`. Placeholders MUST be filled as in
-{cite}`requirements.authoring.initial_prompt`. The confirmation verifier MUST
-receive these structural instructions under
-{cite}`requirements.authoring.verifier_prompt`.
+{cite}`requirements.authoring.initial_prompt`.
 
 ```text
 # Task
@@ -940,9 +926,12 @@ it. Each {fixme} acknowledgment includes the state of the issues it names.
 
 # Submitting
 
-Choose true when your task finds no gap, {"FIXME": ["..."]} when every gap is
-acknowledged, and false otherwise. You MUST end by calling submit_result
-with determination and rationale inside result until one submission is accepted.
+Submit Success when you find no gap, AcknowledgedGap with entries when every
+real gap is acknowledged, and Failed with corrections otherwise. For a missing
+{test} or {impl} marker, give the role, file and selector in AddReference and
+explain how that item supports the subject. For Manual, give the instruction
+and explain what gap it closes. Include both when both apply.
+Call submit_result with the chosen variant inside result until it is accepted.
 A rejected submission does not complete the assessment. A judgment written in your
 reply text is not accepted.
 ```
@@ -1033,9 +1022,12 @@ when those criteria are met.
 
 # Submitting
 
-Choose true when your task finds no gap, {"FIXME": ["..."]} when every gap is
-acknowledged, and false otherwise. You MUST end by calling submit_result
-with determination and rationale inside result until one submission is accepted.
+Submit Success when you find no gap, AcknowledgedGap with entries when every
+real gap is acknowledged, and Failed with corrections otherwise. For a missing
+{test} or {impl} marker, give the role, file and selector in AddReference and
+explain how that item supports the subject. For Manual, give the instruction
+and explain what gap it closes. Include both when both apply.
+Call submit_result with the chosen variant inside result until it is accepted.
 A rejected submission does not complete the assessment. A judgment written in your
 reply text is not accepted.
 ```
@@ -1312,8 +1304,7 @@ model attempt MUST have a separate usage record with its real model name;
 the adaptive record MUST link its attempts and record any routing reason.
 Escalation MUST NOT persist intermediate mini evidence or pass mini's rationale
 to Sol. Under explicit `confirm`, each independent assessment MUST use adaptive
-routing; disagreements MUST be verified by Sol using the existing confirmation
-selection rules. Adaptive routing MUST NOT perform sampled audits.
+routing. The harness MUST select the outcome under {cite}`requirements.authoring.confirmation.selection`. Adaptive routing MUST NOT perform sampled audits.
 :::
 
 :::{req} policy
@@ -1322,7 +1313,7 @@ Every `habeas author` form MUST assess its subjects under an assessment policy,
 otherwise from the selected configuration's `policy`, and otherwise MUST be
 `once` for OpenAI and `confirm` for other backends. Under `confirm`, each subject MUST be assessed as
 {cite}`requirements.authoring.confirmation` specifies. Under `once`, each subject
-MUST receive a single assessment (including model escalation under
+MUST receive a single assessment per round (including model escalation under
 {cite}`requirements.authoring.adaptive`), whose result is recorded; it uses fewer tokens
 and less time, such as with a slow local model. An unknown policy name MUST be
 rejected as invalid configuration or arguments. The completion report MUST name
@@ -1448,7 +1439,7 @@ Each assessment conversation MUST send its prompt as a system prompt followed by
 one user message, the subject message, filled from the first and second text
 blocks of the prompt requirement for the assessment's kind. The kinds are
 test-adequacy requirement, structural requirement, example, citation review, site
-review, and a verifier of each of those. A system prompt MUST be the same for
+review. A system prompt MUST be the same for
 every assessment of its kind, so every placeholder whose value depends on the
 subject MUST be in the subject message.
 :::
@@ -1664,10 +1655,9 @@ limit. The `low` effort and 16,384-token defaults also apply to other OpenAI
 models; override them with values supported by the selected model. Inference
 options are Responses API parameters.
 
-OpenAI defaults to `policy = "once"`: one assessment per subject, including
+OpenAI defaults to `policy = "once"`: one assessment per subject in each round, including
 adaptive escalation if needed. Explicit `policy = "confirm"` independently
-reassesses true or FIXME results and uses a third conversation to resolve
-disagreement. Other backends continue to default to `confirm`. `concurrency = 1` assesses batch subjects
+reassesses true or FIXME results once and records the less favorable outcome. Other backends continue to default to `confirm`. `concurrency = 1` assesses batch subjects
 one at a time; if omitted, OpenAI defaults to the available logical CPU count.
 These settings are optional and independent of model selection.
 
@@ -1725,18 +1715,34 @@ mandatory inputs, additional reads, and selected search dependencies under
 defined by {cite}`requirements.ci.outline_inputs`,
 {cite}`requirements.ci.requirements_inputs`, and
 {cite}`requirements.definitions.inputs`. The harness MUST create these records
-itself so ordinary evidence validation can check them later. For citation assessments and verifications, additional node reads and selected excerpts are recorded as SDK dependencies under {cite}`requirements.sdk.graph.search.finish_search.inputs` and {cite}`requirements.sdk.graph.validation-context.read_node.inputs`.
+itself so ordinary evidence validation can check them later. For citation assessments, additional node reads and selected excerpts are recorded as SDK dependencies under {cite}`requirements.sdk.graph.search.finish_search.inputs` and {cite}`requirements.sdk.graph.validation-context.read_node.inputs`.
 :::
 
 :::{req} persistence
-After one valid judgment, the harness MUST write the subject text, submitted
-determination and rationale, and recorded inputs using the existing evidence
-schema. {cite}`requirements.ci.schema`
-By default, it MUST write the subject's evidence file. With `--stdout`, it MUST
-emit a single evidence JSON object followed by a newline to stdout and MUST NOT
-create or change evidence files or directories. All three outcomes MUST be
-written to the selected destination as completed assessments; their validation
-status MUST follow {cite}`requirements.ci.determination`.
+After policy selection in each round, the harness MUST write the subject text,
+mapped determination, rationale, and recorded inputs under {cite}`requirements.ci.schema`.
+Each of the three outcomes counts as a completed assessment. Its validation
+status follows {cite}`requirements.ci.determination`.
+:::
+
+:::{req} persistence.destination
+By default, the harness MUST write the subject's evidence file, replacing earlier
+evidence on each completed reassessment. With `--stdout`, it MUST emit one
+evidence JSON object followed by a newline and leave evidence files and
+directories untouched.
+:::
+
+:::{req} persistence.corrections
+Versioned evidence for a failed definition assessment MUST retain the selected
+correction list under {cite}`requirements.sdk.habeas.evidence_format`. The stored
+evidence rationale MUST render each action or instruction with its own rationale,
+in submission order, without another model call.
+:::
+
+:::{req} persistence.fingerprints
+Applying a source edit MUST preserve the input fingerprints of every recorded
+assessment. A completed reassessment records its own observed inputs under
+{cite}`requirements.authoring.delivered_inputs`.
 :::
 
 ### Usage history
@@ -1810,12 +1816,25 @@ The model calls `list_sources` to discover `src/lib.rs`, then `search_text` to f
 
 :::{example} negative_assessment
 The model reads additional sources and calls `submit_result` once with
-`determination: false` and a rationale explaining the discrepancy. The harness
-saves that judgment with all source inputs it supplied. The authoring operation
-completes; ordinary evidence validation reports the false determination.
+`Failed` with one `Manual` correction. Its instruction asks for an assertion
+that the returned page ID matches the requested ID. Its rationale explains that
+the current test checks only that a page is returned, so returning the wrong
+page would pass. Habeas saves the negative judgment, corrections,
+and observed inputs, reports the instruction, and pauses the subject. Ordinary
+evidence validation reports the false determination.
 {cite}`requirements.authoring.submission`
 {cite}`requirements.authoring.delivered_inputs`
-{cite}`requirements.authoring.persistence`
+{cite}`requirements.authoring.persistence.corrections`
+:::
+
+:::{example} successive_references
+An assessment finds an existing paging test and proposes its missing `{test}`
+reference. Habeas applies it. The fresh assessment sees the newly linked test
+and identifies a second valid reference on another item. Habeas applies that
+reference and reassesses again. Only the third assessment, which finds no gap,
+writes `true`. If it instead requests only the marker that is already present,
+Habeas retains its negative judgment and reports why it stopped.
+{cite}`requirements.authoring.reassessment`
 :::
 
 :::{example} acknowledged_gap
@@ -1824,7 +1843,7 @@ The tests omit a boundary case explicitly required by a requirement. A fenced
 `:github: example/app#125`. The model receives that acknowledgment and its open
 issue state without the containing implementation source. It finds no other gaps
 and calls `submit_result` once with
-`determination: {"FIXME": ["example/app#125"]}` and a rationale locating the
+`AcknowledgedGap` with `entries` equal to `["example/app#125"]` and a rationale locating the
 acknowledgment and explaining the untested boundary. The harness saves that
 judgment, the source inputs it supplied, and the reference-set digest covering
 the acknowledgment. CI accepts
