@@ -418,6 +418,7 @@ fn implementation_discovery_has_no_text_or_evidence_until_the_model_requests_a_r
     );
 }
 
+// {test}`requirements.authoring.submission`
 // {test}`requirements.authoring.persistence.destination`
 // {test}`requirements.authoring.complete_initial_bundle`
 // {test}`requirements.authoring.invocation`
@@ -7515,6 +7516,7 @@ fn malformed_definition_corrections_preserve_existing_evidence() {
     }
 }
 
+// {test}`requirements.authoring.reporting`
 // {test}`requirements.authoring.corrections`
 // {test}`requirements.authoring.corrections.apply`
 #[test]
