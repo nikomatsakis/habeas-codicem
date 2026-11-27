@@ -82,7 +82,7 @@ async fn run_batch(
     sites_of: Option<&str>,
 ) -> io::Result<BatchOutcome> {
     let root = fs::canonicalize(root)?;
-    let mut progress = BatchProgress::new(options.verbose);
+    let mut progress = BatchProgress::new(options.verbose, true);
     let mut inspection =
         inspect_repository_with_progress(&root, |update| progress.inspect(update))?;
     if !inspection.discovery_errors.is_empty() {
@@ -159,7 +159,8 @@ async fn run_batch(
         &mut outcome,
     )
     .await?;
-    finish_corrections(&root, &config, policy, options.verbose, &mut outcome, round).await?;
+    finish_corrections(&root, &config, policy, &mut progress, &mut outcome, round).await?;
+    progress.finish(outcome.cancelled);
     Ok(outcome)
 }
 
@@ -170,7 +171,7 @@ pub(super) async fn finish_corrections(
     root: &Path,
     config: &config::ResolvedAuthoringConfig,
     policy: AssessmentPolicy,
-    verbose: bool,
+    progress: &mut BatchProgress,
     outcome: &mut BatchOutcome,
     mut round: RoundFindings,
 ) -> io::Result<()> {
@@ -263,22 +264,13 @@ pub(super) async fn finish_corrections(
         }
         outcome.completed.retain(|a| !labels.contains(&a.subject));
         eprintln!("Reassessing {} subjects after reference edits", retry.len());
-        let mut progress = BatchProgress::new(verbose);
+
         tokio::select! {
             biased;
             _ = &mut interrupt => { outcome.cancelled = true; break; }
             _ = tokio::task::yield_now() => {}
         }
-        round = assess_round(
-            root,
-            &inspection,
-            retry,
-            config,
-            policy,
-            &mut progress,
-            outcome,
-        )
-        .await?;
+        round = assess_round(root, &inspection, retry, config, policy, progress, outcome).await?;
     }
     Ok(())
 }
@@ -294,7 +286,7 @@ async fn assess_round(
 ) -> io::Result<RoundFindings> {
     let mut round = RoundFindings::new();
     let concurrency = config.effective_concurrency();
-    progress.start(subjects.len());
+    progress.start_round(subjects.len());
     let mut subjects = subjects
         .into_iter()
         .map(|subject| (assessment_kind(inspection, &subject), subject))
@@ -425,7 +417,6 @@ async fn assess_round(
         }
     }
     outcome.cancelled = cancellation.borrow().is_some();
-    progress.finish(outcome.cancelled, subjects.len());
     Ok(round)
 }
 

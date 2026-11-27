@@ -7077,6 +7077,7 @@ fn adaptive_unsubmitted_conversation_escalates_once_with_fresh_input() {
     assert!(!requests[2].body.to_string().contains("Reminder:"));
 }
 
+// {test}`requirements.authoring.reporting`
 // {test}`requirements.authoring.successive_references`
 // {test}`requirements.authoring.corrections`
 // {test}`requirements.authoring.corrections.coverage`
@@ -7245,6 +7246,26 @@ fn corrections_replay_reference_only_mixed_and_regression_findings() {
                 assert!(prompt.contains(guidance), "missing {guidance}");
             }
         }
+        if markers > 0 {
+            assert!(stderr.contains("(applied)"), "{stderr}");
+        }
+        if stdout {
+            assert!(
+                stderr.contains("proposed correction: Add `{test}`"),
+                "{stderr}"
+            );
+            assert!(!stderr.contains("(applied)"), "{stderr}");
+        }
+        if matches!(case, "mixed" | "new-regression") {
+            assert!(
+                stderr.contains(&format!("paused for manual work: {instruction}")),
+                "{stderr}"
+            );
+        }
+        assert!(
+            !stderr.contains("The test asserts the expected page ID."),
+            "{stderr}"
+        );
         if case == "anchor" {
             assert!(stderr.contains("already present"));
         }
@@ -7435,6 +7456,7 @@ fn an_applied_reference_keeps_the_original_read_and_reassessment_records_the_edi
 // {test}`requirements.authoring.corrections`
 // {test}`requirements.authoring.corrections.rationale`
 #[test]
+// {test}`requirements.authoring.submission`
 fn malformed_definition_corrections_preserve_existing_evidence() {
     for corrections in [
         json!([]),
@@ -7459,6 +7481,7 @@ fn malformed_definition_corrections_preserve_existing_evidence() {
             !fixture.run(&["author", SUBJECT]).status.success(),
             "{corrections}"
         );
+        assert_eq!(fixture.usage()["outcome"], "failed");
         assert_eq!(server.finish().len(), 1);
         assert_eq!(
             fs::read_to_string(&fixture.evidence).unwrap(),

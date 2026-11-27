@@ -12,6 +12,7 @@ pub(super) struct BatchProgress {
     bar: Option<ProgressBar>,
     inspection_stage: Option<(&'static str, bool)>,
     verbose: bool,
+    scheduled: usize,
     positive: usize,
     negative: usize,
     fixme: usize,
@@ -19,8 +20,9 @@ pub(super) struct BatchProgress {
 }
 
 impl BatchProgress {
-    pub(super) fn new(verbose: bool) -> Self {
-        let bar = if io::stderr().is_terminal()
+    pub(super) fn new(verbose: bool, show_bar: bool) -> Self {
+        let bar = if show_bar
+            && io::stderr().is_terminal()
             && std::env::var_os("TERM").is_none_or(|term| term != "dumb")
         {
             // Choose terminal support independently of color support: NO_COLOR
@@ -41,6 +43,7 @@ impl BatchProgress {
             bar,
             inspection_stage: None,
             verbose,
+            scheduled: 0,
             positive: 0,
             negative: 0,
             fixme: 0,
@@ -74,19 +77,18 @@ impl BatchProgress {
     }
 
     // {cite}`habeas:util`
-    pub(super) fn start(&self, total: usize) {
+    pub(super) fn start_round(&mut self, queued: usize) {
+        let first_round = self.scheduled == 0;
+        self.scheduled += queued;
         if let Some(bar) = &self.bar {
-            bar.set_position(0);
-            bar.set_length(total as u64);
-            bar.set_style(
-                progress_style(
-                    "{prefix} {spinner:.cyan} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {percent:>3}% {pos}/{len} finished\n{msg}",
-                )
-                .progress_chars("█▉▊▋▌▍▎▏  "),
-            );
-            bar.set_prefix("Authoring");
-            bar.reset_elapsed();
-            self.refresh(0, total);
+            if first_round {
+                bar.set_position(0);
+                bar.set_style(progress_style("{prefix} {spinner:.cyan} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {percent:>3}% {pos}/{len} finished\n{msg}").progress_chars("█▉▊▋▌▍▎▏  "));
+                bar.set_prefix("Authoring");
+                bar.reset_elapsed();
+            }
+            bar.set_length(self.scheduled as u64);
+            self.refresh(0, queued);
         }
     }
 
@@ -144,10 +146,13 @@ impl BatchProgress {
     }
 
     // {cite}`habeas:util`
-    pub(super) fn finish(&self, interrupted: bool, queued: usize) {
+    pub(super) fn finish(&self, interrupted: bool) {
         if let Some(bar) = &self.bar {
             bar.disable_steady_tick();
-            self.refresh(0, queued);
+            self.refresh(
+                0,
+                self.scheduled - self.positive - self.negative - self.fixme - self.errors,
+            );
             if interrupted {
                 bar.set_prefix("Stopped");
                 // Finishing normally would move the position to the total,
@@ -276,6 +281,7 @@ mod tests {
             bar: Some(bar),
             inspection_stage: None,
             verbose: false,
+            scheduled: 0,
             positive: 0,
             negative: 0,
             fixme: 0,

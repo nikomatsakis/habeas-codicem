@@ -2873,6 +2873,7 @@ no_match: ['// unrelated']
 // {test}`requirements.authoring.submission`
 #[test]
 // {test}`requirements.authoring.corrections.apply`
+// {test}`requirements.authoring.progress`
 fn batch_collects_all_shared_file_findings_before_editing() {
     let server = Server::start_with(false, Behavior::RepairSharedReferences);
     let fixture = Fixture::new(&server.endpoint, Some(2));
@@ -2888,8 +2889,18 @@ fn batch_collects_all_shared_file_findings_before_editing() {
     let original = "#[test]\nfn shared() {}\n";
     fs::write(&source, original).unwrap();
     server.requests.0.lock().unwrap().observed_source = Some(source.clone());
+    #[cfg(unix)]
+    let output = fixture.run_in_pty(false, "xterm-256color");
+    #[cfg(not(unix))]
     let output = fixture.run(&["author", "--all"]);
     assert!(output.status.success(), "{output:?}");
+    #[cfg(unix)]
+    {
+        let screen = final_screen(&output.stderr);
+        for text in ["8/8 finished", "true 4", "false 4", "0 queued"] {
+            assert!(screen.contains(text), "missing {text}: {screen}");
+        }
+    }
     let edited = fs::read_to_string(source).unwrap();
     let state = server.requests.0.lock().unwrap();
     assert_eq!(state.peak, 2);

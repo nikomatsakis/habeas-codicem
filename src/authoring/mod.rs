@@ -369,7 +369,8 @@ pub async fn author_evidence_with_options(
         cancelled: false,
     };
     let round = [(subject.to_owned(), findings)].into();
-    batch::finish_corrections(&root, &config, policy, options.verbose, &mut batch, round).await?;
+    let mut progress = progress::BatchProgress::new(options.verbose, false);
+    batch::finish_corrections(&root, &config, policy, &mut progress, &mut batch, round).await?;
     if batch.cancelled {
         return Err(io::Error::new(
             io::ErrorKind::Interrupted,
@@ -1874,6 +1875,7 @@ mod tests {
         // own usage record.
         let prompts = provider.prompts();
         assert_eq!(prompts.len(), 2);
+        assert_eq!(prompts[0], prompts[1]);
         assert!(prompts.iter().all(|(text, tools)| {
             text.contains("Assess whether a project's tests adequately check")
                 && tools.contains(&"submit_result".to_owned())
