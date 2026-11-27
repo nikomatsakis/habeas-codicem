@@ -71,6 +71,14 @@ impl KindRule {
     }
 }
 
+/// Where the grammar places the declaration that owns an attachment.
+// {cite}`habeas:util`
+pub enum AttachmentTarget {
+    FollowingItem,
+    Parent,
+    SiblingField(&'static str),
+}
+
 /// A language's outline profile.
 // {impl}`requirements.references.outlines`
 pub struct Profile {
@@ -78,6 +86,8 @@ pub struct Profile {
     pub expando_char: char,
     /// Profile name, such as `rust` or `plain-text`.
     pub name: &'static str,
+    /// Scheme identifying this profile's structural hash rules.
+    pub fingerprint_scheme: &'static str,
     /// File extensions selecting this profile, without the dot.
     pub extensions: &'static [&'static str],
     /// Grammar; `None` for the plain-text profile.
@@ -99,8 +109,8 @@ pub struct Profile {
     /// as in YAML, where a comment before a key at the same indentation
     /// trails the previous key's node.
     pub trailing_comments_outside: bool,
-    /// Whether a preceding grammar sibling attaches to the next outline node.
-    pub attaches: fn(Node<'_>, &str) -> bool,
+    /// Classify attachment syntax and locate its owner.
+    pub attachment_target: fn(Node<'_>) -> Option<AttachmentTarget>,
 }
 
 impl std::fmt::Debug for Profile {

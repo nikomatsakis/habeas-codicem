@@ -85,9 +85,23 @@ function checkToken(): boolean { return true; }
 ## Inspect attachments
 
 :::{req} attachments
-TypeScript and TSX report only `Comment` attachments. Both recognize `//`
-line comments and `/* … */` block comments, including `/** … */`
-documentation comments. Decorators remain part of the parsed source.
+TypeScript and TSX report `Comment` and `Annotation` attachments.
+:::
+
+:::{req} attachments.comments
+TypeScript and TSX report `//` line comments and `/* … */` block comments,
+including `/** … */` documentation comments, as `Comment` attachments.
+:::
+
+:::{req} attachments.decorators
+Each decorator on a selectable declaration is a separate `Annotation` owned
+by that declaration. Stacked decorators follow the source order specified by
+{cite}`requirements.sdk.outlines.attachments.order`.
+:::
+
+:::{req} attachments.decorators.span
+A decorator's attachment span starts at `@` and covers the full decorator
+expression, including any arguments.
 :::
 
 ## Fingerprint the contents
@@ -99,5 +113,6 @@ The fingerprint scheme identifies these rules and their version under
 {cite}`requirements.sdk.outlines.language_provider.fingerprint_scheme`.
 
 Comments, including documentation comments, are excluded from structural
-hashes. The remaining source structure and text participate in hashing.
+hashes. Decorators participate in the decorated declaration's hash along
+with its other source structure and text.
 :::

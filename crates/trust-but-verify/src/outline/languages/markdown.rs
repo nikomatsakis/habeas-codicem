@@ -47,6 +47,7 @@ const KINDS: &[KindRule] = &[
 // {impl}`requirements.sdk.sources.markdown.attachments`
 pub static PROFILE: Profile = Profile {
     name: "markdown",
+    fingerprint_scheme: "markdown-structural-v1",
     expando_char: '$',
     extensions: &["md", "markdown"],
     language: Some(|| tree_sitter_md::LANGUAGE.into()),
@@ -56,7 +57,7 @@ pub static PROFILE: Profile = Profile {
     comment_prose: crate::outline_engine::language::whole_comment,
     comment_binds_to_container: never,
     trailing_comments_outside: false,
-    attaches: never,
+    attachment_target: |_| None,
 };
 
 /// Tree-sitter-backed markdown provider.

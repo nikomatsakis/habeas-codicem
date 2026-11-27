@@ -627,8 +627,13 @@ the comment text.
 :::
 
 :::{req} attachments.fingerprint
-Each language's fingerprint rules determine which attachments
-contribute to the owning item's structural hash.
+A language SHOULD include annotations in the owning item's structural hash
+because they can affect the declaration's semantics. Each language defines
+which attachments contribute to that hash. For example, a language that
+includes a permission-checking decorator in a method's hash reflects the
+addition of that decorator in both the method's own fingerprint and the
+enclosing class's structural hash. The class's own fingerprint excludes
+its methods under {cite}`requirements.references.structural_hash`.
 :::
 
 :::{req} OutlineAttachment

@@ -45,7 +45,7 @@ pub(crate) fn profiles() -> [&'static crate::outline_engine::language::Profile; 
 }
 
 macro_rules! language {
-    ($name:ident, $profile:path, $scheme:literal) => {
+    ($name:ident, $profile:path) => {
         /// Bundled, cheaply cloneable outline language.
         #[derive(Clone, Copy, Debug, Default)]
         pub struct $name;
@@ -64,7 +64,7 @@ macro_rules! language {
             }
 
             fn fingerprint_scheme(&self) -> &str {
-                $scheme
+                $profile.fingerprint_scheme
             }
 
             fn search_structure(
@@ -91,20 +91,20 @@ macro_rules! language {
 }
 
 // {impl}`requirements.sdk.sources.plain-text.language`
-language!(PlainText, super::plain::PROFILE, "plain-text-structural-v1");
+language!(PlainText, super::plain::PROFILE);
 // {impl}`requirements.sdk.sources.rust.language`
-language!(Rust, rust::PROFILE, "rust-structural-v1");
+language!(Rust, rust::PROFILE);
 // {impl}`requirements.sdk.sources.python.language`
-language!(Python, python::PROFILE, "python-structural-v1");
+language!(Python, python::PROFILE);
 // {impl}`requirements.sdk.sources.typescript.language`
-language!(TypeScript, typescript::PROFILE, "typescript-structural-v1");
+language!(TypeScript, typescript::PROFILE);
 // {impl}`requirements.sdk.sources.typescript.language`
-language!(Tsx, typescript::TSX_PROFILE, "tsx-structural-v1");
+language!(Tsx, typescript::TSX_PROFILE);
 // {impl}`requirements.sdk.sources.markdown.language`
-language!(Markdown, markdown::PROFILE, "markdown-structural-v1");
+language!(Markdown, markdown::PROFILE);
 // {impl}`requirements.sdk.sources.css.language`
-language!(Css, css::PROFILE, "css-structural-v1");
+language!(Css, css::PROFILE);
 // {impl}`requirements.sdk.sources.toml.language`
-language!(Toml, toml::PROFILE, "toml-structural-v1");
+language!(Toml, toml::PROFILE);
 // {impl}`requirements.sdk.sources.yaml.language`
-language!(Yaml, yaml::PROFILE, "yaml-structural-v1");
+language!(Yaml, yaml::PROFILE);

@@ -407,6 +407,7 @@ struct Builder<'tree, 'source> {
     redaction: &'source Redaction,
     drafts: Vec<Draft<'tree>>,
     comments: Vec<DraftComment>,
+    annotations: Vec<(usize, std::ops::Range<usize>)>,
     /// Grammar node id of each draft's core and attached siblings.
     owners: HashMap<usize, usize>,
 }
@@ -433,6 +434,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
                 attached: Vec::new(),
             }],
             comments: Vec::new(),
+            annotations: Vec::new(),
             owners: HashMap::from([(root.id(), 0)]),
         };
         builder.walk(root, 0);
@@ -459,36 +461,34 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         });
     }
 
-    /// Records comments anywhere under a node that is not walked as outline
-    /// structure, such as an attached attribute.
     // {cite}`habeas:util`
-    fn record_comments_within(&mut self, node: Node<'_>) {
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if self.is_comment(child) {
-                self.record_comment(child);
-            } else {
-                self.record_comments_within(child);
-            }
-        }
-    }
-
-    // {cite}`habeas:util`
+    // {impl}`requirements.sdk.sources.typescript.attachments.decorators.span`
     fn walk(&mut self, node: Node<'tree>, parent: usize) {
         let mut cursor = node.walk();
         let children = node.children(&mut cursor).collect::<Vec<_>>();
         let mut attached_to = vec![None; children.len()];
-        for (index, child) in children.iter().enumerate() {
-            if !self.maps(*child) {
-                continue;
-            }
-            for previous in (0..index).rev() {
-                let sibling = children[previous];
-                if (self.profile.attaches)(sibling, self.source) {
-                    attached_to[previous] = Some(index);
-                } else if !self.is_comment(sibling) {
-                    break;
+        let mut following_item = None;
+        for (index, child) in children.iter().copied().enumerate().rev() {
+            match (self.profile.attachment_target)(child) {
+                Some(language::AttachmentTarget::FollowingItem) => {
+                    attached_to[index] = following_item
                 }
+                Some(language::AttachmentTarget::Parent) => {
+                    // The core already includes this annotation in its span and hash.
+                    if self.drafts[parent].core == node {
+                        self.annotations.push((parent, child.byte_range()));
+                    }
+                }
+                Some(language::AttachmentTarget::SiblingField(field)) => {
+                    attached_to[index] = node
+                        .child_by_field_name(field)
+                        .filter(|owner| self.maps(*owner))
+                        .map(|owner| owner.id());
+                }
+                None if !self.is_comment(child) => {
+                    following_item = self.profile.rule(child).map(|_| child.id());
+                }
+                None => {}
             }
         }
         for (index, child) in children.iter().copied().enumerate() {
@@ -497,7 +497,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
                 continue;
             }
             if attached_to[index].is_some() {
-                self.record_comments_within(child);
+                // Walk this attachment when its owning draft exists.
                 continue;
             }
             if let Some(rule) = self.profile.rule(child) {
@@ -509,10 +509,16 @@ impl<'tree, 'source> Builder<'tree, 'source> {
                 let attached = children
                     .iter()
                     .zip(&attached_to)
-                    .filter(|(_, target)| **target == Some(index))
+                    .filter(|(_, target)| **target == Some(child.id()))
                     .map(|(sibling, _)| *sibling)
                     .collect::<Vec<_>>();
                 let draft = self.push(rule.kind, name, name_span, parent, child, attached);
+                for i in 0..self.drafts[draft].attached.len() {
+                    let attachment = self.drafts[draft].attached[i];
+                    if !self.is_comment(attachment) {
+                        self.walk(attachment, draft);
+                    }
+                }
                 self.walk(child, draft);
             } else {
                 // Unmapped grammar nodes are transparent; source in no mapped
@@ -524,6 +530,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
     }
 
     // {cite}`habeas:util`
+    // {impl}`requirements.sdk.sources.typescript.attachments.decorators.span`
     fn push(
         &mut self,
         kind: &'static str,
@@ -536,6 +543,9 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         let index = self.drafts.len();
         self.owners.insert(core.id(), index);
         for sibling in &attached {
+            if !self.is_comment(*sibling) {
+                self.annotations.push((index, sibling.byte_range()));
+            }
             self.owners.insert(sibling.id(), index);
         }
         self.drafts.push(Draft {
@@ -617,7 +627,6 @@ impl<'tree, 'source> Builder<'tree, 'source> {
     // {impl}`requirements.references.outline_selectors`
     fn finish(self, lines: &LineIndex, diagnostic: Option<OutlineError>) -> LegacyOutline {
         let mut nodes = Vec::with_capacity(self.drafts.len());
-        let mut annotations = Vec::new();
         nodes.push(root_node(
             self.source,
             lines,
@@ -625,13 +634,6 @@ impl<'tree, 'source> Builder<'tree, 'source> {
             self.hash(0, true),
         ));
         for (index, draft) in self.drafts.iter().enumerate().skip(1) {
-            annotations.extend(
-                draft
-                    .attached
-                    .iter()
-                    .filter(|node| !self.is_comment(**node))
-                    .map(|node| (index, node.byte_range())),
-            );
             let identity_hash = self.hash(index, true);
             let label = match &draft.name {
                 Some(parts) => Label::Named(parts.clone()),
@@ -684,7 +686,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
             profile: self.profile,
             nodes,
             comments,
-            annotations,
+            annotations: self.annotations,
         }
     }
 }
