@@ -212,9 +212,8 @@ pub enum OptionValue {
     Map(BTreeMap<String, OptionValue>),
 }
 
-/// How each subject is assessed: `confirm` checks a `true` or FIXME result
-/// with further independent conversations; `once` records a single
-/// assessment.
+/// `confirm` checks an initial `true` or FIXME result with one more
+/// independent assessment. `once` records a single assessment.
 // {impl}`requirements.configuration.serialization`
 // {impl}`requirements.authoring.policy`
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

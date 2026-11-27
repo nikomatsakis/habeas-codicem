@@ -83,9 +83,8 @@ enum Command {
         /// Assess every selected subject, including those with current evidence.
         #[arg(long)]
         force: bool,
-        /// The assessment policy: `confirm` checks each true or
-        /// FIXME result in further independent conversations; `once` records a
-        /// single assessment.
+        /// `confirm` checks an initial true or FIXME result with one more
+        /// independent assessment. `once` records a single assessment.
         #[arg(long, value_name = "name")]
         policy: Option<habeas::config::AssessmentPolicy>,
     },

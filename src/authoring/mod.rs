@@ -1373,6 +1373,68 @@ mod tests {
         }
     }
 
+    // {test}`requirements.authoring.confirmation.selection`
+    #[test]
+    fn confirmation_orders_all_judgments_and_preserves_the_selected_payload() {
+        fn assessment(rank: usize, author: &str, applies: Option<bool>) -> Assessment {
+            let determination = match rank {
+                0 => Judgment::False,
+                1 => Judgment::Fixme(vec![format!("{author}'s acknowledged gap")]),
+                2 => Judgment::True,
+                _ => unreachable!(),
+            };
+            let mut record = json!({"determination": determination.to_value(), "rationale":author});
+            if let Some(applies) = applies {
+                record["applies"] = json!(applies);
+            }
+            let mut findings = vec![];
+            if determination == Judgment::False {
+                findings.push(corrections::Finding::capture(
+                    corrections::Correction::Manual {
+                        instruction: format!("{author}'s repair"),
+                        rationale: "Missing assertion".into(),
+                    },
+                    &[],
+                ));
+            }
+            Assessment {
+                determination,
+                record,
+                findings,
+            }
+        }
+        for applies in [None, Some(false), Some(true)] {
+            for first in 0..3 {
+                for second in 0..3 {
+                    let chosen = select_assessment(
+                        assessment(first, "first", applies),
+                        assessment(second, "second", applies),
+                    );
+                    let author = if first <= second { "first" } else { "second" };
+                    let expected = assessment(first.min(second), author, applies);
+                    assert_eq!(chosen.determination, expected.determination);
+                    assert_eq!(
+                        chosen.record["determination"],
+                        expected.record["determination"]
+                    );
+                    let explanation = chosen.record["rationale"].as_str().unwrap();
+                    if first == second {
+                        assert_eq!(explanation, author);
+                    } else {
+                        assert!(explanation.contains(&format!("Recorded the {author} assessment")));
+                    }
+                    if chosen.determination == Judgment::False {
+                        assert_eq!(chosen.findings.len(), 1);
+                        assert_eq!(
+                            chosen.findings[0].description(),
+                            format!("{author}'s repair")
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     fn citation_judgment(determination: bool, rationale: &str) -> (&'static str, Value) {
         (
             "submit_result",
@@ -1685,6 +1747,7 @@ mod tests {
         assert_ne!(logs[0]["run_id"], logs[1]["run_id"]);
     }
 
+    // {test}`requirements.authoring.confirmation.selection`
     // {test}`requirements.authoring.confirmation`
     // {test}`requirements.authoring.line_numbers.citation`
     #[tokio::test]
