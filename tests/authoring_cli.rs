@@ -502,6 +502,8 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
         "SECRET_DEFINITION_TEXT",
         "fn ready_test()",
         "Call submit_result with the chosen variant",
+        r#"Set result.status to "success", "acknowledged_gap", or "failed"."#,
+        r#"set each correction's kind to "add_reference" or "manual"."#,
     ] {
         assert!(prompt.contains(text), "prompt missing {text}");
     }

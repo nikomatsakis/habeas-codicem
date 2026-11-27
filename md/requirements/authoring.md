@@ -932,6 +932,8 @@ real gap is acknowledged, and Failed with corrections otherwise. For a missing
 explain how that item supports the subject. For Manual, give the instruction
 and explain what gap it closes. Include both when both apply.
 Call submit_result with the chosen variant inside result until it is accepted.
+Set result.status to "success", "acknowledged_gap", or "failed".
+For a failed result, set each correction's kind to "add_reference" or "manual".
 A rejected submission does not complete the assessment. A judgment written in your
 reply text is not accepted.
 ```
@@ -1028,6 +1030,8 @@ real gap is acknowledged, and Failed with corrections otherwise. For a missing
 explain how that item supports the subject. For Manual, give the instruction
 and explain what gap it closes. Include both when both apply.
 Call submit_result with the chosen variant inside result until it is accepted.
+Set result.status to "success", "acknowledged_gap", or "failed".
+For a failed result, set each correction's kind to "add_reference" or "manual".
 A rejected submission does not complete the assessment. A judgment written in your
 reply text is not accepted.
 ```
