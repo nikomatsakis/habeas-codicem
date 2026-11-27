@@ -1,7 +1,7 @@
 {
   "requirement": "The Habeas crate MUST have a Cargo integration test that exercises evidence\nauthoring against a real configured Bedrock model when AWS credentials can be\nloaded. It MUST skip before reading configuration or resolving credentials when\nthe `CI` environment variable is present. Outside CI, it MUST fail when no\nBedrock authoring configuration exists, and MUST skip with a visible warning when\nthe AWS SDK cannot load credentials. Skip warnings MUST be visible under ordinary\n`cargo test` output.\n\n`HABEAS_LIVE_CONFIG`, when set, MUST select a named authoring configuration for\nthe test. Otherwise the test MUST use the configuration that authoring would\nselect for the checkout under {cite}`requirements.authoring.configuration_precedence`\nwhen it is a Bedrock configuration, falling back to the first Bedrock\nconfiguration in name order among the user and workspace configurations. The\nfixture project MUST resolve the selected name against the same workspace\nauthoring configurations as the checkout. Malformed configuration and invalid explicit\nselections MUST fail the test. The selected profile, region, model, and options\nMUST come from that configuration; credential resolution MUST use the AWS SDK.\n\nOnce credentials load, model-request and authoring failures MUST fail the test\nrather than be treated as skips. The test MUST exercise an additional source read\nand judgment submission using a temporary project and stdout evidence output,\nwithout changing the checkout's evidence. It MUST retain ordinary usage history\nand check the returned evidence and recorded usage. Deterministic tests MUST\nverify the CI and missing-credential skip paths and the missing-configuration\nfailure without calling a model.\n{cite}`requirements.authoring.provider`\n{cite}`requirements.authoring.source_tools`\n{cite}`requirements.authoring.submission`\n{cite}`requirements.authoring.persistence`\n{cite}`requirements.authoring.usage_storage`",
   "determination": true,
-  "rationale": "The three marked tests in `tests/live_bedrock.rs` cover each obligation of `requirements.integration.live_bedrock_test`. I found no gap. I read the helpers `report`, `selected_config`, `select_config`, `credentials_available`, `skip_probe` and `evidence_snapshot` to check what the tests assert.\n\n**CI skip before configuration or credentials**\n- `live_test_prerequisites_are_checked_without_inference` writes a malformed user config (`invalid TOML [`).\n- It runs the live test in a subprocess with `CI=true`.\n- The subprocess must exit successfully and print \"skipping live Bedrock test: CI is set\". A run that read the configuration first would fail on the malformed file.\n\n**Failure when no Bedrock configuration exists outside CI**\n- The same test runs the probe with no config file, a config with only `version = 1`, and a config with only an Ollama entry.\n- Each run must fail with \"no Bedrock authoring configuration\" and must not print a skip message.\n\n**Skip with a visible warning when the AWS SDK cannot load credentials**\n- The test uses a Bedrock config with `aws_profile`, an empty AWS credentials file and an isolated AWS config. `skip_probe` strips `AWS_*` variables and disables EC2 metadata.\n- The probe must succeed and its stderr must contain \"AWS credentials unavailable\". It must not contain \"Usage:\", so no model run happened.\n- `report` writes straight to stderr, and the probe runs without `--nocapture`, so the assertion on captured stderr shows the warning is visible under ordinary test output.\n\n**Selection**\n- `live_configuration_selection_follows_authoring_precedence` covers the first Bedrock configuration in name order, skipping an earlier Ollama entry.\n- It covers a Bedrock user default and an Ollama default that falls back to the first Bedrock entry.\n- It covers the project selection, the workspace default, and workspace-only configuration.\n- It covers workspace configurations being candidates alongside user ones, and an explicit name beating every other selection.\n- It asserts that the profile, region, model and options come from the selected record.\n- It asserts that the fixture receives only the workspace `version` and `authoring` sections, and that the `[evidence]` section is dropped.\n- Failure cases covered: an explicit non-Bedrock name, an unknown explicit name, malformed user config, and malformed workspace config.\n- `HABEAS_LIVE_CONFIG` is exercised through the environment in the prerequisites test (explicit `missing` fails). Explicit selection through `select_config` is exercised in the precedence test.\n\n**Failures after credentials load**\n- The prerequisites test supplies fake `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` and points the Bedrock endpoint at an unreachable local address.\n- The probe must fail with \"live Bedrock authoring failed\", and stderr must show the \"live Bedrock test: configuration\" line.\n- Stderr must not contain a skip message, so a model or authoring failure is not treated as a skip.\n\n**Live run (`live_bedrock_authoring`)**\n- It uses a temporary fixture project with its own `habeas.toml` carrying the workspace authoring configurations, and runs `author-evidence ... --config <name> --stdout`.\n- It checks that the command succeeds and that stdout is evidence JSON with the right `requirement` text, a valid judgment and a nonempty rationale.\n- It checks that an input for `src/parity.rs` has a file, item and hash but no text, which shows an additional source read.\n- It checks that the fixture has no `evidence` directory and that the checkout's evidence snapshot is unchanged.\n- It reads the usage record from the reported \"Usage:\" path. It asserts backend `bedrock`, the configured model, outcome `completed`, `evidence_output` `stdout`, `evidence_written` true, `request_count` of at least 2, at least one `submit_judgment` call, and at least one `habeas` or `ripgrep` call.\n- It does not redirect the state directory, so ordinary usage history is retained.\n- `credentials_available` resolves credentials through the AWS SDK, applying the configured profile and region.\n- This test cannot run in CI because it needs a live model and credentials. The deterministic tests cover that gap.\n\n**Context and exemptions**\n- The cited requirements (`requirements.authoring.provider`, `requirements.authoring.source_tools`, `requirements.authoring.submission`, `requirements.authoring.persistence`, `requirements.authoring.usage_storage` and `requirements.authoring.configuration_precedence`) are context only. They are not reassessed here.\n- No testing exemption is needed. No gaps are acknowledged by `{fixme}`.",
+  "rationale": "I found no adequacy gap. Each obligation in `requirements.integration.live_bedrock_test` maps to a test that exercises it and asserts the outcome. I read the three marked tests and the helpers `report`, `selected_config`, `select_config`, `credentials_available` and `skip_probe` in `tests/live_bedrock.rs`.\n\n**Live test.** `tests/live_bedrock.rs#fn[live_bedrock_authoring]` is a Cargo integration test. When credentials load, it builds a temporary fixture project and runs `habeas author-evidence --config <selected> --stdout` with the real configured model. The fixture's `src/parity.rs` is not cited, so assessing it needs an additional source read.\n- It asserts the command succeeds, so model-request and authoring failures fail the test.\n- It parses the stdout evidence JSON and checks the requirement text, a valid determination, a nonempty rationale, and an input for `src/parity.rs`.\n- It checks the project has no `evidence` directory and that the checkout's `evidence` snapshot is unchanged.\n- It reads the usage record at the path reported in stderr, from ordinary state. It asserts backend, model, outcome `completed`, `evidence_output` `stdout`, `evidence_written` true, `request_count` of at least 2, and `submit_result` and `habeas`/`ripgrep` tool calls.\n\n**Deterministic skip and failure paths** are in `live_test_prerequisites_are_checked_without_inference`. It re-runs `live_bedrock_authoring` as a subprocess with AWS variables removed and an endpoint that points nowhere, so no model is called.\n- **CI skip before reading configuration:** `CI=true` with a deliberately malformed user config exits successfully and prints the skip warning. This shows the skip happens before configuration is read.\n- **Malformed configuration fails:** the same malformed config without `CI` fails with \"cannot select live Bedrock configuration\".\n- **Missing Bedrock configuration fails outside CI:** this is covered for no file, a file with no authoring section, and an Ollama-only file. Each case fails with \"no Bedrock authoring configuration\" and prints no skip warning.\n- **Invalid explicit selection fails:** `HABEAS_LIVE_CONFIG=missing` fails with the selection error.\n- **Missing credentials skip:** with an empty credentials file, the run succeeds. It prints \"AWS credentials unavailable\" to stderr and writes no usage record.\n- **Visible warnings:** the warnings are written through `report` straight to stderr. The subprocess runs without `--nocapture` and the assertions read its stderr, which shows they appear in ordinary test output.\n- **Failures after credentials load are not skips:** with fake credentials the run fails with \"live Bedrock authoring failed\" and prints no skip warning.\n\n**Configuration selection** is in `live_configuration_selection_follows_authoring_precedence`.\n- Without a selection it picks the first Bedrock configuration in name order, skipping an earlier Ollama one.\n- It asserts the selected profile, region, model and options come from that record.\n- A Bedrock user default is used, and an Ollama default falls back to `alpha`.\n- The user's project selection beats the default, the workspace default sits between them, and workspace-only configuration works.\n- Name-order fallback spans user and workspace configurations, and an explicit name wins over everything else.\n- A non-Bedrock or unknown explicit name fails, and a malformed user or workspace file fails.\n- With no Bedrock configuration the result is `None`.\n- The fixture workspace text keeps the `authoring` configurations and drops other sections such as `evidence`.\n\nThe `HABEAS_LIVE_CONFIG` environment path is exercised by the explicit-missing probe. The explicit-name logic is covered through `select_config`.\n\nCredential resolution through the AWS SDK is handled by `credentials_available`, which the probes exercise for both the skip and the proceed branches.\n\nThe cited requirements (`requirements.authoring.configuration_precedence`, `requirements.authoring.provider`, `requirements.authoring.source_tools`, `requirements.authoring.submission`, `requirements.authoring.persistence` and `requirements.authoring.usage_storage`) are context only. The live test applies them end to end: stdout mode, an unchanged checkout, usage recording, and source-tool and submit calls. There are no acknowledged gaps.",
   "references": "b86240f533d3f7ea9b3649f7e8602472f4f32942360f82f89b069b9579361769",
   "inputs": [
     {
@@ -91,56 +91,7 @@
       ],
       "text": [
         ":::{req} source_tools",
-        "For requirement, example, and site reviews and their verifications, the harness MUST expose a `habeas` tool accepting exactly one of these request",
-        "forms. Each form MUST correspond to one existing evidence-input kind:",
-        "",
-        "| Request fields | Evidence input returned | Definition |",
-        "| --- | --- | --- |",
-        "| `file: String`, `line_start: Integer`, optional `line_end: Integer` | Outline inputs for the innermost outline nodes covering the range | {cite}`requirements.ci.outline_inputs` |",
-        "| `file: String`, `item: String` | Outline input | {cite}`requirements.ci.outline_inputs` |",
-        "| `requirements: String` | Requirements input, including its matching names | {cite}`requirements.ci.requirements_inputs` |",
-        "| `definition: String` | Definition input | {cite}`requirements.definitions.inputs` |",
-        "",
-        "Selector arguments MUST use the syntax defined by",
-        "{cite}`requirements.references.outline_selectors`. Habeas MUST use the public SDK project source provider for authoring. Mandatory",
-        "inputs, file listings, direct reads, outlines, and searches MUST follow",
-        "{cite}`requirements.sdk.sources.local_provider`. Every source supplied to the",
-        "model MUST be redacted under {cite}`requirements.authoring.redaction`.",
-        "",
-        "Line numbers are only a way to request sources; recorded evidence MUST identify",
-        "sources by outline selector and structural hash, never by line number. Request",
-        "line numbers MUST be one-based and inclusive, and omitting `line_end` MUST read",
-        "through EOF. A line-range request MUST be resolved to the innermost outline",
-        "nodes covering the requested lines, which are `line` nodes in a file using the",
-        "plain-text profile; the result MUST show the model each node's selector and",
-        "source text, without line numbers, and the harness MUST record those nodes as",
-        "outline inputs. The model-facing tool description MUST include the argument conventions",
-        "from the cited requirements, including outline selector syntax, definition",
-        "selections, and full definition names, with a short request example for each form.",
-        "",
-        "A successful call MUST return the requested evidence input, populated by the",
-        "harness with the selected source text, using the existing evidence schema.",
-        "{cite}`requirements.ci.schema`",
-        "Required terminology dependencies MUST be returned alongside it as additional",
-        "definition inputs under {cite}`requirements.definitions.authoring_inputs`.",
-        "For item, requirement, and definition selections, the result MUST have this shape:",
-        "",
-        "```text",
-        "HabeasResult {",
-        "    input: EvidenceInput,",
-        "    definitions: Array<DefinitionInput>,",
-        "}",
-        "```",
-        "",
-        "Line-range selections can contain multiple outline nodes. Their result MUST use",
-        "`inputs: Array<EvidenceInput>` instead of the singular `input` field, including",
-        "when only one node is selected.",
-        "",
-        "`definitions` MUST be empty when no additional terminology is required. The",
-        "harness MUST record inputs supplied to the model in the assessment's evidence.",
-        "A failed read MUST add no evidence input. Access-policy denials MUST be handled",
-        "under {cite}`requirements.authoring.read_denial`; other failed reads MUST return",
-        "an explanatory tool error.",
+        "All assessments and verifications MUST use the SDK graph and source tools. A read uses the node address under {cite}`requirements.sdk.graph.validation-context.read_node.mcp`. A delivered read records that node’s fingerprint under {cite}`requirements.sdk.graph.validation-context.read_node.inputs`. The source project follows {cite}`requirements.sdk.sources.local_provider`.",
         ":::"
       ]
     },
@@ -151,37 +102,7 @@
       ],
       "text": [
         ":::{req} submission",
-        "For requirement, example, and site assessments the harness MUST expose a `submit_judgment` tool accepting exactly these fields:",
-        "",
-        "```text",
-        "submit_judgment({ determination: Judgment, rationale: String })",
-        "",
-        "Judgment = Boolean | { FIXME: Array<String> }",
-        "```",
-        "",
-        "The judgment MUST use the three outcomes and nonempty FIXME entries defined by",
-        "{cite}`requirements.ci.outcomes`.",
-        "`rationale` MUST be nonempty Markdown. This tool call MUST supply the final",
-        "assessment result. The model MUST obtain exactly one accepted submission over the entire",
-        "assessment. Rejected attempts under",
-        "{cite}`requirements.authoring.submission.searches.recovery` and",
-        "{cite}`requirements.authoring.line_numbers.rejection` do not count as accepted",
-        "submissions. If a response ends without invoking it, and the assessment has",
-        "not already been reminded, the harness MUST continue the conversation with one",
-        "user message, `Reminder: you MUST submit your result with the submit_judgment",
-        "tool.`, naming the assessment's submission tool. If a later response also ends",
-        "without invoking it, or a response contains multiple submission calls, the harness MUST",
-        "report an error and leave existing evidence unchanged. The reminder MUST be",
-        "counted in usage like any other turn.",
-        "The harness MUST check the complete model response for multiple submissions",
-        "before accepting one. Invalid submission arguments MUST also fail the assessment.",
-        "A valid single submission MUST finish the assessment; there is no submission",
-        "repair or resubmission loop, except the one continuation after a response cut",
-        "off at its output limit under {cite}`requirements.authoring.output_limit`, the",
-        "one reminder above, and the one resubmission after a rejection under",
-        "{cite}`requirements.authoring.line_numbers.rejection`, and recovery under",
-        "{cite}`requirements.authoring.submission.searches.recovery`. An assessment that fails before accepting a valid",
-        "judgment MUST emit no evidence JSON to stdout.",
+        "Each assessment and verification MUST use the SDK’s `submit_result({\"result\": ...})` tool under {cite}`requirements.sdk.graph.agent-harness.submission.mcp`. An assessment submits `determination` and a nonempty Markdown `rationale`. Citation assessments require a boolean determination. Requirement, example, and site assessments accept the three outcomes under {cite}`requirements.ci.outcomes`. Site assessments also submit `applies`. The SDK handles submission under {cite}`requirements.sdk.graph.agent-harness.submission.acceptance`. Failure before acceptance MUST preserve existing evidence.",
         ":::"
       ]
     },
@@ -229,7 +150,7 @@
     {
       "file": "tests/live_bedrock.rs",
       "item": "fn[live_bedrock_authoring]",
-      "hash": "5e19aa8f3fb6f9b0082445702d7f0de055bc6e37366ec6c52cba6d47d66f053a"
+      "hash": "801f07c2a62dfcb7631f185eddfa422c19db359bf95bce0937b96fbd2d9db75e"
     },
     {
       "file": "tests/live_bedrock.rs",
@@ -240,6 +161,11 @@
       "file": "tests/live_bedrock.rs",
       "item": "fn[live_configuration_selection_follows_authoring_precedence]",
       "hash": "ebc242940ea37a63bb243b366e300f2a58bc3fcbc12c69c23d3ef4f375370453"
+    },
+    {
+      "file": "tests/live_bedrock.rs",
+      "item": "",
+      "hash": "e88b122153277a16da8e9ff7ec3ca4436c05fad85dacaad60e60f1d7bd8fc4e0"
     },
     {
       "file": "tests/live_bedrock.rs",
@@ -265,66 +191,6 @@
       "file": "tests/live_bedrock.rs",
       "item": "fn[skip_probe]",
       "hash": "7e6f75f88c16fa516c68950b99cb10bca1df3bfae0f737439241ce3e90200532"
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "item": "fn[evidence_snapshot]",
-      "hash": "41460170f28d66e2d1b6408eee3770b829f67980d9cb1b22153aa340d86973c1"
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "item": "use@a552f69c94db",
-      "hash": "a552f69c94dbd8dd8259fd09e70ee942c67b0f0c57d93f887a4209774044be1c"
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "item": "use@0aa5aad345a4",
-      "hash": "0aa5aad345a497ea8555581d02720ca86969e0aff012fce65b6f20d384262fb4"
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "item": "use@b9ad51f029df",
-      "hash": "b9ad51f029df0e9b3352de6ee80b9fc5085d69b914654d0181d2570afbfc446f"
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "item": "use@e843693d3cbe",
-      "hash": "e843693d3cbeca2bebfa419b4a2dc5105a0168642b87189c11f2ad16b53a0207"
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "item": "use@005abb79b847",
-      "hash": "005abb79b847cee7b52f03243914d0dd411ba748e7d501c9e832350d806830ad"
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "item": "use@8e54b45306f5",
-      "hash": "8e54b45306f5c910001a450ab1ae4fc3746276c9d6b66f2187fe025955b166cb"
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "item": "use@abb3fccb24f6",
-      "hash": "abb3fccb24f6a4dd37f2e008e41caf4be9937d8d16d30b7fb5f6facc1a9ed722"
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "item": "use@ae28650edb42",
-      "hash": "ae28650edb426279725e0ce17aa894e8e0be5440573cbf57b3b9d71fbea44ba9"
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "item": "const[SUBJECT]",
-      "hash": "4462ea8ba39bd22b72b49f7034d5555cf1eaba510ad33877359797e96f2706e6"
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "item": "const[REQUIREMENT]",
-      "hash": "388bcfd8964eb082ed9b81700b83561a5774281beae8b3db1abb72aaa2d3c25b"
-    },
-    {
-      "file": "tests/live_bedrock.rs",
-      "item": "struct[LiveSelection]",
-      "hash": "30e728dc24c2d3ef1e2e6baacc7f35a064b7daa98203d8958da85ce96d00bf90"
     }
   ],
   "format_version": 1,
@@ -393,7 +259,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "eadfacc183a48031ccd56f07e5d15f406a4f232c9b1095465d5f0af784659c7c"
+          "value": "2e8494f40fd26584ce46d69acc25f8791f9fdfa87a0e4887c82f300aba584d0b"
         }
       ]
     },
@@ -404,7 +270,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "2d2b9934a3e43e8b4c08a943095da0aba8beba4d7ca1e1544bfef2ae8c585da8"
+          "value": "526380d0c1a3ca0f9123535151d26fb1a8af97e353a306bc7205d6b57deb7387"
         }
       ]
     },
@@ -443,7 +309,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "5e19aa8f3fb6f9b0082445702d7f0de055bc6e37366ec6c52cba6d47d66f053a"
+          "value": "801f07c2a62dfcb7631f185eddfa422c19db359bf95bce0937b96fbd2d9db75e"
         }
       ]
     },
@@ -478,6 +344,23 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "ebc242940ea37a63bb243b366e300f2a58bc3fcbc12c69c23d3ef4f375370453"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/live_bedrock.rs"
+            },
+            "selector": ""
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "195eafe199e7841201ffe12b8b6e83b1f2862993575799c3b2822f0498fe9613"
         }
       ]
     },
@@ -563,210 +446,6 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "7e6f75f88c16fa516c68950b99cb10bca1df3bfae0f737439241ce3e90200532"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "tests/live_bedrock.rs"
-            },
-            "selector": "fn[evidence_snapshot]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "41460170f28d66e2d1b6408eee3770b829f67980d9cb1b22153aa340d86973c1"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "tests/live_bedrock.rs"
-            },
-            "selector": "use@a552f69c94db"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "a552f69c94dbd8dd8259fd09e70ee942c67b0f0c57d93f887a4209774044be1c"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "tests/live_bedrock.rs"
-            },
-            "selector": "use@0aa5aad345a4"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "0aa5aad345a497ea8555581d02720ca86969e0aff012fce65b6f20d384262fb4"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "tests/live_bedrock.rs"
-            },
-            "selector": "use@b9ad51f029df"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "b9ad51f029df0e9b3352de6ee80b9fc5085d69b914654d0181d2570afbfc446f"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "tests/live_bedrock.rs"
-            },
-            "selector": "use@e843693d3cbe"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "e843693d3cbeca2bebfa419b4a2dc5105a0168642b87189c11f2ad16b53a0207"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "tests/live_bedrock.rs"
-            },
-            "selector": "use@005abb79b847"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "005abb79b847cee7b52f03243914d0dd411ba748e7d501c9e832350d806830ad"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "tests/live_bedrock.rs"
-            },
-            "selector": "use@8e54b45306f5"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "8e54b45306f5c910001a450ab1ae4fc3746276c9d6b66f2187fe025955b166cb"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "tests/live_bedrock.rs"
-            },
-            "selector": "use@abb3fccb24f6"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "abb3fccb24f6a4dd37f2e008e41caf4be9937d8d16d30b7fb5f6facc1a9ed722"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "tests/live_bedrock.rs"
-            },
-            "selector": "use@ae28650edb42"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "ae28650edb426279725e0ce17aa894e8e0be5440573cbf57b3b9d71fbea44ba9"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "tests/live_bedrock.rs"
-            },
-            "selector": "const[SUBJECT]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "4462ea8ba39bd22b72b49f7034d5555cf1eaba510ad33877359797e96f2706e6"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "tests/live_bedrock.rs"
-            },
-            "selector": "const[REQUIREMENT]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "388bcfd8964eb082ed9b81700b83561a5774281beae8b3db1abb72aaa2d3c25b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "tests/live_bedrock.rs"
-            },
-            "selector": "struct[LiveSelection]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "30e728dc24c2d3ef1e2e6baacc7f35a064b7daa98203d8958da85ce96d00bf90"
         }
       ]
     }

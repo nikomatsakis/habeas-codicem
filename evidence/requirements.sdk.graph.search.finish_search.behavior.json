@@ -1,8 +1,8 @@
 {
-  "requirement": "Each text or structural search page delivered to the agent opens a session-local\n`search_id` for accounting, even when there are no matches. Each match has a\nshort string `tag` unique within the page. The agent may fetch further pages\nwhile earlier pages are open. Replaying a page preserves its ID, tags, and\ncompletion state. Failed searches and undelivered pages create no obligation.\n\nBefore the harness accepts a submission, the agent MUST call `finish_search`\nfor every open page. `used` lists the tags of excerpts the agent relied on\ndirectly and may be empty. A valid call closes the page and returns its ID and\n`finished: true`. A later call for the same page can select additional tags.\nAn invalid call, including an unknown ID or tag, returns a correctable tool\nerror and preserves the page's completion state.",
+  "requirement": "Each text or structural search page delivered to the agent opens a session-local\n`search_id` for accounting, even when there are no matches. Each match has a\nshort string `tag` unique within the page. Each new page receives a fresh UUID. The agent may fetch further pages\nwhile earlier pages are open. Replaying a page preserves its ID, tags, and\ncompletion state. Failed searches and undelivered pages create no obligation.\n\nBefore the harness accepts a submission, the agent MUST call `finish_search`\nfor every open page. `used` lists the tags of excerpts the agent relied on\ndirectly and may be empty. A valid call closes the page and returns its ID and\n`finished: true`. A later call for the same page can select additional tags.\nThe tool accepts exactly `search_id` and `used`. An invalid call, including an unknown ID or tag, returns a correctable tool error and preserves the page's completion state. A submission with open pages returns a tool error listing every outstanding UUID so the agent can close them and resubmit in the same conversation.",
   "determination": true,
-  "rationale": "The two marked tests cover each obligation in `requirements.sdk.graph.search.finish_search.behavior`. The one thin spot is a minor gap, described under \"Replay\" below, and I did not count it against the tests.\n\n**Tests reviewed**\n- `crates/trust-but-verify/src/agent/project_sources.rs#mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]`\n- `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]`\n\n**Obligation to test mapping**\n- **A `search_id` for every delivered page, even with no matches.**\n  - `peer` runs a structural search that returns `matches == []`. The test asserts `peer.outstanding_searches()` equals exactly that page's `search_id`.\n  - `session` does the same for an empty `search_text`.\n  - The `configured.rs` test uses an empty `search_text` page and then closes it.\n- **Session-local IDs.** A `peer` session cannot finish `session`'s page, and it cannot fetch its `next` page. Both calls are asserted to be errors.\n- **Short string `tag`, unique within the page.** The test builds a `BTreeSet` of the tags and asserts its size equals the match count.\n- **Further pages while earlier pages are open.** `get_next_page` is called while the first page is still open. The test asserts that the second page has a different `search_id`, and that two searches are outstanding.\n- **Replay preserves ID, tags and completion state.** After page 2 is finished, `get_next_page` is called again. The test asserts the text equals the original delivery (same ID and tags). It also asserts `outstanding_searches()` is empty, so the replay did not reopen the page.\n- **Failed searches and undelivered pages create no obligation.**\n  - A bad regex `(` returns an error. Afterwards only the real page is outstanding.\n  - `fresh.outstanding_searches()` lists only the first page, not the undelivered `next` page.\n- **Submission blocked until every open page is finished.** In `configured.rs`, turn 6 attempts to conclude while two searches are open. The test asserts the retry text contains \"Call finish_search for every open search_id\" and both IDs. Later turns finish the pages, and `submit_result` is then accepted.\n- **`used` may be empty.** Both tests finish pages with `used: []`, and the dependencies are empty.\n- **A valid call closes the page and returns the ID with `finished: true`.** The test asserts `{\"search_id\":…, \"finished\":true}` exactly.\n- **A later call can select additional tags.** In `configured.rs`, `alpha` is selected first and `beta` later. The final dependencies contain both and exclude `unused`. Repeating the same selection in `project_sources.rs` returns the same dependency.\n- **Invalid calls return a correctable error and preserve state.**\n  - An unknown ID (`first[\"next\"]`, or another session's ID) is asserted `is_err()`.\n  - An unknown tag (`[\"1\",\"unknown\"]`) is asserted `is_err()`, and `outstanding_searches().len()` stays 2. This is the open-page case.\n  - In `configured.rs`, a call with a valid tag plus `\"invalid\"` returns an \"unknown search tag\" error. That tag is not recorded as a dependency, and the already-closed page stays closed, because the submission is later accepted.\n\n**Replay while open**\n- Only replay of a closed page is tested directly. Replay of a still-open page is not. I treated this as a minor gap, not a counted one. The replay returns a stored delivery and the test checks its ID, tags and closed state, so the main risk (reopening) is covered.\n\n**Structural search**\n- Structural search is exercised only for the empty-page case here. Page and tag accounting is shared with text search in `pages.rs`.\n\nI found no unacknowledged gap and no `{fixme}` references were needed.",
-  "references": "aa1ea2f2795dfce7a5bccd09e3535cd0165fb022885973ab30f714b60c90cef7",
+  "rationale": "I found no adequacy gap. Two marked tests cover the obligations of `requirements.sdk.graph.search.finish_search.behavior`. They are `search_obligations_follow_delivery_and_keep_the_original_snapshot` (`crates/trust-but-verify/src/agent/project_sources.rs`, called P below) and `configured_agent_uses_domain_source_tools_in_independent_executions` (`crates/trust-but-verify/src/agent/configured.rs`, called C below).\n\n**Page opens a `search_id`, even with no matches.**\n- P runs an empty `search_text` ('absent') and an empty `search_structure`. It asserts that `outstanding_searches()` equals exactly that page's ID.\n- C leaves two empty text searches open.\n\n**Tags are unique within a page.** P asserts that the tag set size equals the match count and that the count is greater than 1.\n\n**Each new page gets a fresh UUID.** P asserts that the `search_id` differs between page 1 and page 2. C asserts `assert_ne!(ids[0], ids[1])`.\n\n**Further pages while earlier pages are open.** P fetches page 2 with `get_next_page` while page 1 is open. It then asserts that two searches are outstanding.\n\n**Replay preserves ID, tags and completion state.** At the end of P, replaying `get_next_page` returns text identical to the first delivery. That covers the ID and tags. `outstanding_searches()` is still empty afterwards, so the replay did not reopen a finished page.\n\n**Failed searches and undelivered pages create no obligation.**\n- P's invalid regex `(` errors, and later outstanding counts exclude it.\n- `finish_search` with the undelivered `next` UUID errors.\n- A peer session cannot finish or fetch another session's page.\n\n**Submission blocked while pages are open.** C sends `submit_result` with two open empty pages. It asserts that the retry text contains 'Call finish_search for every open search_id' and both distinct UUIDs. After the pages are closed, a later `submit_result` is accepted.\n\n**Partial finishing.** P closes one page and asserts that the other stays outstanding. The submit path reads `outstanding_searches()`, so this covers the recovery example `requirements.sdk.graph.search.recovery` by composition. No test sends a submission between finishing only the first page and finishing the second. This is a minor weakness, not a gap.\n\n**`used` selection.**\n- `used:[]` is tested, and so are single tags.\n- A later call can add tags to a closed page: C selects alpha and then beta, and the dependencies contain both.\n- Repeating the same selection is idempotent. P loops twice and C repeats beta.\n- A valid call returns exactly `{search_id, finished:true}`, and P asserts `input_count == 0`.\n\n**Invalid calls.**\n- P tries a missing field, a missing `used`, a non-array `used`, a bad UUID and an extra property. Each is rejected with a non-empty error.\n- An unknown ID is rejected. An unknown tag is rejected, with the 'unknown search tag' message asserted in C.\n- The invalid call `[\"1\",\"unknown\"]` leaves two pages outstanding in P. Valid tags in a rejected call are not recorded: in C the invalid `[unused, invalid]` call leaves `unused` out of the final dependencies.\n\nI found no obligation without an exercising test and an assertion.",
+  "references": "5de9ac95a98d6a5db5a7fe2e9e81bcb496d8dc140560a832fee9364ba0db3abb",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.search.finish_search.behavior",
@@ -13,7 +13,7 @@
         ":::{req} finish_search.behavior",
         "Each text or structural search page delivered to the agent opens a session-local",
         "`search_id` for accounting, even when there are no matches. Each match has a",
-        "short string `tag` unique within the page. The agent may fetch further pages",
+        "short string `tag` unique within the page. Each new page receives a fresh UUID. The agent may fetch further pages",
         "while earlier pages are open. Replaying a page preserves its ID, tags, and",
         "completion state. Failed searches and undelivered pages create no obligation.",
         "",
@@ -21,30 +21,44 @@
         "for every open page. `used` lists the tags of excerpts the agent relied on",
         "directly and may be empty. A valid call closes the page and returns its ID and",
         "`finished: true`. A later call for the same page can select additional tags.",
-        "An invalid call, including an unknown ID or tag, returns a correctable tool",
-        "error and preserves the page's completion state.",
+        "The tool accepts exactly `search_id` and `used`. An invalid call, including an unknown ID or tag, returns a correctable tool error and preserves the page's completion state. A submission with open pages returns a tool error listing every outstanding UUID so the agent can close them and resubmit in the same conversation.",
         ":::"
       ]
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]",
-      "hash": "c128684d8f511e40b199c52736d9cf930af4e4efdeb7fe26a17164c6d3635ef7"
+      "hash": "1a1a252964872efc8573135d5fb391176e8a78b08c0d975f77b8072c6591f9e8"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]",
-      "hash": "ae174164270435b945ebc49fa48717ef762ca2f76ae833920a87e59a3b09d7ad"
+      "hash": "d50fc16c3dbbf946e0b67d84304739d14998f92261ecab2f9a492b0c4fd9dcbe"
+    },
+    {
+      "requirements": "requirements.sdk.graph.search.recovery",
+      "matches": [
+        "requirements.sdk.graph.search.recovery"
+      ],
+      "text": [
+        ":::{example} recovery",
+        "Two search results remain outstanding; one has no matches. Submission MUST",
+        "return an error naming both UUIDs. Finishing only the first MUST leave",
+        "submission rejected with the second UUID. Finishing the empty search with",
+        "`used: []` MUST permit an otherwise valid subsequent submission.",
+        "{test}`requirements.sdk.graph.search.finish_search.behavior`",
+        ":::"
+      ]
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tools.rs",
+      "item": "impl[SessionTools<'a,%20D>]/fn[outstanding_searches]",
+      "hash": "fc29617c91ff1c26ccab8235eb9dcd93fbc85937e01b1f0fd0ca8eed1365e2cd"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tools.rs",
       "item": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[submit]",
       "hash": "6be2e73d8b2560e2efa6af25790bb67d021a8ea434976896e26e4e88259aaed6"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/pages.rs",
-      "item": "impl[Pages<N,%20L>]/fn[search]",
-      "hash": "affaeb7275d522dc08d00e36ba5b88bc4f30fd276a9b702c9a6c3f60193a0a6d"
     }
   ],
   "format_version": 1,
@@ -57,7 +71,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "aa1ea2f2795dfce7a5bccd09e3535cd0165fb022885973ab30f714b60c90cef7"
+          "value": "5de9ac95a98d6a5db5a7fe2e9e81bcb496d8dc140560a832fee9364ba0db3abb"
         }
       ]
     },
@@ -69,7 +83,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "a5689b60f89e9029640943bb42a32125f75f29a19f763f44c5a1b83b4b64572d"
+          "value": "e713338996edcc0fb160204d18b1ef8d13c7d7cc6efdf83b5e1e4c2fcdb47f5b"
         }
       ]
     },
@@ -80,7 +94,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ac3aa81169e5ce770268212f25508f604bd9d8742668fb18eceb7634d7707442"
+          "value": "f77d3c3ecc1364014d36fab00ddceec39b88d2c18e925eccdfc976102b2b41c5"
         }
       ]
     },
@@ -97,7 +111,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "da13b86e29be9c84f6439d22e6ad6656b7fe185b9002ca9c3490741263a0af6f"
+          "value": "f9d8fbc31acd81ef8aa636e21fe02910790b3ec81c15b618e8fdb2b93a7a50de"
         }
       ]
     },
@@ -114,7 +128,35 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "ae174164270435b945ebc49fa48717ef762ca2f76ae833920a87e59a3b09d7ad"
+          "value": "d50fc16c3dbbf946e0b67d84304739d14998f92261ecab2f9a492b0c4fd9dcbe"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.sdk.graph.search.recovery"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "e4762facc1d730050c5ae419764132fbb244d2a7033213b250f9c27f593ae1b7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tools.rs"
+            },
+            "selector": "impl[SessionTools<'a,%20D>]/fn[outstanding_searches]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "fc29617c91ff1c26ccab8235eb9dcd93fbc85937e01b1f0fd0ca8eed1365e2cd"
         }
       ]
     },
@@ -132,23 +174,6 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "6be2e73d8b2560e2efa6af25790bb67d021a8ea434976896e26e4e88259aaed6"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/pages.rs"
-            },
-            "selector": "impl[Pages<N,%20L>]/fn[search]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "affaeb7275d522dc08d00e36ba5b88bc4f30fd276a9b702c9a6c3f60193a0a6d"
         }
       ]
     }

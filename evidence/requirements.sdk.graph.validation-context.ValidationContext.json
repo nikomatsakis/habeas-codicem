@@ -1,7 +1,7 @@
 {
   "requirement": "The SDK exposes the {term}`requirements.sdk.graph.validation-context.validation_context`\nthrough `ValidationContext`. Criterion code can read graph nodes and source items, follow edges,\nand call `ask` to dispatch an agent with a prompt. The agent can search project\nfiles and use the same tracked reads as criterion code.\n\n`verify` creates a context for one execution. Each tracked read adds\nthe input’s identity and a fingerprint of its contents to the dependency list.\n`verify` returns these dependencies with the answer. `refresh_evidence` uses\nthem to decide whether to rerun the criterion. [Searching project sources](search.md) explains\nhow the agent chooses which search excerpts to record.\n\n```rust,ignore\npub struct ValidationContext<'d, D: Domain> { /* private fields */ }\n```",
   "determination": true,
-  "rationale": "The subject is the type-level requirement for `ValidationContext`. Its member-level obligations (`read`, `read_source`, `outgoing_edges`, `ask`, the agent tools, paging, search recording) are refined by their own requirements, which carry their own tests and implementations. Here I assessed only the overview obligations the subject states itself.\n\n- **Criterion code reads nodes, reads source items and follows edges.**\n  - `snapshots_record_exact_reads_and_retain_distinct_versions` in `graph/validation_tests.rs` covers node reads. It checks the returned contents. It checks that a read of a missing node fails and adds no dependency. It checks that repeated reads of changed content record distinct fingerprints, in order.\n  - `direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns` in `agent/project_sources.rs` covers source reads. It checks that unsupported addresses and failed reads record nothing. It checks that a successful read records `Dependency::Node(identity, returned.fingerprint())`.\n  - `agent_edge_tools_record_selections_without_validating_targets` covers edge selections. It checks the recorded `OutgoingEdges` dependencies and the delivered results.\n- **`ask` dispatches an agent that shares the context's tracked reads.**\n  - `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` runs two `ask` calls on one context. It asserts that both reads land in the shared dependency list.\n  - `agent_edge_tools_record_selections_without_validating_targets` checks the agent's edge tool calls against the dependency list. They are recorded only when delivery succeeds.\n- **The agent can search project files and its tracked reads are the same ones.** `source_tools_keep_search_discovery_separate_from_delivered_source_reads` has the agent run `search_text` and then `read_source`. It asserts that exactly one dependency exists, for the delivered read, with the observed fingerprint. Search excerpts that are not recorded are specified in the separate search requirement.\n- **Each tracked read adds identity plus a content fingerprint.** The assertions in the tests above compare the full `Dependency::Node(..., fingerprint)` and `Dependency::OutgoingEdges(..., fingerprint)` values, not only counts.\n- **`verify` creates one context per execution and returns its dependencies with the answer.**\n  - `concurrent_single_node_validations_keep_separate_traces` runs three concurrent `verify` calls. Each stored record contains only its own node's content and edge dependencies, so contexts are separate per execution.\n  - `agent_edge_tools_record_selections_without_validating_targets` asserts that the `verify_with_agent` result's dependencies equal the saved ones.\n  - `ctx.finish` is checked to return the same dependencies as `ctx.dependencies()`.\n- **`refresh_evidence` uses the dependencies to decide whether to rerun.** In `snapshots_record_exact_reads_and_retain_distinct_versions` and the direct source-read test, `record.is_current` returns true while the recorded input is unchanged. It returns false after the content changes. The rerun decision in `refresh_evidence` itself belongs to `requirements.sdk.graph.evidence.refresh_evidence`, which has its own tests, such as `deterministic_source_reads_reuse_saved_results`. It is not an obligation of this type-level requirement.\n- **Public type exposure.** `public_exports_match_the_appendix` in `tests/public_api.rs` verifies that the exported `ValidationContext` matches the specified inventory.\n\nI found no uncovered obligation in the subject's text, and the tests assert the outcomes. No `{fixme}` acknowledgments apply.",
+  "rationale": "The tests cover each obligation in `requirements.sdk.graph.validation-context.ValidationContext`. I did not read implementation source.\n\n- **Public exposure of `ValidationContext`:** `tests/public_api.rs#fn[public_exports_match_the_appendix]` checks the exported inventory against rustdoc and compiles the Habeas consumer against the SDK.\n- **Criterion code reads graph nodes:** `graph/validation_tests.rs#fn[snapshots_record_exact_reads_and_retain_distinct_versions]` asserts the returned content. It checks that each `read` and `read_snapshot` records `Dependency::Node` with the content fingerprint. A later read after the content changes records a distinct dependency, and an earlier snapshot of the list is unchanged. A failed read of node 2 is not recorded.\n- **Criterion code reads source items:** `agent/project_sources.rs#mod[tests]/fn[direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns]` covers three cases. Unsupported addresses and a failed provider read return errors and record no dependency. A successful read records `Dependency::Node` with the returned fingerprint. The same test then calls `finish` and checks that `is_current` is true, then false after the contents change.\n- **Criterion code follows edges:** `concurrent_single_node_validations_keep_separate_traces` uses `edges_in_callback` and asserts a recorded `Dependency::OutgoingEdges` with the edge fingerprint, alongside the node dependency.\n- **`ask` dispatches an agent with a prompt:** `agent/tests.rs#fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]` calls `ctx.ask` with context and asserts typed answers. It also asserts that the agents' reads land in the shared context's dependencies.\n- **The agent searches project files and uses the same tracked reads:** `source_tools_keep_search_discovery_separate_from_delivered_source_reads` runs `search_text` followed by `read_source`. Only the delivered read is recorded as a dependency. `agent_edge_tools_record_selections_without_validating_targets` shows the agent's `outgoing_edges` tool records dependencies in the context. It also checks that a malformed node, a failed delivery and a second label behave correctly.\n- **`verify` creates one context per execution:** the concurrent validation test runs three `verify` calls at once. Each stored record contains only its own node's dependencies.\n- **`verify` returns the dependencies with the answer:** the same test checks the stored dependencies. `agent_edge_tools_record_selections_without_validating_targets` checks that `saved.dependencies()` equals `result.dependencies()`.\n- **`refresh_evidence` uses the dependencies to decide whether to rerun:** `is_current` is checked in the source-read and snapshot tests. `agent/project_sources.rs#fn[deterministic_source_reads_reuse_saved_results]` reuses a saved result, then reruns after the source changes. `tests/contracts.rs#fn[refresh_reuses_current_positive_negative_and_legacy_answers_without_saving]` and `validation_and_answer_need_send_without_sync` also cover reuse. That behavior belongs to the `refresh_evidence` requirements, which those tests mark.\n- **Search excerpt selection:** this is delegated to `search.md`.\n\nI found no gap.",
   "references": "c1e130862562880e7c9c542f44a68c861c68ffcb1f3ed2118818968248df921a",
   "inputs": [
     {
@@ -62,7 +62,7 @@
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[public_exports_match_the_appendix]",
-      "hash": "4d6ce6161754fb9e88ad84ef64f9bb131b308298104915179b2c5d573ed2b087"
+      "hash": "85236d57663dd61cc1cfc8c4a81672e5c5591e6d9dfaf865943d051c38e8bb2a"
     },
     {
       "definition": "requirements.sdk.application_domain",
@@ -118,24 +118,19 @@
       ]
     },
     {
-      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
-      "item": "fn[labeled_selections_track_only_target_membership_without_reading_contents]",
-      "hash": "99523765d03546a8080ace6dab2053ee9b74cfbd8ee76dd224c1693883961924"
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "mod[tests]/fn[deterministic_source_reads_reuse_saved_results]",
+      "hash": "a13991b1c7d3ec979d77d71ea1f3486bebd718ca795588d003960c87d62de956"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "fn[validation_and_answer_need_send_without_sync]",
+      "hash": "2bf006acebdb8fc3df250c66c66a218d7e2e7d0edd1566f398067c9a9012f735"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[refresh_reuses_current_positive_negative_and_legacy_answers_without_saving]",
       "hash": "c8d56c1c28e310c24a1fefa0450366e9fb0e36c5f18b416aa843e1bcc469dde6"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace]",
-      "hash": "095ffe75cc4d85fbea4a2822dacee31a5304b8dc3e8ca5daa34b26cee5410f12"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]",
-      "hash": "e7612967baf35151d91388d3bdcba2d29524109c2ecbbe5f1d242cfce6f6f959"
     }
   ],
   "format_version": 1,
@@ -187,8 +182,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "9346a9426df6ba6fcd2196c647cdb3dd6fe404f8b5bc5de639be4aaac8aa2a1a"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "6d4d5c3ecff21114d8a3664f6636e1d11c6cc468e31c61e5d6a9ac4dd5c4b3cf"
         }
       ]
     },
@@ -204,8 +199,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "48a915bd09b5009c59ae08da015119046223c6fa314af6572c8062782a4759d3"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "07f3a94cd585fd150e0944575c24f6d3538f7ec6c1f07277c24bb2f20ee7fd87"
         }
       ]
     },
@@ -221,8 +216,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "334491ad721d43076eef1db4692d0f635df245ff55e675eb45ef1a45a1dd7f43"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b1c00c1e246a9d3cad5d832802238ee07b4387536a473825251974c9a82c5923"
         }
       ]
     },
@@ -238,8 +233,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "76c834f7cd2327608f196fe50c0c0cc65e588cc0542d6824c109e620b78bd38d"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "411c8669624d7fe886a79621b1640c28fb2bebdf8254b18443bf5ab806c33f41"
         }
       ]
     },
@@ -255,8 +250,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "46e64fe1cae795b00880fe90bca67849b023e364121a0383c555aa8188e610b3"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "f8ea3ec9bfea77fff1dd9ea1ecbcc8cb80aa310da9dad91e241a49ac2fd1125d"
         }
       ]
     },
@@ -272,8 +267,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "a158b933c1595082748de465ad9b4c1e4b4f58e0a50d16d56d2efcede1795db4"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "5013e59de848fef5d0de348958c93db5e4030fbf79d55559833aeaca30e2e544"
         }
       ]
     },
@@ -289,8 +284,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "ae4819b6e5ac9cd22992cc4254e7868f438e101dbd53f1bd7d443a33ee96f61d"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "85236d57663dd61cc1cfc8c4a81672e5c5591e6d9dfaf865943d051c38e8bb2a"
         }
       ]
     },
@@ -344,14 +339,31 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
             },
-            "selector": "fn[labeled_selections_track_only_target_membership_without_reading_contents]"
+            "selector": "mod[tests]/fn[deterministic_source_reads_reuse_saved_results]"
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "e78758c0539762303a26ab156954eb8e1aea3a2abfa1da69f7f252b2373d7d05"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "a13991b1c7d3ec979d77d71ea1f3486bebd718ca795588d003960c87d62de956"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/contracts.rs"
+            },
+            "selector": "fn[validation_and_answer_need_send_without_sync]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "2bf006acebdb8fc3df250c66c66a218d7e2e7d0edd1566f398067c9a9012f735"
         }
       ]
     },
@@ -367,42 +379,20 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "4b2c3757c94da447579608551e5d8c412a9e4841d94fbb36a713a0dd8e56a52b"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "c8d56c1c28e310c24a1fefa0450366e9fb0e36c5f18b416aa843e1bcc469dde6"
         }
       ]
     },
     {
-      "Node": [
+      "OutgoingEdges": [
         {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "fn[refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace]"
-          }
+          "Requirement": "requirements.sdk.graph.validation-context.ValidationContext"
         },
+        "Implements",
         {
-          "scheme": "habeas-input-v1",
-          "value": "0f476030622d48b4da988fe757c14e9768867faaa7a3dcda829ddbf760d8b012"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "ac3e898eec9a1723e1c59e83e24f6afa5897c45140603fe41abe15fa7b9c1267"
+          "scheme": "node-path-set-sha256-v1",
+          "value": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
         }
       ]
     }

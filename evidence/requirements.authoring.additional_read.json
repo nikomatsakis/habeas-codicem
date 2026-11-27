@@ -1,8 +1,8 @@
 {
-  "example": "The model calls `list_files` to find a directory, then `ripgrep` to find matching\nlines in a Rust file. The listing creates no evidence input; the search returns\nthe selector of the innermost Rust item containing each match, with the\nmatching and context lines but no line numbers, and creates no evidence input. An `outline` request\nfor that file lists its items without content and creates no evidence input. A\n`habeas` request with the file and one item's selector returns and records that\nitem, along with any required terminology. A line-range request omitting\n`line_end` reads through EOF and records the outline nodes it covers.\n{cite}`requirements.authoring.file_discovery`\n{cite}`requirements.authoring.text_search`\n{cite}`requirements.authoring.source_tools`\n{cite}`requirements.authoring.delivered_inputs`",
+  "example": "The model calls `list_sources` to discover `src/lib.rs`, then `search_text` to find a matching function. The search returns its node address and a source excerpt. Reading the function with `read_node` records the function as a dependency. The agent closes the search with `finish_search` and an empty `used` list because it relied on the full node read.\n{cite}`requirements.sdk.graph.validation-context.list_sources.behavior`\n{cite}`requirements.sdk.graph.search.search_text.mcp`\n{cite}`requirements.authoring.source_tools`\n{cite}`requirements.authoring.delivered_inputs`",
   "determination": true,
-  "rationale": "The example describes a concrete flow with stated outcomes. The model calls `list_files`, then `ripgrep` on a Rust file, then `outline`, then `habeas` with an item selector, then `habeas` with a line range that omits `line_end`. The test `src/authoring/tools.rs#mod[tests]/fn[additional_read_flow_searches_outlines_and_reads_a_rust_file]` runs this whole sequence against a project with `src/lib.rs`. That file holds `fn work` and `fn other`, plus a `{term}` reference to a definition. The assertions below are tied to each outcome.\n\n- **Listing:** `list_files` on the root finds `src` with kind `directory`, and `.inputs` is empty. A second listing of that directory returns exactly `[{\"path\":\"src/lib.rs\",\"kind\":\"file\"}]`, again with empty inputs.\n- **Search:** `ripgrep` on `src/lib.rs` for `work` has empty `.inputs`, and the result's `matches` equals one entry. That entry has `item` `fn[work]`, kind `fn`, a tag, and a `lines` array of only `text` and `matched` fields, so it has no line numbers. The test uses `context` 0, so the context-line part is covered by the other tests. In `search_records_nothing_clamps_at_eof_and_reports_failures`, a search with `context` 5 on a Rust item returns the attached comment line as an unmatched context line. Its window stops at the item boundary, and `sources.recorded_inputs()` stays empty with no `definitions` in the result. `search_merges_context_windows_and_respects_ignore_rules` also checks that results carry no line-number fields.\n- **Outline:** The `outline` result has empty inputs and lists the items `fn[work]` and `fn[other]`. It does not contain the source text `fn other()`, so it lists items without content.\n- **Item read:** `habeas` with `file` and `item` `fn[work]` returns an input with item `fn[work]` and the source text. It also returns exactly one definition, `terms.value`, so the required terminology comes with it. The returned inputs hold two entries, the outline node and the definition. After `record_inputs`, the recorded set contains `outline_input(... \"fn[work]\")` and has length 2. This shows the item is returned and recorded.\n- **Line range to EOF:** `habeas` with `line_start` 2 and no `line_end` returns inputs for `fn[work]` and `fn[other]`. After recording, both outline inputs and the `terms.value` definition are present, so the covered nodes are recorded.\n\nOther reviewed tests back up the same behavior:\n- `listed_git_directories_need_an_eligible_descendant_at_any_depth` checks listings and that they record nothing.\n- `tests/authoring_cli.rs#fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]` checks the flow end to end through the CLI. The search leaves nothing recorded, a repeated line-range read is deduplicated, and the evidence has the expected outline inputs for the lines read.\n\nI found no outcome the example states that these tests leave unasserted. The tests cite `requirements.authoring.additional_read` with `{test}`.",
-  "references": "5a10fcccc9f65401742794bd54ccb3b6cdadb4a3b80e754b7853e95f95756ddc",
+  "rationale": "The example `requirements.authoring.additional_read` describes a concrete case: `list_sources`, then `search_text`, then `read_node` on the matched node, then `finish_search` with an empty `used` list. Its stated outcomes are that discovery lists the file, that the search returns a node address and an excerpt, that the read records the node as a dependency, and that the finish records nothing from the search.\n\n`tests/authoring_cli.rs#fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]` carries the `{test}` reference. It scripts the model to call `list_sources`, then `search_text` (pattern `needle`, path `extra.txt`), then `read_node` on the matched line, then a repeated read and a missing read. It then closes the search with `{\"__finish_search\":0}`.\n\nThe helper `tests/authoring_cli.rs#impl[Server]/fn[start_with]` turns that directive into `finish_search` with `used: []` unless `use_first` is set. The test does not set `use_first`, so the empty `used` list matches the example.\n\nThe test covers each outcome:\n- **Discovery:** the `list_sources` result's `files` array is asserted to contain an entry whose `data.Source.resource.location` is `extra.txt`. The example names `src/lib.rs`, but a different file does not change the scenario.\n- **Search result:** the hit's `node` is asserted to be an integer (`is_u64`), and its `excerpt` is asserted to contain `needle`. Its `selector` is asserted to equal `line@36a3bca8a276` and to equal the selector in the `read_node` result.\n- **Read recorded as a dependency:** the evidence `inputs` entries for `extra.txt` are asserted to equal `habeas::outline_inputs_for_lines(..., \"extra.txt\", 6, 6)`. The read node is therefore recorded, once, by selector and hash with no text. The evidence is also asserted not to contain the source payload.\n- **Empty `used` and no search excerpt recorded:** the same equality means the search adds no extra `extra.txt` inputs. The test asserts the `finish_search` call count is 1 and that its result bytes match the final tool message. These assertions show the finish was accepted and that submission followed.\n- **Delivered-input recording (`requirements.authoring.delivered_inputs`):** the test checks that evidence inputs for read nodes carry a hash and no text. It also checks that `prepared_inputs` equals `delivered_inputs`.\n\nThe example reads a line node in a plain-text file instead of a function. This still exercises the same read-records-dependency and empty-`used` behavior, so it is not a gap. The cited requirements are context only and were not reassessed. No acknowledgments apply.",
+  "references": "c2454a99ed7767832eed5fae4a4301fdd6c107cf76ed5960a43afe981ec0e828",
   "inputs": [
     {
       "requirements": "requirements.authoring.additional_read",
@@ -11,118 +11,40 @@
       ],
       "text": [
         ":::{example} additional_read",
-        "The model calls `list_files` to find a directory, then `ripgrep` to find matching",
-        "lines in a Rust file. The listing creates no evidence input; the search returns",
-        "the selector of the innermost Rust item containing each match, with the",
-        "matching and context lines but no line numbers, and creates no evidence input. An `outline` request",
-        "for that file lists its items without content and creates no evidence input. A",
-        "`habeas` request with the file and one item's selector returns and records that",
-        "item, along with any required terminology. A line-range request omitting",
-        "`line_end` reads through EOF and records the outline nodes it covers.",
-        "{cite}`requirements.authoring.file_discovery`",
-        "{cite}`requirements.authoring.text_search`",
+        "The model calls `list_sources` to discover `src/lib.rs`, then `search_text` to find a matching function. The search returns its node address and a source excerpt. Reading the function with `read_node` records the function as a dependency. The agent closes the search with `finish_search` and an empty `used` list because it relied on the full node read.",
+        "{cite}`requirements.sdk.graph.validation-context.list_sources.behavior`",
+        "{cite}`requirements.sdk.graph.search.search_text.mcp`",
         "{cite}`requirements.authoring.source_tools`",
         "{cite}`requirements.authoring.delivered_inputs`",
         ":::"
       ]
     },
     {
-      "requirements": "requirements.authoring.file_discovery",
+      "requirements": "requirements.sdk.graph.validation-context.list_sources.behavior",
       "matches": [
-        "requirements.authoring.file_discovery"
+        "requirements.sdk.graph.validation-context.list_sources.behavior"
       ],
       "text": [
-        ":::{req} file_discovery",
-        "The harness MUST expose a `list_files` tool with this interface:",
-        "",
-        "```text",
-        "list_files({ path: String = \".\" }) -> Array<DirectoryEntry>",
-        "",
-        "DirectoryEntry {",
-        "    path: String,",
-        "    kind: \"file\" | \"directory\",",
-        "}",
-        "```",
-        "",
-        "The tool MUST list the immediate children of the requested directory, returning",
-        "project-relative paths. Each listed directory MUST contain a visible file.",
-        "A failed listing MUST return an explanatory tool error. Directory listings",
-        "MUST NOT become evidence inputs.",
+        ":::{req} list_sources.behavior",
+        "Each file entry pairs its assigned root ID with the domain identity serialized as a JSON value. The whole entry is a valid node argument under {cite}`requirements.sdk.graph.validation-context.node_reference.consistency`. Follow `next` to retrieve further pages.",
         ":::"
       ]
     },
     {
-      "requirements": "requirements.authoring.text_search",
+      "requirements": "requirements.sdk.graph.search.search_text.mcp",
       "matches": [
-        "requirements.authoring.text_search"
+        "requirements.sdk.graph.search.search_text.mcp"
       ],
       "text": [
-        ":::{req} text_search",
-        "The harness MUST expose a `ripgrep` tool with this interface:",
+        ":::{req} search_text.mcp",
+        "Give `search_text` a regular expression and an optional match limit. Set `window_bytes` to choose how much source to show on each side of a hit under {cite}`requirements.sdk.graph.search.windows`.",
+        "Use the returned `search_id` and match tags when calling `finish_search`.",
+        "For the `instructions` field, see {cite}`requirements.sdk.graph.search.first_search.instructions`.",
         "",
         "```text",
-        "ripgrep({ pattern: String, path: String = \".\", context: Integer = 2,",
-        "          referencing: Optional<ReferenceScope> }) -> SearchResult",
-        "",
-        "ReferenceScope {",
-        "    selection: String,                     // full name or definition glob",
-        "    roles: Array<Role> = [\"impl\", \"test\", \"cite\"],",
-        "    scope: \"node\" | \"file\" = \"file\",",
-        "}",
-        "",
-        "SearchResult {",
-        "    search_id: UUID,",
-        "    instructions: Optional<String>,",
-        "    matches: Array<SearchMatch>,",
-        "}",
-        "",
-        "SearchMatch {",
-        "    tag: String,         // short tag for finish_search",
-        "    file: String,",
-        "    item: String,        // selector of the innermost outline node",
-        "    kind: String,",
-        "    lines: Array<{ text: String, matched: Boolean }>,",
-        "}",
+        "search_text({pattern: string, path?: string, window_bytes?: integer, limit?: integer})",
+        "  -> {search_id: UUID, instructions?: string, next?: UUID, complete: boolean, matches: {tag: string, node: NodeId, file: string, selector: string, excerpt: string}[]}",
         "```",
-        "",
-        "The tool MUST search the requested permitted file or directory using",
-        "ripgrep's regular-expression syntax and case-sensitive matching. It MUST search in process using ripgrep's library crates, without",
-        "requiring an external `rg` executable, and MUST apply source-access policy while",
-        "walking files rather than filtering results afterwards. It MAY search files in",
-        "parallel; results MUST be ordered by path and then line regardless of",
-        "parallelism, so the same sources always produce the same inputs. The search scope follows {cite}`requirements.sdk.sources.local_provider`.",
-        "`context`",
-        "MUST be nonnegative and specify how many lines before and after each matching",
-        "line to include, defaulting to two on each side. Windows MUST stop at item",
-        "boundaries under {cite}`requirements.authoring.search_accounting.excerpts`,",
-        "and overlapping windows within the same item MUST be merged. The result",
-        "MUST give one entry for each innermost outline node containing a match, where a",
-        "match in a comment belongs to the node the comment belongs to under",
-        "{cite}`requirements.references.outline_comments`: the node's file, selector",
-        "under {cite}`requirements.references.outline_selectors`, kind, and its matching",
-        "and context lines in source order, each marked as matching or not and redacted",
-        "under {cite}`requirements.authoring.redaction`. Results MUST NOT give line",
-        "numbers; the model locates and cites code by selector. Separate windows within",
-        "one node MUST be distinguishable, such as by an elision line that is not",
-        "marked as matching. Search results MUST NOT include definitions. Selected snippets MUST contribute",
-        "evidence inputs through {cite}`requirements.authoring.finish_search.inputs`;",
-        "unselected snippets MUST NOT contribute inputs merely through discovery.",
-        "Results and descriptions MUST follow",
-        "{cite}`requirements.authoring.search_accounting.instructions` and",
-        "{cite}`requirements.authoring.finish_search.description`. Setting `context` to zero MUST return only matching lines.",
-        "With `referencing`, the tool MUST search only sources, within `path`, that carry",
-        "a reference in one of `roles` to a requirement or example the `selection`",
-        "matches under {cite}`requirements.references.definition_globs`, including",
-        "anchors under {cite}`requirements.references.anchors`: with `scope` `node`, only",
-        "the outline nodes that contain or are named by those references, and with",
-        "`file`, their whole files. A selection matching no requirement or example, or an",
-        "unknown role or scope, MUST return an explanatory tool error. Its model-facing",
-        "description MUST explain `referencing`.",
-        "Search results MUST contain only files visible under",
-        "{cite}`requirements.authoring.source_tools`. A search scoped to a `.gitignore`-excluded",
-        "file or directory MUST return an empty `matches` array.",
-        "No matches MUST return an empty array; invalid arguments or a failed search MUST",
-        "return an explanatory tool error.",
         ":::"
       ]
     },
@@ -133,56 +55,7 @@
       ],
       "text": [
         ":::{req} source_tools",
-        "For requirement, example, and site reviews and their verifications, the harness MUST expose a `habeas` tool accepting exactly one of these request",
-        "forms. Each form MUST correspond to one existing evidence-input kind:",
-        "",
-        "| Request fields | Evidence input returned | Definition |",
-        "| --- | --- | --- |",
-        "| `file: String`, `line_start: Integer`, optional `line_end: Integer` | Outline inputs for the innermost outline nodes covering the range | {cite}`requirements.ci.outline_inputs` |",
-        "| `file: String`, `item: String` | Outline input | {cite}`requirements.ci.outline_inputs` |",
-        "| `requirements: String` | Requirements input, including its matching names | {cite}`requirements.ci.requirements_inputs` |",
-        "| `definition: String` | Definition input | {cite}`requirements.definitions.inputs` |",
-        "",
-        "Selector arguments MUST use the syntax defined by",
-        "{cite}`requirements.references.outline_selectors`. Habeas MUST use the public SDK project source provider for authoring. Mandatory",
-        "inputs, file listings, direct reads, outlines, and searches MUST follow",
-        "{cite}`requirements.sdk.sources.local_provider`. Every source supplied to the",
-        "model MUST be redacted under {cite}`requirements.authoring.redaction`.",
-        "",
-        "Line numbers are only a way to request sources; recorded evidence MUST identify",
-        "sources by outline selector and structural hash, never by line number. Request",
-        "line numbers MUST be one-based and inclusive, and omitting `line_end` MUST read",
-        "through EOF. A line-range request MUST be resolved to the innermost outline",
-        "nodes covering the requested lines, which are `line` nodes in a file using the",
-        "plain-text profile; the result MUST show the model each node's selector and",
-        "source text, without line numbers, and the harness MUST record those nodes as",
-        "outline inputs. The model-facing tool description MUST include the argument conventions",
-        "from the cited requirements, including outline selector syntax, definition",
-        "selections, and full definition names, with a short request example for each form.",
-        "",
-        "A successful call MUST return the requested evidence input, populated by the",
-        "harness with the selected source text, using the existing evidence schema.",
-        "{cite}`requirements.ci.schema`",
-        "Required terminology dependencies MUST be returned alongside it as additional",
-        "definition inputs under {cite}`requirements.definitions.authoring_inputs`.",
-        "For item, requirement, and definition selections, the result MUST have this shape:",
-        "",
-        "```text",
-        "HabeasResult {",
-        "    input: EvidenceInput,",
-        "    definitions: Array<DefinitionInput>,",
-        "}",
-        "```",
-        "",
-        "Line-range selections can contain multiple outline nodes. Their result MUST use",
-        "`inputs: Array<EvidenceInput>` instead of the singular `input` field, including",
-        "when only one node is selected.",
-        "",
-        "`definitions` MUST be empty when no additional terminology is required. The",
-        "harness MUST record inputs supplied to the model in the assessment's evidence.",
-        "A failed read MUST add no evidence input. Access-policy denials MUST be handled",
-        "under {cite}`requirements.authoring.read_denial`; other failed reads MUST return",
-        "an explanatory tool error.",
+        "All assessments and verifications MUST use the SDK graph and source tools. A read uses the node address under {cite}`requirements.sdk.graph.validation-context.read_node.mcp`. A delivered read records that node’s fingerprint under {cite}`requirements.sdk.graph.validation-context.read_node.inputs`. The source project follows {cite}`requirements.sdk.sources.local_provider`.",
         ":::"
       ]
     },
@@ -204,29 +77,14 @@
       ]
     },
     {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[additional_read_flow_searches_outlines_and_reads_a_rust_file]",
-      "hash": "8c6e08cc3bd986237f04e8902f4203b9de77dd394079ffc10bfb8f89048ba398"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[listed_git_directories_need_an_eligible_descendant_at_any_depth]",
-      "hash": "fce082021ed2e90935470c1b2d2a36656e4bf7b4767aa9752f487890ead122cc"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[search_merges_context_windows_and_respects_ignore_rules]",
-      "hash": "2070f063e1823f7f8637127f1eee257a213cbf48d3305ba74285387f3b5ec222"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[search_records_nothing_clamps_at_eof_and_reports_failures]",
-      "hash": "800cf53dadb439f8eb7dee2e4a29aaf664a7f348394bd5c049f9121bc2df56ed"
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]",
+      "hash": "c710fed6606490c4a6b84a2b0282971e28c960c35b8ac9e50a10f1d8bcc73257"
     },
     {
       "file": "tests/authoring_cli.rs",
-      "item": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]",
-      "hash": "54f4cef9e806649948c3d0e8878c431a510814eaab641e418e8a2aafa2dfe245"
+      "item": "impl[Server]/fn[start_with]",
+      "hash": "b00d1c9811a03804d7a9cf1b8b5e2b0df691b21e0779ba0680805fe9353a4ca7"
     }
   ],
   "format_version": 1,
@@ -239,7 +97,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "5a10fcccc9f65401742794bd54ccb3b6cdadb4a3b80e754b7853e95f95756ddc"
+          "value": "c2454a99ed7767832eed5fae4a4301fdd6c107cf76ed5960a43afe981ec0e828"
         }
       ]
     },
@@ -251,7 +109,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "2f0c1b429137144a30261fdb3d58c50d7543d085bc3403aa32b045ab9ba8b6d7"
+          "value": "51525528e13f6372f783e34a9c791933e11d00d6031a953eb0d04a6078ac889a"
         }
       ]
     },
@@ -262,29 +120,29 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "782530dcbb7b7de2e978b64600b0248041601ada8ff37e64fff576e7e7e85134"
+          "value": "4df4a597ddf248fafeef35a88a20b23cfa96cd3e0531428ae167861eb6da5b4e"
         }
       ]
     },
     {
       "Node": [
         {
-          "Requirement": "requirements.authoring.file_discovery"
+          "Requirement": "requirements.sdk.graph.validation-context.list_sources.behavior"
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "4c0e892c0304a227d0af7fbb061c5e36f4cb9de2e9370d0c2cf96bc5f773b649"
+          "value": "3192db539bfec50f7713c34fc74901264fa66130abb0817cfb1e0139f197eb0f"
         }
       ]
     },
     {
       "Node": [
         {
-          "Requirement": "requirements.authoring.text_search"
+          "Requirement": "requirements.sdk.graph.search.search_text.mcp"
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "6a2b5640ca255968fd7fc648166cd3d4c01927d3a53aafdef2166c9f01bd5025"
+          "value": "b8e4180c95ac7f326ac88c082404957571e1c1b8a8061fdc84062cb1d7292d18"
         }
       ]
     },
@@ -295,7 +153,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "eadfacc183a48031ccd56f07e5d15f406a4f232c9b1095465d5f0af784659c7c"
+          "value": "2e8494f40fd26584ce46d69acc25f8791f9fdfa87a0e4887c82f300aba584d0b"
         }
       ]
     },
@@ -316,65 +174,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "src/authoring/tools.rs"
+              "location": "tests/authoring_cli.rs"
             },
-            "selector": "mod[tests]/fn[additional_read_flow_searches_outlines_and_reads_a_rust_file]"
+            "selector": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "8c6e08cc3bd986237f04e8902f4203b9de77dd394079ffc10bfb8f89048ba398"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/tools.rs"
-            },
-            "selector": "mod[tests]/fn[listed_git_directories_need_an_eligible_descendant_at_any_depth]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "fce082021ed2e90935470c1b2d2a36656e4bf7b4767aa9752f487890ead122cc"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/tools.rs"
-            },
-            "selector": "mod[tests]/fn[search_merges_context_windows_and_respects_ignore_rules]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "2070f063e1823f7f8637127f1eee257a213cbf48d3305ba74285387f3b5ec222"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/tools.rs"
-            },
-            "selector": "mod[tests]/fn[search_records_nothing_clamps_at_eof_and_reports_failures]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "800cf53dadb439f8eb7dee2e4a29aaf664a7f348394bd5c049f9121bc2df56ed"
+          "value": "c710fed6606490c4a6b84a2b0282971e28c960c35b8ac9e50a10f1d8bcc73257"
         }
       ]
     },
@@ -386,12 +193,12 @@
               "scheme": "repo",
               "location": "tests/authoring_cli.rs"
             },
-            "selector": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]"
+            "selector": "impl[Server]/fn[start_with]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "54f4cef9e806649948c3d0e8878c431a510814eaab641e418e8a2aafa2dfe245"
+          "value": "b00d1c9811a03804d7a9cf1b8b5e2b0df691b21e0779ba0680805fe9353a4ca7"
         }
       ]
     }

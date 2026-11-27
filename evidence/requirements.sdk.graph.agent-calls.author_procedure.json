@@ -1,8 +1,8 @@
 {
   "requirement": "A `Criterion::execute` invocation receives one `Send + Sync`\n`ValidationContext<'d, D>` for `D: Domain`, with tracked `inspection(&self)`\nand the `ask(&self)` builder under\n{cite}`requirements.sdk.graph.agent-calls.judge`.\n\nEach awaited ask builder runs its own conversation and returns its own submitted\nanswer. The context combines delivered node contents, tool reads, direct\ninspection reads, and recorded edge selections into one dependency trace for\nthe criterion. It records the node identities and fingerprints of the supplied\ncontents. A later call that selects fewer nodes, or none, preserves earlier\ninputs. An unawaited builder contributes no\nagent-delivery dependencies.\n\nShared references support concurrent calls: builders, conversations, and\nsubmission state remain independent, while updates to the trace are synchronized.\nCalls can run concurrently without holding an exclusive context borrow across\nan agent interaction or locking the whole context for the conversation.\n\nThe same context supports deterministic criteria under\n{cite}`requirements.sdk.graph.criteria.deterministic_procedures`.",
   "determination": true,
-  "rationale": "I judge the marked tests adequate for `requirements.sdk.graph.agent-calls.author_procedure`. I did not request implementation source or read the elided portions of the tests. My mapping of obligations to tests:\n\n- **Send + Sync context with tracked inspection and `ask`.** `later_lighter_agent_calls_preserve_the_contexts_existing_trace` calls `assert_send_sync(&ctx)`. It also exercises direct `ctx.read` inspection together with `ctx.ask()`. `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` asserts the `ask` future is `Send`.\n- **Each awaited builder has its own conversation and its own answer.**\n  - `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` joins two `ctx.ask::<String>()` calls behind a two-party barrier. It asserts \"alpha\" and \"beta\" come back separately and that each conversation made 3 calls.\n  - `agent_executions_isolate_conversations_and_dependency_traces` runs two executions concurrently. It asserts separate usage counts and outputs, and separate stored dependency records.\n  - `shared_context_allows_independent_concurrent_agent_calls` asserts the answers 7 and 11 under a barrier with a timeout. That proves the calls run concurrently on a shared `&ctx`.\n- **One trace combining delivered contents, tool reads, direct reads and edge selections.**\n  - `later_lighter_agent_calls_preserve_the_contexts_existing_trace` asserts the exact trace for a direct read, successor edges and current-node contents. These are `Dependency::Node` and `Dependency::OutgoingEdges` entries with fingerprints.\n  - `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` covers tool reads (`outgoing_edges`, `read_node`, `get_next_page`). It asserts the recorded edges and node fingerprints. It also asserts that a failed or undelivered ask records nothing, or only what was delivered.\n  - `node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents` asserts that tool errors leave the dependency list empty.\n- **A later call selecting fewer nodes, or none, preserves earlier inputs.** In `later_lighter_agent_calls_preserve_the_contexts_existing_trace`, a later `ask().context(\"lighter\")` call with no nodes leaves `ctx.dependencies()` equal to the earlier `retained` trace. `finish` then yields the persisted dependencies.\n- **An unawaited builder contributes no agent-delivery dependencies.**\n  - `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` drops a builder and asserts the dependencies are empty and no reads happened.\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` also drops a builder and asserts no agent request was made.\n- **Shared references, independent submission state, and a synchronized trace without an exclusive borrow.** The concurrent tests above call `futures::join!` on `&ctx` while the two conversations rendezvous at a barrier. They then assert the merged trace contains the dependencies from both calls.\n- **Deterministic criteria.** `deterministic_validation_uses_required_storage_without_an_agent` runs a `Review` criterion through `verify`. It asserts the computed output and the stored `Dependency::Node`, with no agent configured. It also asserts that `ask` without an agent returns `NoAgentConfigured`.\n\nThe assertions are strong: they check exact dependency vectors and fingerprints, and per-conversation call counts. They would reject behaviors such as shared conversation state, lost trace updates, dropped earlier inputs, or recording dependencies for undelivered builders. Each obligation maps to at least one marked test, so I found no unacknowledged gap.",
-  "references": "42e431bb67eb10a98b0b42c0476f1077271a3105a4690c25f74e92598c431b48",
+  "rationale": "I judged the tests adequate. I did not request implementation source, because the supplied tests were enough to map each obligation.\n\n**Obligations and the tests that cover them**\n\n1. **A `Send + Sync` `ValidationContext` with tracked `inspection` and `ask`.**\n   - `assert_send_sync(&ctx)` and direct `ctx.read(...)` calls appear in `crates/trust-but-verify/src/graph/validation_tests.rs#fn[later_lighter_agent_calls_preserve_the_contexts_existing_trace]`. The test checks that direct reads are recorded as `Dependency::Node` entries.\n   - `assert_send(&future)` appears in `#fn[contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text]`.\n\n2. **Each awaited builder runs its own conversation and returns its own answer.**\n   - `crates/trust-but-verify/src/agent/tests.rs#fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]` runs two concurrent asks behind a barrier. It asserts that `alpha` and `beta` each return their own answer and each make 3 calls.\n   - `shared_context_allows_independent_concurrent_agent_calls` asserts the distinct answers 7 and 11 and two separate agent requests.\n   - `agent_executions_isolate_conversations_and_dependency_traces` runs two separate executions and checks their answers and per-execution traces.\n\n3. **One dependency trace combining delivered contents, tool reads, direct reads and edge selections, with node identities and fingerprints.**\n   - `later_lighter_agent_calls_preserve_the_contexts_existing_trace` asserts the exact combined trace. It holds a direct read, an `OutgoingEdges` entry, delivered current-node contents and another direct read, in order. It also checks that `finish` persists the same dependencies.\n   - `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` in `agent/tests.rs` covers tool reads (`outgoing_edges` and `read_node`). It asserts `OutgoingEdges` and `Node` entries with the exact content fingerprints.\n   - `node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents` covers a tool read that fails, which records nothing.\n   - `queued_reads_selection_and_rendering_fail_before_agent_invocation` covers edge-selection recording, including empty selections, and failures in read, edges and render.\n\n4. **A later call selecting fewer nodes or none preserves earlier inputs.** `later_lighter_agent_calls_preserve_the_contexts_existing_trace` makes a later `.context(\"lighter\")` call with no nodes. It asserts `ctx.dependencies() == retained`. `contexts_render_once_...` also covers ask calls with no inputs.\n\n5. **An unawaited builder contributes no agent-delivery dependencies.**\n   - `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` drops a builder with queued inputs. It asserts empty dependencies and no graph reads or selections.\n   - `queued_reads_selection_and_rendering_fail_before_agent_invocation` asserts that no agent request is made after a dropped builder.\n\n6. **Concurrent shared-reference calls keep builders, conversations, submissions and pages independent, with synchronized trace updates and no exclusive borrow.**\n   - Both concurrent tests run two asks on one `&ctx` under barriers. Neither call can finish until the other has started, so a lock held across the conversation would deadlock and trip the timeout.\n   - `concurrent_tool_agents_isolate_...` asserts the merged trace contains the 3 expected dependencies from both calls.\n   - The same test asserts per-conversation call counts, so one conversation's page and submission state does not leak into the other.\n\n7. **Deterministic criteria under `requirements.sdk.graph.criteria.deterministic_procedures`.** `deterministic_validation_uses_required_storage_without_an_agent` runs a `Review` criterion through `Validator::verify` with no agent. It asserts the computed result, the rationale, and a stored dependency with the node fingerprint. It also asserts that `ask` on a context without an agent returns `NoAgentConfigured`.\n\n**Gaps**\n\nI found no unmet obligation and no acknowledged gap (there are no `{fixme}` references). The judge requirement and the deterministic requirement are cited context. I did not reassess their own tests.",
+  "references": "4769a6fab52e4ed959f9b29805c202c666152a83eed1c1a9f10f2dba04857b1c",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.agent-calls.author_procedure",
@@ -100,7 +100,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[generic_conversations_can_use_default_telemetry_through_retry_and_continuation]",
-      "hash": "8f59b1548b4995b53a1b66580b0c237e4dfa6c0bc5d715986f06e41e193ef379"
+      "hash": "8ed001e20faf00ba0c965b2988852bcbd7797a27f56395b308b89f1348a3beda"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
@@ -128,9 +128,20 @@
       "hash": "16e5d66c127375503160b7357b3aab780341b16eb17adf36510391e372907734"
     },
     {
-      "file": "src/authoring/sdk.rs",
-      "item": "mod[tests]/fn[confirmed_evidence_retains_reads_from_both_assessments_and_the_verifier]",
-      "hash": "4e8803d52e7baa6737e36ba29032728f193b50f5f0396b794f1b16607868dae8"
+      "requirements": "requirements.sdk.graph.validation-context.tracked_inspection",
+      "matches": [
+        "requirements.sdk.graph.validation-context.tracked_inspection"
+      ],
+      "text": [
+        ":::{req} tracked_inspection",
+        "Criteria and their agents should use the SDK's context inspection",
+        "operations for information on which a judgment depends.",
+        "The context records successful node-content observations in the enclosing",
+        "validation's trace. The SDK makes no recording claim for arbitrary filesystem,",
+        "process, or network I/O outside that interface. Discovery-only results do not",
+        "count as full reads of the nodes they locate.",
+        ":::"
+      ]
     }
   ],
   "format_version": 1,
@@ -143,7 +154,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "42e431bb67eb10a98b0b42c0476f1077271a3105a4690c25f74e92598c431b48"
+          "value": "4769a6fab52e4ed959f9b29805c202c666152a83eed1c1a9f10f2dba04857b1c"
         }
       ]
     },
@@ -155,7 +166,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "1d68b9e43ba92168157b348fc8d2ca48c09314fb6d068a2b90918459019066bf"
+          "value": "dfb3cb5860dda6a8010c58b4a9f06fba13f45758c889e37a065490786a378e76"
         }
       ]
     },
@@ -290,7 +301,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "8f59b1548b4995b53a1b66580b0c237e4dfa6c0bc5d715986f06e41e193ef379"
+          "value": "8ed001e20faf00ba0c965b2988852bcbd7797a27f56395b308b89f1348a3beda"
         }
       ]
     },
@@ -382,17 +393,11 @@
     {
       "Node": [
         {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/sdk.rs"
-            },
-            "selector": "mod[tests]/fn[confirmed_evidence_retains_reads_from_both_assessments_and_the_verifier]"
-          }
+          "Requirement": "requirements.sdk.graph.validation-context.tracked_inspection"
         },
         {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "4e8803d52e7baa6737e36ba29032728f193b50f5f0396b794f1b16607868dae8"
+          "scheme": "habeas-input-v1",
+          "value": "8851e44a7543e3b24a61a46cff605394d5cc878bf6c2c1a633d05197e04b9b3c"
         }
       ]
     }

@@ -1,8 +1,8 @@
 {
   "requirement": "TBV exposes configuration for its supplied Bedrock, OpenAI, and Ollama\nagents. The configuration selects a backend and carries its model, connection,\ncredential-selection, and model-option settings.\n\n```rust,ignore\n#[non_exhaustive]\npub enum AgentConfig {\n    Bedrock(BedrockConfig),\n    OpenAi(OpenAiConfig),\n    Ollama(OllamaConfig),\n}\n```\n\nTrait implementations\n\n```rust,ignore\nimpl<D: Domain> AgentSettings<D> for AgentConfig;\nimpl Clone for AgentConfig;\nimpl Debug for AgentConfig;\nimpl<'de> Deserialize<'de> for AgentConfig;\nimpl PartialEq for AgentConfig;\nimpl Serialize for AgentConfig;\n```",
   "determination": true,
-  "rationale": "The tests adequately check `requirements.sdk.graph.agent-harness.agent_config`.\n\n**What the requirement asks for**\n- An `AgentConfig` enum with `Bedrock`, `OpenAi` and `Ollama` variants.\n- The configuration selects a backend and carries its model, connection, credential-selection and model-option settings.\n- The enum is `#[non_exhaustive]`.\n- Trait impls: `AgentSettings<D>`, `Clone`, `Debug`, `Deserialize`, `PartialEq`, `Serialize`.\n\nThe detailed field and serialization behavior is refined by `agent_config.serialization` and `agent_config.settings`. Those refinements carry their own tests, so I did not reassess them here.\n\n**How the tests cover it**\n- **Backend selection and settings:** `config.rs#mod[tests]/fn[all_backends_preserve_nested_settings_and_credentials]` deserializes one JSON value per backend (bedrock, openai, ollama). Each carries a model, connection fields (region, profile, endpoint), credential selection (credentials, `api_key`, `api_key_env`) and nested options. It asserts that `to_value` reproduces the input exactly. It also round-trips through a string and asserts `assert_eq!(config, copy)`. This exercises `Serialize`, `Deserialize` and `PartialEq` on every variant, and `assert_eq!` needs `Debug`.\n- **Defaults, credential resolution and option validation:** `config.rs#mod[tests]/fn[option_defaults_and_credential_resolution_are_deterministic]` covers default endpoint and model, environment-variable and explicit credentials, and the default OpenAI options through `AgentConfig::options_json`. It also asserts that non-finite option values are rejected for the OpenAI and Ollama backends.\n- **Variants in use:** `providers.rs#mod[tests]/fn[supported_backend_settings_create_transports_without_sending_requests]` builds each of the three `AgentConfig` variants, including ones deserialized from JSON. It connects a provider from each and checks the model options take effect through `output_limit` (16384 for OpenAI, none for default Ollama, 128 for Ollama `num_predict`, 512 for Bedrock `maxTokens`).\n- **Unknown input:** the deserialization test in `config.rs` (`configuration_debug_hides_credentials`) asserts that an unknown field is rejected.\n- **`AgentSettings<D>`:** the impl in `config.rs#impl[AgentConfig/AgentSettings<D>]` is an empty marker impl. The configured-agent tests in `configured.rs` pass `AgentConfig` values through the agent-setup path, which the sealed `Settings` impl in `domain_tools.rs` accepts. That impl has no conditional logic, so it needs no separate test.\n- **`Clone`, `Debug`, `PartialEq`:** these are derives on `enum[AgentConfig]` with no custom logic. `Debug` and `PartialEq` are exercised by the `assert_eq!` calls above. The obligation is only that the impls exist, and the derive guarantees that.\n- **Public surface:** `tests/public_api.rs#fn[public_exports_match_the_appendix]` checks the exported inventory against rustdoc.\n\n**Unresolved point**\nNo test checks `#[non_exhaustive]` directly. It is a compile-time attribute with no runtime behavior to assert, so I do not count it as a gap.\n\nI found no plausible requirement-violating behavior that these tests would accept.",
-  "references": "dcc8353ea5b109de2d58daed653881c05e6000ca571c394953c7ef5b081569f8",
+  "rationale": "The subject requires that `AgentConfig` (a) exposes Bedrock, OpenAI and Ollama configurations. It must (b) select a backend and carry model, connection, credential-selection and model-option settings. It must also (c) implement `AgentSettings<D>`, `Clone`, `Debug`, `Deserialize`, `PartialEq` and `Serialize`. The `agent_config.serialization` and `agent_config.settings` requirements refine it. I found no gap.\n\n**Backend selection and carried settings.**\n- `src/agent/config.rs#mod[tests]/fn[all_backends_preserve_nested_settings_and_credentials]` deserializes a full JSON object for each of `bedrock`, `openai` and `ollama`.\n- Each object has a `backend` tag and carries the model, `aws_profile`, `region`, `endpoint`, `api_key`, `api_key_env`, nested credentials and nested options.\n- The test asserts that serializing gives back exactly the same JSON.\n- It also asserts that a string round-trip gives an equal config, via `PartialEq`.\n- Together these show the `backend` tag selects the variant and that model, connection, credential and option settings are preserved. That covers `Serialize`, `Deserialize` and `PartialEq` for every variant.\n- `fn[option_defaults_and_credential_resolution_are_deterministic]` covers the defaults and the credential-selection settings.\n  - It checks the OpenAI default model, endpoint and options, and the Ollama default endpoint.\n  - It checks that `api_key_env` and `api_key` resolve correctly, including the failure case.\n  - It checks nonfinite option values are rejected, and that `OptionValue` Integer/Float deserialization behaves as specified.\n- `src/agent/providers.rs#mod[tests]/fn[supported_backend_settings_create_transports_without_sending_requests]` connects an `AgentConfig` of each backend (OpenAI, Ollama via struct and via JSON, Bedrock via JSON with credentials). It asserts the output limit derived from each variant's options (16384, none, 128, 512). This shows each variant's settings are used by its own backend.\n- `src/agent/configured.rs#mod[tests]/fn[configured_agents_initialize_only_when_asked_and_report_setup_errors]` uses `AgentConfig::OpenAi` with an `api_key_env` setting. It asserts that the credential error names the environment variable.\n\n**Trait implementations.**\n- `AgentSettings<D>` for `AgentConfig` is an empty marker impl. The tests pass an `AgentConfig` to `ValidationCache::with_agent`, so they would not compile without it. The `configured.rs` tests `fn[bedrock_configuration_attaches_to_a_cache_without_being_persisted]` and `fn[configured_agents_initialize_only_when_asked_and_report_setup_errors]` exercise it.\n- `Clone` and `Debug` are plain derives. They have no conditional logic or transformation of their own, so they qualify for the untested-obligation exemption. `Debug` is also needed by `assert_eq!` on `AgentConfig`.\n- `#[non_exhaustive]` is a compile-time attribute with no runtime behavior to test.\n\nThe test in `tests/public_api.rs#fn[public_exports_match_the_appendix]` checks the public export inventory. It covers the exposure of the type itself.\n\nI found no acknowledgments and no gaps.",
+  "references": "386371299c1dda328bfab5a65acfcaad44bd4714bee096c8508be4969e05e15a",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.agent-harness.agent_config",
@@ -49,6 +49,11 @@
       "hash": "a5683b2f0c863625aeda54d53f84b9d2f21560e0ad448f7a4de9c7126686164f"
     },
     {
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/fn[configured_agents_initialize_only_when_asked_and_report_setup_errors]",
+      "hash": "ccbff871c211d01d5e62ddd6ede9cc44dde94a6fa9f41aa090b3fef8ac7d8b9b"
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/providers.rs",
       "item": "mod[tests]/fn[supported_backend_settings_create_transports_without_sending_requests]",
       "hash": "a5d4c98815f4a52923f27b3867bf45da920f100f90df7ceb533f9eee654261a5"
@@ -56,7 +61,7 @@
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[public_exports_match_the_appendix]",
-      "hash": "4d6ce6161754fb9e88ad84ef64f9bb131b308298104915179b2c5d573ed2b087"
+      "hash": "85236d57663dd61cc1cfc8c4a81672e5c5591e6d9dfaf865943d051c38e8bb2a"
     },
     {
       "file": "crates/trust-but-verify/src/agent/config.rs",
@@ -64,19 +69,55 @@
       "hash": "42fa0e71e4831941d1e9b9df8480d4a0b52cabc7348b81f4e84f0e400c810c96"
     },
     {
+      "requirements": "requirements.sdk.graph.agent-harness.agent_config.serialization",
+      "matches": [
+        "requirements.sdk.graph.agent-harness.agent_config.serialization"
+      ],
+      "text": [
+        ":::{req} agent_config.serialization",
+        "`AgentConfig` and its backend-specific configuration types implement Serde",
+        "serialization and deserialization. An application can embed them in its own",
+        "configuration types; serializing and deserializing a supported configuration",
+        "preserves its settings.",
+        ":::"
+      ]
+    },
+    {
+      "requirements": "requirements.sdk.graph.agent-harness.agent_config.settings",
+      "matches": [
+        "requirements.sdk.graph.agent-harness.agent_config.settings"
+      ],
+      "text": [
+        ":::{req} agent_config.settings",
+        "Each `AgentConfig` variant carries the corresponding settings from",
+        "`trust_but_verify::agent`. Serde uses the `backend` field to select `bedrock`,",
+        "`openai`, or `ollama` and reads the settings from the same object.",
+        "",
+        "Choose [`BedrockConfig`](#habeas-req-requirements.sdk.graph.agent-harness.BedrockConfig),",
+        "[`OpenAiConfig`](#habeas-req-requirements.sdk.graph.agent-harness.OpenAiConfig), or",
+        "[`OllamaConfig`](#habeas-req-requirements.sdk.graph.agent-harness.OllamaConfig) for the selected backend.",
+        "With settings omitted, OpenAI uses `gpt-6.1-sol`, `https://api.openai.com/v1`,",
+        "and `OPENAI_API_KEY`. Ollama defaults to `http://localhost:11434`.",
+        "",
+        "All three backend constructors start with an empty `options` map. Calling",
+        "`option(key, value)` inserts one inference setting. Calling it again with the",
+        "same key replaces its value and preserves the other settings. An `OptionValue` is",
+        "a `String`, `Boolean`, `Integer(i64)`, `Float(f64)`, `Array`, or `Map`. Arrays hold",
+        "option values and maps associate strings with option values. These serialize as",
+        "the corresponding untagged values. Backend calls reject nonfinite floats,",
+        "including those nested in an array or map.",
+        "",
+        "`BedrockCredentials` contains `access_key_id` and `secret_access_key`, both",
+        "`SecretString`, and an optional `session_token` of the same type. Construct a",
+        "`SecretString` from `String` or `&str`. `expose_secret()` borrows its value.",
+        "Serialization preserves the string, while `Debug` prints `<redacted>`.",
+        ":::"
+      ]
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/config.rs",
       "item": "impl[AgentConfig/AgentSettings<D>]",
       "hash": "dfcd9fec624f1b81186232a4a1d0ebd80a3a42cf28e82ed2095ccd41631d0364"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/domain_tools.rs",
-      "item": "mod[sealed]/impl[AgentConfig/Settings<D>]",
-      "hash": "3321da0fe7e5ac457bb67b4490480e4076a9f8d44f944351fd98b164b78959c2"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/config.rs",
-      "item": "mod[tests]/fn[configuration_debug_hides_credentials]",
-      "hash": "0eb69c9a83dd9847d1a4a6a254390b9380e0266aa6321585305cd74b23643a57"
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
@@ -84,19 +125,9 @@
       "hash": "0a39a68deecf0d56dd35ef5aee04aa1825e3a2ee749ac8bf99f8829f597cfa5e"
     },
     {
-      "file": "crates/trust-but-verify/tests/public_api.rs",
-      "item": "fn[check_declaration]",
-      "hash": "8b1c73c8b7f4d630486c6b27caf3e51bce10a936030636789da17673aad8f019"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/public_api.rs",
-      "item": "impl[RustdocSignatures]/fn[declaration]",
-      "hash": "b94a7d98e9af99adedf0cf5a7ea5d87fd2cc01369e4e19be249cd5ab406682be"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/public_api.rs",
-      "item": "impl[RustdocSignatures]/fn[trait_impls]",
-      "hash": "ebfad3e82996cc9623a2e46280c4e4e3056bb114f9fa5bb9bb4e65413bf00080"
+      "file": "crates/trust-but-verify/src/agent/config.rs",
+      "item": "mod[tests]/fn[configuration_debug_hides_credentials]",
+      "hash": "0eb69c9a83dd9847d1a4a6a254390b9380e0266aa6321585305cd74b23643a57"
     }
   ],
   "format_version": 1,
@@ -109,7 +140,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "dcc8353ea5b109de2d58daed653881c05e6000ca571c394953c7ef5b081569f8"
+          "value": "386371299c1dda328bfab5a65acfcaad44bd4714bee096c8508be4969e05e15a"
         }
       ]
     },
@@ -121,7 +152,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "28dfb1d12288c43070b767986a78a264f6d05c9febf89f6108b816d96b3f9f0e"
+          "value": "2503716c41d1633445e0fb93f4ec0c29f253b365a57a0eb6479cc704649db6b6"
         }
       ]
     },
@@ -148,8 +179,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "0940f6eefd0acde511f837b125cf811a358a4fe7f6bccd7eb7c4b31498638954"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "9aa8cd22ac9c2c5047f4665cce65d94198aa74d7ba91b6a8252c2e6721861cae"
         }
       ]
     },
@@ -165,8 +196,25 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "be3326f676274772d653fdf5ea01c08aca5dc575a551a36fba7b8708160d6cd0"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "a5683b2f0c863625aeda54d53f84b9d2f21560e0ad448f7a4de9c7126686164f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
+            },
+            "selector": "mod[tests]/fn[configured_agents_initialize_only_when_asked_and_report_setup_errors]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "ccbff871c211d01d5e62ddd6ede9cc44dde94a6fa9f41aa090b3fef8ac7d8b9b"
         }
       ]
     },
@@ -182,8 +230,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "19f1da1a6890f27a7e69b3ddc2bd10f085af31f897492cc8cd5a66a6eff4ea4b"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "4c9c25c5373487d03006e9f606ecfdcd620b9be908ccec3b9810764565b68da2"
         }
       ]
     },
@@ -199,8 +247,20 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "ae4819b6e5ac9cd22992cc4254e7868f438e101dbd53f1bd7d443a33ee96f61d"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "85236d57663dd61cc1cfc8c4a81672e5c5591e6d9dfaf865943d051c38e8bb2a"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.sdk.graph.agent-harness.agent_config"
+        },
+        "Implements",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "68e8d0cd7281631b5414f5daa6869b8b99c269c458ec842af383f29852847828"
         }
       ]
     },
@@ -216,8 +276,30 @@
           }
         },
         {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "42fa0e71e4831941d1e9b9df8480d4a0b52cabc7348b81f4e84f0e400c810c96"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.sdk.graph.agent-harness.agent_config.serialization"
+        },
+        {
           "scheme": "habeas-input-v1",
-          "value": "f5542c308e3aad27373891e7a37771a0852451d4875622033ed00e9ba504dcb4"
+          "value": "1e267b679a5e4ecbc8f47e35146151aa5ccf5ee332fd446b2cc5572c7a0a5967"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.sdk.graph.agent-harness.agent_config.settings"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "0bd5dd72dfc2477abb5b6862d13f0ce2b1153128ee9575e84af3e4c422942862"
         }
       ]
     },
@@ -233,42 +315,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "fa76fd4be9f13c004889349715228963a7735acd55b1a9405186eebfdeb85565"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/domain_tools.rs"
-            },
-            "selector": "mod[sealed]/impl[AgentConfig/Settings<D>]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "9d90761d0f3b09540e6a2ecf2e633bff41fdd366451469ab8fdf4430b78a80a6"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/config.rs"
-            },
-            "selector": "mod[tests]/fn[configuration_debug_hides_credentials]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "a5c5fbb12c9af319a8e2040a16053fbeb4916093db0f22e4d324682df8e1a305"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "dfcd9fec624f1b81186232a4a1d0ebd80a3a42cf28e82ed2095ccd41631d0364"
         }
       ]
     },
@@ -284,8 +332,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "b57a8fbe05791a9fb20abd02132df7b744c4feaa4a450ae5807055e2f10cba0b"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "0a39a68deecf0d56dd35ef5aee04aa1825e3a2ee749ac8bf99f8829f597cfa5e"
         }
       ]
     },
@@ -295,48 +343,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/public_api.rs"
+              "location": "crates/trust-but-verify/src/agent/config.rs"
             },
-            "selector": "fn[check_declaration]"
+            "selector": "mod[tests]/fn[configuration_debug_hides_credentials]"
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "c137c9e2bd542c4e6586d2957f35974ba7e43c878c9a12036ea98cf0dd27a483"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/public_api.rs"
-            },
-            "selector": "impl[RustdocSignatures]/fn[declaration]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "2d0ed22d296d93827b42924fbe1c7f06489fed10b7de9e50ded2879976ae8501"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/public_api.rs"
-            },
-            "selector": "impl[RustdocSignatures]/fn[trait_impls]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "7954c02a7da347eee2f5a8d92d5afa279abdea98d807a48050453d5481906d0c"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "0eb69c9a83dd9847d1a4a6a254390b9380e0266aa6321585305cd74b23643a57"
         }
       ]
     }

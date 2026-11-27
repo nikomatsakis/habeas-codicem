@@ -1,7 +1,7 @@
 {
   "requirement": "For a tracked label-specific edge query, the SDK constructs a\n{term}`requirements.sdk.graph.content_snapshot` from the returned targets and\ntheir target-set fingerprint, without another query.\n\nThe public `trust_but_verify::graph::edge_fingerprint(graph, targets)` helper\ncomputes this `Fingerprint` from the domain and a slice of target node IDs.\nIt fingerprints the set of distinct stable paths obtained from `Domain::node_path` under a versioned\nscheme, including when the set is empty. Changing\norder, duplicate edges, or another label's relationships leaves this fingerprint\nunchanged. Assigning different integers to the same targets in a fresh cache preserves the fingerprint. Reading target contents is a separate observation;\n`NodeContents::fingerprint` describes those contents under\n{cite}`requirements.sdk.graph.node_content.fingerprint`.\n\nThe returned vector preserves the graph's ordering and duplicates.\n\n```rust,ignore\npub fn edge_fingerprint<D: Domain>(\n    graph: &D,\n    targets: &[NodeId<D>],\n) -> Fingerprint;\n```",
   "determination": true,
-  "rationale": "The tests I reviewed cover every obligation in `requirements.sdk.graph.validation-context.snapshot`. I did not read the implementation, because the supplied tests were enough to judge adequacy.\n\n**Snapshot built from the returned targets and their fingerprint, without another query.**\n- `crates/trust-but-verify/src/graph/validation_tests.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]` calls `outgoing_edges` and checks `snapshot.content` and `snapshot.fingerprint`. The fingerprint is compared with `edge_fingerprint` over the distinct targets 3 and 5.\n- It clears the mock graph's `selections` log first, then asserts the log is exactly `[1]` after the call. That shows one edge query for the call.\n- It repeats the check on an empty edge set, using node 9 and `edge_fingerprint(&graph, &[])`.\n- The tracked `Dependency::OutgoingEdges` entries record the same fingerprint.\n\n**The returned vector preserves the graph's ordering and duplicates.**\n- The same test asserts `snapshot.content == [5, 3, 5]` and `successors == [5, 3, 5]` for stored edges `(7,5), (7,3), (7,5)`.\n\n**Fingerprint helper over the set of distinct stable paths, versioned, including the empty set.**\n- `crates/trust-but-verify/tests/contracts.rs#fn[edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding]` asserts an exact golden fingerprint for the empty set, with scheme `node-path-set-sha256-v1`. It asserts an exact digest for one single-path set.\n- It also checks:\n  - Every fingerprint in a set of single-path inputs has the same scheme, differs from the empty fingerprint and differs from every other.\n  - Those inputs include tricky paths: `a/b` against `a`,`b`, an empty segment, quotes, newlines, backslashes, and composed against decomposed Unicode.\n  - A single node with path `a/b` differs from two nodes with paths `a` and `b/c`.\n- The membership tests in `labeled_selections_track_only_target_membership_without_reading_contents` check that a changed target set, such as `{3}` or `{3,5,9}`, differs from `{3,5}`.\n\n**Order and duplicates leave the fingerprint unchanged.**\n- The contracts test asserts that `[0,1,0]` and `[1,0]` give equal fingerprints.\n- The validation test records the fingerprint from `[5,3,5]` and compares it with `edge_fingerprint` over `[3,5]`, so duplicates and order are ignored.\n\n**Another label's relationships leave the fingerprint unchanged.**\n- In the validation test, `record.is_current` stays true after label-8 edges are added or changed. It becomes false only when a label-7 target changes.\n- The empty-selection record stays current after a label-8 edge is added, and becomes stale only when a label-7 edge appears.\n\n**Different integers for the same targets in a fresh cache preserve the fingerprint.**\n- `contracts.rs#fn[saved_node_and_edge_inputs_survive_a_different_handle_allocation_order]` rebuilds the domain with a fresh `ValidationCache`. It asserts `fresh_target != target`.\n- It then asserts the saved record is still current, that the durable inputs are equal, and that `check_inputs` passes. It also asserts the record becomes stale when the edges are cleared.\n\n**Reading target contents is a separate observation.**\n- Both tests assert that the mock domain's `reads` log is empty after the edge operations.\n\n**Failure case.**\n- An edge-query failure leaves `dependencies()` unchanged, and `is_current` returns the error.\n\n**Cited requirement.** `requirements.sdk.graph.node_content.fingerprint` is cited only for the separation of contents from edge membership. That separation is covered by the `reads`-empty assertions, and I did not reassess that requirement.\n\nI found no plausible violating behavior that these tests would accept.",
+  "rationale": "I judged the tests against the subject text alone. I did not read any implementation source. All three reviewed {test} items carry a reference to `requirements.sdk.graph.validation-context.snapshot`, and the cited `node_content.fingerprint` is only context. `public_exports_match_the_appendix` is a generic public-API test, and I did not count it as evidence for any specific obligation below.\n\n**Obligations and the tests that cover them**\n\n- **Snapshot built from the returned targets and their target-set fingerprint, without another query.**\n  - `crates/trust-but-verify/src/graph/validation_tests.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]` calls `outgoing_edges` for node 1, label 7.\n  - It asserts `snapshot.content` is `[5,3,5]`. It asserts `snapshot.fingerprint == edge_fingerprint(&graph,&[3,5])`.\n  - It asserts the recorded selections are exactly `[1]`, which shows one query. It does the same for the empty case on node 9, where selections are `[9]`.\n  - It asserts the `Dependency::OutgoingEdges` entry holds `edge_fingerprint(...)`.\n  - It asserts `graph.reads` stays empty. This covers \"reading target contents is a separate observation\".\n- **`edge_fingerprint` fingerprints the set of distinct stable paths from `Domain::node_path` under a versioned scheme, including the empty set.**\n  - `crates/trust-but-verify/tests/contracts.rs#fn[edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding]` asserts the empty fingerprint equals the exact scheme `node-path-set-sha256-v1` and a fixed digest.\n  - It asserts one fixed digest for a one-path set.\n  - It checks 13 path sets that are pairwise distinct and differ from the empty fingerprint. The sets cover separator boundaries (`a/b` vs `a`,`b`), empty segments, Unicode normalization, quote/newline/backslash escaping, and multi-element sets.\n  - It asserts every fingerprint uses the same scheme.\n  - It asserts a multi-target set differs from a single-target fingerprint.\n- **Order, duplicates and other labels do not change the fingerprint.**\n  - Order and duplicates: the contracts test asserts `[0,1,0]` equals `[1,0]`. The validation test asserts the snapshot fingerprint for the graph's `[5,3,5]` equals the fingerprint of `[3,5]`.\n  - Other labels: the validation test adds label-8 edges and still finds the record current, and the snapshot fingerprint ignores label 8.\n  - Changed membership: the validation test asserts a change of target membership (`[3]`, `[3,5,9]`, or 5 replaced by 6) gives a different fingerprint or makes the record non-current.\n- **Different integers in a fresh cache preserve the fingerprint.** `contracts.rs#fn[saved_node_and_edge_inputs_survive_a_different_handle_allocation_order]` builds a fresh `ValidationCache` and asserts `fresh_target != target`. It asserts the saved record is still current in the fresh domain. It asserts the loaded dependencies equal the durable inputs, and that `check_inputs` is true and then false after the edges are cleared.\n- **The returned vector preserves the graph's ordering and duplicates.** The validation test asserts `snapshot.content == [5,3,5]` and `successors == [5,3,5]`.\n- **The public helper is exported.** The contracts tests call it through the public path. The public-API test covers the export inventory.\n\n**Gaps and acknowledgments**\n\nI found no unexercised obligation or weak assertion, and no ambiguity in the text. There are no {fixme} acknowledgments.",
   "references": "82d20a8738b40750124c6efb7e1c44aa37847f7352b9b425b08a4de1bd5a36ea",
   "inputs": [
     {
@@ -84,7 +84,7 @@
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[public_exports_match_the_appendix]",
-      "hash": "4d6ce6161754fb9e88ad84ef64f9bb131b308298104915179b2c5d573ed2b087"
+      "hash": "85236d57663dd61cc1cfc8c4a81672e5c5591e6d9dfaf865943d051c38e8bb2a"
     },
     {
       "definition": "requirements.sdk.graph.content_snapshot",
@@ -175,8 +175,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "e78758c0539762303a26ab156954eb8e1aea3a2abfa1da69f7f252b2373d7d05"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "99523765d03546a8080ace6dab2053ee9b74cfbd8ee76dd224c1693883961924"
         }
       ]
     },
@@ -192,8 +192,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "2815e0f87bb203fa2c96b13d3d805315094e757832dfe0996a2202cfc044df41"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "5f982aa549efd79078d7e627ec28befe0a89a4c46f6880266e0ec2a96afd83f5"
         }
       ]
     },
@@ -209,8 +209,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "b0124c3fab16b60f2e82e236f76ce3eb647fc6804f61713f6411dd631315708e"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "24be22a97937d7a23b55a93bac3f9ef02f30fa5814eadf47a9bb02f4f0a11faf"
         }
       ]
     },
@@ -226,8 +226,8 @@
           }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "ae4819b6e5ac9cd22992cc4254e7868f438e101dbd53f1bd7d443a33ee96f61d"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "85236d57663dd61cc1cfc8c4a81672e5c5591e6d9dfaf865943d051c38e8bb2a"
         }
       ]
     },
