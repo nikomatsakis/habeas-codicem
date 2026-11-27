@@ -2231,6 +2231,42 @@ async fn tool_usage_counts_utf8_results_and_errors_once_across_retries() {
     );
 }
 
+// {test}`requirements.authoring.output_limit`
+#[tokio::test]
+async fn truncation_without_a_provider_output_limit_fails_before_dispatch() {
+    struct Provider;
+    impl CompletionProvider for Provider {
+        async fn complete(&self, _: CompletionRequest) -> io::Result<CompletionResponse> {
+            Ok(tool_turn(
+                FinishReason::Length,
+                vec![("lookup", json!({"key":"value"}))],
+            ))
+        }
+    }
+    let domain = Memory::new(String::new());
+    let ctx = ValidationContext::new(&domain, domain.cache().intern_node(Node(0)));
+    let mut session = MinimalConversation::default();
+    let result = converse(
+        &ctx,
+        &Provider,
+        &mut session,
+        CompletionRequest::new("review"),
+        Vec::new(),
+        json!({"type":"boolean"}),
+        |answer| Ok(Submission::Accepted(answer)),
+    )
+    .await;
+    let Err(AgentError::Conversation(error)) = result else {
+        panic!("expected an incomplete-response error, got {result:?}");
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("an output limit the configuration does not set")
+    );
+    assert_eq!(session.dispatched, 0);
+}
+
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
 // {test}`requirements.authoring.provider_backoff`
 // {test}`requirements.authoring.output_limit`
