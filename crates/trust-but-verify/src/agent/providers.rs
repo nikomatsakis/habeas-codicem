@@ -2,7 +2,7 @@ use std::io;
 #[cfg(test)]
 use std::time::{Duration, Instant, SystemTime};
 
-use rig_core::completion::{CacheRetention, CompletionRequest, CompletionResponse};
+use rig_core::completion::{CacheRetention, CompletionRequest, CompletionResponse, OnUnsupported};
 use rig_core::error::ProviderError;
 use rig_core::message::{AssistantContent, ToolCall, ToolFunction, ToolName};
 use rig_core::{DynModel, operation::Completion};
@@ -133,11 +133,22 @@ impl CompletionProvider for RigProvider {
         if self.bedrock {
             apply_bedrock_options(&mut request, &mut options)?;
         }
-        if self.caches {
-            place_cache_checkpoints(&mut request);
-        }
         request.additional_params = (!options.is_empty()).then_some(Value::Object(options));
-        let mut response = self.model.call(request).await.map_err(provider_failure)?;
+        let result = if self.caches {
+            place_cache_checkpoints(&mut request);
+            // Rig validates generation options before placing the message checkpoint.
+            // If only that checkpoint is refused, keep the supported system checkpoint.
+            match self.model.call(request.clone()).await {
+                Err(ProviderError::UnsupportedOption(option)) if option.option == "cache" => {
+                    request.options.on_unsupported = Some(OnUnsupported::Ignore);
+                    self.model.call(request).await
+                }
+                result => result,
+            }
+        } else {
+            self.model.call(request).await
+        };
+        let mut response = result.map_err(provider_failure)?;
         if self.bedrock {
             normalize_bedrock_client_calls(&mut response)?;
         }
@@ -171,8 +182,7 @@ impl CompletionProvider for RigProvider {
 
 // {cite}`habeas:util`
 fn normalize_bedrock_client_calls(response: &mut CompletionResponse) -> io::Result<()> {
-    // Rig 0.44 treats every typed Converse toolUse block as a hosted tool.
-    // Newer Claude responses explicitly identify client calls as "tool_use".
+    // Recover explicitly typed client calls if the decoder leaves them opaque.
     for block in &mut response.choice {
         let AssistantContent::Opaque(opaque) = block else {
             continue;
@@ -268,8 +278,7 @@ fn bedrock_caches(model: &str) -> bool {
 /// Asks Rig for its cache checkpoints, which Bedrock places after the
 /// system prompt and at the end of the last message as separate
 /// `cachePoint` blocks, leaving the request's content unchanged. They are
-/// placed after reasoning turns too, which Bedrock accepts; the vendored
-/// `rig-bedrock` is patched to allow that.
+/// placed after reasoning turns on Claude models in Rig's catalog.
 fn place_cache_checkpoints(request: &mut CompletionRequest) {
     request.options.cache = Some(CacheRetention::Short);
 }
@@ -850,11 +859,12 @@ mod tests {
 
         // Checkpoints are requested after a reasoning turn too.
         let mut request = CompletionRequest::new("subject").preamble("system");
-        request.chat_history.push(Message::Assistant(
-            rig_core::message::AssistantMessage::new(vec![AssistantContent::Reasoning(
-                Reasoning::new("Think."),
-            )]),
-        ));
+        request.chat_history.push(
+            Message::Assistant(rig_core::message::AssistantMessage::new(vec![
+                AssistantContent::Reasoning(Reasoning::new("Think.")),
+            ]))
+            .into(),
+        );
         place_cache_checkpoints(&mut request);
         assert_eq!(request.options.cache, Some(CacheRetention::Short));
     }

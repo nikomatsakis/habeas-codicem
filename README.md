@@ -142,8 +142,7 @@ Habeas loads its configuration and supplies the SDK's access rules and
 user-configuration path.
 
 Run `cargo test -p trust-but-verify` for the shared machinery and
-`cargo test --workspace` for both packages. The temporary `vendor/habeas-rig`
-fork is a dependency, excluded from workspace membership and releases.
+`cargo test --workspace` for both packages.
 
 ## Developing and publishing the book
 

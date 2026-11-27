@@ -1,7 +1,7 @@
 {
   "requirement": "`ValidationCache::usage()` returns an owned snapshot of the cache’s lifetime\n{cite}`requirements.sdk.graph.running-criteria.UsageStats`. A newly constructed\ncache starts at zero. Every agent call through the cache or any clone adds its\nusage exactly once by the time the call returns, including retries and failed\nattempts. Concurrent calls contribute to the same totals. The snapshot sums tool invocations and result bytes by tool name across validators under {cite}`requirements.sdk.graph.running-criteria.ToolUsage.by_name`. Reading a snapshot\npreserves the counters, and later calls leave earlier snapshots unchanged.\n\n```rust,ignore\nimpl<D: Domain> ValidationCache<D> {\n    pub fn usage(&self) -> UsageStats;\n}\n```",
   "determination": true,
-  "rationale": "Obligations from `requirements.sdk.validation-cache.usage`, mapped to the marked tests:\n\n- **Starts at zero.** `agent_executions_isolate_conversations_and_dependency_traces` takes `cache.usage()` before any call. It asserts `initial.attempts == 0` and empty `tools`. The cache is also read after the calls, and `initial` is rechecked at the end, so the zero start is checked. `validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse` checks all counters and token categories on a fresh `Validator`'s usage, which is a different object from the cache.\n- **Each call is added exactly once, including retries and failed attempts.**\n  - `validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse` runs a throttled failure, a retry that succeeds, then a terminal failure. It asserts `graph.cache().usage()` has attempts 3, retries 1, failed_attempts 2, and the expected token and missing_attempts values. It also asserts that evidence reuse (`refresh_evidence`) adds nothing.\n  - `cache_retains_usage_across_validators_and_sums_each_token_category` asserts attempts 3, retries 1, failed_attempts 1, and exact per-category token sums.\n  - `dropping_an_inflight_request_preserves_its_attempt` asserts the cache keeps the attempt (1, 0, 1) when the call is dropped before it returns.\n- **Through the cache or any clone.** `cache_retains_usage_across_validators_and_sums_each_token_category` uses `graph`, a clone `peer`, and a cloned `cache`. It asserts that all three views report the same total of 3 attempts.\n- **Concurrent calls share totals.** `agent_executions_isolate_conversations_and_dependency_traces` uses `futures::join!` with a barrier that needs both conversations in flight. It asserts `cache.usage().attempts == 6`, which is the sum of the two validators' 3 each.\n- **Tool calls and result bytes are summed by name across validators.** The same test asserts, for `read_node`, `get_next_page` and `submit_result`, that the cache totals equal the two validators' values. Calls are 1 + 1 = 2, and result_bytes is the sum of the two validators' bytes. It also asserts the cache has exactly 3 tool entries. This covers the cited `ToolUsage.by_name` for built-in tools. A separate test in `configured.rs`, `registered_tools_use_the_current_context_and_ordinary_node_ids`, also reads `cache().usage().tools` for registered tools. It is not marked for this requirement. I did not treat that as a gap, because the summing is the same for built-in and registered tools.\n- **Owned snapshot, reading preserves counters, earlier snapshots are unchanged.** `initial` (attempts 0, empty tools) is still unchanged after later calls. `before_failure` (read before the failing call) still has `failed_attempts == 1` after the later calls. Repeated `cache.usage()` reads give consistent totals.\n\nThe cited `UsageStats` fields (prepared and delivered inputs, token counts) are also asserted at the cache level. I found no unacknowledged gap.",
+  "rationale": "Each obligation in `requirements.sdk.validation-cache.usage` maps to a marked test with assertions that enforce it.\n\n- **Starts at zero.** `agent_executions_isolate_conversations_and_dependency_traces` takes `cache.usage()` before any call and asserts `initial.attempts == 0` and `initial.tools.is_empty()`. The other counters are not asserted on a fresh cache. I judge that acceptable.\n- **Every call through the cache or a clone adds usage exactly once, including retries and failed attempts.**\n  - `cache_retains_usage_across_validators_and_sums_each_token_category` uses `Memory::clone` (`peer`) with a scripted throttled error followed by two successes. It asserts cache totals of 3 attempts, 1 retry and 1 failed attempt. It also asserts that `graph.cache().usage()` and `peer.cache().usage()` agree, and that each token category is summed across validators (19, 13, 5, 3, 8).\n  - `validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse` covers a retry, a successful attempt and a terminal failure. The cache and validator both show 3 attempts, 1 retry and 2 failed attempts.\n  - `dropping_an_inflight_request_preserves_its_attempt` checks that a dropped in-flight request is still counted once in the cache.\n- **Concurrent calls contribute to the same totals.** `agent_executions_isolate_conversations_and_dependency_traces` runs two validators concurrently with `futures::join!` and a barrier. It asserts the cache has 6 attempts, matching 3 plus 3.\n- **Tool calls and result bytes are summed by tool name across validators.** The same test asserts, for `read_node`, `get_next_page` and `submit_result`, that cache calls are 2 and that cache `result_bytes` equal the sum of both validators' values. The tool map has exactly 3 keys. Registered tools are covered by `tool_usage_counts_utf8_results_and_errors_once_across_retries` (`crates/trust-but-verify/src/agent/tests.rs`) and `registered_tools_use_the_current_context_and_ordinary_node_ids` (`crates/trust-but-verify/src/agent/configured.rs`). These are not marked for this requirement, but they are the cited `ToolUsage.by_name` requirement's own tests, so they need no marking here.\n- **Reading a snapshot preserves the counters, and later calls leave earlier snapshots unchanged.** In the parallel test, `initial` still shows 0 attempts and no tools after the calls. In `validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse`, `before_failure` still shows `failed_attempts == 1` after a later failure. Repeated `cache.usage()` reads return consistent totals.\n- **Owned snapshot.** The tests hold snapshots across later mutations, which shows they are independent copies.\n\nI found no unacknowledged gaps.",
   "references": "d4acd724ad04f9a7b0374a47d1799adb4edb47664e2e83d78d271436e22477bb",
   "inputs": [
     {
@@ -106,9 +106,14 @@
       "hash": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
     },
     {
-      "file": "crates/trust-but-verify/src/agent.rs",
-      "item": "fn[converse]",
-      "hash": "a909b32e3a742693d32e5bb25e87fc280fc13ac5665d019dda2bd3db6d14ff07"
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/fn[registered_tools_use_the_current_context_and_ordinary_node_ids]",
+      "hash": "1bf97cc8cd53fefba38eba8a9c2426fe72f0fd8d8f2f957083dc512fc16577cb"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "fn[tool_usage_counts_utf8_results_and_errors_once_across_retries]",
+      "hash": "082682fdc3eafc57a2f004ee63b765b6fe1dda9bcfcb6e0700cc31242571378f"
     }
   ],
   "format_version": 1,
@@ -256,19 +261,48 @@
       ]
     },
     {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.sdk.validation-cache.usage"
+        },
+        "Tests",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "da1d1b4ff0e941994250fc32335e4adf6d65c22c4e60c1d42b5207f347e76808"
+        }
+      ]
+    },
+    {
       "Node": [
         {
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent.rs"
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
             },
-            "selector": "fn[converse]"
+            "selector": "mod[tests]/fn[registered_tools_use_the_current_context_and_ordinary_node_ids]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "a909b32e3a742693d32e5bb25e87fc280fc13ac5665d019dda2bd3db6d14ff07"
+          "value": "2a2cd72d471bf2cf18e6987128b2d9c2c22deeaa2d3e269118486369534f0a29"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
+            },
+            "selector": "fn[tool_usage_counts_utf8_results_and_errors_once_across_retries]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "082682fdc3eafc57a2f004ee63b765b6fe1dda9bcfcb6e0700cc31242571378f"
         }
       ]
     }

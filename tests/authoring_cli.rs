@@ -3432,6 +3432,36 @@ fn claude_requests_carry_cache_checkpoints_and_record_cache_usage() {
     );
 }
 
+// {test}`requirements.authoring.cache_checkpoints`
+#[test]
+fn bedrock_continues_when_the_model_refuses_a_checkpoint_after_reasoning() {
+    for model in ["us.amazon.nova-pro-v1:0", "us.anthropic.claude-unlisted"] {
+        let (bodies, _) = bedrock_run(model);
+        assert_eq!(bodies.len(), 2, "{model}");
+        assert!(bodies[0].to_string().contains("cachePoint"), "{model}");
+        let follow_up = &bodies[1];
+        assert_eq!(follow_up["system"], bodies[0]["system"], "{model}");
+        assert!(
+            follow_up["system"].to_string().contains("cachePoint"),
+            "{model}"
+        );
+        assert!(
+            follow_up["messages"][1]
+                .to_string()
+                .contains("reasoningContent"),
+            "{model}"
+        );
+        assert!(
+            follow_up["messages"][2].to_string().contains("toolResult"),
+            "{model}"
+        );
+        assert!(
+            !follow_up["messages"].to_string().contains("cachePoint"),
+            "{model}"
+        );
+    }
+}
+
 // {test}`requirements.authoring.output_limit`
 #[test]
 fn bedrock_requests_without_max_tokens_ask_for_at_most_16k_output_tokens() {
