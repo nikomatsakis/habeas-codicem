@@ -7110,6 +7110,7 @@ fn corrections_replay_reference_only_mixed_and_regression_findings() {
         )])
     };
     let instruction = "Add a regression for an unknown page ID.";
+    let manual = json!({"kind":"manual","instruction":instruction,"rationale":"An unknown page ID is unchecked."});
     for (case, responses, expected, markers) in [
         (
             "reference-only",
@@ -7125,13 +7126,7 @@ fn corrections_replay_reference_only_mixed_and_regression_findings() {
         ),
         (
             "mixed",
-            vec![
-                read("page_id"),
-                fail(vec![
-                    add("page_id"),
-                    json!({"kind":"manual","instruction":instruction,"rationale":"An unknown page ID is unchecked."}),
-                ]),
-            ],
+            vec![read("page_id"), fail(vec![manual.clone(), add("page_id")])],
             false,
             1,
         ),
@@ -7271,7 +7266,7 @@ fn corrections_replay_reference_only_mixed_and_regression_findings() {
         }
         if case == "mixed" {
             let list = record["corrections"].as_array().unwrap();
-            assert_eq!(list.len(), 2);
+            assert_eq!(list, &vec![manual.clone(), add("page_id")]);
             let rationale = record["rationale"].as_str().unwrap();
             assert!(rationale.contains("Add `{test}` to `src/lib.rs#fn[page_id]`"));
             assert!(rationale.contains(instruction));
@@ -7322,6 +7317,7 @@ fn corrections_replay_reference_only_mixed_and_regression_findings() {
     }
 }
 
+// {test}`requirements.authoring.reassessment`
 // {test}`requirements.authoring.corrections.apply`
 // {test}`requirements.authoring.submission`
 #[test]
@@ -7498,6 +7494,7 @@ fn unreachable_reference_targets_are_reported_without_writing_or_retrying() {
         ("/outside.rs", ""),
         ("../outside.rs", ""),
         ("src/lib.rs", "fn[missing]"),
+        ("src/lib.rs", "fn[ambiguous]"),
     ] {
         let correction = json!({"kind":"add_reference","role":"impl","file":file,"selector":selector,"rationale":"The selected item implements readiness."});
         let server = Server::start(vec![reply(vec![call(
@@ -7506,6 +7503,13 @@ fn unreachable_reference_targets_are_reported_without_writing_or_retrying() {
             json!({"result":{"status":"failed","corrections":[correction]}}),
         )])]);
         let fixture = Fixture::new(&server.endpoint);
+        if selector == "fn[ambiguous]" {
+            fs::write(
+                fixture.project.join("src/lib.rs"),
+                "fn ambiguous() { first(); }\nfn ambiguous() { second(); }\n",
+            )
+            .unwrap();
+        }
         let before = fs::read(fixture.project.join("src/lib.rs")).unwrap();
         let output = fixture.run(&["author", SUBJECT]);
         let stderr = String::from_utf8_lossy(&output.stderr);

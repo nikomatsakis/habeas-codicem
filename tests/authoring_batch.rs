@@ -50,7 +50,10 @@ enum Behavior {
     /// Hold the three post-warmup requirement requests until all arrive.
     WarmupBarrier,
     ReadEachSubject,
-    RepairReferences,
+    RepairReferences {
+        file: &'static str,
+        selector: &'static str,
+    },
     RepairSharedReferences,
     PausedPeer {
         unreachable: bool,
@@ -303,14 +306,16 @@ fn serve(
     } else if (matches!(
         behavior,
         Behavior::RepairSharedReferences | Behavior::PausedPeer { .. }
-    ) || (matches!(behavior, Behavior::RepairReferences) && subject.ends_with("alpha")))
+    ) || (matches!(behavior, Behavior::RepairReferences { .. })
+        && subject.ends_with("alpha")))
         && previous < 2
     {
+        let (file, selector) = match behavior {
+            Behavior::RepairReferences { file, selector } => (file, selector),
+            _ => ("src/lib.rs", "fn[shared]"),
+        };
         let (name, arguments) = if previous == 0 {
-            (
-                "read_node",
-                json!({"path":"src/lib.rs","location":"fn[shared]"}),
-            )
+            ("read_node", json!({"path":file,"location":selector}))
         } else {
             let correction = match behavior {
                 Behavior::PausedPeer { unreachable: true } if subject.ends_with("alpha") => {
@@ -320,7 +325,7 @@ fn serve(
                     json!({"kind":"manual","instruction":"Assert the missing boundary.","rationale":"The boundary goes unchecked."})
                 }
                 _ => {
-                    json!({"kind":"add_reference","file":"src/lib.rs","selector":"fn[shared]","role":"test","rationale":"Shared exercises this requirement."})
+                    json!({"kind":"add_reference","file":file,"selector":selector,"role":"test","rationale":"Shared exercises this requirement."})
                 }
             };
             (
@@ -2802,7 +2807,13 @@ fn mock_server_waits_for_remaining_request_headers() {
 #[test]
 // {test}`requirements.authoring.reassessment`
 fn reference_edits_reassess_a_skipped_subject_sharing_the_changed_input() {
-    let server = Server::start_with(false, Behavior::RepairReferences);
+    let server = Server::start_with(
+        false,
+        Behavior::RepairReferences {
+            file: "src/lib.rs",
+            selector: "fn[shared]",
+        },
+    );
     let fixture = Fixture::new(&server.endpoint, Some(2));
     fs::write(
         fixture.project.join("md/requirements.md"),
@@ -2902,6 +2913,10 @@ fn batch_collects_all_shared_file_findings_before_editing() {
         }
     }
     let edited = fs::read_to_string(source).unwrap();
+    let markers = ["alpha", "beta", "delta", "gamma"]
+        .map(|name| format!("// {{test}}`requirements.{name}`\n"))
+        .concat();
+    assert_eq!(edited, format!("{markers}{original}"));
     let state = server.requests.0.lock().unwrap();
     assert_eq!(state.peak, 2);
     let (initial, retries) = state.source_snapshots.split_at(subjects.len() * 2);
@@ -2973,4 +2988,55 @@ fn a_changed_shared_input_does_not_resume_a_paused_subject() {
                 .contains("{test}`requirements.beta`")
         );
     }
+}
+
+// {test}`requirements.authoring.reassessment`
+#[test]
+fn a_named_reference_edit_refreshes_a_definition_and_a_citation_that_read_the_same_text() {
+    let server = Server::start_with(
+        false,
+        Behavior::RepairReferences {
+            file: "notes.txt",
+            selector: "",
+        },
+    );
+    let fixture = Fixture::new(&server.endpoint, Some(2));
+    fs::write(
+        fixture.project.join("md/requirements.md"),
+        ":::{req} alpha\nCheck alpha.\n:::\n\n:::{req} beta\nCheck beta.\n:::\n",
+    )
+    .unwrap();
+    fs::write(fixture.project.join("src/lib.rs"), "").unwrap();
+    fs::write(
+        fixture.project.join("notes.txt"),
+        "Check both outcomes. {test}`requirements.beta` {cite}`requirements.beta`\n",
+    )
+    .unwrap();
+    for subject in [
+        "requirements.beta",
+        "citations:notes.txt",
+        "requirements.alpha",
+    ] {
+        let output = fixture.run(&["author", subject]);
+        assert!(output.status.success(), "{subject}: {output:?}");
+    }
+    let seen = server.subjects();
+    assert_eq!(
+        &seen[..4],
+        [
+            "requirement requirements.beta",
+            "notes.txt <root>",
+            "requirement requirements.alpha",
+            "requirement requirements.alpha"
+        ]
+    );
+    for peer in [
+        "requirement requirements.beta",
+        "notes.txt <root>",
+        "requirement requirements.alpha",
+    ] {
+        assert!(seen[4..].iter().any(|s| s == peer), "{seen:?}");
+    }
+    let report = habeas::validate_repository(&fixture.project).unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
 }

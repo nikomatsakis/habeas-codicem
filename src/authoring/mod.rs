@@ -2354,6 +2354,7 @@ mod tests {
         assert!(!prompt.contains("{{"), "{prompt}");
     }
 
+    // {test}`requirements.authoring.prompt_parts`
     // {test}`requirements.authoring.distributed_task`
     // {test}`requirements.authoring.habeas_background`
     // {test}`requirements.authoring.initial_prompt`
