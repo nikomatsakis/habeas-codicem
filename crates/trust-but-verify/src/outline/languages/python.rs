@@ -2,6 +2,7 @@
 
 use tree_sitter::Node;
 
+use crate::outline_engine::language::AttachmentTarget;
 use crate::outline_engine::language::KindRule;
 use crate::outline_engine::language::NameRule;
 use crate::outline_engine::language::Profile;
@@ -10,8 +11,8 @@ use crate::outline_engine::language::never;
 
 /// Decorators attach to the decorated definition.
 // {cite}`habeas:util`
-fn attaches(node: Node<'_>, _source: &str) -> bool {
-    node.kind() == "decorator"
+fn attachment_target(node: Node<'_>) -> Option<AttachmentTarget> {
+    (node.kind() == "decorator").then_some(AttachmentTarget::FollowingItem)
 }
 
 const KINDS: &[KindRule] = &[
@@ -24,6 +25,7 @@ const KINDS: &[KindRule] = &[
 // {impl}`requirements.sdk.sources.python.attachments`
 pub static PROFILE: Profile = Profile {
     name: "python",
+    fingerprint_scheme: "python-structural-v1",
     expando_char: 'µ',
     extensions: &["py", "pyi"],
     language: Some(|| tree_sitter_python::LANGUAGE.into()),
@@ -33,7 +35,7 @@ pub static PROFILE: Profile = Profile {
     comment_prose: crate::outline_engine::language::whole_comment,
     comment_binds_to_container: never,
     trailing_comments_outside: false,
-    attaches,
+    attachment_target,
 };
 
 /// Tree-sitter-backed python provider.

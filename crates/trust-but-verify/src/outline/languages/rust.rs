@@ -2,6 +2,7 @@
 
 use tree_sitter::Node;
 
+use crate::outline_engine::language::AttachmentTarget;
 use crate::outline_engine::language::KindRule;
 use crate::outline_engine::language::NameRule;
 use crate::outline_engine::language::Profile;
@@ -117,8 +118,9 @@ fn doc_prose(node: Node<'_>, body: &str) -> (&'static str, String) {
 }
 
 /// Attributes and outer doc comments attach to the following item.
-fn attaches(node: Node<'_>, _source: &str) -> bool {
-    node.kind() == "attribute_item" || has_marker(node, "outer_doc_comment_marker")
+fn attachment_target(node: Node<'_>) -> Option<AttachmentTarget> {
+    (node.kind() == "attribute_item" || has_marker(node, "outer_doc_comment_marker"))
+        .then_some(AttachmentTarget::FollowingItem)
 }
 
 const KINDS: &[KindRule] = &[
@@ -151,6 +153,7 @@ const KINDS: &[KindRule] = &[
 // {impl}`requirements.sdk.sources.rust.attachments`
 pub static PROFILE: Profile = Profile {
     name: "rust",
+    fingerprint_scheme: "rust-structural-v1",
     expando_char: 'µ',
     extensions: &["rs"],
     language: Some(|| tree_sitter_rust::LANGUAGE.into()),
@@ -160,7 +163,7 @@ pub static PROFILE: Profile = Profile {
     comment_prose: doc_prose,
     comment_binds_to_container: is_inner_doc_comment,
     trailing_comments_outside: false,
-    attaches,
+    attachment_target,
 };
 
 /// Tree-sitter-backed rust provider.

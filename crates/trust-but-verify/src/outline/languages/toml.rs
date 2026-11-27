@@ -19,6 +19,7 @@ const KINDS: &[KindRule] = &[
 // {impl}`requirements.sdk.sources.toml.attachments`
 pub static PROFILE: Profile = Profile {
     name: "toml",
+    fingerprint_scheme: "toml-structural-v1",
     expando_char: '_',
     extensions: &["toml"],
     language: Some(|| tree_sitter_toml_ng::LANGUAGE.into()),
@@ -28,7 +29,7 @@ pub static PROFILE: Profile = Profile {
     comment_prose: crate::outline_engine::language::whole_comment,
     comment_binds_to_container: never,
     trailing_comments_outside: false,
-    attaches: never,
+    attachment_target: |_| None,
 };
 
 /// Tree-sitter-backed toml provider.

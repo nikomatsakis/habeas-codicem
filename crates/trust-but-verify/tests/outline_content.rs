@@ -731,7 +731,7 @@ fn bundled_languages_claim_extensions_and_supply_the_same_public_outline() {
         "function check() {}",
         "function[check]",
         &["ts", "mts", "cts"],
-        "typescript-structural-v1",
+        "typescript-structural-v2",
     );
     check(
         languages::Tsx,
@@ -739,7 +739,7 @@ fn bundled_languages_claim_extensions_and_supply_the_same_public_outline() {
         "function check() { return <div />; }",
         "function[check]",
         &["tsx"],
-        "tsx-structural-v1",
+        "tsx-structural-v2",
     );
     check(
         languages::Markdown,
@@ -1341,6 +1341,76 @@ fn bundled_fingerprints_exclude_comments_and_preserve_word_boundaries() {
     );
 }
 
+// {test}`requirements.sdk.outlines.attachments.fingerprint`
+// {test}`requirements.sdk.sources.typescript.attachments.decorators`
+// {test}`requirements.sdk.sources.typescript.attachments.decorators.span`
+// {test}`requirements.sdk.sources.typescript.fingerprints`
+#[test]
+fn typescript_and_tsx_decorators_belong_to_the_decorated_declaration() {
+    use trust_but_verify::outline::AttachmentKind::Annotation;
+
+    let source = r#"@sealed
+@register("widget")
+class Widget {
+    @field value = 0;
+    @trace
+    @metrics.time(
+        "render"
+    )
+    render(@input arg: string) {}
+    plain() {}
+}
+@published(() => { @local class Local {} })
+export default abstract class Base {}
+"#;
+    for path in ["widget.ts", "widget.tsx"] {
+        let root =
+            OutlineContent::from_source(&ValidationCache::new(), path, source.into()).unwrap();
+        assert!(root.outline().diagnostic.is_none());
+        let records: Vec<_> = root
+            .outline()
+            .items
+            .iter()
+            .flat_map(|item| {
+                item.attachments.iter().map(|attachment| {
+                    assert_eq!(attachment.kind, Annotation);
+                    (item.selector.as_str(), &source[attachment.span])
+                })
+            })
+            .collect();
+        assert_eq!(
+            records,
+            [
+                ("class[Widget]", "@sealed"),
+                ("class[Widget]", r#"@register("widget")"#),
+                ("class[Widget]/method[render]", "@trace"),
+                (
+                    "class[Widget]/method[render]",
+                    "@metrics.time(\n        \"render\"\n    )"
+                ),
+                ("class[Base]", "@published(() => { @local class Local {} })"),
+                ("class[Base]/class[Local]", "@local"),
+            ],
+            "{path}"
+        );
+        let edited = OutlineContent::from_source(
+            &ValidationCache::new(),
+            path,
+            source.replace("@trace", "@logged").into(),
+        )
+        .unwrap();
+        let method = "class[Widget]/method[render]";
+        assert_ne!(
+            root.select(method).unwrap().fingerprint(),
+            edited.select(method).unwrap().fingerprint()
+        );
+        let class = root.select("class[Widget]").unwrap();
+        let edited_class = edited.select("class[Widget]").unwrap();
+        assert_ne!(class.structural_hash(), edited_class.structural_hash());
+        assert_eq!(class.fingerprint(), edited_class.fingerprint());
+    }
+}
+
 // {test}`requirements.sdk.sources.typescript.items`
 // {test}`requirements.sdk.sources.typescript.TypeScript`
 // {test}`requirements.sdk.sources.typescript.Tsx`
@@ -1632,6 +1702,7 @@ fn rust_attachments_keep_the_owner_kind_and_original_bytes() {
 // {test}`requirements.sdk.sources.python.attachments`
 // {test}`requirements.sdk.sources.markdown.attachments`
 // {test}`requirements.sdk.sources.typescript.attachments`
+// {test}`requirements.sdk.sources.typescript.attachments.comments`
 // {test}`requirements.sdk.sources.css.attachments`
 // {test}`requirements.sdk.sources.yaml.attachments`
 // {test}`requirements.sdk.sources.toml.attachments`
@@ -1669,12 +1740,20 @@ fn bundled_languages_classify_only_their_attachment_syntax() {
         (
             "test.ts",
             "/** doc */\nconst s = '// string'; // trailing\n@dec class C {}\n",
-            vec![(Comment, "/** doc */"), (Comment, "// trailing")],
+            vec![
+                (Comment, "/** doc */"),
+                (Comment, "// trailing"),
+                (Annotation, "@dec"),
+            ],
         ),
         (
             "test.tsx",
             "/* doc */\nconst s = <p>// text</p>; // trailing\n@dec class C {}\n",
-            vec![(Comment, "/* doc */"), (Comment, "// trailing")],
+            vec![
+                (Comment, "/* doc */"),
+                (Comment, "// trailing"),
+                (Annotation, "@dec"),
+            ],
         ),
         (
             "test.css",
@@ -1733,9 +1812,6 @@ fn bundled_languages_classify_only_their_attachment_syntax() {
                 source[class.attachments[0].span].trim_end(),
                 "@pkg.decorate(\n  1\n)"
             );
-        }
-        if path == "test.ts" || path == "test.tsx" {
-            assert!(snapshot.text().contains("@dec class C"));
         }
         if path == "test.py" {
             assert_eq!(

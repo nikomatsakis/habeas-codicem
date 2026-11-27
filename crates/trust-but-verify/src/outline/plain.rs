@@ -6,6 +6,7 @@ use super::profile::{Profile, kind_is_comment, never};
 pub static PROFILE: Profile = Profile {
     expando_char: '$',
     name: "plain-text",
+    fingerprint_scheme: "plain-text-structural-v1",
     extensions: &[],
     language: None,
     kinds: &[],
@@ -14,5 +15,5 @@ pub static PROFILE: Profile = Profile {
     comment_prose: super::profile::whole_comment,
     comment_binds_to_container: never,
     trailing_comments_outside: false,
-    attaches: never,
+    attachment_target: |_| None,
 };

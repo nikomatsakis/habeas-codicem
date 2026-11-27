@@ -17,6 +17,7 @@ const KINDS: &[KindRule] = &[
 // {impl}`requirements.sdk.sources.yaml.attachments`
 pub static PROFILE: Profile = Profile {
     name: "yaml",
+    fingerprint_scheme: "yaml-structural-v1",
     expando_char: '$',
     extensions: &["yml", "yaml"],
     language: Some(|| tree_sitter_yaml::LANGUAGE.into()),
@@ -26,7 +27,7 @@ pub static PROFILE: Profile = Profile {
     comment_prose: crate::outline_engine::language::whole_comment,
     comment_binds_to_container: never,
     trailing_comments_outside: true,
-    attaches: never,
+    attachment_target: |_| None,
 };
 
 /// Tree-sitter-backed yaml provider.

@@ -365,7 +365,7 @@ impl OutlineContent {
                 source.clone(),
                 Outline::from_legacy(parse_provider(profile, &source)?),
                 profile.profile().name,
-                &format!("{}-structural-v1", profile.profile().name),
+                profile.profile().fingerprint_scheme,
             );
         }
         Self::parse_with(&languages::PlainText, filename, source)
