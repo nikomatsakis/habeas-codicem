@@ -92,20 +92,13 @@ def main():
         )
         runner.chmod(0o755)
         manifest = (repo / "Cargo.toml").read_text()
-        # The stub is a standalone consumer dependency, not a copy of the
-        # repository workspace. Both local dependencies point back into it.
+        # The standalone stub uses the SDK from this checkout.
         manifest = manifest[manifest.index("[package]") :]
         sdk_path = 'path = "crates/trust-but-verify"'
         if manifest.count(sdk_path) != 1:
             raise AssertionError("Habeas's SDK dependency changed")
         manifest = manifest.replace(
             sdk_path, f"path = {json.dumps(str(repo / 'crates' / 'trust-but-verify'))}", 1
-        )
-        fork_path = 'path = "vendor/habeas-rig"'
-        if manifest.count(fork_path) != 1:
-            raise AssertionError("Habeas's habeas-rig dependency changed")
-        manifest = manifest.replace(
-            fork_path, f"path = {json.dumps(str(repo / 'vendor' / 'habeas-rig'))}", 1
         )
         cargo_installation = (
             'source = "cargo"\ncrate = "habeas"\n'
