@@ -84,10 +84,17 @@ fn normalize_dependencies(dependencies: &mut Value) -> io::Result<()> {
 // {impl}`requirements.sdk.habeas.evidence_format`
 // {impl}`requirements.sdk.habeas.evidence_format.errors`
 pub(crate) fn view(value: &Value) -> io::Result<Value> {
+    if is_versioned(value) {
+        versioned_fields(value)?;
+    }
+    application_fields(value)
+}
+
+/// Extract application fields independently of the SDK header and dependencies.
+pub(crate) fn application_fields(value: &Value) -> io::Result<Value> {
     if !is_versioned(value) {
         return Ok(value.clone());
     }
-    versioned_fields(value)?;
     let mut object = value
         .as_object()
         .cloned()
@@ -383,6 +390,8 @@ pub(crate) fn check_native(
                 {
                     record.output["references"].as_str() != Some(&fingerprint.value)
                 }
+                // Only status and authoring may refresh remote issue snapshots.
+                Dependency::Node(HabeasNode::GithubIssue(_), _) => false,
                 Dependency::Node(node, fingerprint) => {
                     let Ok(selector) = node.selector() else { return true };
                     if record.output["inputs"].as_array().into_iter().flatten().any(|input| {
@@ -474,6 +483,48 @@ mod tests {
             native["corrections"] = invalid;
             assert!(decode(&native, &node).is_err());
         }
+    }
+
+    // {test}`requirements.sdk.habeas.evidence_format`
+    #[tokio::test]
+    async fn loading_and_inspecting_a_reference_correction_preserve_the_source_and_record() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        std::fs::create_dir(root.join("md")).unwrap();
+        std::fs::write(root.join("book.toml"), "[book]\nsrc='md'\n").unwrap();
+        std::fs::write(
+            root.join("md/rules.md"),
+            ":::{req} ready\nReady MUST work.\n:::\n",
+        )
+        .unwrap();
+        let target = root.join("check.rs");
+        let original_source = "#[test]\nfn checks_ready() {}\n";
+        std::fs::write(&target, original_source).unwrap();
+        let subject = AuthoringSubject::Definition("rules.ready".into());
+        let node = HabeasNode::review_subject(&subject);
+        let corrections = json!([{"kind":"add_reference", "role":"test", "file":"check.rs", "selector":"fn[checks_ready]", "rationale":"This test exercises ready."}]);
+        let mut previous = legacy(&subject);
+        previous["determination"] = json!(false);
+        let mut value = encode(&decode(&previous, &node).unwrap()).unwrap();
+        value["corrections"] = corrections.clone();
+        let evidence_path = subject.evidence_path(root);
+        write_atomic(&evidence_path, &value).unwrap();
+        let original_evidence = std::fs::read(&evidence_path).unwrap();
+        let inspection = crate::evidence::inspect_repository(root).unwrap();
+        assert_eq!(inspection.report.evidence_files, 1);
+        let graph = HabeasDomain::new(root, &inspection.definitions, &inspection.outlines);
+        let record = graph
+            .load_evidence(
+                &graph.cache().intern_node(node),
+                &crate::sdk::review_criterion(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.output["corrections"], corrections);
+        assert_eq!(encode(&record).unwrap(), value);
+        assert_eq!(std::fs::read(&target).unwrap(), original_source.as_bytes());
+        assert_eq!(std::fs::read(evidence_path).unwrap(), original_evidence);
     }
 
     // {test}`requirements.sdk.habeas.evidence_format`
@@ -610,6 +661,51 @@ mod tests {
             let mut malformed = record.clone();
             malformed.output = invalid;
             assert!(encode(&malformed).is_err());
+        }
+    }
+
+    // {test}`requirements.sdk.habeas.evidence_format`
+    // {test}`requirements.sdk.habeas.evidence_format.errors`
+    #[test]
+    fn native_and_legacy_records_reject_the_same_malformed_application_fields() {
+        let subject = AuthoringSubject::Definition("old.ready".into());
+        let node = HabeasNode::review_subject(&subject);
+        let old = legacy(&subject);
+        let native = encode(&decode(&old, &node).unwrap()).unwrap();
+        for valid in [old, native] {
+            assert!(decode(&valid, &node).is_ok());
+            for (pointer, change) in [
+                ("/inputs/0/hash", json!("not a digest")),
+                (
+                    "/inputs/0",
+                    json!({"file":"old.rs","item":"fn[old]","hash":"a".repeat(64),"text":["source bytes"]}),
+                ),
+                ("/rationale", json!("")),
+                ("/rationale", json!(" \t")),
+                ("/requirement", json!(17)),
+                ("/references", json!("not a digest")),
+            ] {
+                let mut invalid = valid.clone();
+                *invalid.pointer_mut(pointer).unwrap() = change;
+                assert!(decode(&invalid, &node).is_err(), "accepted {invalid}");
+            }
+            let mut invalid = valid.clone();
+            invalid.as_object_mut().unwrap().remove("requirement");
+            assert!(decode(&invalid, &node).is_err(), "accepted {invalid}");
+
+            let mut corrections = valid;
+            corrections["corrections"] = json!([{"kind":"manual","instruction":"Add the check.","rationale":"The boundary is untested."}]);
+            corrections["determination"] = json!(true);
+            assert!(
+                decode(&corrections, &node).is_err(),
+                "accepted {corrections}"
+            );
+            corrections["determination"] = json!(false);
+            corrections.as_object_mut().unwrap().remove("references");
+            assert!(
+                decode(&corrections, &node).is_err(),
+                "accepted {corrections}"
+            );
         }
     }
 

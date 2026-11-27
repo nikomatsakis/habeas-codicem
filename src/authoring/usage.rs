@@ -35,7 +35,6 @@ pub(super) struct UsageRecord {
     pub(super) provider_usage: trust_but_verify::graph::UsageStats,
 }
 
-// {cite}`requirements.authoring.usage_storage`
 pub(super) struct UsageLog {
     pub record: UsageRecord,
     pub path: PathBuf,

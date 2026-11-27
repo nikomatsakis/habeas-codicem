@@ -2741,6 +2741,33 @@ fn a_batch_warms_each_kind_with_one_assessment_before_starting_the_others() {
 
 // {test}`requirements.authoring.cache_warmup`
 #[test]
+fn peers_wait_until_the_warmers_tool_conversation_finishes() {
+    let server = Server::start_with(false, Behavior::ReadEachSubject);
+    let fixture = Fixture::new(&server.endpoint, Some(8));
+    let output = fixture.run(&["author", "--all"]);
+    assert!(output.status.success(), "{output:?}");
+    for requests in assert_warmed_first(&server) {
+        let warmer = &requests[0].0;
+        let turns: Vec<_> = requests
+            .iter()
+            .filter(|(name, ..)| name == warmer)
+            .collect();
+        assert_eq!(turns.len(), 2, "tool request followed by submission");
+        let finished = turns[1].2.unwrap();
+        assert!(requests.iter().any(|(name, ..)| name != warmer));
+        for (name, start, _) in &requests {
+            if name != warmer {
+                assert!(
+                    *start >= finished,
+                    "{name} started before {warmer} submitted"
+                );
+            }
+        }
+    }
+}
+
+// {test}`requirements.authoring.cache_warmup`
+#[test]
 fn a_failed_first_request_still_releases_its_kind() {
     let server = Server::start_with(
         false,
@@ -2885,6 +2912,7 @@ no_match: ['// unrelated']
 #[test]
 // {test}`requirements.authoring.corrections.apply`
 // {test}`requirements.authoring.progress`
+// {test}`requirements.authoring.reassessment`
 fn batch_collects_all_shared_file_findings_before_editing() {
     let server = Server::start_with(false, Behavior::RepairSharedReferences);
     let fixture = Fixture::new(&server.endpoint, Some(2));
@@ -2922,6 +2950,23 @@ fn batch_collects_all_shared_file_findings_before_editing() {
     let (initial, retries) = state.source_snapshots.split_at(subjects.len() * 2);
     assert!(initial.iter().all(|(_, text)| text == original));
     assert_eq!(retries.len(), subjects.len());
+    // Every request following the source edit is a separate reassessment.
+    // Count simultaneous requests in this round independently of the first round.
+    let round = &state.timeline[initial.len()..];
+    let peak = round
+        .iter()
+        .map(|(_, start, _)| {
+            round
+                .iter()
+                .filter(|(_, arrived, answered)| arrived <= start && answered.unwrap() > *start)
+                .count()
+        })
+        .max();
+    assert_eq!(
+        peak,
+        Some(2),
+        "four peers reassessed with concurrency two: {round:?}"
+    );
     for name in subjects {
         let label = format!("requirement requirements.{name}");
         assert!(

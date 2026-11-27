@@ -4,7 +4,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 
-pub(super) struct RecordingProvider {
+pub(crate) struct RecordingProvider {
     backend: config::BackendConfig,
     pub requests: Arc<Mutex<Vec<Value>>>,
 }

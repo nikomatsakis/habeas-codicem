@@ -119,6 +119,20 @@ async fn scoped_text_results_keep_line_numbers_context_and_completeness() {
     let limited = sources.search_text(&scoped.limit(1)).await.unwrap();
     assert_eq!(limited.matches.len(), 1);
     assert!(!limited.complete);
+    fs::write(
+        root.path().join("context.txt"),
+        "first\nsecond\nhit\nfourth\nfifth\n",
+    )
+    .unwrap();
+    for (lines, excerpt) in [
+        (1, "second\nhit\nfourth"),
+        (2, "first\nsecond\nhit\nfourth\nfifth"),
+    ] {
+        let query = TextQuery::new("^hit$".into()).context_lines(lines);
+        let found = sources.search_text(&query).await.unwrap();
+        assert_eq!(found.matches.len(), 1);
+        assert_eq!(found.matches[0].excerpt, excerpt);
+    }
     fs::remove_file(root.path().join("one.txt")).unwrap();
     assert!(sources.list(&scope).await.is_err(), "{scope:?}");
 }
@@ -403,6 +417,18 @@ async fn built_in_languages_and_structural_search_use_the_project_scope() {
     let subset = sources.search_structure(&bounded).await.unwrap();
     assert_eq!(subset.matches.len(), 1);
     assert!(!subset.complete);
+    let unsupported = StructuralQuery::new("plain-text".into(), query.rule.clone());
+    let error = sources
+        .search_structure(&unsupported)
+        .await
+        .err()
+        .expect("plain text has no structural search capability");
+    assert!(
+        error
+            .to_string()
+            .contains("structural search is unsupported for outline language \"plain-text\""),
+        "{error}"
+    );
     let python = StructuralQuery::new("python".into(), query.rule.clone());
     let found = sources.search_structure(&python).await.unwrap();
     assert_eq!(found.matches.len(), 1);

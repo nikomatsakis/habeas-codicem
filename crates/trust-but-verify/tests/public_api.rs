@@ -435,18 +435,73 @@ fn check_declaration(
     );
 }
 
+/// Rustdoc omits `doc(hidden)` items even when another crate can name them.
+/// Check each public module's declarations before comparing its published exports.
+fn check_hidden_exports(rust_source: &str, module: &str) {
+    fn is_public(node: tree_sitter::Node<'_>, source: &str) -> bool {
+        node.named_children(&mut node.walk()).any(|child| {
+            child.kind() == "visibility_modifier" && &source[child.byte_range()] == "pub"
+        })
+    }
+
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&tree_sitter_rust::LANGUAGE.into())
+        .unwrap();
+    let tree = parser.parse(rust_source, None).unwrap();
+    let mut scopes = vec![tree.root_node()];
+    while let Some(scope) = scopes.pop() {
+        let mut hidden = false;
+        for item in scope.named_children(&mut scope.walk()) {
+            match item.kind() {
+                "attribute_item" => {
+                    let attr = &rust_source[item.byte_range()];
+                    hidden |= attr.split_whitespace().collect::<String>() == "#[doc(hidden)]";
+                    continue;
+                }
+                "line_comment" | "block_comment" => continue,
+                _ => {}
+            }
+            let implicit = scope
+                .parent()
+                .is_some_and(|owner| matches!(owner.kind(), "trait_item" | "enum_item"));
+            let exported = is_public(item, rust_source) || implicit;
+            assert!(
+                !(hidden && exported),
+                "Hidden public API in {module}: {}",
+                &rust_source[item.byte_range()]
+            );
+            hidden = false;
+            if (exported || item.kind() == "impl_item")
+                && let Some(body) = item.child_by_field_name("body")
+            {
+                scopes.push(body);
+            }
+        }
+    }
+}
+
 fn documented_exports(
     root: &Path,
     chapters: &Path,
     declarations: &BTreeMap<String, DeclarationLink<'_>>,
 ) -> Exports {
     let signatures = RustdocSignatures::new();
+    let source_link =
+        Regex::new(r#"<a class="src" href="[^"]*/src/trust_but_verify/([^"]+)\.html#"#).unwrap();
     let tables = Regex::new(r#"(?s)<dl class="item-table(?: [^"]*)?">(.*?)</dl>"#).unwrap();
     let links = Regex::new(r#"(?s)<a class="(\w+)" href="([^"]+)"[^>]*>(.*?)</a>"#).unwrap();
     let mut pending = vec![("trust_but_verify".to_owned(), "index.html".to_owned())];
     let mut exports = BTreeSet::from([("trust_but_verify".to_owned(), "crate".to_owned())]);
     while let Some((module, page)) = pending.pop() {
         let html = fs::read_to_string(root.join(&page)).unwrap();
+        let source = &source_link
+            .captures(&html)
+            .expect("a public module's source link")[1];
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join(source);
+        check_hidden_exports(&fs::read_to_string(path).unwrap(), &module);
         let directory = Path::new(&page).parent().unwrap();
         let mut found_table = false;
         for table in tables.captures_iter(&html) {
@@ -542,7 +597,7 @@ fn public_exports_match_the_appendix() {
             "--offline",
             "--package",
             "habeas",
-            "--lib",
+            "--all-targets",
         ])
         .env_remove("RUSTFLAGS")
         .env_remove("CARGO_ENCODED_RUSTFLAGS")

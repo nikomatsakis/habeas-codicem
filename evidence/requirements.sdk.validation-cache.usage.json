@@ -1,7 +1,7 @@
 {
   "requirement": "`ValidationCache::usage()` returns an owned snapshot of the cache’s lifetime\n{cite}`requirements.sdk.graph.running-criteria.UsageStats`. A newly constructed\ncache starts at zero. Every agent call through the cache or any clone adds its\nusage exactly once by the time the call returns, including retries and failed\nattempts. Concurrent calls contribute to the same totals. The snapshot sums tool invocations and result bytes by tool name across validators under {cite}`requirements.sdk.graph.running-criteria.ToolUsage.by_name`. Reading a snapshot\npreserves the counters, and later calls leave earlier snapshots unchanged.\n\n```rust,ignore\nimpl<D: Domain> ValidationCache<D> {\n    pub fn usage(&self) -> UsageStats;\n}\n```",
   "determination": true,
-  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.validation-cache.usage`.\n\n- **Starts at zero.**\n  - `agent_executions_isolate_conversations_and_dependency_traces` takes `initial = cache.usage()` before any call. It asserts `initial.attempts == 0` and `initial.tools.is_empty()`.\n  - `validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse` checks that a fresh `Validator` reports zero for attempts, retries, failed attempts, inputs, tools and every token category.\n  - A fresh `Validator` is not a fresh cache, so this second check does not read `cache.usage()` directly. The first test does check `cache.usage()` for attempts and tools, which is enough here.\n- **Every call through the cache or any clone is added, including retries and failed attempts.**\n  - `cache_retains_usage_across_validators_and_sums_each_token_category` runs two validators on clones (`graph` and `peer`). Its scenario has a throttled error followed by a success, then another success.\n  - It asserts attempts 3, retries 1, failed_attempts 1 and prepared/delivered inputs (2, 2). It reads the totals through `cache`, `graph.cache()` and `peer.cache()`.\n  - The failure test adds a terminal failure. It asserts (3, 1, 2) for attempts, retries and failed attempts on both the validator and the cache.\n  - The failure test also asserts token `reported` and `missing_attempts` for each category.\n  - Evidence reuse via `refresh_evidence` does not double-count.\n- **Exactly once by the time the call returns.** The exact counts above rule out double or missed counting. `dropping_an_inflight_request_preserves_its_attempt` shows an attempt is already recorded when the call is dropped mid-flight. It asserts (attempts, failed_attempts, input missing_attempts) == (1, 0, 1).\n- **Concurrent calls share totals.** `agent_executions_isolate_conversations_and_dependency_traces` runs two validators with `futures::join!` behind a barrier, so the calls genuinely overlap. It asserts `cache.usage().attempts == 6`, which is 3 + 3 from the two validators.\n- **Tools summed by name across validators.** The same test asserts that the cache has 3 tool entries. For `read_node`, `get_next_page` and `submit_result`, the cache's calls equal 2 (1 + 1) and its `result_bytes` equal the sum of the two validators' bytes. The by_name semantics themselves belong to the cited `requirements.sdk.graph.running-criteria.ToolUsage.by_name`.\n- **Reading a snapshot preserves counters.** Repeated reads return identical values. The `cache` total is read first, then `graph.cache().usage().attempts` and `peer.cache().usage().attempts` both return 3. A destructive read would fail these.\n- **Later calls leave earlier snapshots unchanged.** `before_failure` is captured, then a further failing call runs. The test later asserts `before_failure.failed_attempts == 1`, while the live value is 2. `initial` likewise still shows attempts 0 and empty tools after calls.\n\nI found no uncovered obligation or marking gap.",
+  "rationale": "Obligations from `requirements.sdk.validation-cache.usage`, mapped to the marked tests:\n\n- **Starts at zero.** `agent_executions_isolate_conversations_and_dependency_traces` takes `cache.usage()` before any call. It asserts `initial.attempts == 0` and empty `tools`. The cache is also read after the calls, and `initial` is rechecked at the end, so the zero start is checked. `validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse` checks all counters and token categories on a fresh `Validator`'s usage, which is a different object from the cache.\n- **Each call is added exactly once, including retries and failed attempts.**\n  - `validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse` runs a throttled failure, a retry that succeeds, then a terminal failure. It asserts `graph.cache().usage()` has attempts 3, retries 1, failed_attempts 2, and the expected token and missing_attempts values. It also asserts that evidence reuse (`refresh_evidence`) adds nothing.\n  - `cache_retains_usage_across_validators_and_sums_each_token_category` asserts attempts 3, retries 1, failed_attempts 1, and exact per-category token sums.\n  - `dropping_an_inflight_request_preserves_its_attempt` asserts the cache keeps the attempt (1, 0, 1) when the call is dropped before it returns.\n- **Through the cache or any clone.** `cache_retains_usage_across_validators_and_sums_each_token_category` uses `graph`, a clone `peer`, and a cloned `cache`. It asserts that all three views report the same total of 3 attempts.\n- **Concurrent calls share totals.** `agent_executions_isolate_conversations_and_dependency_traces` uses `futures::join!` with a barrier that needs both conversations in flight. It asserts `cache.usage().attempts == 6`, which is the sum of the two validators' 3 each.\n- **Tool calls and result bytes are summed by name across validators.** The same test asserts, for `read_node`, `get_next_page` and `submit_result`, that the cache totals equal the two validators' values. Calls are 1 + 1 = 2, and result_bytes is the sum of the two validators' bytes. It also asserts the cache has exactly 3 tool entries. This covers the cited `ToolUsage.by_name` for built-in tools. A separate test in `configured.rs`, `registered_tools_use_the_current_context_and_ordinary_node_ids`, also reads `cache().usage().tools` for registered tools. It is not marked for this requirement. I did not treat that as a gap, because the summing is the same for built-in and registered tools.\n- **Owned snapshot, reading preserves counters, earlier snapshots are unchanged.** `initial` (attempts 0, empty tools) is still unchanged after later calls. `before_failure` (read before the failing call) still has `failed_attempts == 1` after the later calls. Repeated `cache.usage()` reads give consistent totals.\n\nThe cited `UsageStats` fields (prepared and delivered inputs, token counts) are also asserted at the cache level. I found no unacknowledged gap.",
   "references": "d4acd724ad04f9a7b0374a47d1799adb4edb47664e2e83d78d271436e22477bb",
   "inputs": [
     {
@@ -103,7 +103,12 @@
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[public_exports_match_the_appendix]",
-      "hash": "85236d57663dd61cc1cfc8c4a81672e5c5591e6d9dfaf865943d051c38e8bb2a"
+      "hash": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent.rs",
+      "item": "fn[converse]",
+      "hash": "a909b32e3a742693d32e5bb25e87fc280fc13ac5665d019dda2bd3db6d14ff07"
     }
   ],
   "format_version": 1,
@@ -246,7 +251,24 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "85236d57663dd61cc1cfc8c4a81672e5c5591e6d9dfaf865943d051c38e8bb2a"
+          "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent.rs"
+            },
+            "selector": "fn[converse]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "a909b32e3a742693d32e5bb25e87fc280fc13ac5665d019dda2bd3db6d14ff07"
         }
       ]
     }

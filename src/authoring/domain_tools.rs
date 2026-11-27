@@ -17,6 +17,7 @@ pub(super) fn configure(
     backend: &config::BackendConfig,
     github: crate::github::GithubIssues,
 ) -> io::Result<()> {
+    domain.github = github.clone();
     let config: AgentConfig = serde_json::from_value(serde_json::to_value(backend)?)?;
     let cache = domain
         .outlines
@@ -205,6 +206,7 @@ mod tests {
     // {test}`requirements.authoring.tool_descriptions.common_case`
     // {test}`requirements.authoring.tool_descriptions.special_cases`
     // {test}`requirements.authoring.no_line_numbers`
+    // {test}`requirements.sdk.habeas.graph_discovery`
     async fn domain_discovery_returns_readable_nodes_without_recording_their_contents() {
         assert!(
             LookupRequirements
@@ -290,6 +292,7 @@ mod tests {
         for (query, reason) in [
             ("malformed", "expected <requirement>/<query>"),
             ("absent/query", "unknown requirement"),
+            ("requirements.rule/nothing", "no query named \"nothing\""),
         ] {
             let result = RunNamedQuery
                 .execute(

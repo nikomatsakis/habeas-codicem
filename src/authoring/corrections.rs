@@ -218,6 +218,18 @@ pub(super) async fn apply(
     }
     let cache = OutlineCache::default();
     for (file, actions) in files {
+        if !std::path::Path::new(file)
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+        {
+            repairs
+                .outstanding
+                .extend(actions.into_values().map(|action| {
+                    action
+                        .failed("expected a project-relative source path without parent components")
+                }));
+            continue;
+        }
         let parsed = cache.parse(root, file);
         let mut insertions = BTreeMap::<usize, BTreeSet<String>>::new();
         let mut planned = Vec::new();
@@ -334,11 +346,7 @@ fn plan(
     edit: &ReferenceEdit,
 ) -> Result<Option<(usize, String)>, String> {
     let root = &inspection.root;
-    if !std::path::Path::new(&edit.file)
-        .components()
-        .all(|c| matches!(c, std::path::Component::Normal(_)))
-        || root.join(&edit.file) != p.path
-    {
+    if root.join(&edit.file) != p.path {
         return Err("expected a project-relative source path".into());
     }
     let index = p.resolve(&edit.file, &edit.selector)?;

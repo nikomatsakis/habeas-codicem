@@ -10,7 +10,7 @@ mod line_numbers;
 mod progress;
 mod sdk;
 #[cfg(test)]
-mod test_backend;
+pub(crate) mod test_backend;
 mod usage;
 
 pub use batch::{BatchOutcome, author_all, author_all_with_options, author_sites_with_options};
@@ -2569,6 +2569,8 @@ mod tests {
                         .contains(approved_text("habeas_background", 0))
                 );
                 assert!(prompt.system.contains(approved_text("judgment_rules", 0)));
+                assert!(prompt.system.contains("Skip generated assessment records"));
+                assert!(prompt.system.contains("out of `finish_search.used`"));
                 assert_eq!(
                     prompt
                         .system

@@ -915,6 +915,41 @@ pub(crate) mod tests {
         );
     }
 
+    // {test}`requirements.references.authoring_inputs`
+    #[test]
+    fn direct_test_edges_select_the_nested_item_without_expanding_its_citations() {
+        let root = project();
+        fs::write(root.path().join("md/requirements.md"), format!(
+            ":::{{req}} ready\nReady MUST work.\n:::\n\n:::{{example}} case\n{} {}\n:::\n\n:::{{req}} declaration_only\nA declaration.\n:::\n\n:::{{req}} source_only\nAnother declaration.\n:::\n",
+            role("test", "requirements.ready"),
+            role("cite", "requirements.declaration_only"),
+        )).unwrap();
+        fs::write(
+            root.path().join("src/lib.rs"),
+            format!(
+                "mod tests {{\n    // {} {}\n    fn nested() {{}}\n    fn sibling() {{}}\n}}\n",
+                role("test", "requirements.ready"),
+                role("cite", "requirements.source_only"),
+            ),
+        )
+        .unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let inputs = sources.mandatory_inputs();
+        let source: Vec<_> = inputs
+            .iter()
+            .filter(|input| input["file"] == "src/lib.rs")
+            .collect();
+        assert_eq!(source.len(), 1, "{inputs:?}");
+        assert_eq!(source[0]["item"], "mod[tests]/fn[nested]");
+        assert!(!source[0]["text"].to_string().contains("fn sibling"));
+        let mut declarations: Vec<_> = inputs
+            .iter()
+            .filter_map(|input| input["requirements"].as_str())
+            .collect();
+        declarations.sort_unstable();
+        assert_eq!(declarations, ["requirements.case", "requirements.ready"]);
+    }
+
     // {test}`requirements.authoring.complete_initial_bundle`
     // {test}`requirements.authoring.mandatory_inputs`
     // {test}`requirements.authoring_input`
@@ -1153,6 +1188,43 @@ pub(crate) mod tests {
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
         assert!(error.to_string().contains("src/escape.rs"), "{error}");
         assert!(error.to_string().contains("outside"), "{error}");
+    }
+
+    // {test}`requirements.authoring.mandatory_inputs`
+    #[test]
+    fn mandatory_anchors_respect_git_metadata_and_nested_ignore_exceptions() {
+        let root = project();
+        fs::create_dir(root.path().join(".git")).unwrap();
+        fs::write(root.path().join(".git/config"), "[core]\n").unwrap();
+        fs::write(root.path().join("src/.gitignore"), "*.rs\n!keep.rs\n").unwrap();
+        for file in ["src/ignore.rs", "src/keep.rs"] {
+            fs::write(root.path().join(file), "fn check() {}\n").unwrap();
+        }
+        for file in [".git/config", "src/ignore.rs", "src/keep.rs"] {
+            fs::write(
+                root.path().join("md/requirements.md"),
+                format!(":::{{req}} ready\n:test: {file}\nThe project MUST be ready.\n:::\n"),
+            )
+            .unwrap();
+            let prepared = AssessmentSources::prepare(root.path(), "requirements.ready");
+            if file == "src/keep.rs" {
+                assert!(
+                    prepared
+                        .unwrap()
+                        .mandatory_inputs()
+                        .iter()
+                        .any(|input| input["file"] == file)
+                );
+            } else {
+                let error = prepared.err().expect("hidden mandatory input");
+                assert_eq!(
+                    error.kind(),
+                    io::ErrorKind::PermissionDenied,
+                    "{file}: {error}"
+                );
+                assert!(error.to_string().contains(file), "{error}");
+            }
+        }
     }
 
     // {test}`requirements.configuration.evidence_paths`

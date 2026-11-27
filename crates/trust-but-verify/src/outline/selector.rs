@@ -290,6 +290,7 @@ mod tests {
             segments[0].label,
             Label::Named(vec!["Thing".into(), "Trait<T>".into()])
         );
+        assert_eq!(segments[0].kind, "impl");
         let label = Label::Named(vec!["a/b".into(), "c d".into()]);
         assert_eq!(Segment::base("impl", &label), "impl[a%2Fb/c%20d]");
         assert_eq!(
@@ -311,6 +312,8 @@ mod tests {
             "[run]",
             "fn[run]#0",
             "use@123",
+            "use@0123456789zz",
+            "use@0123456789abc",
             "fn[run]x",
             "a//b",
         ] {

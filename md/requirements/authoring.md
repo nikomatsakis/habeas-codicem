@@ -189,6 +189,10 @@ assessments judge by the same rules:
   read any item whose code your conclusion relies on unless a search snippet
   provides the information you need. Comments state intent; check behavior and
   assertions in the code itself.
+- Form an independent judgment from the underlying declarations, source, and
+  tests. Skip generated assessment records under the project's `evidence/`
+  directory when exploring. If a search returns such a record, leave its tag
+  out of `finish_search.used` and follow the underlying sources instead.
 - Judge only against the text your task names. Report a gap only where your task
   or these rules define one, naming the obligation and the relevant sources you
   have reviewed. For a missing test, identify the obligation or scenario after
@@ -636,7 +640,8 @@ Each correction in a `Failed` submission MUST be either
 `AddReference { role, file, selector, rationale }` or `Manual { instruction, rationale }`.
 An `AddReference` proposes a missing `test` or `impl` reference from an existing
 item to the assessed definition. Its file MUST be project-relative and its
-selector MUST identify that item. A `Manual` instruction MUST be nonempty and
+selector MUST identify that item under {cite}`requirements.references.outline_selectors`.
+The empty selector identifies the file root. A `Manual` instruction MUST be nonempty and
 state what remains to be done.
 :::
 

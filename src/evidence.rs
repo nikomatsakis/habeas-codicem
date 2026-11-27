@@ -706,15 +706,14 @@ fn validate_evidence_file(
             .to_string_lossy()
             .into_owned(),
     ));
-    let native = value.clone();
-    let value = match crate::evidence_format::view(&value) {
+    crate::evidence_format::check_native(&value, &subject, &domain, &label, errors);
+    let value = match crate::evidence_format::application_fields(&value) {
         Ok(value) => value,
         Err(error) => {
             errors.push(format!("{label}: invalid evidence format: {error}"));
             return;
         }
     };
-    crate::evidence_format::check_native(&native, &subject, &domain, &label, errors);
     let Some(object) = value.as_object() else {
         errors.push(format!("{label}: expected a JSON object"));
         return;
@@ -2036,10 +2035,8 @@ impl ReferenceContexts {
         }
         match self {
             Self::Text { markdown } => crate::fenced::text_fences(content, *markdown),
-            Self::Parsed { items, rust } if items.diagnostic.is_none() => {
-                crate::fenced::comment_fences(content, items, *rust)
-            }
-            Self::Parsed { .. } | Self::Unavailable => Vec::new(),
+            Self::Parsed { items, rust } => crate::fenced::comment_fences(content, items, *rust),
+            Self::Unavailable => Vec::new(),
         }
     }
 }
@@ -2279,6 +2276,37 @@ pub(crate) mod tests {
                 "{prefix} :::{{impl}} f.docs\n{prefix} Body.\n{prefix} :::\n{declaration}\n"
             );
             assert_eq!(names(file, source), ["f.docs"], "{file}");
+        }
+        for (file, opening, literal) in [
+            (
+                "lib.rs",
+                "/*",
+                "const S: &str = \"\n:::{impl} f.literal\nBody.\n:::\n\";",
+            ),
+            (
+                "script.ts",
+                "/**",
+                "const s = `\n:::{impl} f.literal\nBody.\n:::\n`;",
+            ),
+            (
+                "style.css",
+                "/*",
+                "a { content: '\\\n:::{impl} f.literal\\\nBody.\\\n:::\\\n'; }",
+            ),
+        ] {
+            let source =
+                format!("{opening}\n * :::{{impl}} f.comment\n * Body.\n * :::\n */\n{literal}\n");
+            assert_eq!(names(file, source), ["f.comment"], "{file}");
+        }
+        for (file, literal) in [
+            (
+                "config.toml",
+                "s = '''\n:::{impl} f.literal\nBody.\n:::\n'''",
+            ),
+            ("config.yaml", "s: |\n  :::{impl} f.literal\n  Body.\n  :::"),
+        ] {
+            let source = format!("# :::{{impl}} f.comment\n# Body.\n# :::\n{literal}\n");
+            assert_eq!(names(file, source), ["f.comment"], "{file}");
         }
         // Plain text has no comments: roles count anywhere.
         assert_eq!(
@@ -4202,6 +4230,31 @@ api_key = 'PRIVATE_REMOTE'
         )
         .unwrap();
         assert_eq!(resolved.text, ready.raw_lines);
+    }
+
+    // {test}`requirements.ci.requirements_inputs`
+    #[test]
+    fn requirements_input_retains_raw_fences_whitespace_and_body_lines() {
+        let temp = fixture();
+        let body = "::::{req} ready\nReady MUST hold.  \n\n```text\n:impl: literal\n```\n::::";
+        fs::write(
+            temp.path().join("md/requirements.md"),
+            format!("# Rules\n\n{body}\n"),
+        )
+        .unwrap();
+        let definitions = super::load_definitions(temp.path()).unwrap();
+        let resolved = crate::inputs::InputSelector::Requirements {
+            requirements: "requirements.ready".to_owned(),
+        }
+        .resolve(
+            temp.path(),
+            &definitions,
+            &crate::inputs::OutlineCache::default(),
+        )
+        .unwrap();
+        assert_eq!(resolved.text, body.lines().collect::<Vec<_>>());
+        assert_eq!(resolved.ranges[0].line_start, 3);
+        assert_eq!(resolved.ranges[0].line_end, 9);
     }
 
     // {test}`requirements.ci.reference_set`

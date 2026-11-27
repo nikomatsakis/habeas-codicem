@@ -49,6 +49,64 @@ struct Review<'a> {
 }
 
 impl Review<'_> {
+    // {impl}`requirements.definitions.dependencies`
+    fn missing_optional_terms(
+        &self,
+        cx: &ValidationContext<'_, HabeasDomain>,
+    ) -> io::Result<Vec<String>> {
+        use std::collections::{BTreeSet, HashSet};
+        let graph = cx.graph();
+        let mandatory: HashSet<_> = self
+            .sources
+            .mandatory_inputs()
+            .iter()
+            .filter_map(InputSelector::from_input)
+            .map(|selector| graph.cache().intern_node(HabeasNode::from(&selector)))
+            .chain(std::iter::once(self.node))
+            .collect();
+        let mut definitions = BTreeSet::new();
+        let mut optional = Vec::new();
+        for dependency in cx.dependencies() {
+            let Dependency::Node(node, _) = dependency else {
+                continue;
+            };
+            let data = graph.cache().node_data(node).expect("observed node");
+            if let HabeasNode::Definition(name) = data.as_ref() {
+                definitions.insert(name.clone());
+            }
+            if mandatory.contains(&node) {
+                continue;
+            }
+            if let Ok(selector) = data.selector() {
+                let input = match &selector {
+                    InputSelector::Outline { file, item } => {
+                        // Use the retained tool snapshot even if the workspace changed after delivery.
+                        let selected = trust_but_verify::outline::OutlineContent::from_path(
+                            graph.cache(),
+                            graph.root.join(file),
+                        )
+                        .and_then(|snapshot| snapshot.select(item))
+                        .map_err(io::Error::other)?;
+                        let text = trust_but_verify::sources::redact_text(selected.text());
+                        json!({"file": file, "item": item, "text": text.lines().collect::<Vec<_>>()})
+                    }
+                    _ => self.sources.read_selector(&selector)?,
+                };
+                optional.push(input);
+            }
+        }
+        let record = json!({"inputs": optional});
+        let required = crate::terms::dependencies(
+            &self.sources.root,
+            &graph.definitions,
+            &self.sources.outlines,
+            record.as_object().unwrap(),
+            None,
+        )
+        .map_err(io::Error::other)?;
+        Ok(required.difference(&definitions).cloned().collect())
+    }
+
     // {impl}`requirements.authoring.line_numbers.citation`
     // {impl}`requirements.authoring.behavioral_review`
     async fn ask<R>(
@@ -69,10 +127,26 @@ impl Review<'_> {
             .message(prompt.subject)
             .vet_answer(|answer| {
                 let value = serde_json::to_value(answer)?;
-                if !citation_review && rejection.resubmitted(&value).is_some() {
+                let resubmitted = !citation_review && rejection.resubmitted(&value).is_some();
+                if !resubmitted {
+                    validate(&value)?;
+                }
+                if matches!(self.sources.subject_kind, AssessmentKind::Definition(..)) {
+                    let missing = self.missing_optional_terms(cx)?;
+                    if !missing.is_empty() {
+                        let reads: Vec<_> = missing
+                            .into_iter()
+                            .map(|name| json!({"data": HabeasNode::Definition(name)}))
+                            .collect();
+                        let reads = serde_json::to_string(&reads)?;
+                        return Ok(VetResult::CorrectAndTryAgain(format!(
+                            "Reviewed inputs refer to additional definitions. Call read_node for each of {reads}, consider their contents, and submit again."
+                        )));
+                    }
+                }
+                if resubmitted {
                     return Ok(VetResult::Accept);
                 }
-                validate(&value)?;
                 if !citation_review {
                     return match rejection.decide("submit_result", &value, location_guidance()) {
                         line_numbers::Outcome::Accept => Ok(VetResult::Accept),
@@ -205,6 +279,107 @@ pub(super) async fn assess(
     })
 }
 
+/// Assess the tracking issues of the acknowledgments used in this judgment.
+// {impl}`requirements.sdk.habeas.github_nodes.related`
+async fn review_tracking_issues(
+    sources: &AssessmentSources,
+    graph: &HabeasDomain,
+    validator: &mut trust_but_verify::graph::Validator<'_, HabeasDomain>,
+    answer: &mut Value,
+    dependencies: &mut Vec<Dependency<NodeId<HabeasDomain>, HabeasEdgeLabel>>,
+) -> Result<(), ValidationError<io::Error>> {
+    let Some(entries) = answer
+        .get("entries")
+        .or_else(|| answer["determination"].get("FIXME"))
+        .and_then(Value::as_array)
+    else {
+        return Ok(());
+    };
+    let mut corrections = Vec::new();
+    let mut reviewed = std::collections::HashSet::new();
+    let (subject, bodies) = match &sources.subject_kind {
+        AssessmentKind::Definition(..) => (
+            &sources.subject_name,
+            sources
+                .model_acknowledgments()
+                .into_iter()
+                .map(|a| {
+                    (
+                        a["file"].as_str().unwrap().to_owned(),
+                        a["item"].as_str().unwrap().to_owned(),
+                        a["body"].as_str().unwrap().to_owned(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        ),
+        AssessmentKind::Site(site, fixmes) => (
+            &site.requirement,
+            fixmes
+                .iter()
+                .map(|f| {
+                    (
+                        site.file.clone(),
+                        f.item.clone(),
+                        crate::redaction::redact_text(&f.commentary).into_owned(),
+                    )
+                })
+                .collect(),
+        ),
+        AssessmentKind::Citation(_) => return Ok(()),
+    };
+    for (file, item, body) in bodies {
+        let fixme = crate::fixme::FixmeBody::parse(&body);
+        if !fixme
+            .issues
+            .iter()
+            .any(|issue| entries.iter().any(|e| e.as_str() == Some(issue)))
+        {
+            continue;
+        }
+        let nodes = graph
+            .acknowledgments_for_review(&file, &item, subject, &body)
+            .map_err(ValidationError::Graph)?;
+        for node in nodes {
+            if !reviewed.insert(node) {
+                continue;
+            }
+            let checked = validator
+                .verify(crate::sdk::issues::RelatedIssues(node))
+                .await?;
+            for dep in checked.dependencies() {
+                if !dependencies.contains(dep) {
+                    dependencies.push(dep.clone());
+                }
+            }
+            for row in checked.into_output().into_iter().filter(|row| !row.related) {
+                let instruction = format!(
+                    "Update the acknowledgment in {file} to link an issue that describes its gap in place of {}",
+                    row.issue
+                );
+                corrections.push(corrections::Correction::Manual {
+                    instruction,
+                    rationale: row.rationale,
+                });
+            }
+        }
+    }
+    if !corrections.is_empty() {
+        if matches!(sources.subject_kind, AssessmentKind::Site(..)) {
+            answer["determination"] = json!(false);
+            answer["rationale"] = json!(
+                corrections
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            );
+        } else {
+            *answer = json!({"status":"failed","corrections":corrections});
+        }
+    }
+    Ok(())
+}
+
 /// Publish this assessment's counters even if its future is dropped during a request or backoff.
 struct AssessmentUsage<'d, 'log> {
     validator: trust_but_verify::graph::Validator<'d, HabeasDomain>,
@@ -248,17 +423,31 @@ async fn run(
         validator: trust_but_verify::graph::Validator::new(&graph),
         log: usage,
     };
-    let result = assessment
-        .validator
-        .verify(Review {
+    let result = async {
+        let verified = assessment
+            .validator
+            .verify(Review {
+                sources,
+                criterion,
+                node,
+            })
+            .await?;
+        let mut answer = verified.output().clone();
+        let mut dependencies = verified.dependencies().to_vec();
+        review_tracking_issues(
             sources,
-            criterion,
-            node,
-        })
-        .await;
+            &graph,
+            &mut assessment.validator,
+            &mut answer,
+            &mut dependencies,
+        )
+        .await?;
+        Ok((verified.version().cloned(), answer, dependencies))
+    }
+    .await;
     drop(assessment);
     usage.save()?;
-    let verified = result.map_err(|error| match error {
+    let (version, answer, dependencies) = result.map_err(|error| match error {
         ValidationError::Graph(error) => error,
         ValidationError::Provider(error) => {
             io::Error::new(error.kind(), ValidationError::<io::Error>::Provider(error))
@@ -266,7 +455,7 @@ async fn run(
         other => io::Error::other(other.to_string()),
     })?;
     // Project the SDK's observed nodes into the existing application evidence fields.
-    for dependency in verified.dependencies() {
+    for dependency in &dependencies {
         if let Dependency::Node(id, observed) = dependency {
             let data = graph.cache().node_data(*id).expect("observed node");
             if let Ok(selector) = data.selector() {
@@ -294,7 +483,6 @@ async fn run(
             }
         }
     }
-    let answer = verified.output();
     let (judgment, rationale) = if matches!(sources.subject_kind, AssessmentKind::Definition(..)) {
         serde_json::from_value::<corrections::AssessmentResult>(answer.clone())?.evidence()?
     } else {
@@ -313,9 +501,8 @@ async fn run(
         output["corrections"] = items.clone();
     }
     Ok(trust_but_verify::graph::Record::new(
-        verified.version().cloned(),
-        verified
-            .dependencies()
+        version,
+        dependencies
             .iter()
             .map(|dep| {
                 use trust_but_verify::graph::Dependency;

@@ -1,7 +1,7 @@
 {
   "requirement": "Source inspection uses the project directory and respects `.gitignore`,\nincluding nested ignore files and their exceptions. Untracked files are\navailable unless ignored. The same scope applies to listing, reading,\noutlining, text search, and structural search, including requests naming a\nfile or subdirectory directly.\n\nFiles outside the project directory and Git metadata are excluded. A direct\nread of an excluded file returns an error.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation in `requirements.sdk.sources.local_provider`.\n\n**Respecting `.gitignore`, including nested files and exceptions.**\n- `tests/source_defaults.rs#fn[gitignore_is_shared_by_all_operations_with_or_without_a_git_repository]` runs with and without a Git repository.\n- Its root `.gitignore` has `*.txt`, `!keep.txt` and `skip/`.\n- `src/.gitignore` re-includes `nested.txt`.\n- `skip/.gitignore` has `!rescue.txt`, which cannot reopen a file under an ignored directory.\n- The test asserts that `keep.txt`, `src/nested.txt` and `.visible` are listed.\n- It asserts that `ignored.txt`, `src/ignored.txt` and everything under `skip/` are not listed.\n- `ignored.txt` is also force-added to Git. It stays excluded, so ignoring is not overridden by tracking.\n\n**Untracked files available unless ignored.** `keep.txt` is never added to Git in the repository case, and it is listed and found by search.\n\n**Same scope for every operation, including direct file or subdirectory requests.**\n- Listing: `SourceScope::all()` and `SourceScope::default()` give the same result, and `SourceScope::under(...)` is exercised on ignored files and directories.\n- Reading: ignored files are rejected by `read`.\n- Outlining: `parse` is the outline path, and it also rejects ignored files. `agent/project_sources.rs#mod[tests]/fn[outline_tool_rejects_excluded_and_unreadable_sources_without_domain_reads]` shows the outline tool errors on ignored, `../`, `.git/config` and missing paths.\n- Text search:\n  - Whole-project searches find exactly the three expected matches, using a literal and a regex pattern.\n  - Searches scoped to an ignored file, an ignored file inside `src`, `skip` and `.git` return nothing.\n  - A `./src/../src` scope returns only `src/nested.txt`, and the neighbouring `src-old` is excluded.\n- Structural search: `tests/source_defaults.rs#fn[built_in_languages_and_structural_search_use_the_project_scope]` covers ignored `hidden.rs`, the ignored `skip` directory, `.git/metadata.rs` and a directly named visible file. The visible file returns a match, the others return nothing, and `..` returns an error.\n\n**Outside files and Git metadata excluded.**\n- `sources/tests.rs#fn[local_provider_scopes_paths_and_rejects_resources_outside_its_root]` shows `list` errors for `..`, an absolute outside path, a missing directory and a symlinked outside directory.\n- The same test shows `read` and `parse_sync` error for an absolute outside path, and `read` errors for a symlink to an outside file.\n- It also checks that a file read earlier is unchanged by a later disk edit, and it covers `SourceScope::under(\".\")`.\n- `.git/config` read errors and `.git` list, text-search and structural-search scopes are covered.\n- `symlinks_cannot_reopen_ignored_files_or_leave_the_project` covers symlinks to ignored files and to outside directories.\n\n**Direct read of an excluded file returns an error.** This is asserted for ignored files, `.git/config`, outside paths and symlink aliases.\n\nThe nested-exception case is not repeated for structural search. I did not treat that as a gap, because the requirement states one shared scope and structural search is checked for root ignores, `.git`, direct files and outside paths.",
+  "rationale": "The tests cover every obligation in `requirements.sdk.sources.local_provider`.\n\n**Project root, `.gitignore` and nested exceptions.** `crates/trust-but-verify/tests/source_defaults.rs#fn[gitignore_is_shared_by_all_operations_with_or_without_a_git_repository]` runs with and without a Git repository.\n- It uses a root `.gitignore` of `*.txt`, `!keep.txt` and `skip/`.\n- It adds nested `.gitignore` files: `src/.gitignore` with `!nested.txt`, and `skip/.gitignore` with `!rescue.txt`.\n- It asserts that `keep.txt` and `src/nested.txt` are listed.\n- It asserts that `ignored.txt`, `src/ignored.txt` and `skip/*` are not listed.\n- `skip/rescue.txt` stays excluded because its parent directory is ignored.\n- It asserts that a file tracked by Git but ignored is still excluded.\n\n**Untracked files available unless ignored.** In repository mode, `keep.txt` is untracked and not ignored. The test asserts that it is listed.\n\n**Same scope across operations, including direct file or subdirectory requests.**\n- Listing is covered by `gitignore_is_shared_by_all_operations_with_or_without_a_git_repository`. It lists with `SourceScope::under(name)` and `under(\"skip\")` and asserts empty results for excluded paths.\n- Reading is covered by the same test, which asserts errors for excluded files.\n- Outlining and parsing are covered by `sources.parse(...)` errors for excluded files in that test. `crates/trust-but-verify/src/agent/project_sources.rs#mod[tests]/fn[outline_tool_rejects_excluded_and_unreadable_sources_without_domain_reads]` also checks the `outline_source` tool. It rejects `ignored.txt`, `../source.txt`, `.git/config` and a missing file, and it accepts a normal file.\n- Text search is covered by `gitignore_is_shared_by_all_operations_with_or_without_a_git_repository`. It checks the match count across the whole project. It checks empty results when the scope names an ignored file, an ignored directory, or `.git`. It checks that a `./src/../src` scope returns only `src/nested.txt`, and not the sibling `src-old/other.rs`.\n- Structural search is covered by `crates/trust-but-verify/tests/source_defaults.rs#fn[built_in_languages_and_structural_search_use_the_project_scope]`. Scoping to `hidden.rs`, `skip` or `.git` gives empty, complete results. Scoping to `visible.rs` returns its match. The project-wide search excludes the ignored and Git-metadata files.\n\n**Outside the project and Git metadata excluded; direct read of an excluded file errors.**\n- `crates/trust-but-verify/src/sources/tests.rs#fn[local_provider_scopes_paths_and_rejects_resources_outside_its_root]` checks listing with `..`, an absolute outside path and a missing directory. Each returns an error.\n- The same test checks that reading and parsing an absolute outside path return errors.\n- It also checks a symlink to an outside directory and a symlink to an outside file.\n- `crates/trust-but-verify/tests/source_defaults.rs#fn[symlinks_cannot_reopen_ignored_files_or_leave_the_project]` checks that a symlink to an ignored file or to an outside directory is not listed, and that reading it errors. A symlink to a visible file is still allowed.\n- `.git/config` reads error in repository mode. `.git` is excluded from listing, text search and structural search.\n\n`crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` gives additional end-to-end coverage. The `.gitignore`d file is excluded from the listing, and a sibling directory with a similar name stays out of scope.\n\nI found no obligation that is untested and no assertion that contradicts the requirement.",
   "references": "5d1b8fc5830e19710c0f336719588826eaea1d84f432e0fd0f7ea4ae7b7ce105",
   "inputs": [
     {
@@ -45,17 +45,12 @@
     {
       "file": "crates/trust-but-verify/tests/source_defaults.rs",
       "item": "fn[built_in_languages_and_structural_search_use_the_project_scope]",
-      "hash": "dd3a494d5e6273b333b185acd1a7638593485f94894f7eea37faffdc625a1fa5"
+      "hash": "12b91c12af308adc6e3a9d313d7681f8b2516ad9d587d6bf56886a0b7de5d449"
     },
     {
       "file": "crates/trust-but-verify/tests/source_defaults.rs",
       "item": "fn[symlinks_cannot_reopen_ignored_files_or_leave_the_project]",
       "hash": "988253825f3e2c552f26383c08c725dc9250f2f37c504476ac9d1437807071cd"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/source_defaults.rs",
-      "item": "fn[scoped_text_results_keep_line_numbers_context_and_completeness]",
-      "hash": "94dc6bf71a806a3b06ffae02702cadb47ee42888916d306709da2219a40b73a8"
     }
   ],
   "format_version": 1,
@@ -176,7 +171,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "dd3a494d5e6273b333b185acd1a7638593485f94894f7eea37faffdc625a1fa5"
+          "value": "12b91c12af308adc6e3a9d313d7681f8b2516ad9d587d6bf56886a0b7de5d449"
         }
       ]
     },
@@ -194,23 +189,6 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "fa20b77391f8a7593f3f2f6f5f187f4a0119a3fa5811698da07ddb445d02eff8"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/source_defaults.rs"
-            },
-            "selector": "fn[scoped_text_results_keep_line_numbers_context_and_completeness]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "94dc6bf71a806a3b06ffae02702cadb47ee42888916d306709da2219a40b73a8"
         }
       ]
     }

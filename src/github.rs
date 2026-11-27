@@ -61,17 +61,6 @@ impl IssueRead {
             Self::Found(_) | Self::Failed(_) => "open",
         }
     }
-
-    /// Why the issue no longer counts as open, or `None` while it does or
-    /// cannot be read.
-    // {impl}`requirements.authoring.github_reads`
-    fn not_open(&self) -> Option<&'static str> {
-        match self {
-            Self::Found(issue) if !issue.open => Some("is closed"),
-            Self::Missing => Some("does not exist"),
-            Self::Found(_) | Self::Failed(_) => None,
-        }
-    }
 }
 
 /// Where and how GitHub is read; `None` never contacts it.
@@ -79,6 +68,7 @@ impl IssueRead {
 #[derive(Clone, Debug)]
 pub struct GithubIssues {
     client: Option<Arc<Client>>,
+    snapshot: Option<Arc<BTreeMap<String, IssueRead>>>,
     cache_failure: Option<String>,
 }
 
@@ -111,6 +101,7 @@ impl GithubIssues {
     // {cite}`habeas:util`
     pub fn offline() -> Self {
         Self {
+            snapshot: None,
             client: None,
             cache_failure: None,
         }
@@ -146,6 +137,7 @@ impl GithubIssues {
             Ok(cache) => Some(cache),
             Err(error) => {
                 return Self {
+                    snapshot: None,
                     client: None,
                     cache_failure: Some(format!("cannot locate GitHub cache: {error}")),
                 };
@@ -157,12 +149,20 @@ impl GithubIssues {
     // {impl}`requirements.authoring.github_reads`
     pub(crate) fn with_api(api: String, cache: Option<PathBuf>, token: Option<String>) -> Self {
         Self {
+            snapshot: None,
             client: Some(Arc::new(Client {
                 api: api.trim_end_matches('/').to_owned(),
                 cache,
                 token,
             })),
             cache_failure: None,
+        }
+    }
+
+    pub(crate) fn snapshot(reads: BTreeMap<String, IssueRead>) -> Self {
+        Self {
+            snapshot: Some(Arc::new(reads)),
+            ..Self::offline()
         }
     }
 
@@ -183,6 +183,12 @@ impl GithubIssues {
         issues: impl IntoIterator<Item = String>,
     ) -> BTreeMap<String, IssueRead> {
         let issues = issues.into_iter().collect::<BTreeSet<_>>();
+        if let Some(snapshot) = &self.snapshot {
+            return issues
+                .into_iter()
+                .filter_map(|id| snapshot.get(&id).cloned().map(|read| (id, read)))
+                .collect();
+        }
         let Some(client) = &self.client else {
             if !issues.is_empty()
                 && let Some(error) = &self.cache_failure
@@ -564,6 +570,39 @@ fn input_ranges(
         .collect()
 }
 
+/// Recheck external observations only in commands allowed to contact GitHub.
+fn check_reviewed_issues(
+    root: &Path,
+    relative: &str,
+    domain: &crate::sdk::HabeasDomain,
+    errors: &mut BTreeSet<String>,
+) -> Option<crate::judgment::Judgment> {
+    use trust_but_verify::{
+        domain::{Domain, NodeContents},
+        graph::Dependency,
+    };
+    let bytes = fs::read(root.join(relative)).ok()?;
+    let record: Value = serde_json::from_slice(&bytes).ok()?;
+    if let Ok((_, deps)) = crate::evidence_format::versioned_fields(&record) {
+        for dep in deps {
+            if let Dependency::Node(crate::sdk::HabeasNode::GithubIssue(issue), recorded) = dep {
+                let node = domain
+                    .cache()
+                    .intern_node(crate::sdk::HabeasNode::GithubIssue(issue.clone()));
+                if domain
+                    .node_content(&node)
+                    .is_ok_and(|current| current.fingerprint() != recorded)
+                {
+                    errors.insert(format!(
+                        "{relative}: stale: reviewed issue {issue} changed; reassess the record"
+                    ));
+                }
+            }
+        }
+    }
+    crate::judgment::Judgment::from_value(record.get("determination")?).ok()
+}
+
 /// Adds the findings that depend on issue states: each `{fixme}` naming a
 /// closed or nonexistent issue and the item containing it, and each FIXME
 /// record an acknowledging `{fixme}` of which names one, which is stale.
@@ -576,7 +615,30 @@ pub(crate) fn add_issue_findings(inspection: &mut RepositoryInspection, github: 
         return;
     }
     let reads = github.read_all(fixmes.iter().flat_map(|(_, issues)| issues.iter().cloned()));
-    let not_open = |issue: &String| reads.get(issue).and_then(IssueRead::not_open);
+    use crate::sdk::{HabeasDomain, HabeasNode, issues::OpenIssue};
+    use trust_but_verify::{domain::Domain, graph::Validator};
+    let mut domain = HabeasDomain::new(&root, &inspection.definitions, &inspection.outlines);
+    let names: Vec<_> = reads.keys().cloned().collect();
+    domain.github = GithubIssues::snapshot(reads);
+    let mut validator = Validator::new(&domain);
+    let reasons: BTreeMap<_, _> = names
+        .into_iter()
+        .filter_map(|issue| {
+            let node = domain
+                .cache()
+                .intern_node(HabeasNode::GithubIssue(issue.clone()));
+            match futures_executor::block_on(validator.verify(OpenIssue(node))) {
+                Ok(result) if !result.output() => Some((issue, "is closed")),
+                Err(trust_but_verify::graph::ValidationError::Graph(e))
+                    if e.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    Some((issue, "does not exist"))
+                }
+                _ => None,
+            }
+        })
+        .collect();
+    let not_open = |issue: &String| reasons.get(issue).copied();
     let outlines = &inspection.outlines;
     let mut errors = BTreeSet::new();
     for (reference, issues) in &fixmes {
@@ -602,12 +664,7 @@ pub(crate) fn add_issue_findings(inspection: &mut RepositoryInspection, github: 
             continue;
         }
         let relative = format!("evidence/{name}.json");
-        let Some(entries) = fs::read_to_string(root.join(&relative))
-            .ok()
-            .and_then(|content| serde_json::from_str::<Value>(&content).ok())
-            .and_then(|value| {
-                crate::judgment::Judgment::from_value(value.get("determination")?).ok()
-            })
+        let Some(entries) = check_reviewed_issues(&root, &relative, &domain, &mut errors)
             .map(|judgment| judgment.fixme_entries().to_vec())
             .filter(|entries| !entries.is_empty())
         else {
@@ -645,12 +702,7 @@ pub(crate) fn add_issue_findings(inspection: &mut RepositoryInspection, github: 
     // the site names is closed or missing.
     for site in inspection.sites.values().flatten() {
         let relative = site.review_path();
-        let fixme = fs::read_to_string(root.join(&relative))
-            .ok()
-            .and_then(|content| serde_json::from_str::<Value>(&content).ok())
-            .and_then(|value| {
-                crate::judgment::Judgment::from_value(value.get("determination")?).ok()
-            })
+        let fixme = check_reviewed_issues(&root, &relative, &domain, &mut errors)
             .is_some_and(|judgment| !judgment.fixme_entries().is_empty());
         if !fixme {
             continue;
@@ -738,6 +790,7 @@ pub(crate) mod tests {
     pub(crate) struct FakeGithub {
         pub(crate) endpoint: String,
         requests: Arc<Mutex<Vec<String>>>,
+        answers: Arc<Mutex<BTreeMap<String, (u16, String)>>>,
     }
 
     impl FakeGithub {
@@ -749,6 +802,8 @@ pub(crate) mod tests {
                 .iter()
                 .map(|(path, status, body)| ((*path).to_owned(), (*status, body.to_string())))
                 .collect::<BTreeMap<_, _>>();
+            let answers = Arc::new(Mutex::new(answers));
+            let replies = Arc::clone(&answers);
             let requests = Arc::new(Mutex::new(Vec::new()));
             let seen = Arc::clone(&requests);
             std::thread::spawn(move || {
@@ -765,7 +820,9 @@ pub(crate) mod tests {
                     }
                     let path = head.split_whitespace().nth(1).unwrap_or("").to_owned();
                     seen.lock().unwrap().push(head);
-                    let (status, body) = answers
+                    let (status, body) = replies
+                        .lock()
+                        .unwrap()
                         .get(&path)
                         .cloned()
                         .unwrap_or((404, "{}".to_owned()));
@@ -776,11 +833,22 @@ pub(crate) mod tests {
                     );
                 }
             });
-            Self { endpoint, requests }
+            Self {
+                endpoint,
+                requests,
+                answers,
+            }
         }
 
         // {test}`requirements.authoring.github_reads`
-        fn count(&self) -> usize {
+        pub(crate) fn respond(&self, path: &str, status: u16, body: Value) {
+            self.answers
+                .lock()
+                .unwrap()
+                .insert(path.to_owned(), (status, body.to_string()));
+        }
+
+        pub(crate) fn count(&self) -> usize {
             self.requests.lock().unwrap().len()
         }
     }
@@ -1006,6 +1074,47 @@ pub(crate) mod tests {
             .unwrap();
         }
         temp
+    }
+
+    // {test}`requirements.sdk.habeas.github_nodes.inputs`
+    // {test}`requirements.authoring.github_reads`
+    #[test]
+    fn status_detects_a_changed_reviewed_issue_body_while_repository_validation_stays_offline() {
+        use crate::sdk::{HabeasDomain, HabeasNode};
+        use trust_but_verify::{
+            domain::{Domain, NodeContents},
+            graph::Dependency,
+        };
+        let root = project();
+        let relative = "evidence/rules.other.json";
+        let id = "o/r#2";
+        let snapshot = |body: &str| {
+            GithubIssues::snapshot(BTreeMap::from([(
+                id.to_owned(),
+                IssueRead::Found(Issue {
+                    open: true,
+                    title: "Tracking".into(),
+                    body: body.into(),
+                }),
+            )]))
+        };
+        let mut inspection = crate::evidence::inspect_repository(root.path()).unwrap();
+        let mut graph =
+            HabeasDomain::new(root.path(), &inspection.definitions, &inspection.outlines);
+        graph.github = snapshot("Missing tests");
+        let node = HabeasNode::GithubIssue(id.into());
+        let handle = graph.cache().intern_node(node.clone());
+        let dependency: Dependency<_, crate::sdk::HabeasEdgeLabel> =
+            Dependency::Node(node, graph.node_content(&handle).unwrap().fingerprint());
+        fs::write(root.path().join(relative), json!({"format_version":1,"review_version":"issue-test","dependencies":[dependency],"determination":false}).to_string()).unwrap();
+        let changed =
+            format!("{relative}: stale: reviewed issue {id} changed; reassess the record");
+        let offline = crate::evidence::inspect_repository(root.path()).unwrap();
+        assert!(!offline.report.errors.contains(&changed));
+        add_issue_findings(&mut inspection, &graph.github);
+        assert!(!inspection.report.errors.contains(&changed));
+        add_issue_findings(&mut inspection, &snapshot("A different gap"));
+        assert!(inspection.report.errors.contains(&changed));
     }
 
     // {test}`requirements.cli.fixme_issues`

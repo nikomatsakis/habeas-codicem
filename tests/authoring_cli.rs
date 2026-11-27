@@ -123,6 +123,18 @@ impl Server {
                 });
                 before_reply();
                 let mut response = response;
+                if response == json!({"__next_page":true}) {
+                    let messages = requests.last().unwrap().body["messages"]
+                        .as_array()
+                        .unwrap();
+                    let page: Value =
+                        serde_json::from_str(messages.last().unwrap()["content"].as_str().unwrap())
+                            .unwrap();
+                    let uuid = page["next"]
+                        .as_str()
+                        .expect("requested a paged tool result");
+                    response = reply(vec![call("next", "get_next_page", json!({"uuid":uuid}))]);
+                }
                 if response == json!({"__read_edge_target":true}) {
                     let body = &requests.last().unwrap().body;
                     let result: Value = serde_json::from_str(
@@ -1366,6 +1378,10 @@ fn negative_assessment_records_additional_reads_and_fails_validation() {
 
     let evidence: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
     assert_eq!(evidence["determination"], false);
+    assert_eq!(
+        evidence["corrections"],
+        json!([{"kind":"manual","instruction":"Fix the reported gap.","rationale":rationale}])
+    );
     assert!(evidence["rationale"].as_str().unwrap().ends_with(rationale));
     let inputs = evidence["inputs"].as_array().unwrap();
     // Every supplied input is saved: the mandatory sources and the additional read.
@@ -1792,6 +1808,7 @@ fn usage_state_inside_the_project_is_refused_before_creating_it() {
 // {test}`requirements.authoring.invocation`
 // {test}`requirements.authoring.persistence`
 #[test]
+// {test}`requirements.sdk.habeas.assessment_policy`
 fn verbose_single_author_reports_only_false_rationale_without_source_inputs() {
     for (determination, flag) in [(false, "-v"), (false, "--verbose"), (true, "-v")] {
         let rationale = "REVIEW_RATIONALE_ONLY:\n\n- The captured test misses an interesting boundary.\n- Add an assertion for that boundary.";
@@ -2168,6 +2185,88 @@ fn either_existing_configuration_file_can_omit_its_authoring_section() {
         let output = fixture.run(&["author", SUBJECT]);
         assert!(output.status.success(), "{output:?}");
         assert_eq!(server.finish()[0].body["model"], MODEL);
+    }
+}
+
+// {test}`requirements.definitions.dependencies`
+#[test]
+fn optional_reviewed_terms_must_be_read_before_accepting_the_answer() {
+    let submit = || {
+        reply(vec![call(
+            "submit",
+            "submit_result",
+            json!({"result":{"status":"success","rationale":"Ready."}}),
+        )])
+    };
+    let server = Server::start(vec![
+        reply(vec![call(
+            "related",
+            "read_node",
+            json!({"data":{"Requirement":"requirements.related"}}),
+        )]),
+        submit(),
+        reply(vec![call(
+            "first",
+            "read_node",
+            json!({"data":{"Definition":"terms.first"}}),
+        )]),
+        submit(),
+        reply(vec![call(
+            "second",
+            "read_node",
+            json!({"data":{"Definition":"terms.second"}}),
+        )]),
+        submit(),
+    ]);
+    let fixture = Fixture::new(&server.endpoint);
+    let append = |file: &str, text: String| {
+        let path = fixture.project.join(file);
+        let mut book = fs::read_to_string(&path).unwrap();
+        book.push_str(&text);
+        fs::write(path, book).unwrap();
+    };
+    append(
+        "md/requirements.md",
+        format!("\n:::{{req}} related\nUse {{term}}`terms.first`.\n:::\n"),
+    );
+    for (name, next) in [("first", "second"), ("second", "first")] {
+        append(
+            "md/terms.md",
+            format!(
+                "\n:::{{definition}} {name}\n:phrase: {name}\n\nConsult {{term}}`terms.{next}`.\n:::\n"
+            ),
+        );
+    }
+    let output = fixture.run(&["author", SUBJECT]);
+    assert!(output.status.success(), "{output:?}");
+    let requests = server.finish();
+    for (round, names) in [(2, vec!["first", "second"]), (4, vec!["second"])] {
+        let correction = requests[round].body["messages"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["content"]
+            .as_str()
+            .unwrap();
+        for name in ["first", "second"] {
+            assert_eq!(
+                correction.contains(&format!("terms.{name}")),
+                names.contains(&name),
+                "{correction}"
+            );
+        }
+    }
+    let evidence: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
+    for name in ["first", "second"] {
+        assert_eq!(
+            evidence["inputs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|i| i["definition"] == format!("terms.{name}"))
+                .count(),
+            1
+        );
     }
 }
 
@@ -2552,6 +2651,96 @@ fn listing_charges_result_bytes_while_only_the_explicit_read_adds_an_input() {
     assert_eq!(counts[2], (counts[0].0 + 1, counts[0].1 + 1));
 }
 
+// {test}`requirements.authoring.usage_inputs`
+#[test]
+fn paged_reads_and_searches_charge_only_the_delivered_pages_and_excerpts() {
+    let submit = call(
+        "submit",
+        "submit_result",
+        json!({"result":{"status":"success","rationale":"Ready."}}),
+    );
+    let skipped = call("skipped", "list_sources", json!({}));
+    let server = Server::start(vec![
+        reply(vec![call(
+            "read",
+            "read_node",
+            json!({"path":"src/long.rs","location":"fn[long]"}),
+        )]),
+        json!({"__next_page":true}),
+        reply(vec![call(
+            "search",
+            "search_structure",
+            json!({"language":"rust","rule":{"rule":{"pattern":"café()"}}}),
+        )]),
+        json!({"__next_page":true}),
+        json!({"__finish_search":0}),
+        json!({"__finish_search":1}),
+        reply(vec![submit, skipped]),
+    ]);
+    let fixture = Fixture::new(&server.endpoint);
+    fs::write(
+        fixture.project.join("src/long.rs"),
+        format!("fn long() {{ let _ = \"{}\"; }}\n", "é".repeat(12000)),
+    )
+    .unwrap();
+    let functions: String = (0..160)
+        .map(|i| format!("fn check_{i}() {{ café(); }}\n"))
+        .collect();
+    fs::write(fixture.project.join("src/checks.rs"), functions).unwrap();
+    let output = fixture.run(&["author", SUBJECT]);
+    assert!(output.status.success(), "{output:?}");
+    let requests = server.finish();
+    let mandatory = requests[0].body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|m| m["content"].as_str()?.split_once("# Mandatory inputs"))
+        .unwrap()
+        .1
+        .trim_start();
+    let mandatory = serde_json::Deserializer::from_str(mandatory)
+        .into_iter::<Vec<Value>>()
+        .next()
+        .unwrap()
+        .unwrap()
+        .len();
+    let pages: Vec<_> = requests[1..=4]
+        .iter()
+        .map(|r| {
+            r.body["messages"].as_array().unwrap().last().unwrap()["content"]
+                .as_str()
+                .unwrap()
+        })
+        .collect();
+    assert!(pages.iter().all(|text| text.len() > text.chars().count()));
+    let mut inputs = mandatory + 2; // one input for each read page
+    for page in &pages[2..] {
+        let search: Value = serde_json::from_str(page).unwrap();
+        let matches = search["matches"].as_array().unwrap();
+        assert!(!matches.is_empty());
+        inputs += matches.len();
+    }
+    let stats = &fixture.usage()["provider_usage"];
+    assert_eq!(stats["prepared_inputs"], inputs);
+    assert_eq!(stats["delivered_inputs"], inputs);
+    assert_eq!(
+        stats["tools"]["read_node"],
+        json!({"calls":1,"result_bytes":pages[0].len()})
+    );
+    assert_eq!(
+        stats["tools"]["search_structure"],
+        json!({"calls":1,"result_bytes":pages[2].len()})
+    );
+    assert_eq!(
+        stats["tools"]["get_next_page"],
+        json!({"calls":2,"result_bytes":pages[1].len()+pages[3].len()})
+    );
+    assert!(
+        stats["tools"].get("list_sources").is_none(),
+        "skipped call charged: {stats}"
+    );
+}
+
 // {test}`requirements.authoring.submission.searches.line_numbers`
 // {test}`requirements.authoring.line_numbers.rejection`
 #[test]
@@ -2660,7 +2849,12 @@ fn missing_duplicate_and_invalid_submissions_preserve_existing_evidence() {
             "submit_result",
             json!({"result":{"status":"acknowledged_gap","entries":[],"rationale":"No gap identified."}}),
         )],
-    ] {
+    ].into_iter().chain([
+        json!({"status":"success","rationale":"  "}),
+        json!({"status":"acknowledged_gap","entries":["One acknowledged gap."],"rationale":""}),
+        json!({"status":"acknowledged_gap","entries":["One acknowledged gap."],"rationale":"  "}),
+        json!({"status":"acknowledged_gap","entries":["  "],"rationale":"An acknowledged gap."}),
+    ].map(|result| vec![call("blank", "submit_result", json!({"result": result}))])) {
         for stdout in [false, true] {
             let count = if calls.len() == 1 { 1 } else { 2 };
             let server = Server::start(vec![reply(calls.clone()); count]);
@@ -6117,7 +6311,7 @@ fn bundled_skills_mark_roots_without_requiring_helper_bookkeeping() {
         &[
             "every runnable test needs a `{test}` reference",
             "Ordinary functions, types, trait methods, and test helpers need no individual book connection",
-            "Recorded reads track evidence freshness",
+            "Recorded reads track evidence freshness; they do not satisfy a separate obligation to index every Rust item",
         ],
     );
     assert_text(
@@ -6955,6 +7149,65 @@ fn adaptive_sol_failure_is_final_and_confirm_selects_the_failed_assessment() {
     }
 }
 
+// {test}`requirements.authoring.corrections.apply`
+#[test]
+fn adaptive_corrections_only_edit_sources_for_the_selected_attempt() {
+    let response = |name: &str, arguments: Value| {
+        json!({
+            "id":"resp", "object":"response", "status":"completed", "model":"mock",
+            "output":[{"type":"function_call", "id":"fc", "call_id":"call", "name":name,
+                       "arguments":arguments.to_string(), "status":"completed"}],
+            "usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}
+        })
+    };
+    let read = |item| response("read_node", json!({"path":"src/lib.rs", "location":item}));
+    let fix = |item| {
+        response(
+            "submit_result",
+            json!({"result":{"status":"failed","corrections":[{
+                "kind":"add_reference","role":"test","file":"src/lib.rs","selector":item,"rationale":"This function tests readiness."
+            }]}}),
+        )
+    };
+    let success = || {
+        response(
+            "submit_result",
+            json!({"result":{"status":"success","rationale":"The tests cover readiness."}}),
+        )
+    };
+    for sol_adds_marker in [false, true] {
+        let mut replies = vec![read("fn[a]"), fix("fn[a]"), read("fn[b]")];
+        if sol_adds_marker {
+            replies.extend([fix("fn[b]"), success()]); // fresh mini reassesses the edited source
+        } else {
+            replies.push(success());
+        }
+        let server = Server::start(replies);
+        let fixture = Fixture::new(&server.endpoint);
+        configure_adaptive_fixture(&fixture, &server.endpoint);
+        let source = fixture.project.join("src/lib.rs");
+        let original = "fn a() { assert!(ready()); }\nfn b() { assert!(ready()); }\n";
+        fs::write(&source, original).unwrap();
+        let output = fixture.run(&["author", SUBJECT, "--policy", "once"]);
+        assert!(output.status.success(), "{output:?}");
+        let requests = server.finish();
+        let models: Vec<_> = requests
+            .iter()
+            .map(|r| r.body["model"].as_str().unwrap())
+            .collect();
+        let mut expected_models =
+            vec!["gpt-5.4-mini", "gpt-5.4-mini", "gpt-6.1-sol", "gpt-6.1-sol"];
+        let expected_source = if sol_adds_marker {
+            expected_models.push("gpt-5.4-mini");
+            original.replace("fn b()", "// {test}`requirements.ready`\nfn b()")
+        } else {
+            original.to_owned()
+        };
+        assert_eq!(models, expected_models);
+        assert_eq!(fs::read_to_string(source).unwrap(), expected_source);
+    }
+}
+
 // {cite}`habeas:util`
 fn configure_adaptive_fixture(fixture: &Fixture, endpoint: &str) {
     fs::write(fixture.project.join("src/lib.rs"), "// {impl}`requirements.ready`\npub fn ready() {}\n// {test}`requirements.ready`\nfn ready_test() {}\n").unwrap();
@@ -7144,6 +7397,16 @@ fn corrections_replay_reference_only_mixed_and_regression_findings() {
             2,
         ),
         (
+            "already present after reassessment",
+            vec![
+                read("page_id"),
+                fail(vec![add("page_id")]),
+                fail(vec![add("page_id")]),
+            ],
+            false,
+            1,
+        ),
+        (
             "confirm-reassessment",
             vec![
                 read("page_id"),
@@ -7158,6 +7421,28 @@ fn corrections_replay_reference_only_mixed_and_regression_findings() {
             "mixed",
             vec![read("page_id"), fail(vec![manual.clone(), add("page_id")])],
             false,
+            1,
+        ),
+        (
+            "inapplicable and valid",
+            vec![read("page_id"), fail(vec![add("missing"), add("page_id")])],
+            false,
+            1,
+        ),
+        (
+            "file root",
+            vec![
+                reply(vec![call(
+                    "read",
+                    "read_node",
+                    json!({"path":"src/lib.rs","location":""}),
+                )]),
+                fail(vec![
+                    json!({"kind":"add_reference","role":"impl","file":"src/lib.rs","selector":"","rationale":"The whole file implements readiness."}),
+                ]),
+                success(),
+            ],
+            true,
             1,
         ),
         (
@@ -7291,8 +7576,13 @@ fn corrections_replay_reference_only_mixed_and_regression_findings() {
             !stderr.contains("The test asserts the expected page ID."),
             "{stderr}"
         );
-        if case == "anchor" {
-            assert!(stderr.contains("already present"));
+        if matches!(case, "anchor" | "already present after reassessment") {
+            assert!(stderr.lines().any(|line| line == format!("{SUBJECT}: paused; requested markers already present, no assessment inputs changed")), "{stderr}");
+            assert_eq!(
+                stderr.matches("Reassessing 1 subjects").count(),
+                usize::from(case == "already present after reassessment"),
+                "{stderr}"
+            );
         }
         if case == "mixed" {
             let list = record["corrections"].as_array().unwrap();
@@ -7321,7 +7611,17 @@ fn corrections_replay_reference_only_mixed_and_regression_findings() {
                 "unread" | "sibling read" | "whole-file read" | "other assessor read"
             )
         );
-        let role = if case == "implementation" {
+        if case == "inapplicable and valid" {
+            assert!(
+                stderr
+                    .lines()
+                    .any(|line| line.contains("paused with unapplied correction")
+                        && line.contains("src/lib.rs#fn[missing]")
+                        && line.contains("no outline node matches")),
+                "{stderr}"
+            );
+        }
+        let role = if matches!(case, "implementation" | "file root") {
             "impl"
         } else {
             "test"
@@ -7330,7 +7630,11 @@ fn corrections_replay_reference_only_mixed_and_regression_findings() {
         let text = fs::read_to_string(&path).unwrap();
         assert_eq!(text.matches(&marker).count(), markers, "{case}: {stderr}");
         let mut expected_source = source.to_owned();
+        if case == "file root" {
+            expected_source.push_str(&marker);
+        }
         for target in match (role, markers) {
+            ("impl", 1) if case == "file root" => &[][..],
             ("impl", 1) => &["fn page("][..],
             ("test", 1) => &["fn page_id("],
             ("test", 2) => &["fn page_id(", "fn empty_page("],
@@ -7414,6 +7718,353 @@ fn stale_and_already_present_references_do_not_retry_unchanged_inputs() {
     }
 }
 
+// {test}`requirements.authoring.corrections.apply`
+#[test]
+fn only_delivered_item_contents_or_retained_search_excerpts_qualify_reference_edits() {
+    let target = "fn[check]";
+    let file = "src/checks.rs";
+    let source = "fn check() { assert_eq!(ready_count(), 17); }\n";
+    let search = || {
+        reply(vec![call(
+            "search",
+            "search_text",
+            json!({"path":file,"pattern":"ready_count","window_bytes":0}),
+        )])
+    };
+    for (kind, mut steps, qualifies) in [
+        ("mandatory", vec![], true),
+        (
+            "read",
+            vec![reply(vec![call(
+                "read",
+                "read_node",
+                json!({"path":file,"location":target}),
+            )])],
+            true,
+        ),
+        (
+            "list",
+            vec![reply(vec![call("list", "list_sources", json!({}))])],
+            false,
+        ),
+        (
+            "outline",
+            vec![reply(vec![call(
+                "outline",
+                "outline_source",
+                json!({"path":file}),
+            )])],
+            false,
+        ),
+        (
+            "edge",
+            vec![reply(vec![call(
+                "edges",
+                "outgoing_edges",
+                json!({"data":{"Requirement":"requirements.other"},"label":"Implements"}),
+            )])],
+            false,
+        ),
+        (
+            "discarded hit",
+            vec![search(), json!({"__finish_search":0})],
+            false,
+        ),
+        (
+            "retained hit",
+            vec![search(), json!({"__finish_search":0,"use_first":true})],
+            true,
+        ),
+    ] {
+        let finding = json!({"kind":"add_reference","role":"impl","file":file,"selector":target,"rationale":"Check enforces the ready count."});
+        steps.push(reply(vec![call(
+            "submit",
+            "submit_result",
+            json!({"result":{"status":"failed","corrections":[finding]}}),
+        )]));
+        if qualifies {
+            steps.push(reply(vec![call("done", "submit_result", json!({"result":{"status":"success","rationale":"The selected item is now linked."}}))]));
+        }
+        let count = steps.len();
+        let server = Server::start(steps);
+        let fixture = Fixture::new(&server.endpoint);
+        let path = fixture.project.join(file);
+        fs::write(&path, source).unwrap();
+        let anchor = if kind == "mandatory" {
+            format!(":test: {file}#{target}\n")
+        } else {
+            String::new()
+        };
+        fs::write(fixture.project.join("md/requirements.md"), format!(":::{{req}} ready\n{anchor}Readiness.\n:::\n\n:::{{req}} other\n:impl: {file}#{target}\nA separate requirement.\n:::\n")).unwrap();
+        let output = fixture.run(&["author", SUBJECT]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{kind}: {stderr}");
+        let requests = server.finish();
+        assert_eq!(requests.len(), count);
+        let expected = if qualifies {
+            format!("// {{impl}}`{SUBJECT}`\n{source}")
+        } else {
+            source.to_owned()
+        };
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            expected,
+            "{kind}: {stderr}"
+        );
+        assert_eq!(
+            stderr.contains("the assessor must inspect this exact item"),
+            !qualifies,
+            "{kind}: {stderr}"
+        );
+        let record: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
+        assert_eq!(record["determination"], qualifies, "{kind}");
+        if !qualifies {
+            assert_eq!(record["corrections"], json!([finding]));
+            assert!(
+                !record["inputs"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|i| i["file"] == file && i["item"] == target)
+            );
+        }
+        if kind == "mandatory" {
+            assert!(prompt_text(&requests[0].body).contains("assert_eq!(ready_count(), 17)"));
+        } else {
+            let response: Value = serde_json::from_str(
+                requests[1].body["messages"]
+                    .as_array()
+                    .unwrap()
+                    .last()
+                    .unwrap()["content"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap();
+            assert!(response.get("error").is_none(), "{kind}: {response}");
+            match kind {
+                "list" => assert!(response.to_string().contains(file), "{response}"),
+                "outline" => assert!(response.to_string().contains(target), "{response}"),
+                "edge" => assert_eq!(response["targets"].as_array().unwrap().len(), 1),
+                "discarded hit" | "retained hit" => assert!(
+                    response["matches"][0]["excerpt"]
+                        .as_str()
+                        .unwrap()
+                        .contains("ready_count")
+                ),
+                _ => (),
+            }
+        }
+    }
+}
+
+// {test}`requirements.authoring.corrections.apply`
+#[test]
+fn one_round_inserts_markers_at_multiple_items_and_the_root_of_the_same_file() {
+    let targets = [("fn[second]", "test"), ("", "impl"), ("fn[first]", "test")];
+    let reads = targets.map(|(selector, _)| {
+        call(
+            &format!("read-{selector}"),
+            "read_node",
+            json!({"path":"src/lib.rs","location":selector}),
+        )
+    });
+    let additions = targets.map(|(selector, role)| json!({"kind":"add_reference","role":role,"file":"src/lib.rs","selector":selector,"rationale":"The selected item supports readiness."}));
+    let server = Server::start(vec![
+        reply(reads.to_vec()),
+        reply(vec![call(
+            "add",
+            "submit_result",
+            json!({"result":{"status":"failed","corrections":additions}}),
+        )]),
+        reply(vec![call(
+            "done",
+            "submit_result",
+            json!({"result":{"status":"success","rationale":"All required items are linked."}}),
+        )]),
+    ]);
+    let fixture = Fixture::new(&server.endpoint);
+    let file = fixture.project.join("src/lib.rs");
+    let first = "fn first() { assert!(ready()); }\n";
+    let middle = "\nconst SENTINEL: usize = 19;\n\n";
+    let second = "fn second() { assert_eq!(ready_count(), SENTINEL); }\n";
+    fs::write(&file, format!("{first}{middle}{second}")).unwrap();
+    let output = fixture.run(&["author", SUBJECT]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    let marker = format!("// {{test}}`{SUBJECT}`\n");
+    assert_eq!(
+        fs::read_to_string(file).unwrap(),
+        format!("{marker}{first}{middle}{marker}{second}// {{impl}}`{SUBJECT}`\n")
+    );
+    assert_eq!(stderr.matches("(applied)").count(), 3, "{stderr}");
+    assert_eq!(server.finish().len(), 3);
+}
+
+// {test}`requirements.authoring.corrections.apply`
+#[test]
+fn reference_deduplication_distinguishes_roles_and_definitions_for_the_same_item() {
+    let test = format!("// {{test}}`{SUBJECT}`\n");
+    let implementation = format!("// {{impl}}`{SUBJECT}`\n");
+    let other = format!("// {{test}}`{}`\n", "requirements.other");
+    let function = "fn check() { assert!(ready()); }\n";
+    let add = |role| json!({"kind":"add_reference","role":role,"file":"src/lib.rs","selector":"fn[check]","rationale":"Check verifies the readiness invariant."});
+    for existing in ["", test.as_str(), other.as_str()] {
+        let server = Server::start(vec![
+            reply(vec![call(
+                "read",
+                "read_node",
+                json!({"path":"src/lib.rs","location":"fn[check]"}),
+            )]),
+            reply(vec![call(
+                "add",
+                "submit_result",
+                json!({"result":{"status":"failed","corrections":[add("test"), add("impl"), add("test")]}}),
+            )]),
+            reply(vec![call(
+                "done",
+                "submit_result",
+                json!({"result":{"status":"success","rationale":"Both roles are linked."}}),
+            )]),
+        ]);
+        let fixture = Fixture::new(&server.endpoint);
+        let requirements = fixture.project.join("md/requirements.md");
+        let mut book = fs::read_to_string(&requirements).unwrap();
+        book.push_str("\n:::{req} other\nA separate requirement.\n:::\n");
+        fs::write(requirements, book).unwrap();
+        let file = fixture.project.join("src/lib.rs");
+        fs::write(&file, format!("{existing}{function}")).unwrap();
+        let result = fixture.run(&["author", SUBJECT]);
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(result.status.success(), "{existing}: {stderr}");
+        let edited = fs::read_to_string(&file).unwrap();
+        let comments = edited.strip_suffix(function).unwrap();
+        let mut expected = vec![implementation.trim_end(), test.trim_end()];
+        if existing == other {
+            expected.push(other.trim_end());
+        }
+        expected.sort_unstable();
+        let mut written: Vec<_> = comments.lines().collect();
+        written.sort_unstable();
+        assert_eq!(written, expected, "{existing}: {stderr}");
+        assert_eq!(
+            stderr.matches("(already present)").count(),
+            usize::from(existing == test)
+        );
+        assert_eq!(
+            stderr.matches("(applied)").count(),
+            if existing == test { 1 } else { 2 }
+        );
+        assert_eq!(server.finish().len(), 3);
+    }
+}
+
+// {test}`requirements.authoring.corrections.apply`
+// {test}`requirements.authoring.reporting`
+#[test]
+fn read_only_correction_pauses_the_subject_after_applying_writable_siblings() {
+    let files = ["src/locked.rs", "src/writable.rs"];
+    let read = |file| {
+        call(
+            file,
+            "read_node",
+            json!({"path":file,"location":"fn[check]"}),
+        )
+    };
+    let add = |file| json!({"kind":"add_reference","role":"test","file":file,"selector":"fn[check]","rationale":"The assertion checks readiness."});
+    let corrections = files.map(add);
+    let server = Server::start(vec![
+        reply(files.map(read).to_vec()),
+        reply(vec![call(
+            "add",
+            "submit_result",
+            json!({"result":{"status":"failed","corrections":corrections}}),
+        )]),
+    ]);
+    let fixture = Fixture::new(&server.endpoint);
+    let [locked, writable] = files.map(|name| fixture.project.join(name));
+    let source = "fn check() { assert!(ready()); }\nfn unrelated() {}\n";
+    fs::write(&locked, source).unwrap();
+    fs::write(&writable, source).unwrap();
+    let original_permissions = fs::metadata(&locked).unwrap().permissions();
+    let mut readonly = original_permissions.clone();
+    readonly.set_readonly(true);
+    fs::set_permissions(&locked, readonly).unwrap();
+    let output = fixture.run(&["author", SUBJECT]);
+    fs::set_permissions(&locked, original_permissions).unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(
+        stderr
+            .lines()
+            .any(|s| s.contains("paused with unapplied correction")
+                && s.contains("src/locked.rs#fn[check]")
+                && s.contains("read-only")),
+        "{stderr}"
+    );
+    assert!(
+        stderr
+            .lines()
+            .any(|s| s.contains("src/writable.rs#fn[check]") && s.contains("(applied)")),
+        "{stderr}"
+    );
+    assert_eq!(fs::read_to_string(locked).unwrap(), source);
+    assert_eq!(
+        fs::read_to_string(writable).unwrap(),
+        format!("// {{test}}`{SUBJECT}`\n{source}")
+    );
+    let saved: Value = serde_json::from_slice(&fs::read(fixture.evidence).unwrap()).unwrap();
+    assert_eq!(saved["determination"], false);
+    assert_eq!(saved["corrections"], json!(corrections));
+    assert_eq!(server.finish().len(), 2);
+}
+
+// {test}`requirements.authoring.corrections.apply`
+#[test]
+fn applying_a_reference_preserves_intervening_edits_to_other_items_in_the_file() {
+    let check = "fn check() { assert_eq!(actual(), expected()); }\n";
+    let initial = format!("{check}fn other() {{ original(); }}\n");
+    let revised = format!("fn other() {{ revised(); }}\n{check}");
+    let updated = revised.clone();
+    let file = std::sync::Arc::new(std::sync::OnceLock::<PathBuf>::new());
+    let edit = file.clone();
+    let mut turn = 0;
+    let server = Server::start_with(
+        vec![
+            reply(vec![call(
+                "read",
+                "read_node",
+                json!({"path":"src/lib.rs","location":"fn[check]"}),
+            )]),
+            reply(vec![call(
+                "add",
+                "submit_result",
+                json!({"result":{"status":"failed","corrections":[{"kind":"add_reference","role":"test","file":"src/lib.rs","selector":"fn[check]","rationale":"Check compares actual and expected results."}]}}),
+            )]),
+            reply(vec![call(
+                "done",
+                "submit_result",
+                json!({"result":{"status":"success","rationale":"The test is now linked."}}),
+            )]),
+        ],
+        move || {
+            turn += 1;
+            if turn == 2 {
+                fs::write(edit.get().unwrap(), &updated).unwrap();
+            }
+        },
+    );
+    let fixture = Fixture::new(&server.endpoint);
+    let path = fixture.project.join("src/lib.rs");
+    fs::write(&path, initial).unwrap();
+    file.set(path.clone()).unwrap();
+    let output = fixture.run(&["author", SUBJECT]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(server.finish().len(), 3);
+    let expected = revised.replace(check, &format!("// {{test}}`{SUBJECT}`\n{check}"));
+    assert_eq!(fs::read_to_string(path).unwrap(), expected);
+}
+
 // {test}`requirements.authoring.persistence.fingerprints`
 #[test]
 fn an_applied_reference_keeps_the_original_read_and_reassessment_records_the_edit() {
@@ -7495,7 +8146,11 @@ fn malformed_definition_corrections_preserve_existing_evidence() {
         json!([{"kind":"other","instruction":"Add a test.","rationale":"Tests are missing."}]),
         json!([{"kind":"manual","instruction":"Add a test.","rationale":"Missing test.","role":"test"}]),
         json!([{"kind":"add_reference","role":"impl","file":"src/lib.rs","rationale":"Linked code implements this."}]),
-        json!([{"kind":"add_reference","role":"cite","file":"src/lib.rs","selector":"","rationale":"This file cites the requirement."}]),
+        json!([{"kind":"add_reference","role":"cite","file":"src/lib.rs","selector":"fn[ready]","rationale":"This function cites the requirement."}]),
+        json!([{"kind":"add_reference","file":"src/lib.rs","selector":"fn[ready]","rationale":"This function implements readiness."}]),
+        json!([{"kind":"add_reference","role":"impl","selector":"fn[ready]","rationale":"This function implements readiness."}]),
+        json!([{"kind":"add_reference","role":"impl","file":" ","selector":"fn[ready]","rationale":"This function implements readiness."}]),
+        json!([{"kind":"manual","rationale":"Coverage is missing."}]),
     ] {
         let server = Server::start(vec![reply(vec![call(
             "invalid",
@@ -7521,11 +8176,20 @@ fn malformed_definition_corrections_preserve_existing_evidence() {
 // {test}`requirements.authoring.corrections.apply`
 #[test]
 fn unreachable_reference_targets_are_reported_without_writing_or_retrying() {
-    for (file, selector) in [
-        ("/outside.rs", ""),
-        ("../outside.rs", ""),
-        ("src/lib.rs", "fn[missing]"),
-        ("src/lib.rs", "fn[ambiguous]"),
+    for (file, selector, reason) in [
+        ("/outside.rs", "", "expected a project-relative source path"),
+        (
+            "../outside.rs",
+            "",
+            "expected a project-relative source path",
+        ),
+        (
+            "src/lib.rs",
+            "fn[",
+            "invalid outline selector \"fn[\": unclosed `[`",
+        ),
+        ("src/lib.rs", "fn[missing]", "no outline node matches"),
+        ("src/lib.rs", "fn[ambiguous]", "is ambiguous"),
     ] {
         let correction = json!({"kind":"add_reference","role":"impl","file":file,"selector":selector,"rationale":"The selected item implements readiness."});
         let server = Server::start(vec![reply(vec![call(
@@ -7545,9 +8209,15 @@ fn unreachable_reference_targets_are_reported_without_writing_or_retrying() {
         let output = fixture.run(&["author", SUBJECT]);
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(output.status.success(), "{stderr}");
+        let message = stderr
+            .lines()
+            .find(|line| line.contains("paused with unapplied correction"))
+            .unwrap();
         assert!(
-            stderr.contains("paused with unapplied correction"),
-            "{stderr}"
+            message.contains(SUBJECT)
+                && message.contains(&format!("Add `{{impl}}` to `{file}#{selector}`"))
+                && message.contains(reason),
+            "{message}"
         );
         assert_eq!(server.finish().len(), 1);
         assert_eq!(
@@ -7558,4 +8228,116 @@ fn unreachable_reference_targets_are_reported_without_writing_or_retrying() {
         assert_eq!(saved["determination"], false);
         assert_eq!(saved["corrections"], json!([correction]));
     }
+}
+
+// {test}`requirements.sdk.habeas.github_nodes.related`
+#[test]
+fn author_persists_a_manual_correction_and_the_tracking_inputs_for_an_unrelated_issue() {
+    let issue = "example/app#125";
+    let related = "example/app#126";
+    let reason = "This issue concerns deployment rather than the acknowledged test gap.";
+    let server = Server::start(vec![
+        reply(vec![call(
+            "assessment",
+            "submit_result",
+            json!({"result":{"status":"acknowledged_gap","entries":[issue,related],"rationale":"One acknowledged gap."}}),
+        )]),
+        reply(vec![call(
+            "relevance",
+            "submit_result",
+            json!({"result":[{"issue":issue,"related":false,"rationale":reason},{"issue":related,"related":true,"rationale":"Tracks the test gap"}]}),
+        )]),
+    ]);
+    let fixture = Fixture::new(&server.endpoint);
+    let source = fixture.project.join("src/lib.rs");
+    let original = fs::read_to_string(&source).unwrap();
+    fs::write(
+        source,
+        original.replace(
+            "// :github: example/app#125",
+            "// :github: example/app#125\n// :github: example/app#126",
+        ),
+    )
+    .unwrap();
+    let cache = if cfg!(windows) {
+        "habeas/state/github"
+    } else {
+        "habeas/github"
+    };
+    let cache = fixture.state.join(cache);
+    fs::create_dir_all(&cache).unwrap();
+    let fetched = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    for (number, reference, title, body) in [
+        (
+            125,
+            issue,
+            "Deployment scheduling",
+            "Move deployments after noon.",
+        ),
+        (
+            126,
+            related,
+            "Missing ready assertion",
+            "Test the acknowledged gap.",
+        ),
+    ] {
+        let entry = json!({"issue":reference,"api":"http://127.0.0.1:9","fetched":fetched,"state":"open","title":title,"body":body});
+        fs::write(
+            cache.join(format!("example+app+{number}.json")),
+            entry.to_string(),
+        )
+        .unwrap();
+    }
+    let output = fixture.run(&["author", SUBJECT, "-v"]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(reason),
+        "{output:?}"
+    );
+    let requests = server.finish();
+    assert_eq!(requests.len(), 2);
+    let supplied = prompt_text(&requests[1].body);
+    for text in [
+        "One acknowledged gap.",
+        "Deployment scheduling",
+        "Move deployments after noon.",
+    ] {
+        assert!(supplied.contains(text), "{supplied}");
+    }
+    let record: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
+    assert_eq!(record["determination"], false);
+    assert_eq!(record["corrections"].as_array().unwrap().len(), 1);
+    let correction = &record["corrections"][0];
+    assert_eq!(correction["kind"], "manual");
+    assert!(correction["instruction"].as_str().unwrap().contains(issue));
+    assert!(
+        !correction["instruction"]
+            .as_str()
+            .unwrap()
+            .contains(related)
+    );
+    assert_eq!(correction["rationale"], reason);
+    let dependencies = record["dependencies"].as_array().unwrap();
+    let fixme = dependencies
+        .iter()
+        .find_map(|d| d["Node"][0].get("Fixme"))
+        .expect("persisted acknowledgment read");
+    assert_eq!(fixme["subject"], SUBJECT);
+    assert_eq!(fixme["file"], "src/lib.rs");
+    for reference in [issue, related] {
+        assert!(
+            dependencies
+                .iter()
+                .any(|d| d["Node"][0]["GithubIssue"] == reference)
+        );
+    }
+    assert!(
+        dependencies
+            .iter()
+            .any(|d| d["OutgoingEdges"][0]["Fixme"] == *fixme
+                && d["OutgoingEdges"][1] == "TrackingIssue")
+    );
 }

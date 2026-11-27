@@ -299,6 +299,12 @@ mod tests {
                     .unwrap_or_else(|error| panic!("{language}: {error}"));
             tested.push(language);
             assert!(!rule.extensions().is_empty());
+            for extension in rule.extensions() {
+                assert!(
+                    !extension.is_empty() && !extension.starts_with('.'),
+                    "{language}: {extension:?}"
+                );
+            }
             let found = rule
                 .matches(source)
                 .into_iter()

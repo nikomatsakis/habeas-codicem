@@ -258,6 +258,13 @@ impl StructuralMatch {
         Self { node, excerpt }
     }
 }
+/// Construct a result with [`SearchResults::new`].
+///
+/// ```compile_fail,E0639
+/// use trust_but_verify::sources::SearchResults;
+/// let _ = SearchResults { matches: vec![1], complete: true };
+/// ```
+// {test}`requirements.sdk.graph.search.SearchResults`
 // {impl}`requirements.sdk.sources.provider_results.search_completeness`
 #[non_exhaustive]
 pub struct SearchResults<T> {

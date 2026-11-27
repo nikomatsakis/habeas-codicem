@@ -940,6 +940,99 @@ fn a_move_onto_a_record_whose_own_move_is_refused_is_refused_too() {
     ] {
         assert_eq!(after.get(file), before.get(file), "{file}");
     }
+
+    // With its final destination free, both records can move together.
+    fs::remove_file(root.join("evidence/next.load.json")).unwrap();
+    fs::write(root.join("src/config.rs"), config_source("")).unwrap();
+    let output = refactor(
+        root,
+        &[
+            "--map",
+            "rules.load=core.load",
+            "--map",
+            "core.load=next.load",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let report = stdout(&output);
+    assert!(!report.contains("would be overwritten"), "{report}");
+    assert!(
+        report.contains("evidence/core.load.json -> evidence/next.load.json"),
+        "{report}"
+    );
+    assert!(
+        report.contains("evidence/rules.load.json -> evidence/core.load.json"),
+        "{report}"
+    );
+    assert!(!root.join("evidence/rules.load.json").exists());
+    let load = |path| serde_json::from_slice::<Value>(&fs::read(root.join(path)).unwrap()).unwrap();
+    assert_eq!(load("evidence/next.load.json")["rationale"], "Fine.");
+    assert!(
+        load("evidence/core.load.json")["rationale"]
+            .as_str()
+            .unwrap()
+            .contains("`core.load` asks")
+    );
+}
+
+// {test}`requirements.refactor.record_files`
+#[test]
+fn two_reviews_mapping_to_the_same_destination_are_preserved() {
+    let temp = project();
+    let root = temp.path();
+    fs::write(
+        root.join("src/config.rs"),
+        "// {cite}`rules.load`\nfn final_item() {}\n",
+    )
+    .unwrap();
+    let dirs = [
+        "evidence/citations/src/config.rs",
+        "evidence/sites/rules.load/src/config.rs",
+    ];
+    for dir in dirs {
+        fs::create_dir_all(root.join(dir)).unwrap();
+        for name in ["first", "second"] {
+            let mut review = json!({
+                "file": "src/config.rs", "item": format!("fn[{name}]"),
+                "determination": true, "rationale": name, "inputs": [],
+            });
+            if dir.starts_with("evidence/sites/") {
+                review["requirement"] = json!("rules.load");
+                review["applies"] = json!(true);
+            } else {
+                review["citations"] =
+                    json!([{"role":"cite", "name":"rules.load", "commentary":""}]);
+            }
+            fs::write(
+                root.join(format!("{dir}/fn[{name}].json")),
+                review.to_string(),
+            )
+            .unwrap();
+        }
+    }
+    let before = snapshot(root);
+    let output = refactor(
+        root,
+        &[
+            "--map",
+            "src/config.rs#fn[first]=src/config.rs#fn[final_item]",
+            "--map",
+            "src/config.rs#fn[second]=src/config.rs#fn[final_item]",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let report = stdout(&output);
+    for dir in dirs {
+        for name in ["first", "second"] {
+            assert!(
+                report.contains(&format!(
+                    "{dir}/fn[{name}].json: {dir}/fn[final_item].json would be overwritten"
+                )),
+                "{report}"
+            );
+        }
+    }
+    assert_eq!(snapshot(root), before);
 }
 
 // {test}`requirements.refactor.subject_text`

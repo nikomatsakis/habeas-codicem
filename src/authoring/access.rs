@@ -120,6 +120,7 @@ pub(crate) mod tests {
             "crates/a/target/out.rs",
             "evidence/x.json",
             "docs/book/page.md",
+            "docs/evidence/notes.md",
         ] {
             let path = root.join(file);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -132,6 +133,8 @@ pub(crate) mod tests {
         .unwrap();
         git(&root, &["init", "--quiet"]);
         git(&root, &["add", "-f", "."]);
+        fs::create_dir_all(root.join("crates/a/.git")).unwrap();
+        fs::write(root.join("crates/a/.git/config"), "metadata\n").unwrap();
         git(&root, &["rm", "--cached", "--quiet", "src/untracked.rs"]);
         fs::remove_file(root.join("src/deleted.rs")).unwrap();
         let mut errors = Vec::new();
@@ -144,6 +147,7 @@ pub(crate) mod tests {
             files,
             [
                 Path::new("docs/book/page.md"),
+                Path::new("docs/evidence/notes.md"),
                 Path::new("habeas.toml"),
                 Path::new("src/lib.rs"),
                 Path::new("src/staged.rs"),

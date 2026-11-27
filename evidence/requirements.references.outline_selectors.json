@@ -1,7 +1,7 @@
 {
   "requirement": "Habeas uses the TBV [outline selector grammar](sdk/outlines.md#parse-an-outline-selector)\nunder {cite}`requirements.sdk.outlines.selector_syntax` for source addresses.",
   "determination": true,
-  "rationale": "The subject `requirements.references.outline_selectors` has one obligation: Habeas MUST use the TBV outline selector grammar from `requirements.sdk.outlines.selector_syntax` for source addresses. That requirement is cited context. I checked that the reviewed tests apply the grammar where Habeas uses it, and I did not reassess the cited requirement's own tests.\n\nThe implementation sites marked {impl} are `plain_text` and `Builder::finish` in `crates/trust-but-verify/src/outline/mod.rs`, and `LegacyOutline::resolve` in the same file. They also include `ResolveError`'s `fmt` and `ParsedSource::resolve` in `src/inputs.rs`. The Habeas-side `ParsedSource::resolve` only passes the selector through to the outline resolver, so the grammar behavior is exercised through the TBV outline tests.\n\nMapping to the tests:\n- **Empty selector selects the root.** `rust_selectors_follow_syntactic_ancestry` asserts `resolve(\"\")` is 0. `outline_addresses_validate_selectors_without_reading_paths` accepts `\"\"` as an address selector.\n- **Named segments `kind[name]` and `/`-separated paths.** `rust_selectors_follow_syntactic_ancestry` checks about 20 selectors such as `mod[local]/fn[run]` and `fn[outer]/fn[inner]`. For each it asserts that the selector is generated and that it resolves back to a node with the same selector.\n- **Anonymous segments `kind@<12 hex of identity hash>`.** `anonymous_selectors_use_identity_hashes` checks the `use@` prefix and a length of 12 digits. It checks that inserting a statement keeps the other selectors resolving and that changing the content invalidates the changed node's selector. `anonymous_container_selectors_use_identity_hashes_and_survive_descendant_edits` asserts `item@{identity_hash[..12]}` and that the selector survives a descendant edit. `paragraphs_and_nested_directives_have_independent_source_ranges` checks the `kind@` prefix and length for Markdown nodes and that each one resolves.\n- **`#N` disambiguation.** `rust_selectors_follow_syntactic_ancestry` asserts `fn[repeated]#1` and `#2`, and that the bare `fn[repeated]` fails to resolve. `anonymous_selectors_use_identity_hashes` asserts the `#1` and `#2` suffixes on duplicate `use` items.\n- **`line` exception.** `plain_text_lines_are_interchangeable_anonymous_nodes` asserts that identical lines have identical selectors with no `#N`. It also asserts that the selector resolves.\n- **Percent-encoding.** `rust_selectors_follow_syntactic_ancestry` asserts `impl[%5Bu8;%204%5D]`, which covers `[`, `]` and whitespace. `outline_addresses_validate_selectors_without_reading_paths` accepts an encoded `/` (`mod[a%2Fb]/fn[kept]`). `profile_rules_map_only_matching_contexts_and_keep_other_nodes_transparent` checks that a malformed escape (`fn[bad%ZZ]`) is reported as invalid. The cited requirement's own tests in `selector.rs` and `tests/outline_content.rs` also cover `%`, `#` and `@`.\n- **Invalid or missing selectors.** `outline_addresses_validate_selectors_without_reading_paths` shows `OutlineData::new` rejects `fn[missing`, `fn[bad%ZZ]` and `/fn[kept]`, and that it keeps valid addresses unchanged. `profile_rules_map_only_matching_contexts_and_keep_other_nodes_transparent` checks the not-found and invalid-selector error messages from `resolve`.\n- **No line numbers in selectors.** The `plain_text` test inserts a statement above `use@` items and checks that every selector still resolves. That shows the selectors are not position-based.\n\nThe assertions compare exact selector strings and resolved indexes, so a change to the grammar would make them fail. I found no unmarked or missing scenario that a reviewer would need for this thin delegating requirement, and there are no acknowledgments to weigh.",
+  "rationale": "The subject has one obligation: Habeas uses the TBV outline selector grammar, as defined by `requirements.sdk.outlines.selector_syntax`, for source addresses. That requirement is cited as context, so I checked that the tests apply its grammar to Habeas addresses. I did not reassess its own tests.\n\nThe marked tests cover the grammar as follows:\n- **Rust paths and encoding:** `crates/trust-but-verify/src/outline/tests.rs#fn[rust_selectors_follow_syntactic_ancestry]` checks `/`-separated paths and the empty selector resolving to the root. It checks `kind[name]` segments, the multipart `impl[Thing/Trait]`, and percent-encoding in `impl[%5Bu8;%204%5D]`. It also checks `#1` and `#2` disambiguators, and that an ambiguous `fn[repeated]` and a missing selector both fail to resolve.\n- **Anonymous hashes:** `fn[anonymous_selectors_use_identity_hashes]` checks the `use@` plus 12 hex digits form, that selectors survive an insertion, and that they fail after a content change. It also checks `#N` for duplicate anonymous nodes.\n- **Line nodes:** `fn[plain_text_lines_are_interchangeable_anonymous_nodes]` checks that identical `line@` selectors are equal and resolve, and that whitespace is normalised.\n- **Anonymous containers:** `fn[anonymous_container_selectors_use_identity_hashes_and_survive_descendant_edits]` checks the `kind@hash` form for containers, built from the identity hash. It also checks stability when a descendant is edited, and that a child path continues from the anonymous segment.\n- **Markdown:** `src/outline/markdown_tests.rs#fn[paragraphs_and_nested_directives_have_independent_source_ranges]` checks the `kind@` plus 12 digit segment form, and that every selector resolves back to its node.\n- **Errors:** `fn[profile_rules_map_only_matching_contexts_and_keep_other_nodes_transparent]` checks the missing-selector error and the invalid-selector error for a malformed percent escape.\n- **Habeas source addresses:** `crates/trust-but-verify/tests/search.rs#fn[outline_addresses_validate_selectors_without_reading_paths]` checks that `OutlineData::new` accepts `\"\"`, `fn[kept]` and `mod[a%2Fb]/fn[kept]`. It also checks that it rejects `fn[missing`, `fn[bad%ZZ]` and a leading `/`, and that this does not depend on the path.\n\nI found no accepted-but-wrong behaviour. Other Habeas tests exercise the same resolution path, for example `tests/evidence_boundaries.rs` and `tests/authoring_cli.rs`. They carry no `{test}` reference to this requirement, but the marked tests already cover the grammar, so I did not treat that as a gap.",
   "references": "2c6fb45ec8a367d6739dd65005439f9370f78d69a364f7f23056d35dcb5f7f73",
   "inputs": [
     {
@@ -33,7 +33,9 @@
         "identical lines are interchangeable, so a `line` selector MUST resolve when any",
         "line with that content exists in the file. In names, `%`, `[`, `]`, `/`, `#`,",
         "`@`, and whitespace MUST be percent-encoded as UTF-8 bytes, so selectors are",
-        "reversible. Line numbers MUST NOT form part of a selector.",
+        "reversible. In a multipart label such as `impl[Thing/Trait]`, `/` separates",
+        "name parts. A slash within one part is encoded as `%2F`. Line numbers MUST NOT",
+        "form part of a selector.",
         ":::"
       ]
     },
@@ -142,7 +144,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "16b29353592b163d3e2bac3f735a0e6f207197bf29ceb419623fac65d62df8b5"
+          "value": "d4f491f21a4d8156e1bebdc0bea781fbcc9e94634745d15ac6567b710da16d3e"
         }
       ]
     },
@@ -274,6 +276,18 @@
         {
           "scheme": "node-path-set-sha256-v1",
           "value": "80c42a71b757eb8384a676ccfda41e7703fdf8b343603d87281212283881ba3f"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.references.outline_selectors"
+        },
+        "Tests",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "e92dccc4317f777ee9d6e125e140b2cf77e0d237e26d1da6c5a01a54effd4780"
         }
       ]
     },

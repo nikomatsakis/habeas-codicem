@@ -781,7 +781,7 @@ fn cached_outline_input(
     item: &str,
 ) -> std::io::Result<Value> {
     let selector = InputSelector::Outline {
-        file: file.to_owned(),
+        file: project_relative(root, file),
         item: item.to_owned(),
     };
     let resolved = selector

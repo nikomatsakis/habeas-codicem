@@ -517,6 +517,19 @@ fn citation_reviews_are_required_current_and_not_orphaned() {
     let write = |record: Value| fs::write(root.join(path), record.to_string()).unwrap();
     write(review(root, citations.clone(), json!(true)));
     assert_eq!(errors_for(path), Vec::<String>::new());
+    let mut invalid = review(root, citations.clone(), json!(true));
+    invalid["format_version"] = json!(1);
+    invalid["dependencies"] = json!([]);
+    invalid["review_version"] = json!("outdated");
+    invalid["corrections"] = json!([]);
+    write(invalid);
+    let combined = errors_for(path);
+    assert_eq!(combined.len(), 2, "{combined:#?}");
+    assert!(has(&combined, "review version or SDK dependency changed"));
+    assert!(has(
+        &combined,
+        "corrections require a failed definition assessment"
+    ));
     write(review(
         root,
         json!([null, {"role": "broken", "name": 7, "commentary": 8}]),
