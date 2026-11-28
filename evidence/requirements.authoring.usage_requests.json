@@ -1,8 +1,8 @@
 {
   "requirement": "HC MUST use one {term}`requirements.sdk.graph.running-criteria.validator` per assessment. Its usage record MUST report that validator’s attempt and token totals under {cite}`requirements.sdk.graph.running-criteria.Validator.usage` and its failure and retry counts under {cite}`requirements.authoring.usage_requests.failures`. The record MUST distinguish partial or unavailable token measurements from complete totals and preserve the available cache and reasoning breakdowns. The assessment MUST also report elapsed time.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation in `requirements.authoring.usage_requests`. I judged this from the supplied test sources only and did not read any implementation.\n\n- **Attempt and token totals from one validator per assessment.** `tests/authoring_cli.rs#fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]` runs a three-request assessment. It asserts `provider_usage.attempts == 3`, input tokens reported 33 and output tokens reported 21, with `missing_attempts == 0`. These totals are cumulative over several calls in one assessment. `fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]` asserts 38 input tokens, 10 output tokens and 2 attempts. `fn[openai_responses_replays_tool_calls_and_records_usage]` asserts 22 input tokens, 14 output tokens and 2 attempts. Only the cumulative-totals consequence of the one-validator rule is observable. The reviewed tests check that consequence.\n- **Failure and retry counts, including a recovered failure** (`requirements.authoring.usage_requests.failures`). `fn[a_successful_retry_reports_partial_token_measurements]` has a 503 followed by success. It asserts `attempts == 2`, `failed_attempts == 1` and `retries == 1`. The failure is therefore counted even though a retry recovered it. `bedrock_sdk_retries_are_disabled` in `crates/trust-but-verify/src/agent/providers.rs` checks that SDK-level retries are off, so every attempt is visible to the count.\n- **Terminal failure retains the accumulated counts.** `fn[terminal_provider_failure_retains_the_retry_and_undelivered_inputs]` has a 503 followed by a 400 and a non-success exit. It asserts `outcome == failed`, `attempts == 2`, `failed_attempts == 2` and `retries == 1`. It also asserts `input_tokens.missing_attempts == 2` and `delivered_inputs == 0`.\n- **Partial or unavailable token measurements are distinguished from complete totals.** In the retry test, the reply lacks `eval_count`. The test asserts input tokens `{reported:11, missing_attempts:1}` and output tokens `{reported:0, missing_attempts:2}`. The terminal-failure test asserts missing attempts with no reported tokens. The Ollama test asserts the complete case with `missing_attempts == 0`.\n- **Cache and reasoning breakdowns preserved.** `fn[claude_requests_carry_cache_checkpoints_and_record_cache_usage]` asserts `cached_input_tokens.reported == 1000` and `cache_creation_input_tokens.reported == 1200`. The OpenAI test asserts cached input tokens 6 and reasoning tokens 4, summed over two requests.\n- **Elapsed time reported.** The retry test and the terminal-failure test both assert `elapsed_ms > 0`, covering a completed run and a failed run.\n\nI found no unexercised obligation, no wrong expected value and no marking gap. The reviewed tests carry the `{test}` markers for the subject. `requirements.sdk.graph.running-criteria.Validator.usage` is cited context. I did not reassess its tests.",
-  "references": "070a972d5ff833ad0a753cd1ad42e1a6ebbef1a0801f498d39b9bf661c0510c3",
+  "rationale": "structural: The text has two structural obligations. Both are covered by the supplied roots. The rest of the text states only observable behavior.\n\n1. Clause: \"HC MUST use one `requirements.sdk.graph.running-criteria.validator` per assessment.\" An alternative could create a new validator for each review kind, or keep a shared validator across assessments. Output could look the same, but it would break the one-validator-per-assessment rule. `src/authoring/sdk.rs#fn[run]` builds one `trust_but_verify::graph::Validator::new(&graph)`. It stores it in `AssessmentUsage`. Every `verify` call, in both the Structural and Behavioral kinds and in `review_tracking_issues`, goes through that single `assessment.validator`. This is covered.\n\n2. Clause: \"Its usage record MUST report that validator's attempt and token totals ... and its failure and retry counts\". The record has to carry the SDK's validator usage. It must not carry a separately counted copy. `src/authoring/usage.rs#struct[UsageRecord]` has the field `provider_usage: trust_but_verify::graph::UsageStats`. That is the type returned by `Validator::usage()`. Because the record holds the SDK type, attempt, token, failure and retry totals, partial or unavailable measurements, and cache and reasoning breakdowns are carried as the SDK defines them. `AssessmentUsage`'s `Drop` implementation calls `UsageLog::observe_usage(self.validator.usage())`. That implementation is reached from `run` through the `AssessmentUsage` type. `observe_usage` copies the validator's `UsageStats` into `record.provider_usage`. `run` drops the assessment guard before `usage.save()`. This happens even when the result is an error, so a terminal failure keeps the accumulated counts. This is covered.\n\n3. Clause: \"The assessment MUST also report elapsed time.\" This is observable behavior. `UsageRecord.elapsed_ms` is a field of the record, and `UsageLog::finish` sets it. No type, library or signature is prescribed for it.\n\nThe remaining clauses are behavioral:\n- Failures must be counted, including failures recovered by a retry.\n- Partial and unavailable token measurements must be distinguished from complete totals.\n- The breakdowns must be preserved.\n\nThe SDK `Validator::usage` requirement, which is only cited here, defines how these are produced. No structural obligation is left without implementation evidence.\n\nbehavioral: I found no unacknowledged test gap. Each behavioral obligation has a marked test with assertions on the usage record.\n\n**Obligations and test mapping**\n- **One validator per assessment, with attempt and token totals.** `src/authoring/sdk.rs#fn[run]` creates a single `Validator` and runs the structural and behavioral criteria through it, so there is one assessment-wide usage record.\n  - `tests/authoring_cli.rs#fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]` asserts the attempt total, reported input and output tokens (33 and 21) and `missing_attempts == 0`.\n  - `bedrock_cli_uses_selected_profile_region_and_converse_tools` asserts attempts, 38 input tokens and 10 output tokens.\n  - `openai_responses_replays_tool_calls_and_records_usage` asserts attempts 3, input 22 and output 14.\n  - `explicit_ignored_reads_return_an_error_and_the_assessment_continues` asserts attempts 5.\n- **Failure and retry counts, including a recovered failure** (the cited `requirements.authoring.usage_requests.failures`). `a_successful_retry_reports_partial_token_measurements` has a 503 followed by a success. It asserts `failed_attempts == 1`, `retries == 1` and attempts 3.\n- **Terminal failure retains the accumulated counts.** `terminal_provider_failure_retains_the_retry_and_undelivered_inputs` has a 503 and then a 400. It asserts outcome `failed`, `failed_attempts == 2`, `retries == 1` and attempts 3. This also covers the cited `Validator.usage` rule that usage is added when the run returns `Err`.\n- **Partial or unavailable token measurements are distinguished from complete totals.** The retry test removes `eval_count` from the response. It asserts `input_tokens == {reported:11, missing_attempts:1}` and `output_tokens == {reported:0, missing_attempts:2}`. The terminal-failure test asserts `input_tokens.missing_attempts == 2`. The Ollama test asserts `missing_attempts == 0` for a complete run.\n- **Cache and reasoning breakdowns are preserved.** `openai_responses_replays_tool_calls_and_records_usage` asserts `cached_input_tokens.reported == 6` and `reasoning_tokens.reported == 4`. `claude_requests_carry_cache_checkpoints_and_record_cache_usage` asserts `cached_input_tokens.reported == 1000` and `cache_creation_input_tokens.reported == 1200`.\n- **Elapsed time is reported.** The retry test and the terminal-failure test both assert `elapsed_ms > 0`, on a successful and a failed run.\n\n**Other tests carrying the marker**\n- `crates/trust-but-verify/src/agent/providers.rs#mod[tests]/fn[bedrock_sdk_retries_are_disabled]` supports the retry-counting premise: with SDK-level retries disabled, the application's own retries are the ones counted.\n\n**Residual note**\n- Cache and reasoning totals are only asserted through their `reported` values on complete runs. No test marks a partial cache or reasoning measurement. The requirement's partial/unavailable language is about token measurements in general, and the input and output partial cases are covered. I treat the cache and reasoning partial case as an edge the text does not separately name, not as a gap.",
+  "references": "9d148a6f2fb73d322f41a0ea9829af9ed5f292544cb6ae5d5d49e924b748be31",
   "inputs": [
     {
       "requirements": "requirements.authoring.usage_requests",
@@ -47,44 +47,14 @@
       ]
     },
     {
-      "file": "crates/trust-but-verify/src/agent/providers.rs",
-      "item": "mod[tests]/fn[bedrock_sdk_retries_are_disabled]",
-      "hash": "843d31090f51e321289a9fc32bd4f4a4734f693ee195c896035374308fb2e66f"
+      "file": "src/authoring/sdk.rs",
+      "item": "fn[run]",
+      "hash": "3dc06c6dba13aac42ec7add468b17ea903f8d0ef1d00660174374edb509cd75d"
     },
     {
-      "file": "tests/authoring_cli.rs",
-      "item": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]",
-      "hash": "30a4bbe0281bcaab3304902e1cdc689db00f712739bd6c79978e075bb3611c36"
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "item": "fn[explicit_ignored_reads_return_an_error_and_the_assessment_continues]",
-      "hash": "5bf822982b98e872fca158fe54526973790556c7a8af20e16f38b00576538799"
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "item": "fn[a_successful_retry_reports_partial_token_measurements]",
-      "hash": "21ca86dbf94040e11b0897fe9c241b38efc19bdd0c74a0620bc791f645eee479"
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "item": "fn[terminal_provider_failure_retains_the_retry_and_undelivered_inputs]",
-      "hash": "09a600088fc2d40fb63fddd44475715207f54e3a50e68509452a125b52d28792"
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "item": "fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]",
-      "hash": "fc4fa4f250b30b409db9148c700f314a878b246281bb60f1a668dd10c79e04a4"
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "item": "fn[claude_requests_carry_cache_checkpoints_and_record_cache_usage]",
-      "hash": "52a6aa50c1f18412230dd27bedaef51a1a3f257cf2362d167b4091556317fbd1"
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "item": "fn[openai_responses_replays_tool_calls_and_records_usage]",
-      "hash": "769d2800a7800584a8c940d39385ee6f226dcc532bf2c586f721c3474efec704"
+      "file": "src/authoring/usage.rs",
+      "item": "struct[UsageRecord]",
+      "hash": "ab7dab5860fcd887f867c46a7234793f7fff4d520d5f6a22453be3f4546df341"
     },
     {
       "definition": "requirements.sdk.graph.running-criteria.validator",
@@ -95,9 +65,464 @@
         "A *validator* runs criteria against one borrowed domain and accumulates agent usage for the caller's operation. The caller chooses the operation's scope by creating a validator and using it for one or more criteria.",
         ":::"
       ]
+    },
+    {
+      "file": "src/authoring/sdk.rs",
+      "item": "struct[AssessmentUsage]",
+      "hash": "3998e8e008872a235ecc35726fae13c93b5e6250d96d7bdaf547bc73e4023344"
+    },
+    {
+      "file": "src/authoring/sdk.rs",
+      "item": "impl[AssessmentUsage<'_,%20'_>/Drop]",
+      "hash": "a7f623e986436b0ece4d02b7805df5db327e2ab12664525b692e6614db2012aa"
+    },
+    {
+      "file": "src/authoring/sdk.rs",
+      "item": "impl[AssessmentUsage<'_,%20'_>/Drop]/fn[drop]",
+      "hash": "d3767f3479ee1c1f7457031c3bfb7ec9095bcc097794e4b1a63d44958c31cf46"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[observe_usage]",
+      "hash": "7fd945ec0877edf48dfc9225c3fa2e1ce22be4d644c710c9ec8c521ac5eacddd"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
+      "item": "mod[tests]/fn[bedrock_sdk_retries_are_disabled]",
+      "hash": "843d31090f51e321289a9fc32bd4f4a4734f693ee195c896035374308fb2e66f"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]",
+      "hash": "e0deb8dd7515d15aace0005835b652ad8e791120badd5e2d8d4743c4b7b294ef"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[explicit_ignored_reads_return_an_error_and_the_assessment_continues]",
+      "hash": "61b6f60407abb0de0a62380496c2462d191a5a684eec67c5550d665544def4c9"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[a_successful_retry_reports_partial_token_measurements]",
+      "hash": "3022d7d66131bbc59427ca10d3c5de1619a40da463c80b0a6a0770fe5fa63a4e"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[terminal_provider_failure_retains_the_retry_and_undelivered_inputs]",
+      "hash": "d0a24b20817b80b2973ddaa48421d1abe6f372f34bfb5559ab70502e7dd22ac3"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]",
+      "hash": "f8520cf9ca546d090f86229eb654348be29397ea2fd3d3b462f205fd51145712"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[claude_requests_carry_cache_checkpoints_and_record_cache_usage]",
+      "hash": "52a6aa50c1f18412230dd27bedaef51a1a3f257cf2362d167b4091556317fbd1"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[openai_responses_replays_tool_calls_and_records_usage]",
+      "hash": "eec0229912407844fab6244fd0268fc9a8554f246029eb2539c7548881e7c7d1"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[start]",
+      "hash": "698a8b962164f09267f7d86aeecadf9d098c5df944eeb71e145cef9fdc8842d2"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[finish]",
+      "hash": "c00e8415ee262d33aabe14d23c4d1f206c16e6f72e675cc2d316c27f4321c348"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.authoring.usage_requests"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "9d148a6f2fb73d322f41a0ea9829af9ed5f292544cb6ae5d5d49e924b748be31"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.authoring.usage_requests"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "34c4ff8b9a0b685ebe84fa9977ea05229707a9232d6e4610f9dc6dd54229f10c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.running-criteria.Validator.usage"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "18b7497e2bbb9b551446ecc95ce681171f9d5ccd9f6b5b8f9355c21c876de805"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.authoring.usage_requests.failures"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "f2957a53814509e1320c167f1edb5f415b464002fc2d54ddec29a3361e9d171f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/authoring/sdk.rs"
+                },
+                "selector": "fn[run]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "3dc06c6dba13aac42ec7add468b17ea903f8d0ef1d00660174374edb509cd75d"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/authoring/usage.rs"
+                },
+                "selector": "struct[UsageRecord]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "ab7dab5860fcd887f867c46a7234793f7fff4d520d5f6a22453be3f4546df341"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Definition": "requirements.sdk.graph.running-criteria.validator"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "fccf7e4f4b7ad677067e7080c8396e547eb9e4b73d0a9455f6c5df4648d200a6"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/authoring/sdk.rs"
+                },
+                "selector": "struct[AssessmentUsage]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "3998e8e008872a235ecc35726fae13c93b5e6250d96d7bdaf547bc73e4023344"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/authoring/sdk.rs"
+                },
+                "selector": "impl[AssessmentUsage<'_,%20'_>/Drop]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "cb77bb569c213f55ab044fd156d7ca79d913f9430c51eccd1bcf21063bfd5db2"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/authoring/sdk.rs"
+                },
+                "selector": "impl[AssessmentUsage<'_,%20'_>/Drop]/fn[drop]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "d3767f3479ee1c1f7457031c3bfb7ec9095bcc097794e4b1a63d44958c31cf46"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/authoring/usage.rs"
+                },
+                "selector": "impl[UsageLog]/fn[observe_usage]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "7fd945ec0877edf48dfc9225c3fa2e1ce22be4d644c710c9ec8c521ac5eacddd"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The text has two structural obligations. Both are covered by the supplied roots. The rest of the text states only observable behavior.\n\n1. Clause: \"HC MUST use one `requirements.sdk.graph.running-criteria.validator` per assessment.\" An alternative could create a new validator for each review kind, or keep a shared validator across assessments. Output could look the same, but it would break the one-validator-per-assessment rule. `src/authoring/sdk.rs#fn[run]` builds one `trust_but_verify::graph::Validator::new(&graph)`. It stores it in `AssessmentUsage`. Every `verify` call, in both the Structural and Behavioral kinds and in `review_tracking_issues`, goes through that single `assessment.validator`. This is covered.\n\n2. Clause: \"Its usage record MUST report that validator's attempt and token totals ... and its failure and retry counts\". The record has to carry the SDK's validator usage. It must not carry a separately counted copy. `src/authoring/usage.rs#struct[UsageRecord]` has the field `provider_usage: trust_but_verify::graph::UsageStats`. That is the type returned by `Validator::usage()`. Because the record holds the SDK type, attempt, token, failure and retry totals, partial or unavailable measurements, and cache and reasoning breakdowns are carried as the SDK defines them. `AssessmentUsage`'s `Drop` implementation calls `UsageLog::observe_usage(self.validator.usage())`. That implementation is reached from `run` through the `AssessmentUsage` type. `observe_usage` copies the validator's `UsageStats` into `record.provider_usage`. `run` drops the assessment guard before `usage.save()`. This happens even when the result is an error, so a terminal failure keeps the accumulated counts. This is covered.\n\n3. Clause: \"The assessment MUST also report elapsed time.\" This is observable behavior. `UsageRecord.elapsed_ms` is a field of the record, and `UsageLog::finish` sets it. No type, library or signature is prescribed for it.\n\nThe remaining clauses are behavioral:\n- Failures must be counted, including failures recovered by a retry.\n- Partial and unavailable token measurements must be distinguished from complete totals.\n- The breakdowns must be preserved.\n\nThe SDK `Validator::usage` requirement, which is only cited here, defines how these are produced. No structural obligation is left without implementation evidence."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.authoring.usage_requests"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "9d148a6f2fb73d322f41a0ea9829af9ed5f292544cb6ae5d5d49e924b748be31"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.authoring.usage_requests"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "34c4ff8b9a0b685ebe84fa9977ea05229707a9232d6e4610f9dc6dd54229f10c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.running-criteria.Validator.usage"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "18b7497e2bbb9b551446ecc95ce681171f9d5ccd9f6b5b8f9355c21c876de805"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.authoring.usage_requests.failures"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "f2957a53814509e1320c167f1edb5f415b464002fc2d54ddec29a3361e9d171f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/providers.rs"
+                },
+                "selector": "mod[tests]/fn[bedrock_sdk_retries_are_disabled]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "843d31090f51e321289a9fc32bd4f4a4734f693ee195c896035374308fb2e66f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/authoring_cli.rs"
+                },
+                "selector": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "e0deb8dd7515d15aace0005835b652ad8e791120badd5e2d8d4743c4b7b294ef"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/authoring_cli.rs"
+                },
+                "selector": "fn[explicit_ignored_reads_return_an_error_and_the_assessment_continues]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "61b6f60407abb0de0a62380496c2462d191a5a684eec67c5550d665544def4c9"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/authoring_cli.rs"
+                },
+                "selector": "fn[a_successful_retry_reports_partial_token_measurements]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "3022d7d66131bbc59427ca10d3c5de1619a40da463c80b0a6a0770fe5fa63a4e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/authoring_cli.rs"
+                },
+                "selector": "fn[terminal_provider_failure_retains_the_retry_and_undelivered_inputs]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "d0a24b20817b80b2973ddaa48421d1abe6f372f34bfb5559ab70502e7dd22ac3"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/authoring_cli.rs"
+                },
+                "selector": "fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f8520cf9ca546d090f86229eb654348be29397ea2fd3d3b462f205fd51145712"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/authoring_cli.rs"
+                },
+                "selector": "fn[claude_requests_carry_cache_checkpoints_and_record_cache_usage]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "52a6aa50c1f18412230dd27bedaef51a1a3f257cf2362d167b4091556317fbd1"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/authoring_cli.rs"
+                },
+                "selector": "fn[openai_responses_replays_tool_calls_and_records_usage]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f57589b2e5b4f8c6b27ed9a4b5eeef341b62db04398c059076185cee372271f3"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Definition": "requirements.sdk.graph.running-criteria.validator"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "fccf7e4f4b7ad677067e7080c8396e547eb9e4b73d0a9455f6c5df4648d200a6"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/authoring/sdk.rs"
+                },
+                "selector": "fn[run]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "3dc06c6dba13aac42ec7add468b17ea903f8d0ef1d00660174374edb509cd75d"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "I found no unacknowledged test gap. Each behavioral obligation has a marked test with assertions on the usage record.\n\n**Obligations and test mapping**\n- **One validator per assessment, with attempt and token totals.** `src/authoring/sdk.rs#fn[run]` creates a single `Validator` and runs the structural and behavioral criteria through it, so there is one assessment-wide usage record.\n  - `tests/authoring_cli.rs#fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]` asserts the attempt total, reported input and output tokens (33 and 21) and `missing_attempts == 0`.\n  - `bedrock_cli_uses_selected_profile_region_and_converse_tools` asserts attempts, 38 input tokens and 10 output tokens.\n  - `openai_responses_replays_tool_calls_and_records_usage` asserts attempts 3, input 22 and output 14.\n  - `explicit_ignored_reads_return_an_error_and_the_assessment_continues` asserts attempts 5.\n- **Failure and retry counts, including a recovered failure** (the cited `requirements.authoring.usage_requests.failures`). `a_successful_retry_reports_partial_token_measurements` has a 503 followed by a success. It asserts `failed_attempts == 1`, `retries == 1` and attempts 3.\n- **Terminal failure retains the accumulated counts.** `terminal_provider_failure_retains_the_retry_and_undelivered_inputs` has a 503 and then a 400. It asserts outcome `failed`, `failed_attempts == 2`, `retries == 1` and attempts 3. This also covers the cited `Validator.usage` rule that usage is added when the run returns `Err`.\n- **Partial or unavailable token measurements are distinguished from complete totals.** The retry test removes `eval_count` from the response. It asserts `input_tokens == {reported:11, missing_attempts:1}` and `output_tokens == {reported:0, missing_attempts:2}`. The terminal-failure test asserts `input_tokens.missing_attempts == 2`. The Ollama test asserts `missing_attempts == 0` for a complete run.\n- **Cache and reasoning breakdowns are preserved.** `openai_responses_replays_tool_calls_and_records_usage` asserts `cached_input_tokens.reported == 6` and `reasoning_tokens.reported == 4`. `claude_requests_carry_cache_checkpoints_and_record_cache_usage` asserts `cached_input_tokens.reported == 1000` and `cache_creation_input_tokens.reported == 1200`.\n- **Elapsed time is reported.** The retry test and the terminal-failure test both assert `elapsed_ms > 0`, on a successful and a failed run.\n\n**Other tests carrying the marker**\n- `crates/trust-but-verify/src/agent/providers.rs#mod[tests]/fn[bedrock_sdk_retries_are_disabled]` supports the retry-counting premise: with SDK-level retries disabled, the application's own retries are the ones counted.\n\n**Residual note**\n- Cache and reasoning totals are only asserted through their `reported` values on complete runs. No test marks a partial cache or reasoning measurement. The requirement's partial/unavailable language is about token measurements in general, and the input and output partial cases are covered. I treat the cache and reasoning partial case as an edge the text does not separately name, not as a gap."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -107,19 +532,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "070a972d5ff833ad0a753cd1ad42e1a6ebbef1a0801f498d39b9bf661c0510c3"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.authoring.usage_requests"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "a2c901124eb92b90ca6b46cd4853132a5cc89b4ba4b0dff5e70b93b5f839c9cf"
+          "value": "9d148a6f2fb73d322f41a0ea9829af9ed5f292544cb6ae5d5d49e924b748be31"
         }
       ]
     },
@@ -162,6 +575,119 @@
           "Source": {
             "resource": {
               "scheme": "repo",
+              "location": "src/authoring/sdk.rs"
+            },
+            "selector": "fn[run]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "3dc06c6dba13aac42ec7add468b17ea903f8d0ef1d00660174374edb509cd75d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/usage.rs"
+            },
+            "selector": "struct[UsageRecord]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "ab7dab5860fcd887f867c46a7234793f7fff4d520d5f6a22453be3f4546df341"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Definition": "requirements.sdk.graph.running-criteria.validator"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "fccf7e4f4b7ad677067e7080c8396e547eb9e4b73d0a9455f6c5df4648d200a6"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/sdk.rs"
+            },
+            "selector": "struct[AssessmentUsage]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "3998e8e008872a235ecc35726fae13c93b5e6250d96d7bdaf547bc73e4023344"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/sdk.rs"
+            },
+            "selector": "impl[AssessmentUsage<'_,%20'_>/Drop]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "cb77bb569c213f55ab044fd156d7ca79d913f9430c51eccd1bcf21063bfd5db2"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/sdk.rs"
+            },
+            "selector": "impl[AssessmentUsage<'_,%20'_>/Drop]/fn[drop]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "d3767f3479ee1c1f7457031c3bfb7ec9095bcc097794e4b1a63d44958c31cf46"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/usage.rs"
+            },
+            "selector": "impl[UsageLog]/fn[observe_usage]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "7fd945ec0877edf48dfc9225c3fa2e1ce22be4d644c710c9ec8c521ac5eacddd"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/providers.rs"
             },
             "selector": "mod[tests]/fn[bedrock_sdk_retries_are_disabled]"
@@ -186,7 +712,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "30a4bbe0281bcaab3304902e1cdc689db00f712739bd6c79978e075bb3611c36"
+          "value": "e0deb8dd7515d15aace0005835b652ad8e791120badd5e2d8d4743c4b7b294ef"
         }
       ]
     },
@@ -203,7 +729,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "5bf822982b98e872fca158fe54526973790556c7a8af20e16f38b00576538799"
+          "value": "61b6f60407abb0de0a62380496c2462d191a5a684eec67c5550d665544def4c9"
         }
       ]
     },
@@ -220,7 +746,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "21ca86dbf94040e11b0897fe9c241b38efc19bdd0c74a0620bc791f645eee479"
+          "value": "3022d7d66131bbc59427ca10d3c5de1619a40da463c80b0a6a0770fe5fa63a4e"
         }
       ]
     },
@@ -237,7 +763,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "09a600088fc2d40fb63fddd44475715207f54e3a50e68509452a125b52d28792"
+          "value": "d0a24b20817b80b2973ddaa48421d1abe6f372f34bfb5559ab70502e7dd22ac3"
         }
       ]
     },
@@ -254,7 +780,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "fc4fa4f250b30b409db9148c700f314a878b246281bb60f1a668dd10c79e04a4"
+          "value": "f8520cf9ca546d090f86229eb654348be29397ea2fd3d3b462f205fd51145712"
         }
       ]
     },
@@ -288,18 +814,65 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "7237b4f467af9ae685aa91ba9fd4a61f8cce1e5fb9758e9560fbdeffab5df841"
+          "value": "f57589b2e5b4f8c6b27ed9a4b5eeef341b62db04398c059076185cee372271f3"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.authoring.usage_requests"
+        },
+        "Implements",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "e6f70e7b834a8acfb327818940406222a2d713c412952b8bacac6fa3366665e7"
         }
       ]
     },
     {
       "Node": [
         {
-          "Definition": "requirements.sdk.graph.running-criteria.validator"
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/usage.rs"
+            },
+            "selector": "impl[UsageLog]/fn[start]"
+          }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "fccf7e4f4b7ad677067e7080c8396e547eb9e4b73d0a9455f6c5df4648d200a6"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "698a8b962164f09267f7d86aeecadf9d098c5df944eeb71e145cef9fdc8842d2"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/usage.rs"
+            },
+            "selector": "impl[UsageLog]/fn[finish]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "c00e8415ee262d33aabe14d23c4d1f206c16e6f72e675cc2d316c27f4321c348"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.authoring.usage_requests"
+        },
+        "Tests",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "a568cfec18238d1694a76a760ee1bb9c589f70654c4f7aae478fa4912089d1cb"
         }
       ]
     }

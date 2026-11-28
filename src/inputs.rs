@@ -17,7 +17,6 @@ pub(crate) enum InputSelector {
     Requirements { requirements: String },
 }
 
-// {impl}`requirements.index.detail_format`
 #[derive(Clone, Debug)]
 pub(crate) struct SourceRange {
     pub(crate) file: String,
@@ -27,7 +26,6 @@ pub(crate) struct SourceRange {
 }
 
 /// The outline node an outline input currently selects.
-// {impl}`requirements.index.detail_format`
 #[derive(Clone, Debug)]
 pub(crate) struct ResolvedNode {
     /// Canonical path of the parsed file.
@@ -490,7 +488,6 @@ impl ParsedSource {
     /// Habeas attaches Markdown references to the nearest directive, or to
     /// their paragraph outside directives. SDK line selection still exposes
     /// the innermost paragraph.
-    // {impl}`requirements.references.outline_comments`
     pub(crate) fn reference_owner(&self, line: usize, column: usize) -> usize {
         let owner = self.outline.ownership.owner_at(line, column);
         if self.outline.language != "markdown" {
@@ -512,7 +509,6 @@ impl ParsedSource {
     }
 
     /// Resolves a selector to exactly one node.
-    // {impl}`requirements.references.outline_selectors`
     pub(crate) fn resolve(&self, file: &str, item: &str) -> Result<usize, String> {
         self.outline
             .resolve(item)
@@ -523,7 +519,6 @@ impl ParsedSource {
     /// range. Blank lines between nodes would otherwise select their common
     /// ancestor, so they are skipped unless every requested line is blank.
     /// With `comments`, comment lines select the comments' owners.
-    // {impl}`requirements.references.outline_comments`
     pub(crate) fn nodes_for_range(
         &self,
         line_start: usize,
@@ -551,7 +546,6 @@ impl ParsedSource {
         }
     }
 
-    // {impl}`requirements.ci.outline_inputs`
     /// A node's current inclusive line range and redacted source text.
     pub(crate) fn node_range(&self, file: &str, index: usize) -> (SourceRange, Vec<String>) {
         let node = &self.outline.nodes[index];
@@ -592,9 +586,9 @@ impl InputSelector {
         }
     }
 
+    // {impl}`requirements.definitions.inputs`
     /// The recorded evidence input: selectors and hashes, never outline
     /// source text or line numbers.
-    // {impl}`requirements.definitions.inputs`
     pub(crate) fn to_input(&self, resolved: &ResolvedInput) -> Value {
         match self {
             Self::Outline { file, item } => json!({
@@ -615,8 +609,6 @@ impl InputSelector {
 
     /// The input as shown to the model: the recorded input plus, for an
     /// outline input, the node's kind and source text, without line numbers.
-    // {impl}`requirements.authoring.mandatory_inputs`
-    // {impl}`requirements.authoring.no_line_numbers`
     pub(crate) fn to_model_input(&self, resolved: &ResolvedInput) -> Value {
         let mut input = self.to_input(resolved);
         if let (Self::Outline { .. }, Some(node), Some(object)) =
@@ -628,6 +620,7 @@ impl InputSelector {
         input
     }
 
+    // {impl}`requirements.definitions.inputs`
     pub(crate) fn resolve(
         &self,
         root: &Path,
@@ -718,7 +711,6 @@ impl InputSelector {
 
 /// The recorded form of a model-facing input: outline inputs keep only
 /// `file`, `item`, and `hash`.
-// {impl}`requirements.authoring.delivered_inputs`
 pub(crate) fn recorded_input(input: &Value) -> Value {
     match input.as_object() {
         Some(object) if object.contains_key("item") => json!({
@@ -730,7 +722,6 @@ pub(crate) fn recorded_input(input: &Value) -> Value {
     }
 }
 
-// {impl}`requirements.ci.schema`
 /// The recorded form of a file path: an absolute path inside the project at
 /// the canonical `root` becomes relative to the project for portability. Relative paths, and
 /// paths that leave the project, are kept as given.
@@ -764,7 +755,6 @@ pub(crate) fn project_relative(root: &Path, file: &str) -> String {
 /// `root`, and returns the evidence input recording it: `{file, item, hash}`.
 /// The empty selector selects the whole file. Intended for tools and tests
 /// that construct evidence records.
-// {impl}`requirements.ci.schema`
 pub fn outline_input(root: &Path, file: &str, item: &str) -> std::io::Result<Value> {
     cached_outline_input(
         &OutlineCache::default(),
@@ -793,8 +783,6 @@ fn cached_outline_input(
 /// Returns the evidence inputs for the innermost outline nodes covering an
 /// inclusive, one-based line range of `file`, as the `habeas` authoring tool
 /// records them.
-// {impl}`requirements.ci.outline_inputs`
-// {impl}`requirements.authoring.source_tools`
 pub fn outline_inputs_for_lines(
     root: &Path,
     file: &str,

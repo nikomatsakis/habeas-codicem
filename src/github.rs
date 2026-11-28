@@ -30,7 +30,6 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// An issue or pull request as GitHub reports it, with its title and body
 /// redacted.
-// {impl}`requirements.authoring.github_reads`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Issue {
     pub(crate) open: bool,
@@ -39,7 +38,6 @@ pub(crate) struct Issue {
 }
 
 /// The outcome of reading one issue.
-// {impl}`requirements.authoring.github_reads`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum IssueRead {
     Found(Issue),
@@ -53,7 +51,6 @@ impl IssueRead {
     /// The state supplied to a reviewer: an unreachable issue is assumed
     /// open, and one that does not exist acknowledges no more than a closed
     /// one does.
-    // {impl}`requirements.authoring.github_reads`
     pub(crate) fn state(&self) -> &'static str {
         match self {
             Self::Found(issue) if !issue.open => "closed",
@@ -64,7 +61,6 @@ impl IssueRead {
 }
 
 /// Where and how GitHub is read; `None` never contacts it.
-// {impl}`requirements.authoring.github_reads`
 #[derive(Clone, Debug)]
 pub struct GithubIssues {
     client: Option<Arc<Client>>,
@@ -74,7 +70,6 @@ pub struct GithubIssues {
 
 /// Whether a `HABEAS_GITHUB_API_URL` value has the only accepted form,
 /// `http://127.0.0.1:<port>`, optionally with a trailing slash.
-// {impl}`requirements.authoring.github_reads`
 fn is_loopback_api_url(url: &str) -> bool {
     url.strip_prefix("http://127.0.0.1:")
         .map(|rest| rest.strip_suffix('/').unwrap_or(rest))
@@ -86,7 +81,6 @@ fn is_loopback_api_url(url: &str) -> bool {
 }
 
 /// One configured GitHub API endpoint.
-// {impl}`requirements.authoring.github_reads`
 #[derive(Debug)]
 struct Client {
     api: String,
@@ -107,12 +101,11 @@ impl GithubIssues {
         }
     }
 
+    // {impl}`requirements.authoring.github_reads`
     /// Reads GitHub, authenticating with `GITHUB_TOKEN` when it is set and
     /// caching under the state root, for the project at `root`. A state root
     /// inside that project, or one that cannot be determined, prevents reads
     /// and is reported when an issue is requested. Unit tests never contact GitHub.
-    // {impl}`requirements.authoring.github_reads`
-    // {impl}`requirements.configuration.state_location`
     pub fn from_env(root: &Path) -> Self {
         if cfg!(test) {
             return Self::offline();
@@ -146,7 +139,6 @@ impl GithubIssues {
         Self::with_api(api, cache, token)
     }
 
-    // {impl}`requirements.authoring.github_reads`
     pub(crate) fn with_api(api: String, cache: Option<PathBuf>, token: Option<String>) -> Self {
         Self {
             snapshot: None,
@@ -167,17 +159,16 @@ impl GithubIssues {
     }
 
     /// Reads one issue reference of the form `<owner>/<repo>#<number>`.
-    // {impl}`requirements.authoring.github_reads`
     pub(crate) fn read(&self, issue: &str) -> IssueRead {
         self.read_all([issue.to_owned()])
             .remove(issue)
             .unwrap_or_else(|| IssueRead::Failed("no result".to_owned()))
     }
 
+    // {impl}`requirements.authoring.github_reads`
     /// Reads several issues concurrently, each from a fresh cache entry when
     /// there is one. This blocks; it runs its requests on its own thread so
     /// it may be called from within an asynchronous runtime.
-    // {impl}`requirements.authoring.github_reads`
     pub(crate) fn read_all(
         &self,
         issues: impl IntoIterator<Item = String>,
@@ -246,7 +237,6 @@ impl GithubIssues {
 impl Client {
     /// The cache file of an issue: owner, repository, and number joined by
     /// `+`, which none of them may contain.
-    // {impl}`requirements.authoring.github_reads`
     fn cache_path(&self, issue: &str) -> Option<PathBuf> {
         let (owner, repo, number) = split_issue(issue)?;
         Some(
@@ -257,7 +247,6 @@ impl Client {
     }
 
     /// A cached result less than an hour old, read from this endpoint.
-    // {impl}`requirements.authoring.github_reads`
     fn cached(&self, issue: &str, now: u64) -> Option<IssueRead> {
         let entry: Value =
             serde_json::from_str(&fs::read_to_string(self.cache_path(issue)?).ok()?).ok()?;
@@ -288,8 +277,6 @@ impl Client {
     }
 
     /// Records a definitive result, reporting storage failures to the caller.
-    // {impl}`requirements.authoring.github_reads`
-    // {impl}`requirements.configuration.state_location`
     fn store(&self, issue: &str, now: u64, read: &IssueRead) -> std::io::Result<()> {
         let Some(path) = self.cache_path(issue) else {
             return Ok(());
@@ -315,7 +302,6 @@ impl Client {
     }
 
     /// Fetches issues concurrently on a runtime of this thread's own.
-    // {impl}`requirements.authoring.github_reads`
     fn fetch_all(&self, issues: Vec<String>) -> BTreeMap<String, IssueRead> {
         let failed = |issues: Vec<String>, message: String| {
             issues
@@ -367,8 +353,6 @@ impl Client {
 
 /// Reads one issue or pull request: 404 and 410 mean it does not exist;
 /// any other failure leaves its state unknown.
-// {impl}`requirements.authoring.github_reads`
-// {impl}`requirements.authoring.redaction`
 async fn fetch(http: &reqwest::Client, url: &str, token: Option<&str>) -> IssueRead {
     let mut request = http
         .get(url)
@@ -412,7 +396,6 @@ async fn fetch(http: &reqwest::Client, url: &str, token: Option<&str>) -> IssueR
 }
 
 /// The owner, repository, and number of a valid issue reference.
-// {impl}`requirements.authoring.github_reads`
 fn split_issue(issue: &str) -> Option<(&str, &str, &str)> {
     if !is_issue_reference(issue) {
         return None;
@@ -422,9 +405,9 @@ fn split_issue(issue: &str) -> Option<(&str, &str, &str)> {
     Some((owner, repo, number))
 }
 
+// {impl}`requirements.authoring.github_reads`
 /// The `github` tool: one issue's reference, state, title, and redacted
 /// body. Its result is not an evidence input.
-// {impl}`requirements.authoring.github_reads`
 pub(crate) fn tool(github: &GithubIssues, arguments: &Value) -> Result<Value, String> {
     let object = arguments
         .as_object()
@@ -453,7 +436,6 @@ pub(crate) fn tool(github: &GithubIssues, arguments: &Value) -> Result<Value, St
 
 /// The closed `{fixme}` fences of a reference list and the issues each
 /// names.
-// {impl}`requirements.authoring.github_reads`
 fn fixme_issues(references: &[SourceReference]) -> Vec<(&SourceReference, Vec<String>)> {
     references
         .iter()
@@ -465,9 +447,9 @@ fn fixme_issues(references: &[SourceReference]) -> Vec<(&SourceReference, Vec<St
         .collect()
 }
 
+// {impl}`requirements.authoring.github_reads`
 /// The states of the issues named by the `{fixme}` references inside each
 /// input's sources, in input order, for supplying with the inputs.
-// {impl}`requirements.authoring.github_reads`
 pub(crate) fn input_issue_states(
     root: &Path,
     outlines: &crate::inputs::OutlineCache,
@@ -520,7 +502,6 @@ pub(crate) fn input_issue_states(
 
 /// The source lines a model input covers: an outline node's current range,
 /// or the declarations a requirements or definition input matches.
-// {impl}`requirements.authoring.github_reads`
 fn input_ranges(
     root: &Path,
     outlines: &crate::inputs::OutlineCache,
@@ -603,11 +584,11 @@ fn check_reviewed_issues(
     crate::judgment::Judgment::from_value(record.get("determination")?).ok()
 }
 
+// {impl}`requirements.authoring.github_reads`
 /// Adds the findings that depend on issue states: each `{fixme}` naming a
 /// closed or nonexistent issue and the item containing it, and each FIXME
 /// record an acknowledging `{fixme}` of which names one, which is stale.
 /// Issues that cannot be read count as open.
-// {impl}`requirements.authoring.github_reads`
 pub(crate) fn add_issue_findings(inspection: &mut RepositoryInspection, github: &GithubIssues) {
     let root = inspection.root.clone();
     let fixmes = fixme_issues(&inspection.references);

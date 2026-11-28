@@ -1,8 +1,8 @@
 {
   "requirement": "{impl}`requirements.configuration.feature_sections`\nThe user `[authoring]` table MUST serialize UserAuthoringConfig, and the workspace\ntable MUST serialize WorkspaceAuthoringConfig. Each\n`[authoring.configs.<name>]` table MUST serialize one AuthoringConfig, with\n`backend = \"bedrock\"`, `backend = \"ollama\"`, or `backend = \"openai\"` and that variant's fields in the same\ntable. Backend-specific inference options MUST appear in its `options` subtable.\nWithin a present user authoring section, `configs` MUST be present but MAY be empty;\nworkspace `configs` MAY be omitted, allowing a workspace default to select a\nnamed user configuration.\nomitted `projects` and `options` tables MUST deserialize as empty maps.\nSerialization MUST follow the common rules in\n{cite}`requirements.configuration.serialization`.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation in `requirements.authoring.configuration_serialization`. I did not need implementation source.\n\n**Structure and round trip**\n- `tests/configuration.rs#fn[backend_configuration_round_trips_without_materializing_defaults]` round-trips a user `[authoring]` table. The table has `default`, a bedrock config with an `options` subtable (including nested `custom`), and an ollama config. The test asserts `UserConfig::parse(to_toml()) == config`.\n- `tests/configuration.rs#fn[user_and_workspace_authoring_tables_round_trip_every_map]` round-trips a user table with `projects`. It also round-trips a workspace table with populated `configs` and `options`. It asserts `backend = \"bedrock\"` and `[authoring.configs.cloud.options` appear in the output, which covers the tag in the same table and the `options` subtable. Other tests round-trip ollama and openai configs with `backend` as a tag in the same table. A nested serialization could not re-parse to an equal value.\n- `tests/configuration.rs#fn[openai_defaults_are_effective_only_and_explicit_values_win]` also round-trips openai options.\n\n**`configs` rules**\n- A user `[authoring]` section without `configs` is in the failing set of `tests/configuration.rs#fn[invalid_schema_and_feature_values_report_the_configuration_path]`. That is the MUST-be-present case.\n- The same test accepts `configs = {}`. `user_and_workspace_authoring_tables_round_trip_every_map` shows the empty `configs` survives serialization and re-parse.\n- `tests/configuration.rs#fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]` loads a workspace `[authoring]` with only `default` and checks `configs` is empty. It checks the serialized output has no `configs` and that the output round-trips. That covers the workspace-MAY-omit case.\n\n**Omitted tables**\n- `projects` is asserted empty in `backend_configuration_round_trips_without_materializing_defaults`.\n- `options` is asserted empty for ollama there. `tests/configuration.rs#fn[authoring_concurrency_defaults_overrides_and_invalid_values]` asserts `options().is_empty()` for bedrock, ollama and openai.\n\n**Common rules from `requirements.configuration.serialization`**\n- Omitted settings are not materialized. Tests assert no `endpoint`, `concurrency` or `max_output_tokens` in the output, and openai `model` and `effort` appear only if explicit.\n- Explicit values are preserved (`concurrency = 7`, explicit `endpoint`).\n- Resolved credentials are not written: `openai_configuration_preserves_model_and_resolves_credentials` asserts no `api_key` in the output.\n- Explicit credentials round-trip in `explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them`.\n- Loading does not rewrite the workspace file, checked by comparing file contents in the workspace discovery test.\n\nThe tests contain no wrong expectations. The assertions would catch the plausible violations.\n\nNo marking gaps were found: each relevant test carries a {test} reference to the subject.",
-  "references": "2288af3a8ee6b39d9bebe0a14528c6db1fa0652b0c0b41677ac71d34aab41dcb",
+  "rationale": "structural: The structural obligations are the serialized shapes of the authoring tables, and the four roots implement them.\n\n- `src/config.rs#struct[UserConfig]` and `src/config.rs#struct[WorkspaceConfig]` carry the `authoring` field as an optional `UserAuthoringConfig` or `WorkspaceAuthoringConfig`. This matches \"The user `[authoring]` table MUST serialize UserAuthoringConfig, and the workspace table MUST serialize WorkspaceAuthoringConfig\".\n- `src/config.rs#struct[UserAuthoringConfig]` has `configs: BTreeMap<String, AuthoringConfig>` with no serde default. It is therefore required when the section is present, though it may be empty. Its `projects` field has a serde default, so an omitted table deserializes as an empty map.\n- `src/config.rs#struct[WorkspaceAuthoringConfig]` has `configs` with `#[serde(default)]`, so it may be omitted.\n- `src/config.rs#struct[AuthoringConfig]` has `#[serde(flatten)] backend: BackendConfig`. `src/config.rs#enum[BackendConfig]` is `#[serde(tag = \"backend\", rename_all = \"lowercase\")]` with `Bedrock`, `Ollama` and `Openai` variants. That gives `backend = \"bedrock\"`, `\"ollama\"` or `\"openai\"` with the variant's fields in the same table. These items are reached from the marked roots through the types they use, so they need no marker of their own. The same holds for `BedrockConfig`, `OllamaConfig` and `OpenAiConfig`. Each has `options: BTreeMap<String, OptionValue>` with `#[serde(default, skip_serializing_if = \"BTreeMap::is_empty\")]`. This places the options in an `options` subtable that defaults to an empty map.\n- The common serialization rules are only cited, in `requirements.configuration.serialization`. The optional fields skip serialization when `None` or empty.\n\nAll the structural obligations map to concrete declarations, and no implementation root is missing.\n\nbehavioral: I found no test-adequacy gap for `requirements.authoring.configuration_serialization`. I did not read implementation source. The cited `requirements.configuration.serialization` is context only, and I did not reassess it.\n\n**User and workspace tables**\n- `tests/configuration.rs#fn[user_and_workspace_authoring_tables_round_trip_every_map]` round-trips a user `[authoring]` table with `configs` and `projects`, and the serialized output keeps `[authoring.projects.`.\n- The same test round-trips a populated workspace table with `default`, `configs` and `options`. It asserts `backend = \"bedrock\"` and `[authoring.configs.cloud.options` appear in the output, and that the output re-parses equal to the original.\n\n**Each `[authoring.configs.<name>]` table**\n- Bedrock and Ollama are round-tripped in `fn[backend_configuration_round_trips_without_materializing_defaults]` and in the test above.\n- OpenAI is round-tripped in `fn[openai_defaults_are_effective_only_and_explicit_values_win]`, `fn[openai_configuration_preserves_model_and_resolves_credentials]` and `fn[explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them]`.\n- The backend-specific fields stay in the same table: region, `aws_profile`, `endpoint`, credentials and `api_key` all survive the round trip.\n\n**Options subtable**\n- Bedrock `options`, including nested `custom`, round-trips in `fn[backend_configuration_round_trips_without_materializing_defaults]`.\n- Workspace Bedrock and Ollama `options` round-trip in `fn[user_and_workspace_authoring_tables_round_trip_every_map]`.\n- OpenAI `options.reasoning` is asserted to serialize under `[authoring.configs.api.options.reasoning]` in `fn[openai_defaults_are_effective_only_and_explicit_values_win]`.\n\n**User `configs` required but may be empty**\n- `fn[invalid_schema_and_feature_values_report_the_configuration_path]` rejects `[authoring]` with no `configs`.\n- It accepts `configs = {}`, and `fn[user_and_workspace_authoring_tables_round_trip_every_map]` confirms the empty `configs` is preserved on serialization and re-parses.\n\n**Workspace `configs` may be omitted**\n- `fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]` parses a workspace `[authoring]` with only `default`. It asserts `configs` is empty, that `configs` is not emitted on serialization, and that the output re-parses equal.\n\n**Omitted `projects` and `options` deserialize as empty maps**\n- `authoring.projects.is_empty()` and the Ollama `options.is_empty()` are asserted in `fn[backend_configuration_round_trips_without_materializing_defaults]`.\n- `fn[authoring_concurrency_defaults_overrides_and_invalid_values]` asserts empty `options()` for bedrock, ollama and openai when none are given.\n\n**Common serialization rules**\n- These are delegated to the cited requirement. Even so, the tests show defaults are not materialized (no `endpoint`, `concurrency` or `max_output_tokens`) and explicit values are preserved.",
+  "references": "34888795adfbe9f2ac2d530ca537a8de269d2ac5914f4c76f8d30215eab45acf",
   "inputs": [
     {
       "requirements": "requirements.authoring.configuration_serialization",
@@ -50,6 +50,56 @@
       ]
     },
     {
+      "file": "src/config.rs",
+      "item": "struct[UserConfig]",
+      "hash": "5ca27331b076fcf81f134db2bcb9a411fac504a9fea82f170d5fdc7a96428af9"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[WorkspaceConfig]",
+      "hash": "94705e5df970944d7b9c1500dff4f2f0771e6db9aa270cdc793ac478829746f9"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[WorkspaceAuthoringConfig]",
+      "hash": "dc77877aa0ec14ccc3722764dc03c147573d21c90195f6398c6ccae78ce104c5"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[UserAuthoringConfig]",
+      "hash": "d2e5b7da032551910106c5024d9b6a286b1603c0268a63b9a2b851fe3330153b"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[ProjectSelection]",
+      "hash": "9c20bc057d63c1972e2664967a18366422b22742143a834e81e89927f892ce30"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[BedrockConfig]",
+      "hash": "e123937a7e339468258c2a8a9a0926311f6b446c5430b1aaf5668aa82d758e15"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[OllamaConfig]",
+      "hash": "75a1dacb21ac62202f7a625fbd76627d723870f174a00fed5d8ec05515f76fc9"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[OpenAiConfig]",
+      "hash": "e461a99c1e9e9f37109a845e66b022b00f9aeae0af212d81f0dac2ebb39d0a51"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[AuthoringConfig]",
+      "hash": "d374f32df0798a6e989353a20db09dd6fbf087ffd4ba829ba3bc3dcf0eb3b133"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "enum[BackendConfig]",
+      "hash": "021d3215d0c12d74640c3ca5707ac7430c183ef7654f3d5c25909d839124e06f"
+    },
+    {
       "file": "tests/configuration.rs",
       "item": "fn[backend_configuration_round_trips_without_materializing_defaults]",
       "hash": "7ca17bb2973b249554d2b3596889dd7011afaa21f69224953f6d065a40359724"
@@ -90,7 +140,399 @@
       "hash": "694de1ad2802366f472b78c3a6bf63c800fee820e569933eadb308bd2367fb14"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.authoring.configuration_serialization"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "34888795adfbe9f2ac2d530ca537a8de269d2ac5914f4c76f8d30215eab45acf"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.authoring.configuration_serialization"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "04848b8d4c7c2f0cfad5fdfd9a159dfc0388d605b4bfa2285b535a1c1863294d"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.configuration.serialization"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "db2832e718a176c996f92381863db937fe475393fb4542ff50ad8ad34be0b310"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/config.rs"
+                },
+                "selector": "struct[UserConfig]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "5ca27331b076fcf81f134db2bcb9a411fac504a9fea82f170d5fdc7a96428af9"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/config.rs"
+                },
+                "selector": "struct[WorkspaceConfig]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "94705e5df970944d7b9c1500dff4f2f0771e6db9aa270cdc793ac478829746f9"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/config.rs"
+                },
+                "selector": "struct[WorkspaceAuthoringConfig]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "dc77877aa0ec14ccc3722764dc03c147573d21c90195f6398c6ccae78ce104c5"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/config.rs"
+                },
+                "selector": "struct[UserAuthoringConfig]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "d2e5b7da032551910106c5024d9b6a286b1603c0268a63b9a2b851fe3330153b"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/config.rs"
+                },
+                "selector": "struct[ProjectSelection]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "9c20bc057d63c1972e2664967a18366422b22742143a834e81e89927f892ce30"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/config.rs"
+                },
+                "selector": "struct[BedrockConfig]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "e123937a7e339468258c2a8a9a0926311f6b446c5430b1aaf5668aa82d758e15"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/config.rs"
+                },
+                "selector": "struct[OllamaConfig]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "75a1dacb21ac62202f7a625fbd76627d723870f174a00fed5d8ec05515f76fc9"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/config.rs"
+                },
+                "selector": "struct[OpenAiConfig]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "e461a99c1e9e9f37109a845e66b022b00f9aeae0af212d81f0dac2ebb39d0a51"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/config.rs"
+                },
+                "selector": "struct[AuthoringConfig]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "d374f32df0798a6e989353a20db09dd6fbf087ffd4ba829ba3bc3dcf0eb3b133"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/config.rs"
+                },
+                "selector": "enum[BackendConfig]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "021d3215d0c12d74640c3ca5707ac7430c183ef7654f3d5c25909d839124e06f"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The structural obligations are the serialized shapes of the authoring tables, and the four roots implement them.\n\n- `src/config.rs#struct[UserConfig]` and `src/config.rs#struct[WorkspaceConfig]` carry the `authoring` field as an optional `UserAuthoringConfig` or `WorkspaceAuthoringConfig`. This matches \"The user `[authoring]` table MUST serialize UserAuthoringConfig, and the workspace table MUST serialize WorkspaceAuthoringConfig\".\n- `src/config.rs#struct[UserAuthoringConfig]` has `configs: BTreeMap<String, AuthoringConfig>` with no serde default. It is therefore required when the section is present, though it may be empty. Its `projects` field has a serde default, so an omitted table deserializes as an empty map.\n- `src/config.rs#struct[WorkspaceAuthoringConfig]` has `configs` with `#[serde(default)]`, so it may be omitted.\n- `src/config.rs#struct[AuthoringConfig]` has `#[serde(flatten)] backend: BackendConfig`. `src/config.rs#enum[BackendConfig]` is `#[serde(tag = \"backend\", rename_all = \"lowercase\")]` with `Bedrock`, `Ollama` and `Openai` variants. That gives `backend = \"bedrock\"`, `\"ollama\"` or `\"openai\"` with the variant's fields in the same table. These items are reached from the marked roots through the types they use, so they need no marker of their own. The same holds for `BedrockConfig`, `OllamaConfig` and `OpenAiConfig`. Each has `options: BTreeMap<String, OptionValue>` with `#[serde(default, skip_serializing_if = \"BTreeMap::is_empty\")]`. This places the options in an `options` subtable that defaults to an empty map.\n- The common serialization rules are only cited, in `requirements.configuration.serialization`. The optional fields skip serialization when `None` or empty.\n\nAll the structural obligations map to concrete declarations, and no implementation root is missing."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.authoring.configuration_serialization"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "34888795adfbe9f2ac2d530ca537a8de269d2ac5914f4c76f8d30215eab45acf"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.authoring.configuration_serialization"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "04848b8d4c7c2f0cfad5fdfd9a159dfc0388d605b4bfa2285b535a1c1863294d"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.configuration.serialization"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "db2832e718a176c996f92381863db937fe475393fb4542ff50ad8ad34be0b310"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/configuration.rs"
+                },
+                "selector": "fn[backend_configuration_round_trips_without_materializing_defaults]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "7ca17bb2973b249554d2b3596889dd7011afaa21f69224953f6d065a40359724"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/configuration.rs"
+                },
+                "selector": "fn[authoring_concurrency_defaults_overrides_and_invalid_values]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "63eabea03cd37b19d8e7119a6b382cde0bfd165e4807445eeec5fcee30f6ae2e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/configuration.rs"
+                },
+                "selector": "fn[invalid_schema_and_feature_values_report_the_configuration_path]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f0903831c57bc55e09ef682d4b1105d6d9fdf9a3dd60d12bf165e7da658811fb"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/configuration.rs"
+                },
+                "selector": "fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "06855a151f60a8e45251fe6367c705453ace2142bd09f869e86c3bd12e4c49d0"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/configuration.rs"
+                },
+                "selector": "fn[explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "cd64f2b2df98fc716a90df559f499416cbd9cb5b0ca9c27baff0a9cd0db21d8a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/configuration.rs"
+                },
+                "selector": "fn[user_and_workspace_authoring_tables_round_trip_every_map]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "47f5b936afd12999213b80a8ae6bc05f37c10f9d2b277715dd052ce3d1e4b13e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/configuration.rs"
+                },
+                "selector": "fn[openai_configuration_preserves_model_and_resolves_credentials]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "4b8c2e93b7d4fa5507be8ba0f41b539908d15b85b59c964f54d1fa129a777c56"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/configuration.rs"
+                },
+                "selector": "fn[openai_defaults_are_effective_only_and_explicit_values_win]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "694de1ad2802366f472b78c3a6bf63c800fee820e569933eadb308bd2367fb14"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "I found no test-adequacy gap for `requirements.authoring.configuration_serialization`. I did not read implementation source. The cited `requirements.configuration.serialization` is context only, and I did not reassess it.\n\n**User and workspace tables**\n- `tests/configuration.rs#fn[user_and_workspace_authoring_tables_round_trip_every_map]` round-trips a user `[authoring]` table with `configs` and `projects`, and the serialized output keeps `[authoring.projects.`.\n- The same test round-trips a populated workspace table with `default`, `configs` and `options`. It asserts `backend = \"bedrock\"` and `[authoring.configs.cloud.options` appear in the output, and that the output re-parses equal to the original.\n\n**Each `[authoring.configs.<name>]` table**\n- Bedrock and Ollama are round-tripped in `fn[backend_configuration_round_trips_without_materializing_defaults]` and in the test above.\n- OpenAI is round-tripped in `fn[openai_defaults_are_effective_only_and_explicit_values_win]`, `fn[openai_configuration_preserves_model_and_resolves_credentials]` and `fn[explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them]`.\n- The backend-specific fields stay in the same table: region, `aws_profile`, `endpoint`, credentials and `api_key` all survive the round trip.\n\n**Options subtable**\n- Bedrock `options`, including nested `custom`, round-trips in `fn[backend_configuration_round_trips_without_materializing_defaults]`.\n- Workspace Bedrock and Ollama `options` round-trip in `fn[user_and_workspace_authoring_tables_round_trip_every_map]`.\n- OpenAI `options.reasoning` is asserted to serialize under `[authoring.configs.api.options.reasoning]` in `fn[openai_defaults_are_effective_only_and_explicit_values_win]`.\n\n**User `configs` required but may be empty**\n- `fn[invalid_schema_and_feature_values_report_the_configuration_path]` rejects `[authoring]` with no `configs`.\n- It accepts `configs = {}`, and `fn[user_and_workspace_authoring_tables_round_trip_every_map]` confirms the empty `configs` is preserved on serialization and re-parses.\n\n**Workspace `configs` may be omitted**\n- `fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]` parses a workspace `[authoring]` with only `default`. It asserts `configs` is empty, that `configs` is not emitted on serialization, and that the output re-parses equal.\n\n**Omitted `projects` and `options` deserialize as empty maps**\n- `authoring.projects.is_empty()` and the Ollama `options.is_empty()` are asserted in `fn[backend_configuration_round_trips_without_materializing_defaults]`.\n- `fn[authoring_concurrency_defaults_overrides_and_invalid_values]` asserts empty `options()` for bedrock, ollama and openai when none are given.\n\n**Common serialization rules**\n- These are delegated to the cited requirement. Even so, the tests show defaults are not materialized (no `endpoint`, `concurrency` or `max_output_tokens`) and explicit values are preserved."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -100,19 +542,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "2288af3a8ee6b39d9bebe0a14528c6db1fa0652b0c0b41677ac71d34aab41dcb"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.authoring.configuration_serialization"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "5c8641daeed0f7985a8e152c33959f07901847d3c3aa1e8e55ff18f6e08f8246"
+          "value": "34888795adfbe9f2ac2d530ca537a8de269d2ac5914f4c76f8d30215eab45acf"
         }
       ]
     },
@@ -135,6 +565,176 @@
         {
           "scheme": "habeas-input-v1",
           "value": "db2832e718a176c996f92381863db937fe475393fb4542ff50ad8ad34be0b310"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/config.rs"
+            },
+            "selector": "struct[UserConfig]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "5ca27331b076fcf81f134db2bcb9a411fac504a9fea82f170d5fdc7a96428af9"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/config.rs"
+            },
+            "selector": "struct[WorkspaceConfig]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "94705e5df970944d7b9c1500dff4f2f0771e6db9aa270cdc793ac478829746f9"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/config.rs"
+            },
+            "selector": "struct[WorkspaceAuthoringConfig]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "dc77877aa0ec14ccc3722764dc03c147573d21c90195f6398c6ccae78ce104c5"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/config.rs"
+            },
+            "selector": "struct[UserAuthoringConfig]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "d2e5b7da032551910106c5024d9b6a286b1603c0268a63b9a2b851fe3330153b"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/config.rs"
+            },
+            "selector": "struct[ProjectSelection]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "9c20bc057d63c1972e2664967a18366422b22742143a834e81e89927f892ce30"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/config.rs"
+            },
+            "selector": "struct[BedrockConfig]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "e123937a7e339468258c2a8a9a0926311f6b446c5430b1aaf5668aa82d758e15"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/config.rs"
+            },
+            "selector": "struct[OllamaConfig]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "75a1dacb21ac62202f7a625fbd76627d723870f174a00fed5d8ec05515f76fc9"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/config.rs"
+            },
+            "selector": "struct[OpenAiConfig]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "e461a99c1e9e9f37109a845e66b022b00f9aeae0af212d81f0dac2ebb39d0a51"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/config.rs"
+            },
+            "selector": "struct[AuthoringConfig]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "d374f32df0798a6e989353a20db09dd6fbf087ffd4ba829ba3bc3dcf0eb3b133"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/config.rs"
+            },
+            "selector": "enum[BackendConfig]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "021d3215d0c12d74640c3ca5707ac7430c183ef7654f3d5c25909d839124e06f"
         }
       ]
     },

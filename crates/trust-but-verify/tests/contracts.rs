@@ -895,6 +895,8 @@ async fn dependency_resolution_failures_do_not_execute_or_replace_saved_answers(
     }
 }
 
+// {test}`requirements.sdk.graph.evidence.evidence_storage`
+// {test}`requirements.sdk.graph.criteria.criterion_trait.version`
 // {test}`requirements.sdk.graph.evidence.checking_records.version_match`
 // {test}`requirements.sdk.graph.evidence.check_node`
 // {test}`requirements.sdk.graph.criteria.criterion_path`

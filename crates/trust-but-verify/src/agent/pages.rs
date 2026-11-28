@@ -31,8 +31,6 @@ impl<N: Clone, L: Clone> Pages<N, L> {
         }
     }
 
-    // {impl}`requirements.sdk.graph.validation-context.pages.behavior`
-    // {impl}`requirements.sdk.graph.validation-context.pages.inputs`
     pub(super) fn prepare(
         &mut self,
         metadata: Value,
@@ -61,7 +59,6 @@ impl<N: Clone, L: Clone> Pages<N, L> {
         self.retain(pages, dependencies)
     }
 
-    // {impl}`requirements.sdk.graph.validation-context.read_node.source_children`
     pub(super) fn source_read(
         &mut self,
         metadata: Value,
@@ -108,12 +105,6 @@ impl<N: Clone, L: Clone> Pages<N, L> {
         unreachable!("even an empty result has a first page")
     }
 
-    // {impl}`requirements.sdk.graph.search.first_search.instructions`
-    // {impl}`requirements.sdk.graph.search.first_search.instructions.content`
-    // {impl}`requirements.sdk.graph.search.search_text.mcp`
-    // {impl}`requirements.sdk.graph.search.search_structure.mcp`
-    // {impl}`requirements.sdk.graph.search.finish_search.behavior`
-    // {impl}`requirements.sdk.graph.search.agent_search_accounting`
     pub(super) fn search(
         &mut self,
         results: crate::sources::SearchResults<SearchEntry<N, L>>,
@@ -174,10 +165,7 @@ impl<N: Clone, L: Clone> Pages<N, L> {
             .collect()
     }
 
-    // {impl}`requirements.sdk.graph.search.finish_search.behavior`
-    // {impl}`requirements.sdk.graph.search.finish_search.inputs`
     // {impl}`requirements.sdk.graph.search.finish_search.mcp`
-    // {impl}`requirements.authoring.finish_search.inputs`
     pub(super) fn finish_search(&mut self, args: &Value) -> io::Result<ToolDelivery<N, L>> {
         #[derive(serde::Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -210,7 +198,6 @@ impl<N: Clone, L: Clone> Pages<N, L> {
         })
     }
 
-    // {impl}`requirements.sdk.graph.validation-context.pages.behavior`
     pub(super) fn get(&mut self, args: &Value) -> io::Result<ToolDelivery<N, L>> {
         let uuid = args["uuid"]
             .as_str()

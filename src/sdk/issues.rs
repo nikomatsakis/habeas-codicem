@@ -31,7 +31,6 @@ pub(super) struct Fixme {
 pub(super) type Fixmes = BTreeMap<FixmeId, Fixme>;
 
 impl HabeasDomain {
-    // {impl}`requirements.sdk.habeas.fixme_graph`
     fn acknowledgments(&self) -> io::Result<&Fixmes> {
         self.fixmes
             .get_or_init(|| {
@@ -97,7 +96,6 @@ impl HabeasDomain {
             .collect())
     }
 
-    // {impl}`requirements.sdk.habeas.fixme_graph`
     pub(super) fn fixme_edges(
         &self,
         node: &HabeasNode,
@@ -147,9 +145,7 @@ impl HabeasDomain {
         })
     }
 
-    // {impl}`requirements.sdk.habeas.github_nodes`
-    // {impl}`requirements.sdk.habeas.github_nodes.inputs`
-    // {impl}`requirements.sdk.habeas.github_nodes.cache`
+    // {impl}`requirements.authoring.github_reads`
     pub(super) fn issue_content(&self, name: &str) -> io::Result<HabeasNodeContent> {
         let read = self.github.read(name);
         Self::issue_snapshot(name, &read)
@@ -179,7 +175,6 @@ impl HabeasDomain {
 }
 
 pub(crate) struct OpenIssue(pub NodeId<HabeasDomain>);
-// {impl}`requirements.sdk.habeas.github_nodes.open`
 impl Criterion<HabeasDomain> for OpenIssue {
     type Ok = bool;
     fn source_node_id(&self) -> NodeId<HabeasDomain> {
@@ -191,6 +186,7 @@ impl Criterion<HabeasDomain> for OpenIssue {
     fn version(&self) -> CriterionVersion {
         CriterionVersion::new("issue-open-v1")
     }
+    // {impl}`requirements.sdk.habeas.github_nodes.open`
     async fn execute(
         self,
         cx: &mut ValidationContext<'_, HabeasDomain>,
@@ -221,6 +217,7 @@ impl Criterion<HabeasDomain> for RelatedIssues {
     fn version(&self) -> CriterionVersion {
         CriterionVersion::new("fixme-issues-v1")
     }
+    // {impl}`requirements.authoring.github_reads`
     async fn execute(
         self,
         cx: &mut ValidationContext<'_, HabeasDomain>,

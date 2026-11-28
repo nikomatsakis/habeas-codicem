@@ -3,7 +3,6 @@
 use super::*;
 use crate::config::BackendConfig;
 
-// {impl}`requirements.authoring.adaptive`
 pub(super) async fn assess(
     root: &Path,
     subject: &AuthoringSubject,
@@ -32,7 +31,6 @@ pub(super) async fn assess(
     Ok(chosen)
 }
 
-// {impl}`requirements.authoring.adaptive`
 async fn route(
     root: &Path,
     subject: &AuthoringSubject,

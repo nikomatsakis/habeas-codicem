@@ -1,8 +1,8 @@
 {
   "requirement": "Each call to `Ask::vet_answer` appends an independent `FnMut` callback to this\nrequest in either builder phase.\n\nFor each decoded submission, the harness invokes the callbacks in registration\norder with the same `&R`, stopping at the first `Err`. Each callback retains\nits state across submissions in the same conversation.\n\nIf any callback returns `Err(error)`, the harness MUST stop running callbacks\nand end the conversation immediately, even if an earlier callback requested a\ncorrection. Awaiting the `Ask` MUST return\n`Err(ValidationError::Graph(error))` carrying the original `D::Error`.",
   "determination": true,
-  "rationale": "The two marked tests cover every obligation in `requirements.sdk.graph.agent-calls.vet_answer`.\n\n- **Callbacks accumulate and keep state, in either phase.** `vetting_collects_corrections_and_rechecks_every_callback` registers one `vet_answer` before `contents_of_current_node()` and two after it. All three run. The first callback is an `FnMut` that pushes to `seen`, and the assertion `seen == [false, true]` shows it ran on both submissions. The third callback uses `std::mem::take` on captured state to correct once and then accept. This shows that state carries across submissions.\n- **Registration order and the same `&R`.** The feedback must contain `first correction\\nsecond correction`, which fixes the order of the second and third callbacks. The first and second callbacks each see the decoded answer and act on its value. The second callback corrects on `false` and accepts on `true`.\n- **All callbacks run even after an earlier correction.** On the first submission the second callback corrects, but the third still runs and its correction is appended to the feedback. On the second submission all callbacks re-run, and the answer is accepted only once all of them accept.\n- **Stop at the first `Err`, end the conversation at once, and keep the original error.** `vetting_preserves_domain_errors_and_skips_later_callbacks` registers a correcting callback, then an `Err(io::Error::from_raw_os_error(42))` callback, then a callback that panics. The test expects `Err(ValidationError::Graph(error))` with `raw_os_error() == Some(42)`. This shows the original `D::Error` is preserved. The panicking callback proves later callbacks are skipped, and `requests.len() == 1` proves the conversation ended without another round. The earlier callback's correction request is overridden, as the text requires.\n\nOne observation, not counted as a gap. The order of a callback registered before `contents_of_current_node()` relative to callbacks registered after it is not directly observable in these tests, because the first callback always returns `Accept`. Reversing the order among the later callbacks would be caught. The text does not make cross-phase ordering a separate obligation, so I treat it as covered by registration order in general.",
-  "references": "d1f0c598d845c175e2ba4b01807f8056899b1bdecedcc1375ca6eb8ec3213049",
+  "rationale": "structural: The structural obligations in `requirements.sdk.graph.agent-calls.vet_answer` are that `Ask::vet_answer` exists as a builder method that appends an independent `FnMut` callback, and that it is available in either builder phase. `crates/trust-but-verify/src/procedure.rs#impl[Ask<'a, 'd, D, R, P>]#1/fn[vet_answer]` meets all three. It is in an impl generic over the phase parameter `P`. It accepts `impl FnMut(&R) -> Result<VetResult, D::Error> + Send + 'a`. It does `self.callbacks.push(Box::new(vet))` and returns `Self`. The shared `callbacks` Vec on `struct[Ask]` is carried across phases by `into_node_phase`, and `ValidationContext::ask` starts it empty. Every call therefore adds one entry.\n\nThe other clauses describe observable runtime behavior only:\n- Callbacks run in registration order with the same `&R`.\n- Execution stops at the first `Err`, even after an earlier correction request.\n- Awaiting the `Ask` returns `Err(ValidationError::Graph(error))` carrying the original `D::Error`.\n- Callback state persists across submissions.\n\nThese are not structural obligations, because an alternative implementation could produce the same results with a different loop, container or error plumbing. The `execute` loop in `impl[Ask<...>]#2/fn[execute]` implements this behavior anyway, and the test `vetting_preserves_domain_errors_and_skips_later_callbacks` verifies it. No further implementation roots are needed.\n\nbehavioral: Both marked tests together cover each observable obligation of `requirements.sdk.graph.agent-calls.vet_answer`.\n\n- **Appending callbacks in either builder phase:** `vetting_collects_corrections_and_rechecks_every_callback` in `crates/trust-but-verify/src/agent/tests.rs` calls `vet_answer` before `.contents_of_current_node()` and twice after it. All three callbacks run, so each call appends a callback in either phase.\n- **Registration order and the same `&R`:** In the same test, callback 1 records each answer in `seen`, which ends as `[false, true]`. Callbacks 2 and 3 judge the same decoded answer. The assertion that the feedback contains `first correction\\nsecond correction` fixes the order of the corrections. Callback 3 returns a correction in round 1 even though callback 2 also corrected, so every callback runs when none returns `Err`.\n- **State kept across submissions:** The `seen` vector in callback 1 and the `first` flag in callback 3 both depend on state carried between two submissions. The flag makes callback 3 correct in round 1 and accept in round 2, and the final `assert!(answer)` confirms the second answer is accepted.\n- **`Err` ends the conversation and skips later callbacks:** `vetting_preserves_domain_errors_and_skips_later_callbacks` registers a correcting callback, then an `Err` callback, then a callback that panics. The `Err` comes after an earlier correction request. The panicking callback is never called, because the test would fail if it were. The conversation ends at once, since the agent receives exactly 1 request.\n- **Original error returned:** The test asserts the result matches `Err(ValidationError::Graph(error))` with `error.raw_os_error() == Some(42)`. This shows the original `D::Error` is carried through unchanged.\n\nI found no obligation that lacks a test, and the assertions enforce the expected outcomes.",
+  "references": "8ecff58074a022f7d1b04e42f10b14a07e95f569abafb58744b12c1ebac4d7c0",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.agent-calls.vet_answer",
@@ -26,9 +26,34 @@
       ]
     },
     {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[vet_answer]",
+      "hash": "edbb68fcf0aa659ac3f79d6222ff6665aae046e9e8965d414cfec3cd8bc64428"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#3/fn[ask]",
+      "hash": "b8b2eae7581183984c864d30ec9f6e3d2861dc9fae437a46d1870f95f68be4c8"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "struct[Ask]",
+      "hash": "b38a7967586a6b57f32ac9441bea1003e46964014583c1dbc2797f9896771465"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[into_node_phase]",
+      "hash": "ebb52a7de2d27341a7738e6d03b87e4e6af5ee75aa66e4889138e91de9f2347f"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]",
+      "hash": "9e4b5ea6e2f69024c28d89449ff56e32dad5ef953614bef0d5f48fe6ea190398"
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[vetting_collects_corrections_and_rechecks_every_callback]",
-      "hash": "30f88cee1195dae51f3714edd10e56befa327279906ab4532bace0b71bbcf75b"
+      "hash": "e88c96902d01bc2e659752ee679fd7b56415df82b5e52d0118ab950a51ce192e"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -36,7 +61,190 @@
       "hash": "1cc1cd808a680c101b6adac1fdae4aafdbc30efc837b75d6736e27bf31ff735a"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.agent-calls.vet_answer"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "8ecff58074a022f7d1b04e42f10b14a07e95f569abafb58744b12c1ebac4d7c0"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-calls.vet_answer"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "573b1ff5c36bddb0961b2cae0d7c453d5715c521a1de0cbe798345e7795cb04d"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[vet_answer]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "edbb68fcf0aa659ac3f79d6222ff6665aae046e9e8965d414cfec3cd8bc64428"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[ValidationContext<'d,%20D>]#3/fn[ask]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "b8b2eae7581183984c864d30ec9f6e3d2861dc9fae437a46d1870f95f68be4c8"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "struct[Ask]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "b38a7967586a6b57f32ac9441bea1003e46964014583c1dbc2797f9896771465"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[into_node_phase]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "ebb52a7de2d27341a7738e6d03b87e4e6af5ee75aa66e4889138e91de9f2347f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "9e4b5ea6e2f69024c28d89449ff56e32dad5ef953614bef0d5f48fe6ea190398"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The structural obligations in `requirements.sdk.graph.agent-calls.vet_answer` are that `Ask::vet_answer` exists as a builder method that appends an independent `FnMut` callback, and that it is available in either builder phase. `crates/trust-but-verify/src/procedure.rs#impl[Ask<'a, 'd, D, R, P>]#1/fn[vet_answer]` meets all three. It is in an impl generic over the phase parameter `P`. It accepts `impl FnMut(&R) -> Result<VetResult, D::Error> + Send + 'a`. It does `self.callbacks.push(Box::new(vet))` and returns `Self`. The shared `callbacks` Vec on `struct[Ask]` is carried across phases by `into_node_phase`, and `ValidationContext::ask` starts it empty. Every call therefore adds one entry.\n\nThe other clauses describe observable runtime behavior only:\n- Callbacks run in registration order with the same `&R`.\n- Execution stops at the first `Err`, even after an earlier correction request.\n- Awaiting the `Ask` returns `Err(ValidationError::Graph(error))` carrying the original `D::Error`.\n- Callback state persists across submissions.\n\nThese are not structural obligations, because an alternative implementation could produce the same results with a different loop, container or error plumbing. The `execute` loop in `impl[Ask<...>]#2/fn[execute]` implements this behavior anyway, and the test `vetting_preserves_domain_errors_and_skips_later_callbacks` verifies it. No further implementation roots are needed."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.agent-calls.vet_answer"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "8ecff58074a022f7d1b04e42f10b14a07e95f569abafb58744b12c1ebac4d7c0"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-calls.vet_answer"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "573b1ff5c36bddb0961b2cae0d7c453d5715c521a1de0cbe798345e7795cb04d"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[vetting_collects_corrections_and_rechecks_every_callback]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "2ee516f70fb0fb6f29685217f9b66920166e1220c64246a11e44139d86f7844f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[vetting_preserves_domain_errors_and_skips_later_callbacks]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "eed232332253f47c8c0b3d1c76436ef5db72ec8347c49068aa9ea3706feeadc7"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "Both marked tests together cover each observable obligation of `requirements.sdk.graph.agent-calls.vet_answer`.\n\n- **Appending callbacks in either builder phase:** `vetting_collects_corrections_and_rechecks_every_callback` in `crates/trust-but-verify/src/agent/tests.rs` calls `vet_answer` before `.contents_of_current_node()` and twice after it. All three callbacks run, so each call appends a callback in either phase.\n- **Registration order and the same `&R`:** In the same test, callback 1 records each answer in `seen`, which ends as `[false, true]`. Callbacks 2 and 3 judge the same decoded answer. The assertion that the feedback contains `first correction\\nsecond correction` fixes the order of the corrections. Callback 3 returns a correction in round 1 even though callback 2 also corrected, so every callback runs when none returns `Err`.\n- **State kept across submissions:** The `seen` vector in callback 1 and the `first` flag in callback 3 both depend on state carried between two submissions. The flag makes callback 3 correct in round 1 and accept in round 2, and the final `assert!(answer)` confirms the second answer is accepted.\n- **`Err` ends the conversation and skips later callbacks:** `vetting_preserves_domain_errors_and_skips_later_callbacks` registers a correcting callback, then an `Err` callback, then a callback that panics. The `Err` comes after an earlier correction request. The panicking callback is never called, because the test would fail if it were. The conversation ends at once, since the agent receives exactly 1 request.\n- **Original error returned:** The test asserts the result matches `Err(ValidationError::Graph(error))` with `error.raw_os_error() == Some(42)`. This shows the original `D::Error` is carried through unchanged.\n\nI found no obligation that lacks a test, and the assertions enforce the expected outcomes."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -46,19 +254,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "d1f0c598d845c175e2ba4b01807f8056899b1bdecedcc1375ca6eb8ec3213049"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.agent-calls.vet_answer"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "aa288ffea940eba4c4fa0ab2a9679903b443c70da7086ed8f7b427bac49f4d3a"
+          "value": "8ecff58074a022f7d1b04e42f10b14a07e95f569abafb58744b12c1ebac4d7c0"
         }
       ]
     },
@@ -79,6 +275,91 @@
           "Source": {
             "resource": {
               "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[vet_answer]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "edbb68fcf0aa659ac3f79d6222ff6665aae046e9e8965d414cfec3cd8bc64428"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#3/fn[ask]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b8b2eae7581183984c864d30ec9f6e3d2861dc9fae437a46d1870f95f68be4c8"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "struct[Ask]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b38a7967586a6b57f32ac9441bea1003e46964014583c1dbc2797f9896771465"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[into_node_phase]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "ebb52a7de2d27341a7738e6d03b87e4e6af5ee75aa66e4889138e91de9f2347f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "9e4b5ea6e2f69024c28d89449ff56e32dad5ef953614bef0d5f48fe6ea190398"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
             "selector": "fn[vetting_collects_corrections_and_rechecks_every_callback]"
@@ -86,7 +367,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "ecc9d1dffa3ee4c89b0d255fefce86f1022e0720cc1a6cb2d2dc67d314489cf2"
+          "value": "2ee516f70fb0fb6f29685217f9b66920166e1220c64246a11e44139d86f7844f"
         }
       ]
     },

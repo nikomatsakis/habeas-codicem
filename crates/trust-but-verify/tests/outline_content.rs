@@ -168,6 +168,7 @@ fn outline_errors_preserve_diagnostic_and_line() {
     assert_eq!(reported.to_string(), "line 7: bad selector");
 }
 
+// {test}`requirements.sdk.sources.plain-text.language`
 // {test}`requirements.sdk.outlines.parser.supplied_source`
 // {test}`requirements.sdk.outlines.defaults`
 // {test}`requirements.sdk.outlines.items`
@@ -548,6 +549,7 @@ fn ambiguous_items_are_errors_except_for_identical_plain_text_lines() {
     );
 }
 
+// {test}`requirements.sdk.outlines.language_provider.fingerprint_scheme`
 // {test}`requirements.sdk.outlines.parser`
 // {test}`requirements.sdk.outlines.independent`
 // {test}`requirements.sdk.outlines.outline_file`
@@ -611,6 +613,7 @@ fn outline_only_languages_report_unsupported_structural_search() {
     );
 }
 
+// {test}`requirements.sdk.sources.plain-text.language`
 // {test}`requirements.sdk.outlines.defaults`
 // {test}`requirements.sdk.outlines.independent`
 // {test}`requirements.sdk.outlines.parser.supplied_source`

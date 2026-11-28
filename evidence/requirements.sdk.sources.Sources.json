@@ -1,8 +1,8 @@
 {
   "requirement": "Create a filesystem inspection rooted at a project directory. Listing, reading, outlining, and both kinds of search use that directory’s visibility rules.\n\n```rust,ignore\npub struct Sources { /* private fields */ }\n\nimpl Sources {\n    pub fn new(root: impl Into<PathBuf>) -> Self;\n    pub async fn list(\n        &self,\n        scope: &SourceScope,\n    ) -> Result<Vec<PathBuf>, SourceError>;\n    pub async fn read(\n        &self,\n        path: impl AsRef<Path>,\n    ) -> Result<SourceFile, SourceError>;\n    pub async fn parse(\n        &self,\n        path: impl AsRef<Path>,\n    ) -> Result<OutlineContent, SourceError>;\n    pub async fn search_text(\n        &self,\n        query: &TextQuery,\n    ) -> Result<TextMatches, SourceError>;\n    pub async fn search_structure(\n        &self,\n        query: &StructuralQuery,\n    ) -> Result<StructuralMatches, SourceError>;\n}\n```",
   "determination": true,
-  "rationale": "The obligation in `requirements.sdk.sources.Sources` is that `Sources::new(root)` creates an inspection rooted at a project directory. `list`, `read`, `parse`, `search_text` and `search_structure` must all apply that directory's visibility rules. The text also fixes the public method signatures. I checked the three supplied tests against that.\n\n- **Shared visibility across list, read, parse and text search:** `crates/trust-but-verify/tests/source_defaults.rs#fn[gitignore_is_shared_by_all_operations_with_or_without_a_git_repository]` runs each case twice, with and without a git repository.\n  - `list` omits files ignored by the root `.gitignore`, even when git tracks them. It keeps files re-included by negation, nested exceptions and dotfiles. It excludes `.git/` and ignored directories (`skip/`), including a rescue file inside one.\n  - `read` and `parse` return errors for the ignored paths. `read` succeeds for `.gitignore`.\n  - `search_text` finds exactly the 3 visible matches, for both a literal and a regex query. Scoping to ignored paths, to `.git` and to `skip` returns no matches. A `..` scope returns an error. A `./src/../src` scope normalises to `src` and returns only `src/nested.txt`, not `src-old`.\n- **Structural search and parsing under the same rules:** `built_in_languages_and_structural_search_use_the_project_scope` covers the remaining operations.\n  - `parse` works on a plain-text file and a Rust file.\n  - `search_structure` skips the gitignored `hidden.rs`, the gitignored `skip/` and `.git`. It returns only `visible.rs`, with the right selector and excerpt.\n  - A limit of 0 or 1 reports `complete` correctly.\n  - Scoping to ignored paths yields no matches. A `..` scope is an error.\n  - Python and unsupported-language queries behave as expected.\n- **Signatures and public surface:** the signatures are exercised by every call in these tests, which compile against them. `public_api.rs#fn[public_exports_match_the_appendix]` checks that the exported items match the specification.\n\nI found no obligation of this requirement that lacks a test with assertions. Detailed behaviour such as provider defaults, source addresses and read results belongs to the other requirements these tests also cite.",
-  "references": "7f917182c4dc344b542ed33d54dcd1670632956dde58fc8e91c5a116802e4819",
+  "rationale": "structural: The structural obligations in `requirements.sdk.sources.Sources` are the prescribed public declarations: `pub struct Sources { /* private fields */ }`, and the methods `new`, `list`, `read`, `parse`, `search_text` and `search_structure` with the listed signatures. An implementation that changed any of these signatures would violate the text. Each declaration is covered by a root marked {impl} for the requirement in `crates/trust-but-verify/src/sources/public.rs`:\n\n- `struct[Sources]` is a public struct with a single field, `analysis`. The field is `pub(crate)` rather than strictly private, but it is not part of the public API.\n- `impl[Sources]/fn[new]` takes `root: impl Into<PathBuf>` and returns `Self`.\n- `impl[Sources]/fn[list]` is `async`, takes `&self` and `scope: &SourceScope`, and returns `Result<Vec<PathBuf>, SourceError>`.\n- `impl[Sources]/fn[read]` is `async`, takes `path: impl AsRef<Path>`, and returns `Result<SourceFile, SourceError>`.\n- `impl[Sources]/fn[parse]` is `async`, takes `path: impl AsRef<Path>`, and returns `Result<OutlineContent, SourceError>`. It is written as `crate::outline::OutlineContent`, which is the same type.\n- `impl[Sources]/fn[search_text]` is `async`, takes `&TextQuery`, and returns `Result<TextMatches, SourceError>`.\n- `impl[Sources]/fn[search_structure]` is `async`, takes `&StructuralQuery`, and returns `Result<StructuralMatches, SourceError>`.\n\nThe other clauses describe observable behavior only. These are: \"rooted at a project directory\", and listing, reading, outlining and both searches using \"that directory's visibility rules\". The text names no library, algorithm or interface that must provide this. Another implementation could apply the same visibility rules by different means and look the same to callers. Those clauses therefore need no implementation evidence, and the behavioral criterion covers them. The seven roots are enough, and I found no missing root.\n\nbehavioral: The reviewed tests adequately check `requirements.sdk.sources.Sources`.\n\nThe requirement has two kinds of obligation. The first is a `Sources` type built from a project root, with `list`, `read`, `parse`, `search_text` and `search_structure` having the signatures given. The second is that listing, reading, outlining and both searches all use that directory's visibility rules. I read `requirements.sdk.sources.local_provider` for what those rules are. It covers `.gitignore` including nested files and exceptions, untracked files, exclusion of Git metadata and files outside the root, and direct requests naming a file or subdirectory.\n\n**Constructor and signatures.**\n- `crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]` compiles the Habeas consumer against the SDK and checks the rustdoc export inventory against the specification. That covers the public shape.\n- Both behavioral tests call `Sources::new(root.path())`. `root.path()` is a `&Path`, which is an `Into<PathBuf>` input.\n\n**Shared visibility across operations.**\n`crates/trust-but-verify/tests/source_defaults.rs#fn[gitignore_is_shared_by_all_operations_with_or_without_a_git_repository]` runs with and without a Git repository.\n- **List:** it asserts that `list(all)` equals `list(default)`. Untracked non-ignored files, nested exceptions and dotfiles are listed. A file ignored in `.gitignore` is absent even when Git tracks it. A file under an ignored directory is absent even when a nested `.gitignore` re-includes it. `skip/` and `.git/` are absent.\n- **Read and parse:** both return errors for the excluded files. Reading `.gitignore` succeeds, and reading `.git/config` errors.\n- **Direct scope:** `list` with `SourceScope::under` on excluded files or directories returns empty.\n- **Text search:** a literal query and a regex query each return exactly 3 matches. Searches scoped to excluded paths or `.git` return nothing. A scope of `..` errors. Scope normalization (`./src/../src`) returns only `src/nested.txt`, which also shows that `src-old` is not matched as a prefix.\n\n**Structural search.**\n`crates/trust-but-verify/tests/source_defaults.rs#fn[built_in_languages_and_structural_search_use_the_project_scope]` covers this.\n- **Visibility:** it checks that `hidden.rs`, `skip/hidden.rs` and `.git/metadata.rs` are not matched, and that searches scoped to them are empty and complete. A search scoped to `visible.rs` returns that file, and a `..` scope errors.\n- **Behavior:** it checks match path, selector and excerpt, and the limit and `complete` behavior. It checks language filtering with `python`, and the error for an unsupported language.\n- **Outline:** it also checks `parse` outlining for plain text and Rust.\n\nEvery operation therefore has a test with outcome assertions for the visibility rules, in both the repository and non-repository settings. The detailed behavior of each operation, such as file content and search semantics, belongs to the refining requirements. Those requirements are also marked from these tests.\n\nI found no behavioral obligation without test evidence.",
+  "references": "4c13e64ac4000c26a30047de3fdb575f53f208e1c0be025f6d8f1a0e2ffed009",
   "inputs": [
     {
       "requirements": "requirements.sdk.sources.Sources",
@@ -45,6 +45,41 @@
       ]
     },
     {
+      "file": "crates/trust-but-verify/src/sources/public.rs",
+      "item": "struct[Sources]",
+      "hash": "93def44a374d6accf86ce51aea24d7336f12b2c633968eb9a224d53391ddb0d5"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/public.rs",
+      "item": "impl[Sources]/fn[new]",
+      "hash": "52b52f84003e07eaab523da208c958fbc27ee1c6faf726a547607fd308752e61"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/public.rs",
+      "item": "impl[Sources]/fn[list]",
+      "hash": "e3844779e975727ecfb7a5899b3d0ccbfd767ebba04c04166729c9336c94f5ac"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/public.rs",
+      "item": "impl[Sources]/fn[read]",
+      "hash": "637d640cad15bd46785dacf7c9643ed3628e131c38fafec5e61248cade729f3f"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/public.rs",
+      "item": "impl[Sources]/fn[parse]",
+      "hash": "cd0beb8ff515d9e90d7668dc578f034963771917c5db5bcb94761a562b456502"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/public.rs",
+      "item": "impl[Sources]/fn[search_text]",
+      "hash": "320ff63ef11d1897b547f88bab726279ffe69e6682e601a4edfeb35d07357aea"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/public.rs",
+      "item": "impl[Sources]/fn[search_structure]",
+      "hash": "1d8bf20820f83ee44764e30d49a4d6c3439ce062beca21b949e0c78575836a3d"
+    },
+    {
       "file": "crates/trust-but-verify/tests/source_defaults.rs",
       "item": "fn[gitignore_is_shared_by_all_operations_with_or_without_a_git_repository]",
       "hash": "4b81c551483aed06169e522f0568156178713ded6d6c7a86c77ca34cac07aa5a"
@@ -57,10 +92,273 @@
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[public_exports_match_the_appendix]",
-      "hash": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
+      "hash": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+    },
+    {
+      "requirements": "requirements.sdk.sources.local_provider",
+      "matches": [
+        "requirements.sdk.sources.local_provider"
+      ],
+      "text": [
+        ":::{req} local_provider",
+        "Source inspection uses the project directory and respects `.gitignore`,",
+        "including nested ignore files and their exceptions. Untracked files are",
+        "available unless ignored. The same scope applies to listing, reading,",
+        "outlining, text search, and structural search, including requests naming a",
+        "file or subdirectory directly.",
+        "",
+        "Files outside the project directory and Git metadata are excluded. A direct",
+        "read of an excluded file returns an error.",
+        ":::"
+      ]
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.sources.Sources"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "4c13e64ac4000c26a30047de3fdb575f53f208e1c0be025f6d8f1a0e2ffed009"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.sources.Sources"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "c87d5daa058439823e4dea4964600cf80260a5a094a8dbaf048f446812f7f742"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/sources/public.rs"
+                },
+                "selector": "struct[Sources]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "93def44a374d6accf86ce51aea24d7336f12b2c633968eb9a224d53391ddb0d5"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/sources/public.rs"
+                },
+                "selector": "impl[Sources]/fn[new]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "52b52f84003e07eaab523da208c958fbc27ee1c6faf726a547607fd308752e61"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/sources/public.rs"
+                },
+                "selector": "impl[Sources]/fn[list]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "e3844779e975727ecfb7a5899b3d0ccbfd767ebba04c04166729c9336c94f5ac"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/sources/public.rs"
+                },
+                "selector": "impl[Sources]/fn[read]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "637d640cad15bd46785dacf7c9643ed3628e131c38fafec5e61248cade729f3f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/sources/public.rs"
+                },
+                "selector": "impl[Sources]/fn[parse]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "cd0beb8ff515d9e90d7668dc578f034963771917c5db5bcb94761a562b456502"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/sources/public.rs"
+                },
+                "selector": "impl[Sources]/fn[search_text]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "320ff63ef11d1897b547f88bab726279ffe69e6682e601a4edfeb35d07357aea"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/sources/public.rs"
+                },
+                "selector": "impl[Sources]/fn[search_structure]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "1d8bf20820f83ee44764e30d49a4d6c3439ce062beca21b949e0c78575836a3d"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The structural obligations in `requirements.sdk.sources.Sources` are the prescribed public declarations: `pub struct Sources { /* private fields */ }`, and the methods `new`, `list`, `read`, `parse`, `search_text` and `search_structure` with the listed signatures. An implementation that changed any of these signatures would violate the text. Each declaration is covered by a root marked {impl} for the requirement in `crates/trust-but-verify/src/sources/public.rs`:\n\n- `struct[Sources]` is a public struct with a single field, `analysis`. The field is `pub(crate)` rather than strictly private, but it is not part of the public API.\n- `impl[Sources]/fn[new]` takes `root: impl Into<PathBuf>` and returns `Self`.\n- `impl[Sources]/fn[list]` is `async`, takes `&self` and `scope: &SourceScope`, and returns `Result<Vec<PathBuf>, SourceError>`.\n- `impl[Sources]/fn[read]` is `async`, takes `path: impl AsRef<Path>`, and returns `Result<SourceFile, SourceError>`.\n- `impl[Sources]/fn[parse]` is `async`, takes `path: impl AsRef<Path>`, and returns `Result<OutlineContent, SourceError>`. It is written as `crate::outline::OutlineContent`, which is the same type.\n- `impl[Sources]/fn[search_text]` is `async`, takes `&TextQuery`, and returns `Result<TextMatches, SourceError>`.\n- `impl[Sources]/fn[search_structure]` is `async`, takes `&StructuralQuery`, and returns `Result<StructuralMatches, SourceError>`.\n\nThe other clauses describe observable behavior only. These are: \"rooted at a project directory\", and listing, reading, outlining and both searches using \"that directory's visibility rules\". The text names no library, algorithm or interface that must provide this. Another implementation could apply the same visibility rules by different means and look the same to callers. Those clauses therefore need no implementation evidence, and the behavioral criterion covers them. The seven roots are enough, and I found no missing root."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.sources.Sources"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "4c13e64ac4000c26a30047de3fdb575f53f208e1c0be025f6d8f1a0e2ffed009"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.sources.Sources"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "c87d5daa058439823e4dea4964600cf80260a5a094a8dbaf048f446812f7f742"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/source_defaults.rs"
+                },
+                "selector": "fn[gitignore_is_shared_by_all_operations_with_or_without_a_git_repository]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "4b81c551483aed06169e522f0568156178713ded6d6c7a86c77ca34cac07aa5a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/source_defaults.rs"
+                },
+                "selector": "fn[built_in_languages_and_structural_search_use_the_project_scope]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "12b91c12af308adc6e3a9d313d7681f8b2516ad9d587d6bf56886a0b7de5d449"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/public_api.rs"
+                },
+                "selector": "fn[public_exports_match_the_appendix]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.sources.local_provider"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "40db2dc632e2225b3ba0682e31c5bdaf609ded48e960bd31668e5f6dd9fc2f4c"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The reviewed tests adequately check `requirements.sdk.sources.Sources`.\n\nThe requirement has two kinds of obligation. The first is a `Sources` type built from a project root, with `list`, `read`, `parse`, `search_text` and `search_structure` having the signatures given. The second is that listing, reading, outlining and both searches all use that directory's visibility rules. I read `requirements.sdk.sources.local_provider` for what those rules are. It covers `.gitignore` including nested files and exceptions, untracked files, exclusion of Git metadata and files outside the root, and direct requests naming a file or subdirectory.\n\n**Constructor and signatures.**\n- `crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]` compiles the Habeas consumer against the SDK and checks the rustdoc export inventory against the specification. That covers the public shape.\n- Both behavioral tests call `Sources::new(root.path())`. `root.path()` is a `&Path`, which is an `Into<PathBuf>` input.\n\n**Shared visibility across operations.**\n`crates/trust-but-verify/tests/source_defaults.rs#fn[gitignore_is_shared_by_all_operations_with_or_without_a_git_repository]` runs with and without a Git repository.\n- **List:** it asserts that `list(all)` equals `list(default)`. Untracked non-ignored files, nested exceptions and dotfiles are listed. A file ignored in `.gitignore` is absent even when Git tracks it. A file under an ignored directory is absent even when a nested `.gitignore` re-includes it. `skip/` and `.git/` are absent.\n- **Read and parse:** both return errors for the excluded files. Reading `.gitignore` succeeds, and reading `.git/config` errors.\n- **Direct scope:** `list` with `SourceScope::under` on excluded files or directories returns empty.\n- **Text search:** a literal query and a regex query each return exactly 3 matches. Searches scoped to excluded paths or `.git` return nothing. A scope of `..` errors. Scope normalization (`./src/../src`) returns only `src/nested.txt`, which also shows that `src-old` is not matched as a prefix.\n\n**Structural search.**\n`crates/trust-but-verify/tests/source_defaults.rs#fn[built_in_languages_and_structural_search_use_the_project_scope]` covers this.\n- **Visibility:** it checks that `hidden.rs`, `skip/hidden.rs` and `.git/metadata.rs` are not matched, and that searches scoped to them are empty and complete. A search scoped to `visible.rs` returns that file, and a `..` scope errors.\n- **Behavior:** it checks match path, selector and excerpt, and the limit and `complete` behavior. It checks language filtering with `python`, and the error for an unsupported language.\n- **Outline:** it also checks `parse` outlining for plain text and Rust.\n\nEvery operation therefore has a test with outcome assertions for the visibility rules, in both the repository and non-repository settings. The detailed behavior of each operation, such as file content and search semantics, belongs to the refining requirements. Those requirements are also marked from these tests.\n\nI found no behavioral obligation without test evidence."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -70,19 +368,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "7f917182c4dc344b542ed33d54dcd1670632956dde58fc8e91c5a116802e4819"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.sources.Sources"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "40d358a3313aab7392808953913dad9692620dbed275732b0174d411d836e0ea"
+          "value": "4c13e64ac4000c26a30047de3fdb575f53f208e1c0be025f6d8f1a0e2ffed009"
         }
       ]
     },
@@ -94,6 +380,125 @@
         {
           "scheme": "habeas-input-v1",
           "value": "c87d5daa058439823e4dea4964600cf80260a5a094a8dbaf048f446812f7f742"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/public.rs"
+            },
+            "selector": "struct[Sources]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "93def44a374d6accf86ce51aea24d7336f12b2c633968eb9a224d53391ddb0d5"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/public.rs"
+            },
+            "selector": "impl[Sources]/fn[new]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "52b52f84003e07eaab523da208c958fbc27ee1c6faf726a547607fd308752e61"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/public.rs"
+            },
+            "selector": "impl[Sources]/fn[list]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "e3844779e975727ecfb7a5899b3d0ccbfd767ebba04c04166729c9336c94f5ac"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/public.rs"
+            },
+            "selector": "impl[Sources]/fn[read]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "637d640cad15bd46785dacf7c9643ed3628e131c38fafec5e61248cade729f3f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/public.rs"
+            },
+            "selector": "impl[Sources]/fn[parse]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "cd0beb8ff515d9e90d7668dc578f034963771917c5db5bcb94761a562b456502"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/public.rs"
+            },
+            "selector": "impl[Sources]/fn[search_text]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "320ff63ef11d1897b547f88bab726279ffe69e6682e601a4edfeb35d07357aea"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/public.rs"
+            },
+            "selector": "impl[Sources]/fn[search_structure]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "1d8bf20820f83ee44764e30d49a4d6c3439ce062beca21b949e0c78575836a3d"
         }
       ]
     },
@@ -144,7 +549,18 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
+          "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.sdk.sources.local_provider"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "40db2dc632e2225b3ba0682e31c5bdaf609ded48e960bd31668e5f6dd9fc2f4c"
         }
       ]
     }

@@ -7,18 +7,12 @@ description: Use at the start of any work in a project that tracks requirements 
 
 Habeas supports literate programming: a project's mdBook explains the program,
 and references connect its stated behavior to the code and tests that implement
-and verify it. `habeas author` has a model assess whether tests adequately check
-each requirement, or, for non-distributed requirements with implementation roots
-and no test edges, whether their stated structure is supported. It records the
-result under `evidence/`;
-`habeas::validate()` validates that evidence without calling a model.
+and verify it. `habeas author` reviews each non-distributed requirement against
+its implementation roots for structure and its tests for behavior. A missing
+edge is a gap when the corresponding obligation needs evidence. Habeas records
+the result under `evidence/`. `habeas::validate()` checks that evidence locally.
 `habeas test` runs instrumented workspace tests and checks their saved execution
 coverage.
-
-The requirements specify independent structural and behavioral checks: mixed
-requirements need both, and a missing edge kind cannot hide a corresponding
-obligation. The current choice of one assessment is an accepted temporary gap
-tracked by issue #51 and acknowledged by fenced `{fixme}` references.
 
 ## Workflow
 

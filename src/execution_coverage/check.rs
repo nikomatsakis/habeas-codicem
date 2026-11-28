@@ -8,7 +8,6 @@ use crate::inputs::OutlineCache;
 
 use super::{book, target_directory, workspace_root};
 
-// {impl}`requirements.test-coverage.check.report`
 pub struct CheckReport {
     pub passed: bool,
     pub text: String,
@@ -20,7 +19,6 @@ struct Exception {
     accepted: bool,
 }
 
-// {impl}`requirements.test-coverage.test`
 pub fn test(project: &Path) -> io::Result<i32> {
     let status = super::run(
         project,
@@ -34,7 +32,6 @@ pub fn test(project: &Path) -> io::Result<i32> {
     Ok(i32::from(!report.passed))
 }
 
-// {impl}`requirements.test-coverage.check`
 pub fn check(project: &Path) -> io::Result<CheckReport> {
     check_in(project, target_directory(project)?)
 }
@@ -47,8 +44,6 @@ struct Function {
     keyword: (u32, u32),
 }
 
-// {impl}`requirements.test-coverage.check.scope`
-// {impl}`requirements.test-coverage.check.threshold`
 fn inventory(
     source: &str,
     outline: &trust_but_verify::outline::Outline,
@@ -141,9 +136,6 @@ fn inventory(
     Ok((functions, no_executable_obligations))
 }
 
-// {impl}`requirements.test-coverage.check.exceptions.reviews`
-// {impl}`requirements.test-coverage.check.exceptions.binding`
-// {impl}`requirements.test-coverage.check.exceptions.author`
 fn exceptions(
     root: &Path,
     outlines: &OutlineCache,
@@ -189,12 +181,10 @@ fn exceptions(
     Ok(accepted)
 }
 
-// {impl}`requirements.test-coverage.check.threshold`
 fn threshold(covered: usize, total: usize) -> bool {
     total > 0 && (covered as u128) * 5 >= (total as u128) * 4
 }
 
-// {impl}`requirements.test-coverage.check.report`
 fn gaps(lines: impl Iterator<Item = u32>) -> String {
     let mut ranges = Vec::new();
     let mut current: Option<(u32, u32)> = None;
@@ -222,19 +212,12 @@ fn gaps(lines: impl Iterator<Item = u32>) -> String {
     ranges.join(", ")
 }
 
-// {impl}`requirements.test-coverage.check`
-// {impl}`requirements.test-coverage.check.measurement`
-// {impl}`requirements.test-coverage.check.functions`
-// {impl}`requirements.test-coverage.check.exceptions`
-// {impl}`requirements.test-coverage.check.report`
 fn check_in(project: &Path, target: PathBuf) -> io::Result<CheckReport> {
     let root = workspace_root(project)?;
     let saved = book::load_saved(&root, Some(target));
     check_saved(&root, &saved)
 }
 
-// {impl}`requirements.test-coverage.check.measurement`
-// {impl}`requirements.test-coverage.check.threshold`
 pub(super) fn check_saved(root: &Path, saved: &book::SavedCoverage) -> io::Result<CheckReport> {
     let mut errors = Vec::new();
     if saved.invalid_store {
@@ -834,6 +817,7 @@ mod tests {
         assert!(result.text.contains("#fn[work]: not measured"));
     }
 
+    // {test}`requirements.test-coverage.index.summary`
     // {test}`requirements.test-coverage.check.threshold`
     // {test}`requirements.test-coverage.check.report`
     #[test]

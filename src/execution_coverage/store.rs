@@ -12,8 +12,6 @@ use super::{Attempt, Run};
 const SCHEMA: i64 = 1;
 pub(super) const DATABASE: &str = "current.sqlite";
 
-// {impl}`requirements.test-coverage.storage.current`
-// {impl}`requirements.test-coverage.storage.selection`
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub(super) struct TestIdentity {
     pub(super) binary: String,
@@ -170,11 +168,9 @@ pub(super) mod fixtures {
 
 // Keep the lock separate from SQLite's short write transactions: nextest's
 // process wrappers must be able to write while the parent owns collection.
-// {impl}`requirements.test-coverage.storage.replace`
 pub(super) struct CollectorLock(fs::File);
 
 impl CollectorLock {
-    // {impl}`requirements.test-coverage.storage.replace`
     pub(super) fn acquire(storage: &Path) -> io::Result<Self> {
         fs::create_dir_all(storage)?;
         let file = fs::OpenOptions::new()
@@ -200,13 +196,11 @@ impl Drop for CollectorLock {
     }
 }
 
-// {impl}`requirements.test-coverage.storage`
 pub(super) struct Store {
     connection: Connection,
     storage: PathBuf,
 }
 
-// {impl}`requirements.test-coverage.index.selection`
 pub(super) struct Snapshot {
     pub(super) configuration: Option<String>,
     pub(super) runs: BTreeMap<String, Run>,
@@ -214,7 +208,6 @@ pub(super) struct Snapshot {
     pub(super) latest: Option<String>,
 }
 
-// {impl}`requirements.test-coverage.storage.outcomes`
 pub(super) struct StoredTest {
     pub(super) run: String,
     pub(super) metadata: Attempt,
@@ -279,7 +272,7 @@ impl Store {
         })
     }
 
-    // {impl}`requirements.test-coverage.check.measurement`
+    // {impl}`requirements.test-coverage.index.selection`
     pub(super) fn read(storage: &Path) -> io::Result<Self> {
         let connection = Connection::open_with_flags(
             storage.join(DATABASE),
@@ -304,9 +297,6 @@ impl Store {
         })
     }
 
-    // {impl}`requirements.test-coverage.storage.replace`
-    // {impl}`requirements.test-coverage.storage.configuration_reset`
-    // {impl}`requirements.test-coverage.storage.outcomes`
     pub(super) fn replace(
         &mut self,
         run: &Run,
@@ -366,7 +356,6 @@ impl Store {
 
     // Empty focused runs record their outcome without changing configuration
     // or replacing any current tests.
-    // {impl}`requirements.test-coverage.storage.outcomes`
     pub(super) fn record_empty(&mut self, run: &Run) -> io::Result<()> {
         let transaction = self.connection.transaction().map_err(io::Error::other)?;
         transaction
@@ -385,7 +374,6 @@ impl Store {
         transaction.commit().map_err(io::Error::other)
     }
 
-    // {impl}`requirements.test-coverage.storage.retries`
     pub(super) fn start_attempt(&self, run: &str, attempt: &Attempt) -> io::Result<()> {
         let count = self.connection.execute(
             "UPDATE tests SET metadata=?1,measurements=NULL WHERE binary=?2 AND test=?3 AND invocation=?4",
@@ -399,7 +387,6 @@ impl Store {
         Ok(())
     }
 
-    // {impl}`requirements.test-coverage.storage.outcomes`
     pub(super) fn update_attempt(
         &self,
         run: &str,
@@ -444,7 +431,6 @@ impl Store {
         Ok(())
     }
 
-    // {impl}`requirements.test-coverage.storage.outcomes`
     pub(super) fn update_run(&self, run: &Run) -> io::Result<()> {
         let count = self
             .connection
@@ -459,9 +445,9 @@ impl Store {
         Ok(())
     }
 
+    // {impl}`requirements.test-coverage.index.selection`
     // Read metadata and measurements in a single transaction. Selecting only
     // metadata never reads or parses the large measurements column.
-    // {impl}`requirements.test-coverage.index.selection`
     pub(super) fn snapshot(&mut self, measurements: bool) -> io::Result<Snapshot> {
         let transaction = self.connection.transaction().map_err(io::Error::other)?;
         let state: Option<(Option<String>, String)> = transaction
@@ -564,7 +550,6 @@ impl Store {
         })
     }
 
-    // {impl}`requirements.test-coverage.storage.cleanup`
     pub(super) fn cleanup(&mut self, preparing: Option<&str>) -> io::Result<()> {
         self.connection
             .execute(

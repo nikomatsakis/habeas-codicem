@@ -311,6 +311,35 @@ esac
     assert_eq!(fs::read_to_string(calls).unwrap(), "build\n");
 }
 
+// {test}`requirements.integration.validate.test_annotations`
+#[test]
+fn unmarked_tests_fail_validation_with_their_locations() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("project");
+    let state = temp.path().join("state");
+    fs::create_dir_all(root.join("md")).unwrap();
+    fs::create_dir_all(root.join("tests")).unwrap();
+    fs::write(root.join("Cargo.toml"), "[package]\nname = 'fixture'\n").unwrap();
+    fs::write(root.join("book.toml"), "[book]\nsrc = 'md'\n").unwrap();
+    common::coverage_setup(&root);
+    let output = validate_in(&root, &state);
+    assert!(output.status.success(), "{output:?}");
+    fs::write(
+        root.join("tests/items.rs"),
+        "#[test]\nfn first() {}\n#[tokio::test]\nasync fn second() {}\n",
+    )
+    .unwrap();
+    let output = validate_in(&root, &state);
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for finding in [
+        "tests/items.rs:2: test function first",
+        "tests/items.rs:4: test function second",
+    ] {
+        assert!(stderr.contains(finding), "{stderr}");
+    }
+}
+
 // {test}`requirements.integration.validate`
 #[test]
 fn validate_fails_outside_a_cargo_and_mdbook_project() {

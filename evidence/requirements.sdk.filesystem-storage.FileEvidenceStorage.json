@@ -1,8 +1,8 @@
 {
   "requirement": "Maps node and criterion paths to a record under the configured root. `load` returns `None` for a missing record. `store` atomically replaces the record.\n\n```rust,ignore\npub struct FileEvidenceStorage { /* private fields */ }\n\nimpl FileEvidenceStorage {\n    pub fn new(root: impl Into<PathBuf>) -> Self;\n    pub fn record_path(&self, path: &NodePath, criterion: &CriterionPath) -> PathBuf;\n    pub async fn load<N, L>(\n        &self,\n        path: &NodePath,\n        criterion: &CriterionPath,\n    ) -> Result<Option<Record<N, L>>, FileStorageError>\n    where\n        N: DeserializeOwned + Send,\n        L: DeserializeOwned + Send;\n    pub async fn store<N, L>(\n        &self,\n        path: &NodePath,\n        criterion: &CriterionPath,\n        record: &Record<N, L>,\n    ) -> Result<(), FileStorageError>\n    where\n        N: Serialize + Sync,\n        L: Serialize + Sync;\n}\n```\n\nTrait implementations\n\n```rust,ignore\nimpl Clone for FileEvidenceStorage;\n```",
   "determination": true,
-  "rationale": "I found no test-adequacy gap. I didn't request any implementation source beyond the search snippets.\n\n- **Path mapping under the root.** `crates/trust-but-verify/tests/storage.rs#fn[paths_are_injective_and_loading_missing_records_has_no_side_effects]` asserts exact `record_path` results for empty, empty-string, multi-segment, slash, `..`, control-character and non-ASCII segments. `#fn[source_and_criterion_boundaries_preserve_independent_records]` asserts exact paths for source/criterion boundary shifts. It then stores a distinct record at each path and reloads each one to show the records stay independent.\n- **`load` returns `None` for a missing record.** The first test loads from a root that does not exist and asserts `None`. It also asserts the root is still absent afterwards. The second test asserts `None` before each store.\n- **`store` atomically replaces the record.** `#fn[concurrent_readers_only_observe_complete_records_from_competing_writes]` has two writers replace the same record repeatedly while a reader loads it. The reader asserts every loaded record is wholly one writer's record (version, dependencies and padded output all agree). It also asserts that only one directory entry remains. `#fn[failed_serialization_preserves_records_and_failed_replacement_cleans_up]` checks that a serialization failure leaves the original bytes intact. It also checks that a failed replacement leaves no temporary files behind.\n- **Round trip and error results.** `#fn[records_round_trip_and_malformed_or_incompatible_data_is_an_error]` covers a store-then-load round trip. It also covers `Json` errors for incompatible or malformed data and an `Io` error when the record path is a directory.\n- **Interface signatures.** The calls in these tests compile against `new`, `record_path`, `load` and `store`, with the generic bounds in use.\n- **`Clone`.** No test clones a `FileEvidenceStorage` directly. The `store.clone()` in the concurrency test clones an `Arc`. The implementation is `#[derive(Clone)]` on a struct with a single `PathBuf` field, in `src/storage.rs#struct[FileEvidenceStorage]`. A derive has no conditional and no transformation of its own, so this obligation is exempt from needing its own test. `StoredGraph` also derives `Clone` over it.",
-  "references": "46acd117cd08d56a28349a14e025e14c5e98e8df3c24641c60df862c4980ed26",
+  "rationale": "structural: The structural obligations in the text are the public type `FileEvidenceStorage` with private fields, the constructor `new(root: impl Into<PathBuf>) -> Self`, the public `record_path(&self, &NodePath, &CriterionPath) -> PathBuf`, the async `load` and `store` signatures with their bounds, and `impl Clone`. Each is covered by the supplied roots or by code they reach.\n\n- `crates/trust-but-verify/src/storage.rs#struct[FileEvidenceStorage]` is a `pub struct` with one private `root: PathBuf` field and `#[derive(Clone)]`. That meets both the private-fields clause and the Clone trait implementation.\n- `crates/trust-but-verify/src/storage.rs#impl[FileEvidenceStorage]/fn[new]` matches `new(root: impl Into<PathBuf>) -> Self` and stores `root.into()`.\n- `crates/trust-but-verify/src/storage.rs#impl[FileEvidenceStorage]/fn[load]` is async with the stated `N: DeserializeOwned + Send, L: DeserializeOwned + Send` bounds and the stated return type. It calls `record_path`, maps `NotFound` to `Ok(None)`, and decodes the record as JSON.\n- `crates/trust-but-verify/src/storage.rs#impl[FileEvidenceStorage]/fn[store]` is async with the stated `Serialize + Sync` bounds and signature. It calls `record_path`, writes to a `tempfile::NamedTempFile` in the target's parent directory, and replaces the target through `write_and_replace`. That is the atomic replace the text asks for.\n- `crates/trust-but-verify/src/storage.rs#impl[FileEvidenceStorage]/fn[record_path]` is not a supplied root, but it is called by both `load` and `store`, which carry the impl marker. A reviewer reaches it through them, so it needs no separate reference. Its public signature matches the text.\n- `write_and_replace` and `TemporaryRecord` are helpers reached from `store`, so they need no separate reference.\n\nThe path-mapping layout, such as hex-encoded segments and the `criteria` directory, is not prescribed. The text only says paths map to a record under the root, so that layout is observable behavior and not a structural obligation.\n\nbehavioral: Behavioral obligations in `requirements.sdk.filesystem-storage.FileEvidenceStorage`, and the tests that cover them:\n\n1. **Path mapping.** `record_path` maps node and criterion paths to a record under the configured root. `paths_are_injective_and_loading_missing_records_has_no_side_effects` asserts exact `record_path` results for empty, empty-string, multi-segment, slash, `..`, NUL, control-character and Unicode segments. `source_and_criterion_boundaries_preserve_independent_records` asserts exact paths for the source/criterion boundary cases. It then stores a distinct record at each path and loads every record back, which shows the records stay independent.\n\n2. **`load` returns `None` for a missing record.** Both tests above assert `is_none()` on missing records. The first also asserts that the missing root is not created.\n\n3. **`store` atomically replaces the record.**\n   - `concurrent_readers_only_observe_complete_records_from_competing_writes` has two writers repeatedly replacing one record while a reader loads it. Every observed record must be fully consistent: version, dependencies and output must all belong to the same writer, and the 8192-character padding must be complete. It also asserts that only one directory entry remains at the end.\n   - `failed_serialization_preserves_records_and_failed_replacement_cleans_up` shows a failed store leaves the original bytes unchanged. It also shows that a failed replacement leaves no temporary file next to `record.json`.\n   - The round-trip tests show that `store` replaces the previous value, and that the loaded value equals what was stored.\n\n4. **Interface and error behavior.** The round-trip test checks that `load` returns `Json` errors for malformed or incompatible data and `Io` errors for an unreadable record, with matching messages. The `store` failure test checks `Json` and `Io` errors. Both are consistent with the `Result<_, FileStorageError>` signatures. The signatures are also exercised by every test and by the `public_api.rs` check that Habeas compiles against the SDK.\n\n5. **`Clone`.** This is a `#[derive(Clone)]` on a struct holding one `PathBuf`. It has no conditional and no transformation of its own, so it needs no separate test. `StoredGraph` in `tests/support/stored_graph.rs` also derives `Clone` over this type, so the impl is exercised at compile time.\n\nI found no input class or failure case that the requirement names and that goes untested. The tests are marked with `{test}` references to the subject.",
+  "references": "cac21933faeed0d8d0754d784d9e4509818cfb8bf8655eb09424a695b517e3d3",
   "inputs": [
     {
       "requirements": "requirements.sdk.filesystem-storage.FileEvidenceStorage",
@@ -49,6 +49,36 @@
       ]
     },
     {
+      "file": "crates/trust-but-verify/src/storage.rs",
+      "item": "struct[FileEvidenceStorage]",
+      "hash": "d096685ec94558a746d6241d96cd243551fbfba0be01a776feb0a667c76d25bd"
+    },
+    {
+      "file": "crates/trust-but-verify/src/storage.rs",
+      "item": "impl[FileEvidenceStorage]/fn[new]",
+      "hash": "395bb192d0c77df2c7ed6b4309c086536c9bc113482d501a564656b4aec72347"
+    },
+    {
+      "file": "crates/trust-but-verify/src/storage.rs",
+      "item": "impl[FileEvidenceStorage]/fn[load]",
+      "hash": "1c3452ffe459d4665e01e47228694a4e471b660e8108eaf8bbe90f0f32f6db87"
+    },
+    {
+      "file": "crates/trust-but-verify/src/storage.rs",
+      "item": "impl[FileEvidenceStorage]/fn[store]",
+      "hash": "c5df6fe773df0ffc833ad054f8fd11736fe259d63a4b79066e2f64b90c26a9af"
+    },
+    {
+      "file": "crates/trust-but-verify/src/storage.rs",
+      "item": "impl[FileEvidenceStorage]/fn[record_path]",
+      "hash": "bc402633bb37560a392f6962f83797e662b6a98d5bca854f69218ebf507fc817"
+    },
+    {
+      "file": "crates/trust-but-verify/src/storage.rs",
+      "item": "fn[write_and_replace]",
+      "hash": "589990c2e0793cd01f42904c5fe4f80d34d680b1b22731ab810292133d4d70a0"
+    },
+    {
       "file": "crates/trust-but-verify/tests/storage.rs",
       "item": "fn[paths_are_injective_and_loading_missing_records_has_no_side_effects]",
       "hash": "7e8c5492e1c427e77ef904b23ea4ba90d7e0f1f6e413cd366137c4641b1beadd"
@@ -76,29 +106,7 @@
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[public_exports_match_the_appendix]",
-      "hash": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
-    },
-    {
-      "file": "crates/trust-but-verify/src/storage.rs",
-      "item": "struct[FileEvidenceStorage]",
-      "hash": "d096685ec94558a746d6241d96cd243551fbfba0be01a776feb0a667c76d25bd"
-    },
-    {
-      "requirements": "requirements.sdk.filesystem-storage.interface",
-      "matches": [
-        "requirements.sdk.filesystem-storage.interface"
-      ],
-      "text": [
-        ":::{req} interface",
-        "`FileEvidenceStorage::new` retains the root directory without touching the filesystem.",
-        "The store implements `Send` and `Sync`. Its `load` and `store` futures are `Send`.",
-        "",
-        "`Record`, `Dependency`, and `Fingerprint` support Serde when their type",
-        "parameters do. `Criterion::Ok` is always serializable; its JSON value is",
-        "already in the record. The SDK supplies `Record<D::NodeData, D::EdgeLabel>` under {cite}`requirements.sdk.graph.evidence.persisted_dependencies`. Serialization bounds on durable node data and edge labels",
-        "apply when using this helper.",
-        ":::"
-      ]
+      "hash": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
     },
     {
       "file": "crates/trust-but-verify/tests/support/stored_graph.rs",
@@ -106,7 +114,321 @@
       "hash": "aa9696d3d6328b2572fab129fd5a6837964e118f6c5f60d1931a28d545295000"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.filesystem-storage.FileEvidenceStorage"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "cac21933faeed0d8d0754d784d9e4509818cfb8bf8655eb09424a695b517e3d3"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.filesystem-storage.FileEvidenceStorage"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "0b532284f1913f55ff9db8a3638c2378baaa4553ace9f230601cc1e75301d185"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/storage.rs"
+                },
+                "selector": "struct[FileEvidenceStorage]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "d096685ec94558a746d6241d96cd243551fbfba0be01a776feb0a667c76d25bd"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/storage.rs"
+                },
+                "selector": "impl[FileEvidenceStorage]/fn[new]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "395bb192d0c77df2c7ed6b4309c086536c9bc113482d501a564656b4aec72347"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/storage.rs"
+                },
+                "selector": "impl[FileEvidenceStorage]/fn[load]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "1c3452ffe459d4665e01e47228694a4e471b660e8108eaf8bbe90f0f32f6db87"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/storage.rs"
+                },
+                "selector": "impl[FileEvidenceStorage]/fn[store]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "c5df6fe773df0ffc833ad054f8fd11736fe259d63a4b79066e2f64b90c26a9af"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/storage.rs"
+                },
+                "selector": "impl[FileEvidenceStorage]/fn[record_path]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "bc402633bb37560a392f6962f83797e662b6a98d5bca854f69218ebf507fc817"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/storage.rs"
+                },
+                "selector": "fn[write_and_replace]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "589990c2e0793cd01f42904c5fe4f80d34d680b1b22731ab810292133d4d70a0"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The structural obligations in the text are the public type `FileEvidenceStorage` with private fields, the constructor `new(root: impl Into<PathBuf>) -> Self`, the public `record_path(&self, &NodePath, &CriterionPath) -> PathBuf`, the async `load` and `store` signatures with their bounds, and `impl Clone`. Each is covered by the supplied roots or by code they reach.\n\n- `crates/trust-but-verify/src/storage.rs#struct[FileEvidenceStorage]` is a `pub struct` with one private `root: PathBuf` field and `#[derive(Clone)]`. That meets both the private-fields clause and the Clone trait implementation.\n- `crates/trust-but-verify/src/storage.rs#impl[FileEvidenceStorage]/fn[new]` matches `new(root: impl Into<PathBuf>) -> Self` and stores `root.into()`.\n- `crates/trust-but-verify/src/storage.rs#impl[FileEvidenceStorage]/fn[load]` is async with the stated `N: DeserializeOwned + Send, L: DeserializeOwned + Send` bounds and the stated return type. It calls `record_path`, maps `NotFound` to `Ok(None)`, and decodes the record as JSON.\n- `crates/trust-but-verify/src/storage.rs#impl[FileEvidenceStorage]/fn[store]` is async with the stated `Serialize + Sync` bounds and signature. It calls `record_path`, writes to a `tempfile::NamedTempFile` in the target's parent directory, and replaces the target through `write_and_replace`. That is the atomic replace the text asks for.\n- `crates/trust-but-verify/src/storage.rs#impl[FileEvidenceStorage]/fn[record_path]` is not a supplied root, but it is called by both `load` and `store`, which carry the impl marker. A reviewer reaches it through them, so it needs no separate reference. Its public signature matches the text.\n- `write_and_replace` and `TemporaryRecord` are helpers reached from `store`, so they need no separate reference.\n\nThe path-mapping layout, such as hex-encoded segments and the `criteria` directory, is not prescribed. The text only says paths map to a record under the root, so that layout is observable behavior and not a structural obligation."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.filesystem-storage.FileEvidenceStorage"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "cac21933faeed0d8d0754d784d9e4509818cfb8bf8655eb09424a695b517e3d3"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.filesystem-storage.FileEvidenceStorage"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "0b532284f1913f55ff9db8a3638c2378baaa4553ace9f230601cc1e75301d185"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/storage.rs"
+                },
+                "selector": "fn[paths_are_injective_and_loading_missing_records_has_no_side_effects]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "7e8c5492e1c427e77ef904b23ea4ba90d7e0f1f6e413cd366137c4641b1beadd"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/storage.rs"
+                },
+                "selector": "fn[source_and_criterion_boundaries_preserve_independent_records]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "1c3e7204f5bad56b73019830133a1de4f68da5c27c2c737d5ee12146c312b0a9"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/storage.rs"
+                },
+                "selector": "fn[records_round_trip_and_malformed_or_incompatible_data_is_an_error]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "a760f09ffd10473e1af8774d969ea4658246316a8cdb9fafbe0a9e9024d19cf0"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/storage.rs"
+                },
+                "selector": "fn[failed_serialization_preserves_records_and_failed_replacement_cleans_up]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "561cc1e117a62fa3b500f329baa12c090757d4d9d66487bc2447d138f467b1b0"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/storage.rs"
+                },
+                "selector": "fn[concurrent_readers_only_observe_complete_records_from_competing_writes]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "104d8fdc65ee1e6a630e60fb25b6d67c3b0a92393f9add08216e39031345b700"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/public_api.rs"
+                },
+                "selector": "fn[public_exports_match_the_appendix]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+            }
+          ]
+        },
+        {
+          "OutgoingEdges": [
+            {
+              "Requirement": "requirements.sdk.filesystem-storage.FileEvidenceStorage"
+            },
+            "Tests",
+            {
+              "scheme": "node-path-set-sha256-v1",
+              "value": "28d239d1815c8efda378188755be088029eed283d4d6ee398618a77d75444d5b"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/storage.rs"
+                },
+                "selector": "struct[FileEvidenceStorage]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "d096685ec94558a746d6241d96cd243551fbfba0be01a776feb0a667c76d25bd"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/support/stored_graph.rs"
+                },
+                "selector": "struct[StoredGraph]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "aa9696d3d6328b2572fab129fd5a6837964e118f6c5f60d1931a28d545295000"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "Behavioral obligations in `requirements.sdk.filesystem-storage.FileEvidenceStorage`, and the tests that cover them:\n\n1. **Path mapping.** `record_path` maps node and criterion paths to a record under the configured root. `paths_are_injective_and_loading_missing_records_has_no_side_effects` asserts exact `record_path` results for empty, empty-string, multi-segment, slash, `..`, NUL, control-character and Unicode segments. `source_and_criterion_boundaries_preserve_independent_records` asserts exact paths for the source/criterion boundary cases. It then stores a distinct record at each path and loads every record back, which shows the records stay independent.\n\n2. **`load` returns `None` for a missing record.** Both tests above assert `is_none()` on missing records. The first also asserts that the missing root is not created.\n\n3. **`store` atomically replaces the record.**\n   - `concurrent_readers_only_observe_complete_records_from_competing_writes` has two writers repeatedly replacing one record while a reader loads it. Every observed record must be fully consistent: version, dependencies and output must all belong to the same writer, and the 8192-character padding must be complete. It also asserts that only one directory entry remains at the end.\n   - `failed_serialization_preserves_records_and_failed_replacement_cleans_up` shows a failed store leaves the original bytes unchanged. It also shows that a failed replacement leaves no temporary file next to `record.json`.\n   - The round-trip tests show that `store` replaces the previous value, and that the loaded value equals what was stored.\n\n4. **Interface and error behavior.** The round-trip test checks that `load` returns `Json` errors for malformed or incompatible data and `Io` errors for an unreadable record, with matching messages. The `store` failure test checks `Json` and `Io` errors. Both are consistent with the `Result<_, FileStorageError>` signatures. The signatures are also exercised by every test and by the `public_api.rs` check that Habeas compiles against the SDK.\n\n5. **`Clone`.** This is a `#[derive(Clone)]` on a struct holding one `PathBuf`. It has no conditional and no transformation of its own, so it needs no separate test. `StoredGraph` in `tests/support/stored_graph.rs` also derives `Clone` over this type, so the impl is exercised at compile time.\n\nI found no input class or failure case that the requirement names and that goes untested. The tests are marked with `{test}` references to the subject."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -116,19 +438,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "46acd117cd08d56a28349a14e025e14c5e98e8df3c24641c60df862c4980ed26"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.filesystem-storage.FileEvidenceStorage"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "28d239d1815c8efda378188755be088029eed283d4d6ee398618a77d75444d5b"
+          "value": "cac21933faeed0d8d0754d784d9e4509818cfb8bf8655eb09424a695b517e3d3"
         }
       ]
     },
@@ -140,6 +450,108 @@
         {
           "scheme": "habeas-input-v1",
           "value": "0b532284f1913f55ff9db8a3638c2378baaa4553ace9f230601cc1e75301d185"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/storage.rs"
+            },
+            "selector": "struct[FileEvidenceStorage]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "d096685ec94558a746d6241d96cd243551fbfba0be01a776feb0a667c76d25bd"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/storage.rs"
+            },
+            "selector": "impl[FileEvidenceStorage]/fn[new]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "395bb192d0c77df2c7ed6b4309c086536c9bc113482d501a564656b4aec72347"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/storage.rs"
+            },
+            "selector": "impl[FileEvidenceStorage]/fn[load]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "1c3452ffe459d4665e01e47228694a4e471b660e8108eaf8bbe90f0f32f6db87"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/storage.rs"
+            },
+            "selector": "impl[FileEvidenceStorage]/fn[store]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "c5df6fe773df0ffc833ad054f8fd11736fe259d63a4b79066e2f64b90c26a9af"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/storage.rs"
+            },
+            "selector": "impl[FileEvidenceStorage]/fn[record_path]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "bc402633bb37560a392f6962f83797e662b6a98d5bca854f69218ebf507fc817"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/storage.rs"
+            },
+            "selector": "fn[write_and_replace]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "589990c2e0793cd01f42904c5fe4f80d34d680b1b22731ab810292133d4d70a0"
         }
       ]
     },
@@ -241,35 +653,19 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
+          "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
         }
       ]
     },
     {
-      "Node": [
+      "OutgoingEdges": [
         {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/storage.rs"
-            },
-            "selector": "struct[FileEvidenceStorage]"
-          }
+          "Requirement": "requirements.sdk.filesystem-storage.FileEvidenceStorage"
         },
+        "Tests",
         {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "d096685ec94558a746d6241d96cd243551fbfba0be01a776feb0a667c76d25bd"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Requirement": "requirements.sdk.filesystem-storage.interface"
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "907a8b42f730a702a31af4318432bf12d99dc1434306b57a2e5f1b66b7dd9f67"
+          "scheme": "node-path-set-sha256-v1",
+          "value": "28d239d1815c8efda378188755be088029eed283d4d6ee398618a77d75444d5b"
         }
       ]
     },
@@ -287,6 +683,18 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "aa9696d3d6328b2572fab129fd5a6837964e118f6c5f60d1931a28d545295000"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.sdk.filesystem-storage.FileEvidenceStorage"
+        },
+        "Implements",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "887112f09191a54247efd24442672360241a723f859639fb0e466a1ce7b13d4f"
         }
       ]
     }

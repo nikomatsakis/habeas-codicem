@@ -12,9 +12,10 @@ use std::{future::Future, marker::PhantomData, sync::Arc};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, ffi::OsString, fmt, io};
 
-/// A supported backend and its model, connection, and inference settings.
-// {impl}`requirements.sdk.graph.agent-harness.agent_config`
 // {impl}`requirements.sdk.graph.agent-harness.agent_config.serialization`
+// {impl}`requirements.sdk.graph.agent-harness.agent_config.settings`
+// {impl}`requirements.sdk.graph.agent-harness.agent_config`
+/// A supported backend and its model, connection, and inference settings.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "backend", rename_all = "lowercase")]
 #[non_exhaustive]
@@ -25,16 +26,16 @@ pub enum AgentConfig {
     Ollama(OllamaConfig),
 }
 
-/// A domain operation offered to a model during a criterion's request.
 // {impl}`requirements.sdk.graph.agent-harness.Tool`
+/// A domain operation offered to a model during a criterion's request.
 pub trait Tool<D: Domain, A, R>: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn execute(&self, cx: &ValidationContext<'_, D>, args: A) -> impl Future<Output = R> + Send;
 }
 
-/// Backend settings and the Rust tools registered for one agent.
 // {impl}`requirements.sdk.graph.agent-harness.AgentWithTools`
+/// Backend settings and the Rust tools registered for one agent.
 pub struct AgentWithTools<D: Domain> {
     backend: AgentConfig,
     tools: Vec<Arc<dyn RegisteredTool<D>>>,
@@ -59,7 +60,7 @@ impl AgentConfig {
 }
 
 impl<D: Domain> AgentWithTools<D> {
-    // {impl}`requirements.sdk.graph.agent-harness.with_tool`
+    // {impl}`requirements.sdk.graph.agent-harness.AgentWithTools`
     pub fn with_tool<A: DeserializeOwned + JsonSchema + 'static, R: Serialize + 'static>(
         mut self,
         tool: Arc<impl Tool<D, A, R> + 'static>,
@@ -72,6 +73,7 @@ impl<D: Domain> AgentWithTools<D> {
     }
 }
 
+// {impl}`requirements.sdk.graph.agent-harness.AgentSettings`
 /// Agent configurations accepted by a domain's cache.
 ///
 /// ```compile_fail
@@ -80,42 +82,55 @@ impl<D: Domain> AgentWithTools<D> {
 /// impl<D: Domain> AgentSettings<D> for ThirdPartyConfig {}
 /// ```
 // {test}`requirements.sdk.graph.agent-harness.AgentSettings`
-// {impl}`requirements.sdk.graph.agent-harness.AgentSettings`
 pub trait AgentSettings<D: Domain>: sealed::Settings<D> {}
+// {impl}`requirements.sdk.graph.agent-harness.AgentSettings`
+// {impl}`requirements.sdk.graph.agent-harness.agent_config`
 impl<D: Domain> AgentSettings<D> for AgentConfig {}
+// {impl}`requirements.sdk.graph.agent-harness.AgentSettings`
+// {impl}`requirements.sdk.graph.agent-harness.AgentWithTools`
 impl<D: Domain> AgentSettings<D> for AgentWithTools<D> {}
 
+// {impl}`requirements.sdk.graph.agent-harness.SecretString`
 // {impl}`requirements.sdk.graph.agent-harness.agent_config.settings`
 /// A credential whose Debug representation hides its value.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SecretString(String);
 
+// {impl}`requirements.sdk.graph.agent-harness.SecretString`
 impl SecretString {
+    // {impl}`requirements.sdk.graph.agent-harness.agent_config.settings`
     pub fn expose_secret(&self) -> &str {
         &self.0
     }
 }
 
+// {impl}`requirements.sdk.graph.agent-harness.SecretString`
+// {impl}`requirements.sdk.graph.agent-harness.agent_config.settings`
 impl From<String> for SecretString {
     fn from(value: String) -> Self {
         Self(value)
     }
 }
 
+// {impl}`requirements.sdk.graph.agent-harness.SecretString`
+// {impl}`requirements.sdk.graph.agent-harness.agent_config.settings`
 impl From<&str> for SecretString {
     fn from(value: &str) -> Self {
         Self(value.to_owned())
     }
 }
 
+// {impl}`requirements.sdk.graph.agent-harness.SecretString`
 impl fmt::Debug for SecretString {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("<redacted>")
     }
 }
 
+// {impl}`requirements.sdk.graph.agent-harness.BedrockCredentials`
 // {impl}`requirements.sdk.graph.agent-harness.agent_config.settings`
+// {impl}`requirements.sdk.public_api`
 /// Explicit AWS credentials. Omitted credentials use AWS's standard resolution.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -127,6 +142,8 @@ pub struct BedrockCredentials {
     pub session_token: Option<SecretString>,
 }
 
+// {impl}`requirements.sdk.public_api`
+// {impl}`requirements.sdk.graph.agent-harness.BedrockCredentials`
 impl BedrockCredentials {
     pub fn new(access_key_id: SecretString, secret_access_key: SecretString) -> Self {
         Self {
@@ -142,7 +159,8 @@ impl BedrockCredentials {
     }
 }
 
-// {impl}`requirements.sdk.graph.agent-harness.agent_config.settings`
+// {impl}`requirements.sdk.graph.agent-harness.BedrockConfig`
+// {impl}`requirements.sdk.public_api`
 /// Settings for an Amazon Bedrock model.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -159,6 +177,8 @@ pub struct BedrockConfig {
     pub options: BTreeMap<String, OptionValue>,
 }
 
+// {impl}`requirements.sdk.public_api`
+// {impl}`requirements.sdk.graph.agent-harness.BedrockConfig`
 impl BedrockConfig {
     pub fn new(model: String) -> Self {
         Self {
@@ -191,7 +211,8 @@ impl BedrockConfig {
     }
 }
 
-// {impl}`requirements.sdk.graph.agent-harness.agent_config.settings`
+// {impl}`requirements.sdk.graph.agent-harness.OpenAiConfig`
+// {impl}`requirements.sdk.public_api`
 /// Settings for an OpenAI Responses model.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -209,6 +230,8 @@ pub struct OpenAiConfig {
     pub options: BTreeMap<String, OptionValue>,
 }
 
+// {impl}`requirements.sdk.public_api`
+// {impl}`requirements.sdk.graph.agent-harness.OpenAiConfig`
 impl OpenAiConfig {
     pub fn new() -> Self {
         Self::default()
@@ -240,7 +263,8 @@ impl OpenAiConfig {
     }
 }
 
-// {impl}`requirements.sdk.graph.agent-harness.agent_config.settings`
+// {impl}`requirements.sdk.graph.agent-harness.OllamaConfig`
+// {impl}`requirements.sdk.public_api`
 /// Settings for an Ollama model and server.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -257,7 +281,9 @@ pub struct OllamaConfig {
     pub options: BTreeMap<String, OptionValue>,
 }
 
+// {impl}`requirements.sdk.public_api`
 impl OllamaConfig {
+    // {impl}`requirements.sdk.graph.agent-harness.OllamaConfig`
     pub fn new(model: String) -> Self {
         Self {
             model,
@@ -268,27 +294,32 @@ impl OllamaConfig {
         }
     }
 
+    // {impl}`requirements.sdk.graph.agent-harness.OllamaConfig`
     pub fn endpoint(mut self, endpoint: String) -> Self {
         self.endpoint = Some(endpoint);
         self
     }
 
+    // {impl}`requirements.sdk.graph.agent-harness.OllamaConfig`
     pub fn api_key_env(mut self, api_key_env: String) -> Self {
         self.api_key_env = Some(api_key_env);
         self
     }
 
+    // {impl}`requirements.sdk.graph.agent-harness.OllamaConfig`
     pub fn api_key(mut self, api_key: SecretString) -> Self {
         self.api_key = Some(api_key);
         self
     }
 
+    // {impl}`requirements.sdk.graph.agent-harness.OllamaConfig`
     pub fn option(mut self, key: String, value: OptionValue) -> Self {
         self.options.insert(key, value);
         self
     }
 }
 
+// {impl}`requirements.sdk.graph.agent-harness.OptionValue`
 // {impl}`requirements.sdk.graph.agent-harness.agent_config.settings`
 /// A backend inference setting, preserving nested maps and arrays.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

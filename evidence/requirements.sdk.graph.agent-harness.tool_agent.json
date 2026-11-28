@@ -1,8 +1,8 @@
 {
   "requirement": "TBV owns the model conversation, supported backend integrations, tool\ndispatch, and structured submission used by its ask builder.",
   "determination": true,
-  "rationale": "The subject is a broad ownership statement. It says TBV owns four things: the model conversation, the supported backend integrations, tool dispatch, and structured submission. Finer rules for submission, isolation and provider failure sit in their own requirements: `submission.*`, `tool_agent.isolation`, `tool_agent.provider_failure`, `fixed_tools` and others. Those are not reassessed here.\n\nI mapped each of the four areas to tests and found no gap.\n\n**Model conversation**\n- `agent/tests.rs#fn[application_tool_factories_create_fresh_state_for_each_agent_call]` and `fn[application_tools_preserve_graph_tools_in_the_same_conversation]` check the recorded requests. They assert the tool list on every turn, and tool results delivered in order as the last message of the next turn.\n- `fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]` asserts the exact system prompt and the order of the user message contents. It also checks the typed `submit_result` schema.\n- `fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]` and `fn[agent_executions_isolate_conversations_and_dependency_traces]` check that concurrent conversations stay separate. They assert per-conversation call counts and results.\n\n**Supported backend integrations**\n\nThe supported backends are Bedrock, OpenAI and Ollama, per `AgentConfig` in `config.rs`.\n- OpenAI: `configured.rs#mod[tests]/fn[supplied_openai_backend_runs_independent_calls_against_a_local_transport]` runs a real exchange against a local server. It checks model, output-token limit, tool names and order, the `submit_result` schema, and the prompt content. It also checks that tool results go back on the second turn, that runs are independent, and that no secrets are persisted.\n- Ollama: `fn[supplied_ollama_backend_delivers_tools_and_results_over_native_chat]` also runs a real local exchange. It checks the `/api/chat` path, the bearer credential, options, the tool schema, and the tool result in a `tool` message.\n- Bedrock has no end-to-end local transport test. That would need AWS services. The Bedrock-specific logic is covered by three tests in `providers.rs#mod[tests]`, each marked for the subject:\n  - `fn[typed_client_calls_preserve_order_and_native_history]` checks the normalization of client tool calls and that history, order, raw response and origin are preserved. It also checks that normalizing twice changes nothing.\n  - `fn[bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted]` checks option validation and defaulting.\n  - `fn[cache_checkpoints_are_requested_for_caching_models]` checks which models get cache checkpoints.\n\n**Tool dispatch**\n- `fn[application_tools_preserve_graph_tools_in_the_same_conversation]` dispatches graph tools and an application tool together. It asserts the delivered results, paging, and recorded dependencies.\n- `fn[source_tools_keep_search_discovery_separate_from_delivered_source_reads]` dispatches search and source-read tools and asserts the observed dependency.\n\n**Structured submission**\n- Every scripted conversation ends in `submit_result`, and the typed answers are asserted: `true`, the string results, and the structured `TestReview`.\n- The submit schema is asserted in the OpenAI, Ollama and behavioral-adequacy tests.\n\nI saw no requirement-violating behavior that these tests would accept. The remaining detail is the responsibility of the refining requirements.",
-  "references": "8ed00f348732b47fae1c4f4a3cd306ae69762b9f4bb6f22913ad71ae1d0c3b86",
+  "rationale": "structural: The text is one sentence: \"TBV owns the model conversation, supported backend integrations, tool dispatch, and structured submission used by its ask builder.\" Its only structural content is ownership: TBV's own code, not an external agent framework, must run these four things. A behavior-preserving alternative would hand the whole loop to a third-party agent runner, and that would violate \"owns\". So ownership is a real structural obligation, and the two supplied roots cover it.\n\n- **Backend integrations.** `crates/trust-but-verify/src/agent/providers.rs#impl[RigProvider]/fn[connect]` maps each `BackendConfig` variant (Bedrock, OpenAi, Ollama) to a concrete completion model. It also sets the options, the provider flags and the cache flag. This is TBV's own set of supported backends.\n- **Conversation, tool dispatch and submission.** `crates/trust-but-verify/src/agent/tools.rs#impl[ToolAgent<P,%20T>]#2/fn[run_with_domain_tools]` builds the opening message and creates the `GraphSession` with `SessionTools` and the domain tools. It then passes the provider, session, result schema and finish callback to `converse`.\n  - `converse` in `crates/trust-but-verify/src/agent.rs` is reached from this root. It runs the loop, installs `tools::submission_tool`, and handles the submission through `tools::submitted_value` and `session.submit`.\n  - Tool dispatch is reached through the `Conversation` implementation on `GraphSession` and through `SessionTools::dispatch`.\n  - The provider's completion implementation is reached because `converse` calls it through the `CompletionProvider` trait.\n\nBecause a marked root reaches these items, they need no separate `{impl}` marker. I found no other clause that prescribes a library, signature, type or field, and no unmarked root.\n\nThe child behaviors (`isolation`, `provider_failure`, submission semantics) are separate requirements. Their test adequacy is outside this structural judgment.\n\nbehavioral: `requirements.sdk.graph.agent-harness.tool_agent` is an umbrella ownership statement with four behavioral facets. Its detailed obligations sit in refining requirements: `tool_agent.isolation`, `tool_agent.provider_failure`, `submission.*`, `domain_tool_dispatch` and `fixed_tools`. I did not reassess those here. Each facet has a marked test.\n\n- **Model conversation.** `agent_executions_isolate_conversations_and_dependency_traces`, `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` and `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer` in `crates/trust-but-verify/src/agent/tests.rs` run multi-turn conversations against scripted providers. They assert the number of provider calls, the prompt and system message, the delivered tool results, and the typed output. They also assert the recorded dependencies and usage.\n- **Backend integrations.** The supplied backends are Bedrock, OpenAI and Ollama (`AgentConfig`).\n  - OpenAI: `supplied_openai_backend_runs_independent_calls_against_a_local_transport` in `configured.rs` uses a local HTTP transport. It checks model, token limit, tool list, `submit_result` schema, prompt, and delivery of the tool result in the second turn. It also checks that no credentials or backend settings are persisted.\n  - Ollama: `supplied_ollama_backend_delivers_tools_and_results_over_native_chat` in `configured.rs` checks the `/api/chat` path, bearer authentication, options, tool schema, and that the tool result reaches the model in turn 2.\n  - Bedrock: `typed_client_calls_preserve_order_and_native_history`, `cache_checkpoints_are_requested_for_caching_models` and `bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted` in `providers.rs` cover Bedrock's conditional logic. That covers call normalization and ordering, native-history preservation, cache checkpoint placement, and option type checking with the `max_tokens` default. A full Bedrock conversation needs the real AWS service, because `BedrockConfig` has no endpoint override and nothing in the project sets up a local Bedrock transport. That is a network-service exemption, so I do not count it as a gap.\n- **Tool dispatch.** `application_tools_preserve_graph_tools_in_the_same_conversation` checks that graph tools and the application tool are both offered on every request. It checks that the dispatched results (`outgoing_edges`, `read_node`, paging via `get_next_page`, `increment`) are delivered in order, and that the dependencies are recorded. `application_tool_factories_create_fresh_state_for_each_agent_call` checks that tool state is fresh for each agent call.\n- **Structured submission.** The `submit_result` schema is asserted in the OpenAI, Ollama and `behavioral_adequacy_...` tests, which also assert that the typed result is returned. The scripted tests end the conversation through `submit_result`.\n\nNo behavioral obligation of this requirement lacks a test, and every relevant test I found carries a `{test}` marker.",
+  "references": "aa1c0f1341c8ccb7426ee037faa41027ec074499526ea22e602d416bbb0b5a55",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.agent-harness.tool_agent",
@@ -15,6 +15,21 @@
         "dispatch, and structured submission used by its ask builder.",
         ":::"
       ]
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
+      "item": "impl[RigProvider]/fn[connect]",
+      "hash": "4aceeee346dc8ed3d743eb309f00fc0263d4d19929ee2c73cd27fdb6735205c9"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tools.rs",
+      "item": "impl[ToolAgent<P,%20T>]#2/fn[run_with_domain_tools]",
+      "hash": "cd6aad6d404e03666cd233feca81d302ccb7bce0dc053f4fe66ea3fc5f7ef79f"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent.rs",
+      "item": "fn[converse]",
+      "hash": "a909b32e3a742693d32e5bb25e87fc280fc13ac5665d019dda2bd3db6d14ff07"
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
@@ -34,7 +49,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/providers.rs",
       "item": "mod[tests]/fn[cache_checkpoints_are_requested_for_caching_models]",
-      "hash": "5e52b84ce6b9029062aa2fdab59891df294a04635a3cf3dc2ab524aa46b48f4d"
+      "hash": "bf1d467d486bbc62b611a7680d8d2e17f6f1fbddd30ac916a1534ce1aabc1c41"
     },
     {
       "file": "crates/trust-but-verify/src/agent/providers.rs",
@@ -53,13 +68,8 @@
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "fn[source_tools_keep_search_discovery_separate_from_delivered_source_reads]",
-      "hash": "411c8669624d7fe886a79621b1640c28fb2bebdf8254b18443bf5ab806c33f41"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]",
-      "hash": "e28b69f092651a66561d8b9ed54e6b7c678f70b7543352ad8fe674bfbba1cbe9"
+      "hash": "e7612967baf35151d91388d3bdcba2d29524109c2ecbbe5f1d242cfce6f6f959"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -69,7 +79,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[application_tools_preserve_graph_tools_in_the_same_conversation]",
-      "hash": "1f07c540b21b2617426f8035fcd18bc902a2a9a3e9a8a2997d33dc25c219bc3b"
+      "hash": "9e2ad11eb5530b7198e7344026fc2eec3b661d8c01978caa4163c0001d9cf120"
     },
     {
       "file": "crates/trust-but-verify/src/agent/config.rs",
@@ -77,77 +87,441 @@
       "hash": "42fa0e71e4831941d1e9b9df8480d4a0b52cabc7348b81f4e84f0e400c810c96"
     },
     {
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
+      "item": "mod[tests]/fn[bedrock_sdk_retries_are_disabled]",
+      "hash": "843d31090f51e321289a9fc32bd4f4a4734f693ee195c896035374308fb2e66f"
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[bedrock_configuration_attaches_to_a_cache_without_being_persisted]",
       "hash": "0a39a68deecf0d56dd35ef5aee04aa1825e3a2ee749ac8bf99f8829f597cfa5e"
     },
     {
-      "requirements": "requirements.sdk.graph.agent-harness.agent_config",
-      "matches": [
-        "requirements.sdk.graph.agent-harness.agent_config"
-      ],
-      "text": [
-        ":::{req} agent_config",
-        "",
-        "TBV exposes configuration for its supplied Bedrock, OpenAI, and Ollama",
-        "agents. The configuration selects a backend and carries its model, connection,",
-        "credential-selection, and model-option settings.",
-        "",
-        "```rust,ignore",
-        "#[non_exhaustive]",
-        "pub enum AgentConfig {",
-        "    Bedrock(BedrockConfig),",
-        "    OpenAi(OpenAiConfig),",
-        "    Ollama(OllamaConfig),",
-        "}",
-        "```",
-        "",
-        "Trait implementations",
-        "",
-        "```rust,ignore",
-        "impl<D: Domain> AgentSettings<D> for AgentConfig;",
-        "impl Clone for AgentConfig;",
-        "impl Debug for AgentConfig;",
-        "impl<'de> Deserialize<'de> for AgentConfig;",
-        "impl PartialEq for AgentConfig;",
-        "impl Serialize for AgentConfig;",
-        "```",
-        ":::"
-      ]
+      "file": "md/requirements/sdk/graph/agent-harness.md",
+      "item": "section[Agent%20harness]/section[Run%20the%20supplied%20harness]/block@b75a0e79701f",
+      "hash": "e53c6eb90f81f70a55123611301d036b53acd3e9c9ffeb3b82245565e1462d78"
     },
     {
-      "requirements": "requirements.sdk.graph.agent-harness.tool_agent.provider_failure",
-      "matches": [
-        "requirements.sdk.graph.agent-harness.tool_agent.provider_failure"
-      ],
-      "text": [
-        ":::{req} tool_agent.provider_failure",
-        "A provider failure that ends the model conversation returns",
-        "`ValidationError::Provider` with the underlying I/O error to the awaiting ask builder.",
-        ":::"
-      ]
+      "file": "md/requirements/sdk/graph/agent-harness.md",
+      "item": "section[Agent%20harness]/section[Run%20the%20supplied%20harness]/block@b75a0e79701f/paragraph@cb8a045ea526",
+      "hash": "cb8a045ea5261e5ff5569474d01bb5cea524d249c1708fe4894043c6386533bd"
     },
     {
-      "requirements": "requirements.sdk.graph.agent-harness.tool_agent.isolation",
-      "matches": [
-        "requirements.sdk.graph.agent-harness.tool_agent.isolation"
-      ],
-      "text": [
-        ":::{req} tool_agent.isolation",
-        "Each awaited ask builder has independent conversation, paging, and submission",
-        "state. Calls in the same criterion contribute their delivered",
-        "inputs to that criterion's shared trace under",
-        "{cite}`requirements.sdk.graph.agent-calls.author_procedure`.",
-        ":::"
-      ]
+      "file": "crates/trust-but-verify/src/agent/config.rs",
+      "item": "struct[BedrockConfig]",
+      "hash": "5102a7bdbb89a0b0985297359edcfda271aca9887e84cd7acd6d2cdc2f3f1e88"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/providers.rs",
-      "item": "mod[tests]/fn[bedrock_sdk_retries_are_disabled]",
-      "hash": "843d31090f51e321289a9fc32bd4f4a4734f693ee195c896035374308fb2e66f"
+      "file": "crates/trust-but-verify/src/agent/tools.rs",
+      "item": "struct[GraphSession]",
+      "hash": "7dffaeb3b15f8e6f4347f355d8c6317c22d8e9ddf442f392930851e6d0bdbf7c"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tools.rs",
+      "item": "impl[GraphSession<'_,%20'_,%20D>/Conversation]",
+      "hash": "b1e1513be8a5ff3c99eef5d6b370cc37abbf15b5b706b7a8c53c563c6d50409e"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.agent-harness.tool_agent"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "aa1c0f1341c8ccb7426ee037faa41027ec074499526ea22e602d416bbb0b5a55"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-harness.tool_agent"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "4cfdea7179e7061cfd7ce4218491ef1daf78ed0a5b6a2ad71563ce64e5b2fa12"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/providers.rs"
+                },
+                "selector": "impl[RigProvider]/fn[connect]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "4aceeee346dc8ed3d743eb309f00fc0263d4d19929ee2c73cd27fdb6735205c9"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tools.rs"
+                },
+                "selector": "impl[ToolAgent<P,%20T>]#2/fn[run_with_domain_tools]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "cd6aad6d404e03666cd233feca81d302ccb7bce0dc053f4fe66ea3fc5f7ef79f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent.rs"
+                },
+                "selector": "fn[converse]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "a909b32e3a742693d32e5bb25e87fc280fc13ac5665d019dda2bd3db6d14ff07"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The text is one sentence: \"TBV owns the model conversation, supported backend integrations, tool dispatch, and structured submission used by its ask builder.\" Its only structural content is ownership: TBV's own code, not an external agent framework, must run these four things. A behavior-preserving alternative would hand the whole loop to a third-party agent runner, and that would violate \"owns\". So ownership is a real structural obligation, and the two supplied roots cover it.\n\n- **Backend integrations.** `crates/trust-but-verify/src/agent/providers.rs#impl[RigProvider]/fn[connect]` maps each `BackendConfig` variant (Bedrock, OpenAi, Ollama) to a concrete completion model. It also sets the options, the provider flags and the cache flag. This is TBV's own set of supported backends.\n- **Conversation, tool dispatch and submission.** `crates/trust-but-verify/src/agent/tools.rs#impl[ToolAgent<P,%20T>]#2/fn[run_with_domain_tools]` builds the opening message and creates the `GraphSession` with `SessionTools` and the domain tools. It then passes the provider, session, result schema and finish callback to `converse`.\n  - `converse` in `crates/trust-but-verify/src/agent.rs` is reached from this root. It runs the loop, installs `tools::submission_tool`, and handles the submission through `tools::submitted_value` and `session.submit`.\n  - Tool dispatch is reached through the `Conversation` implementation on `GraphSession` and through `SessionTools::dispatch`.\n  - The provider's completion implementation is reached because `converse` calls it through the `CompletionProvider` trait.\n\nBecause a marked root reaches these items, they need no separate `{impl}` marker. I found no other clause that prescribes a library, signature, type or field, and no unmarked root.\n\nThe child behaviors (`isolation`, `provider_failure`, submission semantics) are separate requirements. Their test adequacy is outside this structural judgment."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.agent-harness.tool_agent"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "aa1c0f1341c8ccb7426ee037faa41027ec074499526ea22e602d416bbb0b5a55"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-harness.tool_agent"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "4cfdea7179e7061cfd7ce4218491ef1daf78ed0a5b6a2ad71563ce64e5b2fa12"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/configured.rs"
+                },
+                "selector": "mod[tests]/fn[supplied_openai_backend_runs_independent_calls_against_a_local_transport]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "47c08004f9433445e55bd5679a4a68e99a24b6e999fb17745d89612faf457c6a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/configured.rs"
+                },
+                "selector": "mod[tests]/fn[supplied_ollama_backend_delivers_tools_and_results_over_native_chat]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "22289aac4ff09fbebfff3f5f8bc81cb6024c51d526ea89576c11ec9475d20d73"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/providers.rs"
+                },
+                "selector": "mod[tests]/fn[bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "21ed7d2e0bae0f433277592a822919ef35507c8d6cba25226e95fdfc3245727f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/providers.rs"
+                },
+                "selector": "mod[tests]/fn[cache_checkpoints_are_requested_for_caching_models]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "bf1d467d486bbc62b611a7680d8d2e17f6f1fbddd30ac916a1534ce1aabc1c41"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/providers.rs"
+                },
+                "selector": "mod[tests]/fn[typed_client_calls_preserve_order_and_native_history]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "6ba74988b38323d56108368477c0f1ff43944a2468c7ac12cff65dff781da84e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "07f3a94cd585fd150e0944575c24f6d3538f7ec6c1f07277c24bb2f20ee7fd87"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[agent_executions_isolate_conversations_and_dependency_traces]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "056d0e24c13d4598d0ca252b07b88f5943e47267f99859790a84f3575cf78f38"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "e7612967baf35151d91388d3bdcba2d29524109c2ecbbe5f1d242cfce6f6f959"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[application_tool_factories_create_fresh_state_for_each_agent_call]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "b0008e29621d00d960c2727740322b426ac92e1146f0c4d3cf4cb4d303b7a77a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[application_tools_preserve_graph_tools_in_the_same_conversation]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "9e2ad11eb5530b7198e7344026fc2eec3b661d8c01978caa4163c0001d9cf120"
+            }
+          ]
+        },
+        {
+          "OutgoingEdges": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-harness.tool_agent"
+            },
+            "Tests",
+            {
+              "scheme": "node-path-set-sha256-v1",
+              "value": "b09a635fd57dc1d73dda185eaa7b03875c24499722155b799e33041a2822acfa"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/config.rs"
+                },
+                "selector": "enum[AgentConfig]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "42fa0e71e4831941d1e9b9df8480d4a0b52cabc7348b81f4e84f0e400c810c96"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/providers.rs"
+                },
+                "selector": "mod[tests]/fn[bedrock_sdk_retries_are_disabled]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "843d31090f51e321289a9fc32bd4f4a4734f693ee195c896035374308fb2e66f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/configured.rs"
+                },
+                "selector": "mod[tests]/fn[bedrock_configuration_attaches_to_a_cache_without_being_persisted]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "0a39a68deecf0d56dd35ef5aee04aa1825e3a2ee749ac8bf99f8829f597cfa5e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "md/requirements/sdk/graph/agent-harness.md"
+                },
+                "selector": "section[Agent%20harness]/section[Run%20the%20supplied%20harness]/block@b75a0e79701f"
+              }
+            },
+            {
+              "scheme": "markdown-structural-v1:own-v1",
+              "value": "b75a0e79701fd832a18bad8de26a90a1eb158ebd746a14f3b7bc9d9a0a95ed6a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "md/requirements/sdk/graph/agent-harness.md"
+                },
+                "selector": "section[Agent%20harness]/section[Run%20the%20supplied%20harness]/block@b75a0e79701f/paragraph@cb8a045ea526"
+              }
+            },
+            {
+              "scheme": "markdown-structural-v1:own-v1",
+              "value": "cb8a045ea5261e5ff5569474d01bb5cea524d249c1708fe4894043c6386533bd"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/config.rs"
+                },
+                "selector": "struct[BedrockConfig]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "5102a7bdbb89a0b0985297359edcfda271aca9887e84cd7acd6d2cdc2f3f1e88"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "`requirements.sdk.graph.agent-harness.tool_agent` is an umbrella ownership statement with four behavioral facets. Its detailed obligations sit in refining requirements: `tool_agent.isolation`, `tool_agent.provider_failure`, `submission.*`, `domain_tool_dispatch` and `fixed_tools`. I did not reassess those here. Each facet has a marked test.\n\n- **Model conversation.** `agent_executions_isolate_conversations_and_dependency_traces`, `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` and `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer` in `crates/trust-but-verify/src/agent/tests.rs` run multi-turn conversations against scripted providers. They assert the number of provider calls, the prompt and system message, the delivered tool results, and the typed output. They also assert the recorded dependencies and usage.\n- **Backend integrations.** The supplied backends are Bedrock, OpenAI and Ollama (`AgentConfig`).\n  - OpenAI: `supplied_openai_backend_runs_independent_calls_against_a_local_transport` in `configured.rs` uses a local HTTP transport. It checks model, token limit, tool list, `submit_result` schema, prompt, and delivery of the tool result in the second turn. It also checks that no credentials or backend settings are persisted.\n  - Ollama: `supplied_ollama_backend_delivers_tools_and_results_over_native_chat` in `configured.rs` checks the `/api/chat` path, bearer authentication, options, tool schema, and that the tool result reaches the model in turn 2.\n  - Bedrock: `typed_client_calls_preserve_order_and_native_history`, `cache_checkpoints_are_requested_for_caching_models` and `bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted` in `providers.rs` cover Bedrock's conditional logic. That covers call normalization and ordering, native-history preservation, cache checkpoint placement, and option type checking with the `max_tokens` default. A full Bedrock conversation needs the real AWS service, because `BedrockConfig` has no endpoint override and nothing in the project sets up a local Bedrock transport. That is a network-service exemption, so I do not count it as a gap.\n- **Tool dispatch.** `application_tools_preserve_graph_tools_in_the_same_conversation` checks that graph tools and the application tool are both offered on every request. It checks that the dispatched results (`outgoing_edges`, `read_node`, paging via `get_next_page`, `increment`) are delivered in order, and that the dependencies are recorded. `application_tool_factories_create_fresh_state_for_each_agent_call` checks that tool state is fresh for each agent call.\n- **Structured submission.** The `submit_result` schema is asserted in the OpenAI, Ollama and `behavioral_adequacy_...` tests, which also assert that the typed result is returned. The scripted tests end the conversation through `submit_result`.\n\nNo behavioral obligation of this requirement lacks a test, and every relevant test I found carries a `{test}` marker."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -157,19 +531,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "8ed00f348732b47fae1c4f4a3cd306ae69762b9f4bb6f22913ad71ae1d0c3b86"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.agent-harness.tool_agent"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "d735183f7b93cf9e193d8f9e9a3b93839e2923814227166e698a1cfc14a2a9fc"
+          "value": "aa1c0f1341c8ccb7426ee037faa41027ec074499526ea22e602d416bbb0b5a55"
         }
       ]
     },
@@ -181,6 +543,57 @@
         {
           "scheme": "habeas-input-v1",
           "value": "4cfdea7179e7061cfd7ce4218491ef1daf78ed0a5b6a2ad71563ce64e5b2fa12"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/providers.rs"
+            },
+            "selector": "impl[RigProvider]/fn[connect]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "4aceeee346dc8ed3d743eb309f00fc0263d4d19929ee2c73cd27fdb6735205c9"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tools.rs"
+            },
+            "selector": "impl[ToolAgent<P,%20T>]#2/fn[run_with_domain_tools]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "cd6aad6d404e03666cd233feca81d302ccb7bce0dc053f4fe66ea3fc5f7ef79f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent.rs"
+            },
+            "selector": "fn[converse]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "a909b32e3a742693d32e5bb25e87fc280fc13ac5665d019dda2bd3db6d14ff07"
         }
       ]
     },
@@ -248,7 +661,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "5e52b84ce6b9029062aa2fdab59891df294a04635a3cf3dc2ab524aa46b48f4d"
+          "value": "bf1d467d486bbc62b611a7680d8d2e17f6f1fbddd30ac916a1534ce1aabc1c41"
         }
       ]
     },
@@ -311,29 +724,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
-            "selector": "fn[source_tools_keep_search_discovery_separate_from_delivered_source_reads]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "411c8669624d7fe886a79621b1640c28fb2bebdf8254b18443bf5ab806c33f41"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
             "selector": "fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "e28b69f092651a66561d8b9ed54e6b7c678f70b7543352ad8fe674bfbba1cbe9"
+          "value": "e7612967baf35151d91388d3bdcba2d29524109c2ecbbe5f1d242cfce6f6f959"
         }
       ]
     },
@@ -367,7 +763,19 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "1f07c540b21b2617426f8035fcd18bc902a2a9a3e9a8a2997d33dc25c219bc3b"
+          "value": "9e2ad11eb5530b7198e7344026fc2eec3b661d8c01978caa4163c0001d9cf120"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.sdk.graph.agent-harness.tool_agent"
+        },
+        "Tests",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "b09a635fd57dc1d73dda185eaa7b03875c24499722155b799e33041a2822acfa"
         }
       ]
     },
@@ -394,6 +802,23 @@
           "Source": {
             "resource": {
               "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/providers.rs"
+            },
+            "selector": "mod[tests]/fn[bedrock_sdk_retries_are_disabled]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "843d31090f51e321289a9fc32bd4f4a4734f693ee195c896035374308fb2e66f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/configured.rs"
             },
             "selector": "mod[tests]/fn[bedrock_configuration_attaches_to_a_cache_without_being_persisted]"
@@ -406,47 +831,19 @@
       ]
     },
     {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.agent-harness.tool_agent"
-        },
-        "Tests",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "d735183f7b93cf9e193d8f9e9a3b93839e2923814227166e698a1cfc14a2a9fc"
-        }
-      ]
-    },
-    {
       "Node": [
         {
-          "Requirement": "requirements.sdk.graph.agent-harness.agent_config"
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "md/requirements/sdk/graph/agent-harness.md"
+            },
+            "selector": "section[Agent%20harness]/section[Run%20the%20supplied%20harness]/block@b75a0e79701f"
+          }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "17c5ecc7bf1bbac6f2e6ec7ace266d14e705d525d103fa974d0230e0af6272dd"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Requirement": "requirements.sdk.graph.agent-harness.tool_agent.provider_failure"
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "01c05ef52ec464cb314eaceb4417ad92418ce645b4a6ab6a7ae405c7ae5bb6d8"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Requirement": "requirements.sdk.graph.agent-harness.tool_agent.isolation"
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "2717d64033b2a8d24561ecabcc2d7cd1aac756394923a4920c3c7d5274bc0cbc"
+          "scheme": "markdown-structural-v1:own-v1",
+          "value": "b75a0e79701fd832a18bad8de26a90a1eb158ebd746a14f3b7bc9d9a0a95ed6a"
         }
       ]
     },
@@ -456,14 +853,65 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/providers.rs"
+              "location": "md/requirements/sdk/graph/agent-harness.md"
             },
-            "selector": "mod[tests]/fn[bedrock_sdk_retries_are_disabled]"
+            "selector": "section[Agent%20harness]/section[Run%20the%20supplied%20harness]/block@b75a0e79701f/paragraph@cb8a045ea526"
+          }
+        },
+        {
+          "scheme": "markdown-structural-v1:own-v1",
+          "value": "cb8a045ea5261e5ff5569474d01bb5cea524d249c1708fe4894043c6386533bd"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/config.rs"
+            },
+            "selector": "struct[BedrockConfig]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "843d31090f51e321289a9fc32bd4f4a4734f693ee195c896035374308fb2e66f"
+          "value": "5102a7bdbb89a0b0985297359edcfda271aca9887e84cd7acd6d2cdc2f3f1e88"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tools.rs"
+            },
+            "selector": "struct[GraphSession]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "7dffaeb3b15f8e6f4347f355d8c6317c22d8e9ddf442f392930851e6d0bdbf7c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tools.rs"
+            },
+            "selector": "impl[GraphSession<'_,%20'_,%20D>/Conversation]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "9498ed304eacbf833cc459b25e71bdb00ea74bde058a21f674f0622bf6073fd9"
         }
       ]
     }

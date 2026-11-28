@@ -7,7 +7,6 @@ use crate::evidence::{Declaration, InspectionProgress};
 use crate::reference_roles;
 
 /// The inspection phase label for Rust function coverage.
-// {impl}`requirements.authoring.progress`
 const RUST_COVERAGE_STAGE: &str = "Rust function coverage";
 
 // {cite}`habeas:util`
@@ -134,12 +133,10 @@ static TEST_ATTRIBUTE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::
         .expect("test attribute pattern")
 });
 
-/// Test functions of a Rust source without a valid `{test}` reference, as
+/// Test functions of a Rust source without a `{test}` annotation, as
 /// `(node, line, name)`.
-// {impl}`requirements.references.coverage.tests`
-pub(crate) fn untested_tests(
+fn untested_tests(
     source: &str,
-    definitions: &BTreeMap<String, Declaration>,
 ) -> Result<Vec<(usize, usize, String)>, trust_but_verify::outline::OutlineError> {
     use trust_but_verify::outline::{AttachmentKind, OutlineLang, languages::Rust};
     let public = Rust.outline(source)?;
@@ -147,15 +144,11 @@ pub(crate) fn untested_tests(
         return Err(error);
     }
     let items = crate::outline_items::OutlineItems::new(&public, source);
-    // Only an explicit, valid `{test}` reference supplies a test obligation.
-    let counts = |kind: crate::ReferenceKind, name: &str| {
-        kind == crate::ReferenceKind::Test && covering_reference(kind, name, definitions)
-    };
     let mut tested = vec![false; public.items.len()];
     for comment in &items.comments {
         if reference_roles(&source[comment.span.clone()], false)
             .iter()
-            .any(|role| counts(role.kind, role.name))
+            .any(|role| role.kind == crate::ReferenceKind::Test)
         {
             tested[comment.owner] = true;
         }
@@ -163,7 +156,7 @@ pub(crate) fn untested_tests(
     for fence in crate::fenced::comment_fences(source, &items, true) {
         if let Some(owner) = fence.owner
             && fence.closed
-            && counts(fence.kind, &fence.name)
+            && fence.kind == crate::ReferenceKind::Test
         {
             tested[owner] = true;
         }
@@ -187,37 +180,6 @@ pub(crate) fn untested_tests(
         .collect())
 }
 
-/// Whether a reference with role `kind` to `name` covers the item it belongs
-/// to: a requirement, a named example that traces to a requirement, or a
-/// built-in in a role it permits.
-// {impl}`requirements.references.rust_item_coverage`
-// {impl}`requirements.references.coverage.tests`
-// {impl}`requirements.references.util`
-fn covering_reference(
-    kind: crate::ReferenceKind,
-    name: &str,
-    definitions: &BTreeMap<String, Declaration>,
-) -> bool {
-    // A `{fixme}` acknowledges a gap; it does not say why the item exists.
-    if matches!(
-        kind,
-        crate::ReferenceKind::Term | crate::ReferenceKind::Fixme
-    ) {
-        return false;
-    }
-    if let Some(builtin) = crate::builtins::builtin(name) {
-        return builtin.check(kind).is_ok();
-    }
-    definitions.get(name).is_some_and(|d| match d.kind {
-        crate::DefinitionKind::Requirement => true,
-        // An example counts only when it traces to a requirement itself.
-        crate::DefinitionKind::Example => {
-            crate::evidence::example_references_requirement(d, definitions)
-        }
-        crate::DefinitionKind::Term => false,
-    })
-}
-
 /// The first-party Rust files among the sources reference discovery
 /// considers: every `.rs` file outside the project-root `vendor` directory.
 // {cite}`habeas:util`
@@ -234,7 +196,6 @@ pub(crate) fn rust_files(root: &Path, sources: &[PathBuf]) -> Vec<PathBuf> {
 /// The package's Cargo example targets among `files`, the sources reference
 /// discovery considers: each `.rs` file directly under `examples/`, each
 /// `examples/<name>/main.rs`, and each `[[example]]` path.
-// {impl}`requirements.references.coverage.examples`
 pub(crate) fn cargo_examples(root: &Path, files: &[PathBuf]) -> Vec<PathBuf> {
     let mut targets = std::collections::BTreeSet::new();
     let examples = root.join("examples");
@@ -277,7 +238,6 @@ pub(crate) fn cargo_examples(root: &Path, files: &[PathBuf]) -> Vec<PathBuf> {
 
 /// Reports each Cargo example target that does not `{cite}` a named example
 /// of the book.
-// {impl}`requirements.references.coverage.examples`
 pub(crate) fn validate_cargo_examples(
     root: &Path,
     files: &[PathBuf],
@@ -302,14 +262,9 @@ pub(crate) fn validate_cargo_examples(
     }
 }
 
-// {impl}`requirements.ci.errors`
-// {impl}`requirements.references.procedure`
-// {impl}`requirements.references.rust_item_coverage.parsing`
-// {impl}`requirements.references.coverage.tests`
 pub(crate) fn validate_rust_functions(
     root: &Path,
     sources: &[PathBuf],
-    definitions: &BTreeMap<String, Declaration>,
     errors: &mut Vec<String>,
     discovery_errors: &mut Vec<String>,
     progress: &mut impl FnMut(InspectionProgress),
@@ -337,10 +292,12 @@ pub(crate) fn validate_rust_functions(
                 continue;
             }
         };
-        match untested_tests(&source, definitions) {
+        match untested_tests(&source) {
             Ok(tests) => {
                 for (_, line, name) in tests {
-                    errors.push(format!("{label}:{line}: test function {name} has no {{test}} reference to a requirement or example"));
+                    errors.push(format!(
+                        "{label}:{line}: test function {name} has no {{test}} annotation"
+                    ));
                 }
             }
             Err(error) => {
@@ -493,10 +450,10 @@ mod tests {
         );
         let multiline = "#[test]\nfn\n    café() {}";
         assert_eq!(
-            super::untested_tests(multiline, &definitions()).unwrap(),
+            super::untested_tests(multiline).unwrap(),
             [(1, 3, "café".into())]
         );
-        let names: Vec<String> = super::untested_tests(source, &definitions())
+        let names: Vec<String> = super::untested_tests(source)
             .unwrap()
             .into_iter()
             .map(|(_, _, name)| name)
@@ -505,7 +462,6 @@ mod tests {
             names,
             [
                 "unclosed_fence",
-                "unknown_fenced_target",
                 "untested",
                 "only_cited",
                 "untested_async",
@@ -514,31 +470,6 @@ mod tests {
                 "only_implemented"
             ]
         );
-    }
-
-    // {test}`requirements.references.coverage.tests`
-    // {test}`requirements.references.rust_item_coverage`
-    #[test]
-    fn a_test_reference_to_an_example_counts_only_when_it_references_a_requirement() {
-        let mut definitions = definitions();
-        definitions.insert(
-            "requirements.orphan".to_owned(),
-            Declaration {
-                kind: DefinitionKind::Example,
-                text: "No requirement.".to_owned(),
-                ..definitions["requirements.case"].clone()
-            },
-        );
-        let source = concat!(
-            "// {test}`requirements.case`\n#[test]\nfn traced() {}\n\n",
-            "// {test}`requirements.orphan`\n#[test]\nfn orphan() {}\n",
-        );
-        let names: Vec<String> = super::untested_tests(source, &definitions)
-            .unwrap()
-            .into_iter()
-            .map(|(_, _, name)| name)
-            .collect();
-        assert_eq!(names, ["orphan"]);
     }
 
     // {test}`requirements.references.coverage.tests`
@@ -556,7 +487,6 @@ mod tests {
         validate_rust_functions(
             project.path(),
             &crate::evidence::discovered_files(project.path(), &mut Vec::new()),
-            &definitions(),
             &mut errors,
             &mut Vec::new(),
             &mut |_| {},
@@ -677,7 +607,6 @@ mod tests {
         validate_rust_functions(
             project.path(),
             &crate::evidence::discovered_files(project.path(), &mut Vec::new()),
-            &definitions(),
             &mut errors,
             &mut Vec::new(),
             &mut |_| {},
@@ -710,7 +639,6 @@ mod tests {
         validate_rust_functions(
             project.path(),
             &crate::evidence::discovered_files(project.path(), &mut Vec::new()),
-            &definitions(),
             &mut Vec::new(),
             &mut Vec::new(),
             &mut |update| updates.push((update.stage, update.completed, update.total)),

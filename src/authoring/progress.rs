@@ -181,7 +181,6 @@ fn progress_style(template: &str) -> ProgressStyle {
         .with_key("percent", write_percentage)
 }
 
-// {impl}`requirements.authoring.progress`
 fn write_percentage(state: &ProgressState, output: &mut dyn std::fmt::Write) {
     // The library's default rounds 199/200 to 100%. Reserve 100 for completion.
     let total = u128::from(state.len().unwrap_or(1).max(1));
@@ -190,7 +189,6 @@ fn write_percentage(state: &ProgressState, output: &mut dyn std::fmt::Write) {
 }
 
 impl Drop for BatchProgress {
-    // {impl}`requirements.authoring.progress`
     fn drop(&mut self) {
         if let Some(bar) = &self.bar
             && !bar.is_finished()

@@ -16,12 +16,16 @@ impl std::ops::Deref for RecordingProvider {
 }
 impl RecordingProvider {
     pub fn new(turns: Vec<(&'static str, Value)>) -> Self {
+        Self::script(turns, false)
+    }
+    pub fn script(turns: Vec<(&'static str, Value)>, include_structure: bool) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let requests = Arc::new(Mutex::new(Vec::new()));
         let recorded = requests.clone();
         std::thread::spawn(move || {
-            for (name, arguments) in turns {
+            let mut turns = turns.into_iter().peekable();
+            while turns.peek().is_some() {
                 let (mut stream, _) = listener.accept().unwrap();
                 let mut reader = BufReader::new(&mut stream);
                 let mut length = 0;
@@ -38,6 +42,15 @@ impl RecordingProvider {
                 let mut body = vec![0; length];
                 reader.read_exact(&mut body).unwrap();
                 let request: Value = serde_json::from_slice(&body).unwrap();
+                let structural = !include_structure && request["messages"][0]["content"].as_str().unwrap_or("").contains("Assess whether implementation roots support the requirement's stated structural obligations.");
+                let (name, arguments) = if structural {
+                    (
+                        "submit_result",
+                        json!({"result":{"status":"success","rationale":"Structural review complete."}}),
+                    )
+                } else {
+                    turns.next().unwrap()
+                };
                 let arguments = if name == "finish_search" && arguments == "first" {
                     let page = request["messages"]
                         .as_array()
@@ -52,7 +65,9 @@ impl RecordingProvider {
                 } else {
                     arguments
                 };
-                recorded.lock().unwrap().push(request);
+                if !structural {
+                    recorded.lock().unwrap().push(request);
+                }
                 let reply = json!({"model":"fixture", "created_at":"2026-01-01T00:00:00Z", "message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":name,"arguments":arguments}}]},"done":true,"done_reason":"stop","prompt_eval_count":11,"eval_count":7}).to_string();
                 write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",reply.len()).unwrap();
             }

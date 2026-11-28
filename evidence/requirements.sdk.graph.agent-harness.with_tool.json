@@ -1,8 +1,8 @@
 {
   "requirement": "Calling `config.with_tool(Arc::new(tool))` configures an agent with that\n{term}`requirements.sdk.graph.agent-harness.domain_tool`. Each chained call adds\none tool and preserves the preceding registrations. Every request run by this\nagent offers its registered tools alongside the built-in tools. Agents configured\nindependently from the same backend settings have independent tool sets.\n\nAn application can deserialize its backend settings as `AgentConfig`, attach\nits Rust tools, and pass the configured agent to `ValidationCache::with_agent`.\nA name collision with a built-in or another tool on the same agent fails the\nask with `ValidationError::Agent` before the model is called.\n\n```rust,ignore\nimpl AgentConfig {\n    pub fn with_tool<D: Domain, A: DeserializeOwned + JsonSchema + 'static, R: Serialize + 'static>(\n        self,\n        tool: Arc<impl Tool<D, A, R> + 'static>,\n    ) -> AgentWithTools<D>;\n}\n```",
   "determination": true,
-  "rationale": "The two supplied tests cover each obligation in `requirements.sdk.graph.agent-harness.with_tool`. I did not read the implementation.\n\n**Tool registration and chaining.**\n- `registered_tools_use_the_current_context_and_ordinary_node_ids` in `crates/trust-but-verify/src/agent/configured.rs` chains `.with_tool(Lookup(\"lookup_requirements\")).with_tool(Inspect)` on the backend config.\n- The test asserts that the first registration survives the second. Each request's tool list is exactly the four built-ins followed by `lookup_requirements` and `inspect`, in order.\n- Each chained call adds exactly one tool.\n\n**Tools are offered on every request.**\n- The test loops over `requests[..4]`, which are all the requests of the first agent's ask. Each one carries the registered tools alongside the built-ins.\n- It also checks the tool schema and description sent to the model.\n\n**Tools are usable.**\n- The model calls both tools. The outputs are asserted, covering the typed argument (`pattern`) and the invalid-argument case.\n- Usage stats and the recorded dependencies are asserted, which shows the tools run with the current context.\n\n**Independent tool sets.**\n- A second agent is built from the same `backend` with only `Lookup(\"other\")`.\n- Its request (`requests[4]`) contains `other` and neither `inspect` nor `lookup_requirements`.\n- The first agent keeps its own tools, so independently configured agents do not share state.\n\n**Name collisions.**\n- `duplicate_tool_names_fail_the_ask_before_any_completion` registers `lookup` and then a second tool named `read_node` (a built-in), `lookup` (another tool on the same agent) or `search_text`.\n- Each case asserts that `ask` returns `ValidationError::Agent` with a \"duplicate agent tool name\" message that includes the colliding name.\n- `server.join().unwrap().is_empty()` asserts that the model backend received no request, so the failure happens before the model is called.\n- Both collision kinds the text names, built-in and tool-versus-tool, are exercised. The test checks only one built-in name by example, but built-ins make up a single class, and the text does not distinguish between them.\n\nBoth tests carry `{test}` references to the subject. I found no gaps or missing markers.",
-  "references": "bfe9dd3f10ff2e3cb25bdae983f042b5f401f130fb53ddf1d2b4f6a079ccc705",
+  "rationale": "structural: The only structural obligation in `requirements.sdk.graph.agent-harness.with_tool` is the prescribed signature: `impl AgentConfig { pub fn with_tool<D: Domain, A: DeserializeOwned + JsonSchema + 'static, R: Serialize + 'static>(self, tool: Arc<impl Tool<D, A, R> + 'static>) -> AgentWithTools<D> }`.\n\nA version with a different declaration would not satisfy the text. Examples are a `&self` receiver, a non-generic `D`, or a different return type. The root `crates/trust-but-verify/src/agent/config.rs#impl[AgentConfig]#1/fn[with_tool]` declares exactly this signature. It builds an `AgentWithTools { backend: self, tools: Vec::new() }` and delegates to `AgentWithTools::with_tool`. This matches the clause that the application attaches Rust tools to an agent deserialized as `AgentConfig`.\n\nThe other clauses describe observable behavior:\n- Each chained call adds one tool and preserves earlier registrations.\n- Every request offers the registered tools alongside the built-ins.\n- Agents built from the same settings have independent tool sets.\n- A name collision fails the ask with `ValidationError::Agent` before the model is called.\n\nThe text does not prescribe a data structure, library or algorithm for any of these, and any implementation with the same results would conform. Chaining lives in `crates/trust-but-verify/src/agent/config.rs#impl[AgentWithTools<D>]/fn[with_tool]`. That function is reached from the root and is marked for the `AgentWithTools` requirement, not this one. Its `tools` field is a per-instance `Vec`, which gives the independence. No other root needs an `{impl}` reference for this requirement.\n\nbehavioral: Both supplied tests cover the observable obligations of `requirements.sdk.graph.agent-harness.with_tool`, and both carry a {test} reference to it.\n\n**Chained registration and preserved earlier tools.** `registered_tools_use_the_current_context_and_ordinary_node_ids` in `crates/trust-but-verify/src/agent/configured.rs` chains `.with_tool(Lookup(\"lookup_requirements\")).with_tool(Inspect)`. For the first four requests it asserts the exact tool list: the built-ins `read_node`, `outgoing_edges`, `get_next_page` and `submit_result`, then `lookup_requirements` and `inspect`. This shows each call adds one tool and keeps the earlier one.\n\n**Tools offered on every request.** The same exact-list assertion runs for each of `requests[..4]`. Those requests cover several turns, so the registered tools are offered on every request, not only the first. The test also checks the schema and description of `lookup_requirements`. It runs both tools and checks their outputs and usage stats.\n\n**Independent tool sets.** A second agent is built from the same cloned backend with `with_tool(Lookup(\"other\"))`. The test asserts that `requests[4]` offers `other`. It also asserts that `requests[4]` does not offer `inspect` or `lookup_requirements`. The first agent's lists were already asserted to be exactly six tools, so nothing leaks in either direction.\n\n**Name collisions.** `duplicate_tool_names_fail_the_ask_before_any_completion` registers `lookup` and then a second tool named `read_node`, `lookup` or `search_text`.\n- The `read_node` case is a collision with a built-in.\n- The `lookup` case is a collision with another tool on the same agent.\n- In each case `ask::<bool>()` must return `ValidationError::Agent`, and the message must contain \"duplicate agent tool name\" and the name.\n- `server.join().unwrap().is_empty()` shows the model received no requests, so the failure happens before the model is called.\n- The remaining built-in names (`outgoing_edges`, `get_next_page`, `submit_result`) are the same input class as `read_node`. The text does not distinguish them, so they need no separate test.\n\n**Passing the configured agent to `ValidationCache::with_agent`.** Both tests do this and then ask through it.\n\nThe signature and the `AgentWithTools<D>` return type are structural. They are exercised by compilation and by the chained use above. I found no unacknowledged gap.",
+  "references": "a8bf380d984e685630405d034e8484049917f52b911deaa644d744c2f70db322",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.agent-harness.with_tool",
@@ -34,14 +34,9 @@
       ]
     },
     {
-      "file": "crates/trust-but-verify/src/agent/configured.rs",
-      "item": "mod[tests]/fn[registered_tools_use_the_current_context_and_ordinary_node_ids]",
-      "hash": "1bf97cc8cd53fefba38eba8a9c2426fe72f0fd8d8f2f957083dc512fc16577cb"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/configured.rs",
-      "item": "mod[tests]/fn[duplicate_tool_names_fail_the_ask_before_any_completion]",
-      "hash": "c19982f669567e8b9789d041deb0066cc038103d98c4a3544643a44aacc406ea"
+      "file": "crates/trust-but-verify/src/agent/config.rs",
+      "item": "impl[AgentConfig]#1/fn[with_tool]",
+      "hash": "bcccc3698f16024ed0dd8b7acb4a9cf94d68b5844de4c6a2894f8bea81a5a0c7"
     },
     {
       "definition": "requirements.sdk.graph.agent-harness.domain_tool",
@@ -54,9 +49,200 @@
         "criterion's `ValidationContext` and returns a typed result.",
         ":::"
       ]
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/config.rs",
+      "item": "struct[AgentWithTools]",
+      "hash": "d0f7e836ee2c4c9de45615e648e60124128a3222e8424fcf6ee576d2eca808c4"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/config.rs",
+      "item": "impl[AgentWithTools<D>]/fn[with_tool]",
+      "hash": "a0d54d79c61b9b7b4e77a0a930ee6117d8447697423a6e794a125df390e03ccd"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/fn[registered_tools_use_the_current_context_and_ordinary_node_ids]",
+      "hash": "1bf97cc8cd53fefba38eba8a9c2426fe72f0fd8d8f2f957083dc512fc16577cb"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/fn[duplicate_tool_names_fail_the_ask_before_any_completion]",
+      "hash": "c19982f669567e8b9789d041deb0066cc038103d98c4a3544643a44aacc406ea"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.agent-harness.with_tool"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "a8bf380d984e685630405d034e8484049917f52b911deaa644d744c2f70db322"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-harness.with_tool"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "7487ff89c41fd9c84c20b73ca2022f9c3922948f52fc2a800db2797dda6a8185"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/config.rs"
+                },
+                "selector": "impl[AgentConfig]#1/fn[with_tool]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "bcccc3698f16024ed0dd8b7acb4a9cf94d68b5844de4c6a2894f8bea81a5a0c7"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Definition": "requirements.sdk.graph.agent-harness.domain_tool"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "75a24ce6c34939bdf28c1694fa593f26b4a37901157b1dbc2de8456173d7cd2a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/config.rs"
+                },
+                "selector": "struct[AgentWithTools]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "d0f7e836ee2c4c9de45615e648e60124128a3222e8424fcf6ee576d2eca808c4"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/config.rs"
+                },
+                "selector": "impl[AgentWithTools<D>]/fn[with_tool]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "a0d54d79c61b9b7b4e77a0a930ee6117d8447697423a6e794a125df390e03ccd"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The only structural obligation in `requirements.sdk.graph.agent-harness.with_tool` is the prescribed signature: `impl AgentConfig { pub fn with_tool<D: Domain, A: DeserializeOwned + JsonSchema + 'static, R: Serialize + 'static>(self, tool: Arc<impl Tool<D, A, R> + 'static>) -> AgentWithTools<D> }`.\n\nA version with a different declaration would not satisfy the text. Examples are a `&self` receiver, a non-generic `D`, or a different return type. The root `crates/trust-but-verify/src/agent/config.rs#impl[AgentConfig]#1/fn[with_tool]` declares exactly this signature. It builds an `AgentWithTools { backend: self, tools: Vec::new() }` and delegates to `AgentWithTools::with_tool`. This matches the clause that the application attaches Rust tools to an agent deserialized as `AgentConfig`.\n\nThe other clauses describe observable behavior:\n- Each chained call adds one tool and preserves earlier registrations.\n- Every request offers the registered tools alongside the built-ins.\n- Agents built from the same settings have independent tool sets.\n- A name collision fails the ask with `ValidationError::Agent` before the model is called.\n\nThe text does not prescribe a data structure, library or algorithm for any of these, and any implementation with the same results would conform. Chaining lives in `crates/trust-but-verify/src/agent/config.rs#impl[AgentWithTools<D>]/fn[with_tool]`. That function is reached from the root and is marked for the `AgentWithTools` requirement, not this one. Its `tools` field is a per-instance `Vec`, which gives the independence. No other root needs an `{impl}` reference for this requirement."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.agent-harness.with_tool"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "a8bf380d984e685630405d034e8484049917f52b911deaa644d744c2f70db322"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-harness.with_tool"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "7487ff89c41fd9c84c20b73ca2022f9c3922948f52fc2a800db2797dda6a8185"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/configured.rs"
+                },
+                "selector": "mod[tests]/fn[registered_tools_use_the_current_context_and_ordinary_node_ids]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "2a2cd72d471bf2cf18e6987128b2d9c2c22deeaa2d3e269118486369534f0a29"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/configured.rs"
+                },
+                "selector": "mod[tests]/fn[duplicate_tool_names_fail_the_ask_before_any_completion]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "c19982f669567e8b9789d041deb0066cc038103d98c4a3544643a44aacc406ea"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Definition": "requirements.sdk.graph.agent-harness.domain_tool"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "75a24ce6c34939bdf28c1694fa593f26b4a37901157b1dbc2de8456173d7cd2a"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "Both supplied tests cover the observable obligations of `requirements.sdk.graph.agent-harness.with_tool`, and both carry a {test} reference to it.\n\n**Chained registration and preserved earlier tools.** `registered_tools_use_the_current_context_and_ordinary_node_ids` in `crates/trust-but-verify/src/agent/configured.rs` chains `.with_tool(Lookup(\"lookup_requirements\")).with_tool(Inspect)`. For the first four requests it asserts the exact tool list: the built-ins `read_node`, `outgoing_edges`, `get_next_page` and `submit_result`, then `lookup_requirements` and `inspect`. This shows each call adds one tool and keeps the earlier one.\n\n**Tools offered on every request.** The same exact-list assertion runs for each of `requests[..4]`. Those requests cover several turns, so the registered tools are offered on every request, not only the first. The test also checks the schema and description of `lookup_requirements`. It runs both tools and checks their outputs and usage stats.\n\n**Independent tool sets.** A second agent is built from the same cloned backend with `with_tool(Lookup(\"other\"))`. The test asserts that `requests[4]` offers `other`. It also asserts that `requests[4]` does not offer `inspect` or `lookup_requirements`. The first agent's lists were already asserted to be exactly six tools, so nothing leaks in either direction.\n\n**Name collisions.** `duplicate_tool_names_fail_the_ask_before_any_completion` registers `lookup` and then a second tool named `read_node`, `lookup` or `search_text`.\n- The `read_node` case is a collision with a built-in.\n- The `lookup` case is a collision with another tool on the same agent.\n- In each case `ask::<bool>()` must return `ValidationError::Agent`, and the message must contain \"duplicate agent tool name\" and the name.\n- `server.join().unwrap().is_empty()` shows the model received no requests, so the failure happens before the model is called.\n- The remaining built-in names (`outgoing_edges`, `get_next_page`, `submit_result`) are the same input class as `read_node`. The text does not distinguish them, so they need no separate test.\n\n**Passing the configured agent to `ValidationCache::with_agent`.** Both tests do this and then ask through it.\n\nThe signature and the `AgentWithTools<D>` return type are structural. They are exercised by compilation and by the chained use above. I found no unacknowledged gap."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -66,19 +252,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "bfe9dd3f10ff2e3cb25bdae983f042b5f401f130fb53ddf1d2b4f6a079ccc705"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.agent-harness.with_tool"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "d8ee55f690b79ab521da8cb8e489fe7ff78858a94f20fead249526ac07530ab0"
+          "value": "a8bf380d984e685630405d034e8484049917f52b911deaa644d744c2f70db322"
         }
       ]
     },
@@ -90,6 +264,68 @@
         {
           "scheme": "habeas-input-v1",
           "value": "7487ff89c41fd9c84c20b73ca2022f9c3922948f52fc2a800db2797dda6a8185"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/config.rs"
+            },
+            "selector": "impl[AgentConfig]#1/fn[with_tool]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "bcccc3698f16024ed0dd8b7acb4a9cf94d68b5844de4c6a2894f8bea81a5a0c7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Definition": "requirements.sdk.graph.agent-harness.domain_tool"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "75a24ce6c34939bdf28c1694fa593f26b4a37901157b1dbc2de8456173d7cd2a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/config.rs"
+            },
+            "selector": "struct[AgentWithTools]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "d0f7e836ee2c4c9de45615e648e60124128a3222e8424fcf6ee576d2eca808c4"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/config.rs"
+            },
+            "selector": "impl[AgentWithTools<D>]/fn[with_tool]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "a0d54d79c61b9b7b4e77a0a930ee6117d8447697423a6e794a125df390e03ccd"
         }
       ]
     },
@@ -124,17 +360,6 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "c19982f669567e8b9789d041deb0066cc038103d98c4a3544643a44aacc406ea"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Definition": "requirements.sdk.graph.agent-harness.domain_tool"
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "75a24ce6c34939bdf28c1694fa593f26b4a37901157b1dbc2de8456173d7cd2a"
         }
       ]
     }

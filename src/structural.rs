@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 use trust_but_verify::sources::StructuralRule;
 
 /// Whether this file has one of the rule's language extensions.
-// {impl}`requirements.references.distributed`
 pub(crate) fn covers(rule: &StructuralRule, path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
@@ -22,7 +21,6 @@ pub(crate) fn covers(rule: &StructuralRule, path: &Path) -> bool {
         })
 }
 
-// {impl}`requirements.references.distributed`
 /// Which directive declares a query.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum QueryKind {
@@ -111,7 +109,6 @@ pub(crate) fn has_query_directive(declaration: &Declaration) -> bool {
 
 /// The well-formed queries a requirement declaration contains, in
 /// declaration order, and a problem for each malformed one.
-// {impl}`requirements.ci.errors`
 pub(crate) fn parse_queries(declaration: &Declaration) -> (Vec<DeclaredQuery>, Vec<String>) {
     let lines = &declaration.raw_lines;
     let mut queries = Vec::new();
@@ -215,7 +212,6 @@ pub(crate) struct Site {
 }
 
 impl QueryKind {
-    // {impl}`requirements.references.distributed`
     /// The directive's role name, `sites` or `violations`.
     pub(crate) fn label(self) -> &'static str {
         match self {

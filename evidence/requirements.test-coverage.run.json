@@ -1,8 +1,8 @@
 {
   "requirement": "`habeas coverage [-- <nextest arguments>]` MUST run LLVM-instrumented Rust tests\nthrough `cargo nextest run`, forwarding the supplied arguments and preserving\nnextest's configured test concurrency, filtering, and retries. With no supplied\narguments it MUST select the workspace.",
   "determination": true,
-  "rationale": "The tests cover each obligation of `requirements.test-coverage.run`. All coverage invocations go through the `coverage` and `coverage_with_environment` helpers in `tests/execution_coverage.rs`. They run `habeas coverage -- <args>` against the real binary.\n\n- **LLVM-instrumented tests run through `cargo nextest run`:** `real_parallel_processes_retries_child_profiles_and_filtered_reruns` checks that the saved command is `cargo nextest run` and contains `--workspace`. It checks per-process line counts from instrumented profiles, for example that `src/lib.rs` line 3 or line 5 is hit for the matching test, and that the other line is 0. It checks the raw profile files and the five selected tests. The `compiler_wrapper_preserves_arguments_status_and_prior_wrapper_and_records_features` unit test in `src/execution_coverage/runner.rs` checks that `-C instrument-coverage` is added to compile invocations. It checks that `--print` queries are left untouched, and that arguments, exit status and a prior wrapper are preserved.\n- **Forwarding supplied arguments:** The tests forward `--workspace --retries 1 -j 2 --no-fail-fast`, `-E test(second)`, `--profile focused`, `--features alpha -Fbeta`, `--config build.build-dir=...`, `--no-run`, `--no-tests pass`, and libtest arguments after a second `--` (`-- --exact second`). Each has an observable effect: only the selected tests run, the feature set is recorded, no profiles are saved for `--no-run`, and exit codes are correct for an empty selection.\n- **Preserving configured concurrency:** `no_arguments_selects_all_workspace_members_with_configured_parallelism_and_git_metadata` sets `test-threads = 2` in the nextest config. Two tests rendezvous with a 5-second deadline and fail unless they overlap, so the test would catch serialized execution. The first test also checks overlap with `-j 2`.\n- **Preserving configured filtering:** `configured_retries_filters_profiles_and_libtest_arguments_are_preserved` sets `default-filter = test(retries)`. It runs with no arguments and asserts that only `retries` ran. It also checks that the `focused` profile's filter selects only `second`.\n- **Preserving configured retries:** The same test sets `retries = 1` in the config. It asserts that the saved attempt for `retries` is attempt \"2\" with outcome success, so the configured retry was used. The first test also checks retries through `--retries 1` and `--retries 0`.\n- **No arguments selects the workspace:** The fixture sets `default-members = ['.']` plus a separate `member` package. With `coverage(root, &[])`, the test asserts 3 selected tests, including `member_runs` from the non-default member. This distinguishes workspace selection from default-member selection.\n\nI found no untested obligation and no wrong expected result. The three tests carry `{test}` references to the subject.",
-  "references": "221f35406510c97c3f32d76ce1ad3ba39f731fee90d89281910f54896a39b9b8",
+  "rationale": "structural: The only structural obligation in `requirements.test-coverage.run` is delegation through a named interface. The clause is \"MUST run LLVM-instrumented Rust tests through `cargo nextest run`\". An implementation that ran the tests with `cargo test` or its own harness could give similar results, but it would break this clause. `src/execution_coverage/runner.rs#fn[run]` is marked `{impl}` for the requirement. It builds `Command::new(\"cargo\").args([\"nextest\",\"run\"])` and runs the tests through `nextest run`. It does this both for the compile step (with `--no-run`) and for the final execution step, which runs against `--binaries-metadata`. It also runs `cargo nextest list` for selection. `run` is the root, and the helpers it calls (`nextest_args`, `selected_tests`) are reached from it and need no marker of their own. The `md/reference.md` paragraph root carries the reference and adds no further structural obligation.\n\nThe other clauses state observable behavior only. These are: forwarding the supplied arguments, preserving nextest's concurrency, filtering and retries, and selecting the workspace when no arguments are given. Any implementation that gives the same results satisfies them. `run` also covers the workspace default, with `vec![\"--workspace\"]` when `supplied` is empty. Tests can verify the rest. \"LLVM-instrumented\" is also observable, because it produces profraw output. It is set up through the `RUSTC_WORKSPACE_WRAPPER` and `LLVM_PROFILE_FILE` environment variables in `run`. The text does not prescribe how the instrumentation is done.\n\nbehavioral: The reviewed tests cover each behavioral obligation in `requirements.test-coverage.run`.\n\n- **Runs LLVM-instrumented tests through `cargo nextest run`.**\n  - `tests/execution_coverage.rs#fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]` runs the real binary. It asserts that the saved command is `cargo nextest run`.\n  - The same test asserts that raw profiles exist and that per-line counts are recorded.\n  - `src/execution_coverage/runner.rs#mod[tests]/fn[compiler_wrapper_preserves_arguments_status_and_prior_wrapper_and_records_features]` checks the instrumentation wrapper. It asserts that `-C instrument-coverage` is added to compiles and not to queries. It also checks that arguments, exit status and a prior wrapper are preserved.\n- **Forwards supplied arguments.**\n  - The `coverage` helper always inserts `--` before the arguments, matching the `habeas coverage [-- <nextest arguments>]` form.\n  - `real_parallel_processes_retries_child_profiles_and_filtered_reruns` forwards `--workspace`, `--retries`, `-j`, `--no-fail-fast`, `-E`, `--profile`, `--features`, `-F`, `--config`, `--no-run` and `--no-tests`. It asserts the effect of each: selection, retry attempt counts, no-run behavior, empty-selection exit codes and enabled features.\n  - `configured_retries_filters_profiles_and_libtest_arguments_are_preserved` forwards `--profile focused -- --exact second`. It asserts that only `second` runs, so the libtest arguments after the second `--` reach nextest.\n- **Preserves nextest's configured concurrency.**\n  - `no_arguments_selects_all_workspace_members_with_configured_parallelism_and_git_metadata` sets `test-threads = 2` in the nextest config.\n  - Two tests rendezvous on files and fail unless they run at the same time.\n  - `real_parallel_processes_retries_child_profiles_and_filtered_reruns` also passes `-j 2` and uses an overlap rendezvous.\n- **Preserves configured filtering.** `configured_retries_filters_profiles_and_libtest_arguments_are_preserved` sets `default-filter` to `test(retries)`. It asserts that only `retries` runs. It also sets a different `default-filter` on the `focused` profile, and `--profile focused` runs only `second`.\n- **Preserves configured retries.** The same test sets `retries = 1` and asserts a single `retries` record with attempt `\"2\"` and outcome success.\n- **Selects the workspace when no arguments are supplied.** `no_arguments_selects_all_workspace_members_with_configured_parallelism_and_git_metadata` calls `coverage(root, &[])` on a workspace whose `default-members = ['.']` excludes `member`. It asserts that the selection has 3 tests and that `member_runs` ran, so all workspace members are selected rather than only the default members.\n\nI found no obligation without a test and no marking gap.",
+  "references": "d5808bbd97712639fc326107758b13c6bd0cfc0eb042fe195ce3125b44325c97",
   "inputs": [
     {
       "requirements": "requirements.test-coverage.run",
@@ -17,6 +17,16 @@
         "arguments it MUST select the workspace.",
         ":::"
       ]
+    },
+    {
+      "file": "md/reference.md",
+      "item": "section[How%20it%20works]/section[Test%20execution%20coverage]/paragraph@c6506c25c606",
+      "hash": "c6506c25c60675922b361fe46700bc62bb366b794aad067acb4af3e05ef219c8"
+    },
+    {
+      "file": "src/execution_coverage/runner.rs",
+      "item": "fn[run]",
+      "hash": "6f7b49212d5756b245550399f3a6895dd432fa803419f541915029d484855462"
     },
     {
       "file": "src/execution_coverage/runner.rs",
@@ -40,16 +50,194 @@
     },
     {
       "file": "tests/execution_coverage.rs",
-      "item": "fn[coverage]",
-      "hash": "c212f73ace1654dafdce6f10659c4b39d76dfff4ee4c30e56f10b30130b3862f"
-    },
-    {
-      "file": "tests/execution_coverage.rs",
       "item": "fn[coverage_with_environment]",
       "hash": "5a4a345c1ea087ed3e64d5924961bda0c852495ee199765133b6b235ebe02b0f"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.test-coverage.run"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "d5808bbd97712639fc326107758b13c6bd0cfc0eb042fe195ce3125b44325c97"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.test-coverage.run"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "55a65d9c8a06566c62946e311b40dc7acf91da6a6fc088691afc4546ef88a6c9"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "md/reference.md"
+                },
+                "selector": "section[How%20it%20works]/section[Test%20execution%20coverage]/paragraph@c6506c25c606"
+              }
+            },
+            {
+              "scheme": "markdown-structural-v1:own-v1",
+              "value": "c6506c25c60675922b361fe46700bc62bb366b794aad067acb4af3e05ef219c8"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/execution_coverage/runner.rs"
+                },
+                "selector": "fn[run]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "6f7b49212d5756b245550399f3a6895dd432fa803419f541915029d484855462"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The only structural obligation in `requirements.test-coverage.run` is delegation through a named interface. The clause is \"MUST run LLVM-instrumented Rust tests through `cargo nextest run`\". An implementation that ran the tests with `cargo test` or its own harness could give similar results, but it would break this clause. `src/execution_coverage/runner.rs#fn[run]` is marked `{impl}` for the requirement. It builds `Command::new(\"cargo\").args([\"nextest\",\"run\"])` and runs the tests through `nextest run`. It does this both for the compile step (with `--no-run`) and for the final execution step, which runs against `--binaries-metadata`. It also runs `cargo nextest list` for selection. `run` is the root, and the helpers it calls (`nextest_args`, `selected_tests`) are reached from it and need no marker of their own. The `md/reference.md` paragraph root carries the reference and adds no further structural obligation.\n\nThe other clauses state observable behavior only. These are: forwarding the supplied arguments, preserving nextest's concurrency, filtering and retries, and selecting the workspace when no arguments are given. Any implementation that gives the same results satisfies them. `run` also covers the workspace default, with `vec![\"--workspace\"]` when `supplied` is empty. Tests can verify the rest. \"LLVM-instrumented\" is also observable, because it produces profraw output. It is set up through the `RUSTC_WORKSPACE_WRAPPER` and `LLVM_PROFILE_FILE` environment variables in `run`. The text does not prescribe how the instrumentation is done."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.test-coverage.run"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "d5808bbd97712639fc326107758b13c6bd0cfc0eb042fe195ce3125b44325c97"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.test-coverage.run"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "55a65d9c8a06566c62946e311b40dc7acf91da6a6fc088691afc4546ef88a6c9"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/execution_coverage/runner.rs"
+                },
+                "selector": "mod[tests]/fn[compiler_wrapper_preserves_arguments_status_and_prior_wrapper_and_records_features]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "5111c90cfca4140cb513a06f72fbfd73b1a7c08da896d3735afb74727f5031f5"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/execution_coverage.rs"
+                },
+                "selector": "fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "19e2b1e61d5027ab192843ceed1beb865e8669c2d0aed71d8b68d8c31680c076"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/execution_coverage.rs"
+                },
+                "selector": "fn[configured_retries_filters_profiles_and_libtest_arguments_are_preserved]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "0332de3ce8dedcbd02dcab2e6f99bffe12063534d0c6d93bb2cc13f240673b7e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/execution_coverage.rs"
+                },
+                "selector": "fn[no_arguments_selects_all_workspace_members_with_configured_parallelism_and_git_metadata]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "8a94cbb74d1ed64b7c5bfe1242a055eaf285756ee484565f3005a4a2f7f4370e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/execution_coverage.rs"
+                },
+                "selector": "fn[coverage_with_environment]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "5a4a345c1ea087ed3e64d5924961bda0c852495ee199765133b6b235ebe02b0f"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The reviewed tests cover each behavioral obligation in `requirements.test-coverage.run`.\n\n- **Runs LLVM-instrumented tests through `cargo nextest run`.**\n  - `tests/execution_coverage.rs#fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]` runs the real binary. It asserts that the saved command is `cargo nextest run`.\n  - The same test asserts that raw profiles exist and that per-line counts are recorded.\n  - `src/execution_coverage/runner.rs#mod[tests]/fn[compiler_wrapper_preserves_arguments_status_and_prior_wrapper_and_records_features]` checks the instrumentation wrapper. It asserts that `-C instrument-coverage` is added to compiles and not to queries. It also checks that arguments, exit status and a prior wrapper are preserved.\n- **Forwards supplied arguments.**\n  - The `coverage` helper always inserts `--` before the arguments, matching the `habeas coverage [-- <nextest arguments>]` form.\n  - `real_parallel_processes_retries_child_profiles_and_filtered_reruns` forwards `--workspace`, `--retries`, `-j`, `--no-fail-fast`, `-E`, `--profile`, `--features`, `-F`, `--config`, `--no-run` and `--no-tests`. It asserts the effect of each: selection, retry attempt counts, no-run behavior, empty-selection exit codes and enabled features.\n  - `configured_retries_filters_profiles_and_libtest_arguments_are_preserved` forwards `--profile focused -- --exact second`. It asserts that only `second` runs, so the libtest arguments after the second `--` reach nextest.\n- **Preserves nextest's configured concurrency.**\n  - `no_arguments_selects_all_workspace_members_with_configured_parallelism_and_git_metadata` sets `test-threads = 2` in the nextest config.\n  - Two tests rendezvous on files and fail unless they run at the same time.\n  - `real_parallel_processes_retries_child_profiles_and_filtered_reruns` also passes `-j 2` and uses an overlap rendezvous.\n- **Preserves configured filtering.** `configured_retries_filters_profiles_and_libtest_arguments_are_preserved` sets `default-filter` to `test(retries)`. It asserts that only `retries` runs. It also sets a different `default-filter` on the `focused` profile, and `--profile focused` runs only `second`.\n- **Preserves configured retries.** The same test sets `retries = 1` and asserts a single `retries` record with attempt `\"2\"` and outcome success.\n- **Selects the workspace when no arguments are supplied.** `no_arguments_selects_all_workspace_members_with_configured_parallelism_and_git_metadata` calls `coverage(root, &[])` on a workspace whose `default-members = ['.']` excludes `member`. It asserts that the selection has 3 tests and that `member_runs` ran, so all workspace members are selected rather than only the default members.\n\nI found no obligation without a test and no marking gap."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -59,19 +247,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "221f35406510c97c3f32d76ce1ad3ba39f731fee90d89281910f54896a39b9b8"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.test-coverage.run"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "cd9fc42f5810b327a17bd70ae72f8fc20a916719c66d2de50373bc6f4e806e13"
+          "value": "d5808bbd97712639fc326107758b13c6bd0cfc0eb042fe195ce3125b44325c97"
         }
       ]
     },
@@ -83,6 +259,40 @@
         {
           "scheme": "habeas-input-v1",
           "value": "55a65d9c8a06566c62946e311b40dc7acf91da6a6fc088691afc4546ef88a6c9"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "md/reference.md"
+            },
+            "selector": "section[How%20it%20works]/section[Test%20execution%20coverage]/paragraph@c6506c25c606"
+          }
+        },
+        {
+          "scheme": "markdown-structural-v1:own-v1",
+          "value": "c6506c25c60675922b361fe46700bc62bb366b794aad067acb4af3e05ef219c8"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/runner.rs"
+            },
+            "selector": "fn[run]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "6f7b49212d5756b245550399f3a6895dd432fa803419f541915029d484855462"
         }
       ]
     },
@@ -151,23 +361,6 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "8a94cbb74d1ed64b7c5bfe1242a055eaf285756ee484565f3005a4a2f7f4370e"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "tests/execution_coverage.rs"
-            },
-            "selector": "fn[coverage]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "c212f73ace1654dafdce6f10659c4b39d76dfff4ee4c30e56f10b30130b3862f"
         }
       ]
     },

@@ -25,6 +25,7 @@ enum Determination {
     },
 }
 
+// {impl}`requirements.authoring.submission`
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ReviewAnswer<T> {
@@ -32,6 +33,7 @@ struct ReviewAnswer<T> {
     #[schemars(length(min = 1))]
     rationale: String,
 }
+// {impl}`requirements.authoring.submission`
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct SiteAnswer {
@@ -40,16 +42,15 @@ struct SiteAnswer {
     rationale: String,
     applies: bool,
 }
-// {impl}`requirements.sdk.graph.criteria.criterion_trait`
-// {impl}`requirements.authoring.mandatory_inputs`
 struct Review<'a> {
     sources: &'a AssessmentSources,
     node: NodeId<HabeasDomain>,
+    kind: ReviewKind,
+    inputs: Vec<Value>,
     criterion: CriterionPath,
 }
 
 impl Review<'_> {
-    // {impl}`requirements.definitions.dependencies`
     fn missing_optional_terms(
         &self,
         cx: &ValidationContext<'_, HabeasDomain>,
@@ -57,8 +58,7 @@ impl Review<'_> {
         use std::collections::{BTreeSet, HashSet};
         let graph = cx.graph();
         let mandatory: HashSet<_> = self
-            .sources
-            .mandatory_inputs()
+            .inputs
             .iter()
             .filter_map(InputSelector::from_input)
             .map(|selector| graph.cache().intern_node(HabeasNode::from(&selector)))
@@ -108,7 +108,9 @@ impl Review<'_> {
     }
 
     // {impl}`requirements.authoring.line_numbers.citation`
-    // {impl}`requirements.authoring.behavioral_review`
+    // {impl}`requirements.authoring.prompt_parts`
+    // {impl}`requirements.authoring.source_tools`
+    // {impl}`requirements.authoring.submission`
     async fn ask<R>(
         &self,
         cx: &ValidationContext<'_, HabeasDomain>,
@@ -119,6 +121,7 @@ impl Review<'_> {
         R: Serialize + serde::de::DeserializeOwned + JsonSchema + Send,
     {
         let mut corrected = false;
+        let mut reminded_scope = false;
         let mut rejection = line_numbers::Rejection::default();
         let citation_review = matches!(self.sources.subject_kind, AssessmentKind::Citation(_));
         let request = cx
@@ -129,7 +132,18 @@ impl Review<'_> {
                 let value = serde_json::to_value(answer)?;
                 let resubmitted = !citation_review && rejection.resubmitted(&value).is_some();
                 if !resubmitted {
-                    validate(&value)?;
+                    if let Err(error) = validate(&value) {
+                        return Ok(VetResult::CorrectAndTryAgain(error.to_string()));
+                    }
+                    let other_role = match self.kind {
+                        ReviewKind::Structural => Some("test"), ReviewKind::Behavioral => Some("impl"), ReviewKind::Standard => None,
+                    };
+                    if let Some(role) = other_role && value["corrections"].as_array().into_iter().flatten().any(|c| c["role"] == role) {
+                        let message = format!("The {} criterion cannot propose a {{{role}}} marker. Judge only its own obligations. If all of them are supported or none apply, submit success and explain why.",self.kind.name());
+                        if reminded_scope { return Err(io::Error::other(message)); }
+                        reminded_scope = true;
+                        return Ok(VetResult::CorrectAndTryAgain(message));
+                    }
                 }
                 if matches!(self.sources.subject_kind, AssessmentKind::Definition(..)) {
                     let missing = self.missing_optional_terms(cx)?;
@@ -172,10 +186,12 @@ impl Review<'_> {
             })
             .contents_of_current_node();
         let mut request = request;
-        if matches!(self.sources.subject_kind, AssessmentKind::Definition(..)) {
+        if self.kind == ReviewKind::Standard
+            && matches!(self.sources.subject_kind, AssessmentKind::Definition(..))
+        {
             request = request.contents_of_successors(HabeasEdgeLabel::Mandatory);
         } else {
-            for input in self.sources.mandatory_inputs() {
+            for input in &self.inputs {
                 if let Some(selector) = InputSelector::from_input(input) {
                     let node = cx.graph().cache().intern_node(HabeasNode::from(&selector));
                     if node != self.node {
@@ -216,9 +232,9 @@ impl Criterion<HabeasDomain> for Review<'_> {
         // The SDK supplies node bodies at delivery. The task message carries only
         // addresses and metadata alongside those bodies.
         let annotations: Vec<_> = self
-            .sources
-            .model_mandatory_inputs()
-            .into_iter()
+            .inputs
+            .iter()
+            .cloned()
             .map(|mut input| {
                 if let Some(selector) = InputSelector::from_input(&input) {
                     let data = HabeasNode::from(&selector);
@@ -234,7 +250,7 @@ impl Criterion<HabeasDomain> for Review<'_> {
             })
             .collect();
         let site = matches!(self.sources.subject_kind, AssessmentKind::Site(..));
-        let prompt = initial_prompt_with_inputs(self.sources, &annotations)
+        let prompt = initial_prompt_with_inputs(self.sources, self.kind, &annotations)
             .map_err(ValidationError::Graph)?;
         if site {
             self.ask::<SiteAnswer>(cx, prompt, |v| site_submission(v).map(drop))
@@ -252,9 +268,6 @@ impl Criterion<HabeasDomain> for Review<'_> {
         }
     }
 }
-// {impl}`requirements.sdk.habeas.evidence_format`
-// {impl}`requirements.sdk.habeas.evidence_conversion.legacy_freshness`
-// {impl}`requirements.sdk.habeas.assessment_policy`
 pub(super) async fn assess(
     backend: &config::BackendConfig,
     sources: &mut AssessmentSources,
@@ -262,15 +275,28 @@ pub(super) async fn assess(
 ) -> io::Result<Assessment> {
     let record = run(backend, sources, usage).await?;
     let value = crate::evidence_format::encode(&record)?;
-    let findings = if let Some(items) = value.get("corrections") {
-        let corrections: Vec<corrections::Correction> = serde_json::from_value(items.clone())?;
-        corrections
-            .into_iter()
-            .map(|c| corrections::Finding::capture(c, &record.dependencies))
-            .collect()
+    let mut findings = Vec::new();
+    let mut capture =
+        |output: &Value, deps: &[Dependency<HabeasNode, HabeasEdgeLabel>]| -> io::Result<()> {
+            if let Some(items) = output.get("corrections") {
+                let items: Vec<corrections::Correction> = serde_json::from_value(items.clone())?;
+                findings.extend(
+                    items
+                        .into_iter()
+                        .map(|c| corrections::Finding::capture(c, deps)),
+                );
+            }
+            Ok(())
+        };
+    if let Some(criteria) = value.get("criteria") {
+        for name in ["structural", "behavioral"] {
+            let criterion: trust_but_verify::graph::Record<HabeasNode, HabeasEdgeLabel> =
+                serde_json::from_value(criteria[name].clone())?;
+            capture(&criterion.output, &criterion.dependencies)?;
+        }
     } else {
-        Vec::new()
-    };
+        capture(&value, &record.dependencies)?;
+    }
     let determination = Judgment::from_value(&value["determination"]).map_err(io::Error::other)?;
     Ok(Assessment {
         determination,
@@ -280,7 +306,6 @@ pub(super) async fn assess(
 }
 
 /// Assess the tracking issues of the acknowledgments used in this judgment.
-// {impl}`requirements.sdk.habeas.github_nodes.related`
 async fn review_tracking_issues(
     sources: &AssessmentSources,
     graph: &HabeasDomain,
@@ -387,14 +412,14 @@ struct AssessmentUsage<'d, 'log> {
 }
 
 impl Drop for AssessmentUsage<'_, '_> {
-    // {impl}`requirements.authoring.usage_requests`
-    // {impl}`requirements.authoring.usage_inputs`
     fn drop(&mut self) {
         self.log.observe_usage(self.validator.usage());
     }
 }
 
-// {impl}`requirements.authoring.persistence.fingerprints`
+// {impl}`requirements.authoring.source_tools`
+// {impl}`requirements.authoring.finish_search.inputs`
+// {impl}`requirements.authoring.usage_requests`
 async fn run(
     backend: &config::BackendConfig,
     sources: &mut AssessmentSources,
@@ -415,7 +440,7 @@ async fn run(
         },
     };
     let node = HabeasNode::review_subject(&subject);
-    let criterion = node.review_criterion();
+    let default_criterion = node.review_criterion();
     let mut graph = sources.domain.clone();
     domain_tools::configure(&mut graph, backend, sources.github.clone())?;
     let node = graph.cache().intern_node(node);
@@ -424,30 +449,68 @@ async fn run(
         log: usage,
     };
     let result = async {
-        let verified = assessment
-            .validator
-            .verify(Review {
+        let kinds: &[ReviewKind] = if sources.review_roots.is_some() {
+            &[ReviewKind::Structural, ReviewKind::Behavioral]
+        } else {
+            &[ReviewKind::Standard]
+        };
+        let mut criteria = serde_json::Map::new();
+        let mut dependencies = Vec::new();
+        for &kind in kinds {
+            let verified = assessment
+                .validator
+                .verify(Review {
+                    sources,
+                    kind,
+                    inputs: sources.inputs_for(kind).map_err(ValidationError::Graph)?,
+                    criterion: if kind == ReviewKind::Standard {
+                        default_criterion.clone()
+                    } else {
+                        CriterionPath::new(vec![kind.name().into()])
+                    },
+                    node,
+                })
+                .await?;
+            let mut answer = verified.output().clone();
+            let mut observed = verified.dependencies().to_vec();
+            review_tracking_issues(
                 sources,
-                criterion,
-                node,
-            })
+                &graph,
+                &mut assessment.validator,
+                &mut answer,
+                &mut observed,
+            )
             .await?;
-        let mut answer = verified.output().clone();
-        let mut dependencies = verified.dependencies().to_vec();
-        review_tracking_issues(
-            sources,
-            &graph,
-            &mut assessment.validator,
-            &mut answer,
-            &mut dependencies,
-        )
-        .await?;
-        Ok((verified.version().cloned(), answer, dependencies))
+            for dep in &observed {
+                if !dependencies.contains(dep) {
+                    dependencies.push(dep.clone());
+                }
+            }
+            if kind == ReviewKind::Standard {
+                return Ok((answer, None, dependencies));
+            }
+            let record = trust_but_verify::graph::Record::new(
+                verified.version().cloned(),
+                stored_dependencies(&graph, &observed),
+                answer,
+            );
+            criteria.insert(
+                kind.name().into(),
+                serde_json::to_value(record).map_err(ValidationError::Output)?,
+            );
+        }
+        let criteria = Value::Object(criteria);
+        let answer = corrections::combine_criteria(&criteria).map_err(ValidationError::Graph)?;
+        Ok((
+            serde_json::to_value(answer).map_err(ValidationError::Output)?,
+            Some(criteria),
+            dependencies,
+        ))
     }
     .await;
     drop(assessment);
     usage.save()?;
-    let (version, answer, dependencies) = result.map_err(|error| match error {
+    let (answer, criteria, dependencies) = result.map_err(|error| match error {
         ValidationError::Graph(error) => error,
         ValidationError::Provider(error) => {
             io::Error::new(error.kind(), ValidationError::<io::Error>::Provider(error))
@@ -497,30 +560,39 @@ async fn run(
     usage.record.determination = Some(judgment.kind().into());
     usage.save()?;
     let mut output = record(sources, &judgment, &rationale, answer["applies"].as_bool());
+    if let Some(criteria) = criteria {
+        output["criteria"] = criteria;
+    }
     if let Some(items) = answer.get("corrections") {
         output["corrections"] = items.clone();
     }
     Ok(trust_but_verify::graph::Record::new(
-        version,
-        dependencies
-            .iter()
-            .map(|dep| {
-                use trust_but_verify::graph::Dependency;
-                match dep {
-                    Dependency::Node(id, fp) => Dependency::Node(
-                        (*graph.cache().node_data(*id).unwrap()).clone(),
-                        fp.clone(),
-                    ),
-                    Dependency::OutgoingEdges(id, label, fp) => Dependency::OutgoingEdges(
-                        (*graph.cache().node_data(*id).unwrap()).clone(),
-                        label.clone(),
-                        fp.clone(),
-                    ),
-                }
-            })
-            .collect(),
+        Some(crate::sdk::review_version()),
+        stored_dependencies(&graph, &dependencies),
         output,
     ))
+}
+
+fn stored_dependencies(
+    graph: &HabeasDomain,
+    dependencies: &[Dependency<NodeId<HabeasDomain>, HabeasEdgeLabel>],
+) -> Vec<Dependency<HabeasNode, HabeasEdgeLabel>> {
+    dependencies
+        .iter()
+        .map(|dep| {
+            use trust_but_verify::graph::Dependency;
+            match dep {
+                Dependency::Node(id, fp) => {
+                    Dependency::Node((*graph.cache().node_data(*id).unwrap()).clone(), fp.clone())
+                }
+                Dependency::OutgoingEdges(id, label, fp) => Dependency::OutgoingEdges(
+                    (*graph.cache().node_data(*id).unwrap()).clone(),
+                    label.clone(),
+                    fp.clone(),
+                ),
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -852,7 +924,7 @@ mod tests {
                 );
                 assert_eq!(fs::read(&path).unwrap(), before);
             }
-            for version in [json!(2), json!("unsupported")] {
+            for version in [json!(3), json!("unsupported")] {
                 let mut invalid = crate::evidence_format::encode(&decoded).unwrap();
                 invalid["format_version"] = version;
                 crate::evidence_format::write_atomic(&path, &invalid).unwrap();

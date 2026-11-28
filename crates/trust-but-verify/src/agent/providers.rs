@@ -22,10 +22,8 @@ fn provider_failure(error: ProviderError) -> io::Error {
     io::Error::other(error)
 }
 
-// :::{impl} requirements.authoring.provider
 // Holds one backend-erased Rig model, so all backends share this provider
 // type; the flags and `options` hold backend-specific behavior.
-// :::
 pub struct RigProvider {
     model: DynModel<Completion>,
     options: serde_json::Value,
@@ -36,10 +34,9 @@ pub struct RigProvider {
 }
 
 impl RigProvider {
-    // {impl}`requirements.authoring.usage_requests`
-    // {impl}`requirements.authoring.credentials`
-    // {impl}`requirements.authoring.cache_checkpoints`
-    // {impl}`requirements.configuration.serialization`
+    // {impl}`requirements.authoring.provider`
+    // {impl}`requirements.authoring.rig_configuration_mapping`
+    // {impl}`requirements.sdk.graph.agent-harness.tool_agent`
     pub async fn connect(config: &BackendConfig) -> io::Result<Self> {
         let model = match config {
             BackendConfig::Bedrock(config) => {
@@ -81,7 +78,6 @@ impl RigProvider {
     }
 }
 
-// {impl}`requirements.authoring.provider_backoff`
 async fn bedrock_sdk_config(config: &BedrockConfig) -> aws_config::SdkConfig {
     bedrock_sdk_loader(
         config,
@@ -123,7 +119,7 @@ fn bedrock_sdk_loader(
 
 impl CompletionProvider for RigProvider {
     // {impl}`requirements.authoring.configuration_storage`
-    // {impl}`requirements.authoring.cache_checkpoints`
+    // {impl}`requirements.authoring.provider`
     async fn complete(&self, mut request: CompletionRequest) -> io::Result<CompletionResponse> {
         let mut options = self
             .options
@@ -220,7 +216,6 @@ fn normalize_bedrock_client_calls(response: &mut CompletionResponse) -> io::Resu
 /// budget, so Rig's budget-below-`max_tokens` check is not reached.
 const DEFAULT_BEDROCK_MAX_TOKENS: u64 = 16_384;
 
-// {impl}`requirements.authoring.output_limit`
 fn apply_bedrock_options(
     request: &mut CompletionRequest,
     options: &mut Map<String, Value>,

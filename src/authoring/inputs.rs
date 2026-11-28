@@ -25,7 +25,6 @@ pub(crate) enum AssessmentKind {
 }
 
 impl AssessmentKind {
-    // {impl}`requirements.authoring.initial_prompt`
     pub(crate) fn noun(&self) -> &'static str {
         match self {
             Self::Definition(kind, _) => kind.noun(),
@@ -35,15 +34,36 @@ impl AssessmentKind {
     }
 }
 
-// {impl}`requirements.authoring.mandatory_inputs`
-// {impl}`requirements.authoring.delivered_inputs`
+/// The same node can provide evidence in both roles. Empty lists make absent edges explicit.
+#[derive(Default, serde::Serialize)]
+pub(crate) struct ReviewRoots {
+    pub(super) implementation: Vec<crate::sdk::HabeasNode>,
+    tests: Vec<crate::sdk::HabeasNode>,
+    #[serde(skip)]
+    shared: Vec<crate::sdk::HabeasNode>,
+}
+
+impl ReviewRoots {
+    fn add(&mut self, kind: ReferenceKind, selector: &InputSelector) {
+        let nodes = match kind {
+            ReferenceKind::Impl => &mut self.implementation,
+            ReferenceKind::Test => &mut self.tests,
+            _ => unreachable!("only implementation and test roots"),
+        };
+        let node = crate::sdk::HabeasNode::from(selector);
+        if !nodes.contains(&node) {
+            nodes.push(node);
+        }
+    }
+}
+
 pub(crate) struct AssessmentSources {
     pub(crate) domain: crate::sdk::HabeasDomain,
     pub(crate) root: PathBuf,
     pub(crate) access: std::sync::Arc<SourceAccess>,
     pub(crate) subject_name: String,
     pub(crate) subject_kind: AssessmentKind,
-    pub(crate) structural: bool,
+    pub(crate) review_roots: Option<ReviewRoots>,
     pub(crate) subject_text: String,
     pub(crate) has_applicable_fixme: bool,
     /// Parsed outlines, cached for this assessment.
@@ -82,18 +102,7 @@ impl AssessmentSources {
         )
     }
 
-    // {impl}`requirements.authoring.invocation`
-    // {impl}`requirements.authoring.mandatory_inputs`
-    // {impl}`requirements.authoring_input`
-    // {impl}`requirements.examples.authoring_inputs`
-    // {impl}`requirements.examples.definition`
-    // {impl}`requirements.references.authoring_inputs`
-    // {impl}`requirements.definitions.authoring_inputs`
-    // {impl}`requirements.authoring.source_tools`
-    // {impl}`requirements.references.anchors`
-    // {impl}`requirements.ci.reference_set`
-    // {impl}`requirements.references.builtin_definitions`
-    // {impl}`requirements.references.site_review`
+    // {impl}`requirements.authoring.github_reads`
     pub(crate) fn prepare_with_context(
         mut domain: crate::sdk::HabeasDomain,
         subject_name: &str,
@@ -161,7 +170,7 @@ impl AssessmentSources {
             crate::evidence::definition_sites(&root, subject_name, subject, &files, &outlines)?;
         // The same edges determine the reference contributions below.
         let id = crate::sdk::RequirementId(subject_name.to_owned());
-        let mut entries = crate::evidence::reference_set_entries(
+        let entries = crate::evidence::reference_set_entries(
             &root,
             &outlines,
             subject_name,
@@ -169,26 +178,22 @@ impl AssessmentSources {
             references,
             &sites,
         );
-        entries.sort();
-        let structural = crate::evidence::structural_assessment(subject, &entries);
+        let mut review_roots =
+            crate::evidence::reviews_both_dimensions(subject).then(|| ReviewRoots {
+                shared: selectors.iter().map(crate::sdk::HabeasNode::from).collect(),
+                ..Default::default()
+            });
         let subject_node = crate::sdk::HabeasNode::Requirement(id);
         let reference_set = crate::evidence::digest_definition_entries(subject, entries);
-        // {impl}`requirements.authoring.structural_inputs`
-        // :::{fixme} requirements.authoring.structural_inputs
-        // :github: nikomatsakis/habeas-codicem#51
-        // Implementation roots are mandatory only in the exclusive structural
-        // mode. Mixed requirements omit them from the initial bundle even though
-        // their independent structural check needs them. Input tests assert the
-        // accepted compromise and do not yet verify the full mixed-input contract.
-        // :::
-        // Structural review receives implementation roots, while test review
-        // retains on-demand implementation reads.
         for reference in references.iter().filter(|reference| {
             reference.name == subject_name
                 && matches!(reference.kind, ReferenceKind::Impl | ReferenceKind::Test)
         }) {
             let selector = reference_selector(&root, &definitions, &outlines, reference)?;
-            if structural
+            if let Some(roots) = &mut review_roots {
+                roots.add(reference.kind, &selector);
+            }
+            if review_roots.is_some()
                 || reference.kind == ReferenceKind::Test
                 || matches!(selector, InputSelector::Requirements { .. })
             {
@@ -197,7 +202,6 @@ impl AssessmentSources {
             }
         }
 
-        // {impl}`requirements.references.anchors`
         for anchor in &subject.anchors {
             let selector = access
                 .file(&root, Path::new(&anchor.file))
@@ -217,12 +221,14 @@ impl AssessmentSources {
                         ),
                     )
                 })?;
-            if structural || anchor.kind == ReferenceKind::Test {
+            if let Some(roots) = &mut review_roots {
+                roots.add(anchor.kind, &selector);
+            }
+            if review_roots.is_some() || anchor.kind == ReferenceKind::Test {
                 insert_selector(&mut selectors, selector);
             }
         }
 
-        // {impl}`requirements.authoring.fixme_inputs`
         let mut acknowledgments = crate::evidence::fixme_acknowledgments(
             &root,
             &outlines,
@@ -313,7 +319,7 @@ impl AssessmentSources {
             root,
             access,
             subject_name: subject_name.to_owned(),
-            structural,
+            review_roots,
             has_applicable_fixme: !acknowledgments.is_empty(),
             subject_kind: AssessmentKind::Definition(
                 subject.kind,
@@ -334,8 +340,6 @@ impl AssessmentSources {
     /// mandatory inputs are the item's outline node, each cited declaration
     /// or built-in text, and the terminology they use; the citations and
     /// their commentary are supplied in the prompt.
-    // {impl}`requirements.authoring.citation_prompt`
-    // {impl}`requirements.authoring.mandatory_inputs`
     pub(crate) fn prepare_citation(
         mut domain: crate::sdk::HabeasDomain,
         file: &str,
@@ -421,7 +425,7 @@ impl AssessmentSources {
             access,
             subject_name,
             subject_kind: AssessmentKind::Citation(citation),
-            structural: false,
+            review_roots: None,
             has_applicable_fixme: false,
             subject_text: String::new(),
             outlines,
@@ -439,10 +443,6 @@ impl AssessmentSources {
     /// complete declaration, each declaration or built-in text it cites, and
     /// the terminology they use; a `{fixme}` naming the requirement inside
     /// the site is part of the site's node.
-    // {impl}`requirements.authoring.site_prompt`
-    // {impl}`requirements.authoring.mandatory_inputs`
-    // {impl}`requirements.references.builtin_definitions`
-    // {impl}`requirements.references.site_review`
     pub(crate) fn prepare_site(
         mut domain: crate::sdk::HabeasDomain,
         requirement: &str,
@@ -539,7 +539,7 @@ impl AssessmentSources {
             subject_name,
             has_applicable_fixme: !fixmes.is_empty(),
             subject_kind: AssessmentKind::Site(site, fixmes),
-            structural: false,
+            review_roots: None,
             subject_text: String::new(),
             outlines,
             reference_set: String::new(),
@@ -551,13 +551,11 @@ impl AssessmentSources {
         })
     }
 
-    // {impl}`requirements.authoring.mandatory_inputs`
+    #[cfg(test)]
     pub(crate) fn mandatory_inputs(&self) -> &[Value] {
         &self.mandatory
     }
 
-    // {impl}`requirements.authoring.fixme_inputs`
-    // {impl}`requirements.authoring.redaction`
     pub(crate) fn model_acknowledgments(&self) -> Vec<Value> {
         self.acknowledgments
             .iter()
@@ -571,11 +569,52 @@ impl AssessmentSources {
             })
             .collect()
     }
+    pub(super) fn inputs_for(&self, kind: super::ReviewKind) -> io::Result<Vec<Value>> {
+        let mut inputs = self.model_mandatory_inputs();
+        let Some(roots) = &self.review_roots else {
+            return Ok(inputs);
+        };
+        let (terms, mut scoped): (Vec<_>, Vec<_>) = inputs
+            .drain(..)
+            .partition(|input| input.get("definition").is_some());
+        scoped.retain(|input| {
+            let Some(selector) = InputSelector::from_input(input) else {
+                return true;
+            };
+            let node = crate::sdk::HabeasNode::from(&selector);
+            if roots.shared.contains(&node) {
+                return true;
+            }
+            match kind {
+                super::ReviewKind::Structural => roots.implementation.contains(&node),
+                super::ReviewKind::Behavioral => {
+                    roots.tests.contains(&node)
+                        || matches!(selector, InputSelector::Requirements { .. })
+                }
+                super::ReviewKind::Standard => true,
+            }
+        });
+        let needed = crate::terms::dependencies(
+            &self.root,
+            &self.domain.definitions,
+            &self.outlines,
+            json!({"inputs":scoped,"acknowledgments":self.acknowledgments})
+                .as_object()
+                .unwrap(),
+            Some(&self.subject_text),
+        )
+        .map_err(io::Error::other)?;
+        scoped.extend(terms.into_iter().filter(|term| {
+            term["definition"]
+                .as_str()
+                .is_some_and(|name| needed.contains(name))
+        }));
+        Ok(scoped)
+    }
+
     /// The mandatory inputs as supplied to the model: each input containing
     /// a `{fixme}` that names issues also lists their states, `open` or
     /// `closed`, under `github_issues`.
-    // {impl}`requirements.authoring.github_reads`
-    // {impl}`requirements.authoring.mandatory_inputs`
     pub(crate) fn model_mandatory_inputs(&self) -> Vec<Value> {
         self.mandatory
             .iter()
@@ -602,13 +641,10 @@ impl AssessmentSources {
 
     /// Inputs recorded as evidence: outline inputs keep only their file,
     /// selector, and hash.
-    // {impl}`requirements.authoring.delivered_inputs`
     pub(crate) fn recorded_inputs(&self) -> &[Value] {
         &self.recorded
     }
 
-    // {impl}`requirements.authoring.delivered_inputs`
-    // {impl}`requirements.ci.outline_inputs`
     pub(crate) fn record_inputs(&mut self, inputs: &[Value]) {
         // A built-in's fixed text is supplied to the model but is not an
         // evidence input form.
@@ -634,8 +670,6 @@ impl AssessmentSources {
     }
 }
 
-// {impl}`requirements.authoring.mandatory_inputs`
-// {impl}`requirements.references.definition_globs`
 fn source_input(
     root: &Path,
     access: &SourceAccess,
@@ -684,13 +718,11 @@ fn source_input(
 }
 
 /// The model-facing input carrying a built-in's fixed text.
-// {impl}`requirements.authoring.mandatory_inputs`
 pub(crate) fn builtin_input(name: &str) -> Value {
     let text = crate::builtins::builtin(name).map_or("", |builtin| builtin.text());
     json!({ "builtin": name, "text": [text] })
 }
 
-// {impl}`requirements.authoring.mandatory_inputs`
 fn insert_selector(selectors: &mut Vec<InputSelector>, selector: InputSelector) {
     if !selectors.contains(&selector) {
         selectors.push(selector);
@@ -700,7 +732,6 @@ fn insert_selector(selectors: &mut Vec<InputSelector>, selector: InputSelector) 
 /// The input a `{impl}` or `{test}` reference contributes: the enclosing
 /// Markdown declaration, otherwise the smallest outline node the reference
 /// belongs to, or the whole file in a plain-text source.
-// {impl}`requirements.references.outline_comments`
 pub(crate) fn reference_selector(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
@@ -748,9 +779,6 @@ pub(crate) fn reference_selector(
     Ok(InputSelector::Outline { file, item })
 }
 
-// {impl}`requirements.definitions.selection`
-// {impl}`requirements.authoring.mandatory_inputs`
-// {impl}`requirements.definitions.dependencies`
 fn definition_inputs(
     root: &Path,
     access: &SourceAccess,
@@ -915,6 +943,7 @@ pub(crate) mod tests {
         );
     }
 
+    // {test}`requirements.references.outline_comments`
     // {test}`requirements.references.authoring_inputs`
     #[test]
     fn direct_test_edges_select_the_nested_item_without_expanding_its_citations() {
@@ -997,7 +1026,7 @@ pub(crate) mod tests {
         let inputs = sources.mandatory_inputs();
         assert!(sources.recorded_inputs().is_empty());
         assert!(
-            !inputs
+            inputs
                 .iter()
                 .any(|input| input["item"] == "impl[Thing]/fn[run]")
         );
@@ -1344,7 +1373,7 @@ pub(crate) mod tests {
         assert!(has_requirements("requirements.ready"));
         assert!(has_requirements("requirements.base"), "{inputs:#?}");
         assert!(has_requirements("requirements.tester"), "{inputs:#?}");
-        assert!(!has_item("fn[run]"), "{inputs:#?}");
+        assert!(has_item("fn[run]"), "{inputs:#?}");
         assert!(has_item("fn[check]"), "{inputs:#?}");
         assert!(!has_item("fn[helper]"), "{inputs:#?}");
         assert!(!has_requirements("requirements.citer"), "{inputs:#?}");
@@ -1448,7 +1477,9 @@ pub(crate) mod tests {
             inputs[1]["text"],
             json!(["fn target() { assert_eq!(1, 1); }"])
         );
-        let prompt = super::super::initial_prompt(&sources).unwrap().joined();
+        let prompt = super::super::criterion_prompt(&sources, super::super::ReviewKind::Behavioral)
+            .unwrap()
+            .joined();
         assert!(prompt.contains("assert_eq!(1, 1)"), "{prompt}");
         assert!(!prompt.contains("UNRELATED_SOURCE"), "{prompt}");
         assert!(!prompt.contains("fn sibling"), "{prompt}");
@@ -1798,7 +1829,8 @@ pub(crate) mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        assert_eq!(items.len(), 2);
+        assert_eq!(items.len(), 3);
+        assert!(items.contains(&("src/lib.rs", "mod[inner]")));
         assert_eq!(items[0].0, "docs/guide.md");
         assert!(
             items[0].1.starts_with("section[Usage]/paragraph@"),

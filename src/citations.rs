@@ -18,10 +18,8 @@ use crate::judgment::Judgment;
 pub(crate) const CITATIONS_DIR: &str = "citations";
 
 /// The inspection phase that validates citation reviews.
-// {impl}`requirements.authoring.progress`
 const CITATION_STAGE: &str = "citation reviews";
 
-// {impl}`requirements.references.citation_review`
 /// One citation of a reviewed item: its role, name, and fenced commentary,
 /// which is empty for an inline reference.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -32,7 +30,6 @@ pub(crate) struct Citation {
 }
 
 impl Citation {
-    // {impl}`requirements.references.citation_review`
     pub(crate) fn to_value(&self) -> Value {
         json!({"role": self.role, "name": self.name, "commentary": self.commentary})
     }
@@ -85,7 +82,6 @@ impl CitationItem {
         }
     }
 
-    // {impl}`requirements.references.citation_review`
     /// The citations as JSON, in source order.
     pub(crate) fn citations_value(&self) -> Value {
         Value::Array(self.citations.iter().map(Citation::to_value).collect())
@@ -106,7 +102,6 @@ impl CitationItem {
     }
 }
 
-// {impl}`requirements.references.citation_review`
 /// `evidence/citations/<file>/<selector>.json`, with `/` and `%` in the
 /// selector percent-encoded and `_root` for the root node.
 pub(crate) fn review_path(file: &str, item: &str) -> String {
@@ -116,7 +111,6 @@ pub(crate) fn review_path(file: &str, item: &str) -> String {
     )
 }
 
-// {impl}`requirements.references.citation_review`
 /// A selector as a review file name: `/` and `%` percent-encoded, and
 /// `_root` for the root node.
 pub(crate) fn encoded_selector(item: &str) -> String {
@@ -136,10 +130,6 @@ pub(crate) fn subject_label(file: &str, item: &str) -> String {
 
 /// Discover source items and the outermost opted-in book commentary fences.
 /// Unresolvable citations are reported by reference validation.
-// {impl}`requirements.references.outline_comments`
-// {impl}`requirements.references.builtin_definitions`
-// {impl}`requirements.references.util`
-// {impl}`requirements.references.citation_review.book_commentary`
 pub(crate) fn citation_items(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
@@ -297,9 +287,6 @@ pub(crate) fn same_citations(recorded: &[Citation], current: &[Citation]) -> boo
 /// failure there is reported once.
 /// Reports progress as the "citation reviews" phase: an activity display
 /// while items are discovered, then one check per item and review file.
-// {impl}`requirements.ci.outcomes`
-// {impl}`requirements.ci.determination`
-// {impl}`requirements.ci.errors`
 pub(crate) fn validate(
     domain: &crate::sdk::HabeasDomain,
     references: &[SourceReference],
@@ -356,7 +343,6 @@ pub(crate) fn validate(
 }
 
 /// Validates one review file against its current item.
-// {impl}`requirements.ci.errors`
 pub(crate) fn validate_review(
     domain: &crate::sdk::HabeasDomain,
     label: &str,
@@ -528,7 +514,6 @@ pub(crate) fn validate_review(
 }
 
 /// Parses one recorded citation.
-// {impl}`requirements.ci.errors`
 fn parse_citation(value: &Value, label: &str, errors: &mut Vec<String>) -> Option<Citation> {
     let Some(object) = value.as_object() else {
         errors.push(format!("{label}: expected a JSON object"));

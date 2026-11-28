@@ -1,8 +1,8 @@
 {
   "requirement": "Supplies reusable prompt text for an agent request. `contents` may borrow or own the string.\n\nThe SDK implements this trait for the following combinations:\n\n| Value | Rendering |\n| --- | --- |\n| `String` | Use its text directly. |\n| `str` | Use its text directly; `&str` works through the reference implementation. |\n| `&C`, where `C: Context + ?Sized` | Forward to the referenced value. |\n| `[C]` and `Vec<C>`, where `C: Context` | Render elements in order, separated by two newlines. An empty collection renders an empty string. |\n| Heterogeneous tuples of 2 through 12 `Context` values | Render elements in order, separated by two newlines. |\n\nCombinations can nest and preserve repeated elements. Each `.context(value)`\ncall obtains the text once and retains it for both the prefix and its hash,\nwithout retaining a borrow of `value`. The value needs no `Hash`, `Serialize`,\n`Send`, or `Sync` implementation. Repeated calls use the same two-newline\nseparator as combinations. No context calls give the empty prefix and the\nsame fingerprint as an explicitly empty rendered prefix.\n\nThe cache fingerprint hashes the exact UTF-8 prefix delivered to the agent,\nusing a versioned scheme. It preserves order and repetition and uses neither\nobject addresses nor type identities. It identifies this prefix, including the\nquestion; node inputs, the result schema, and the rest of the request are outside\nthat fingerprint.\n\n```rust,ignore\npub trait Context {\n    fn contents(&self) -> Cow<'_, String>;\n}\n```\n\nTrait implementations\n\n```rust,ignore\nimpl Context for str;\nimpl Context for String;\nimpl<A: Context, B: Context> Context for (A, B);\nimpl<A: Context, B: Context, C: Context> Context for (A, B, C);\nimpl<A: Context, B: Context, C: Context, D: Context> Context for (A, B, C, D);\nimpl<A: Context, B: Context, C: Context, D: Context, E: Context> Context for (A, B, C, D, E);\nimpl<A: Context, B: Context, C: Context, D: Context, E: Context, F: Context> Context for (A, B, C, D, E, F);\nimpl<A: Context, B: Context, C: Context, D: Context, E: Context, F: Context, G: Context> Context for (A, B, C, D, E, F, G);\nimpl<A: Context, B: Context, C: Context, D: Context, E: Context, F: Context, G: Context, H: Context> Context for (A, B, C, D, E, F, G, H);\nimpl<A: Context, B: Context, C: Context, D: Context, E: Context, F: Context, G: Context, H: Context, I: Context> Context for (A, B, C, D, E, F, G, H, I);\nimpl<A: Context, B: Context, C: Context, D: Context, E: Context, F: Context, G: Context, H: Context, I: Context, J: Context> Context for (A, B, C, D, E, F, G, H, I, J);\nimpl<A: Context, B: Context, C: Context, D: Context, E: Context, F: Context, G: Context, H: Context, I: Context, J: Context, K: Context> Context for (A, B, C, D, E, F, G, H, I, J, K);\nimpl<A: Context, B: Context, C: Context, D: Context, E: Context, F: Context, G: Context, H: Context, I: Context, J: Context, K: Context, L: Context> Context for (A, B, C, D, E, F, G, H, I, J, K, L);\nimpl<C: Context + ?Sized> Context for &C;\nimpl<C: Context> Context for [C];\nimpl<C: Context> Context for Vec<C>;\n```",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation of `requirements.sdk.graph.agent-calls.agent_context`.\n\n**Rendering table**\n- `String` and `str`: `string_and_str_contexts_deliver_identical_prefixes_and_fingerprints` sends the same text as an owned `String` and as `&str`. The text is `\"\"` or `\"héllo\\0\\n\\npolicy\"`. It asserts identical delivered prefixes and fingerprints.\n- `&C`: `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` passes `&context` (a `CountingContext`). `every_heterogeneous_tuple_arity_renders_elements_in_order` uses `&custom` inside every tuple.\n- `[C]` and `Vec<C>`: the string-and-str test passes `contexts.as_slice()` and `contexts.to_vec()` and expects `policy\\n\\nquestion`. The tuple-arity test asserts that an empty `&[String]` renders `\"\"`. The first test asserts that `Vec::<String>::new()` gives an empty prefix and the empty fingerprint.\n- Tuples of 2 through 12: `every_heterogeneous_tuple_arity_renders_elements_in_order` asserts the exact output for each arity, mixing `CountingContext` and `String`. It also asserts the custom context rendered 11 times, once per tuple. The first test checks arity 12 again.\n\n**Nesting, repetition and separators**\n- Nesting and repeated elements: a tuple of `(Vec[\"a\",\"a\"], \"b\")` is asserted to render `a\\n\\na\\n\\nb`. A tuple nested in a `.context(...)` call is also tested.\n- Repeated `.context` calls: `.context(\"policy\").context(\"question\")` produces `policy\\n\\nquestion`. The first test chains `&context` and a tuple and expects `héllo\\n\\npolicy\\n\\nquestion`.\n\n**Retention and trait bounds**\n- Text is obtained once: `renders` is asserted to be 1 right after building.\n- No borrow is retained: `context.text` is mutated after `.context(&context)`, and `temporary.clear()` runs after `.context(temporary.as_str())`. The delivered prefix is still the original text.\n- No `Hash`, `Serialize`, `Send` or `Sync` needed: `CountingContext` holds an `Rc`/`Cell` and is accepted.\n- The resulting future is `Send`, checked with `assert_send`.\n\n**Empty prefix**\n- No context call, and an empty `Vec`, both deliver `\"\"` with the fingerprint equal to `context_fingerprint(\"\")`.\n\n**Fingerprint**\n- `prefix_hashes_match_known_utf8_sha256_without_normalization` asserts the versioned scheme `context-prefix-sha256-v1` and the known SHA-256 values for `\"\"` and `\"héllo\"`. It also asserts that NFC and NFD forms differ and that whitespace differences matter.\n- Order is covered by `assert_ne!(context_fingerprint(\"a\\n\\nb\"), context_fingerprint(\"b\\n\\na\"))`.\n- Repetition is covered by the `a\\n\\na` rendering plus the fingerprint-equals-hash-of-delivered-prefix assertions.\n- No type identity or address is used: `String` and `&str` give identical fingerprints.\n- Only the prefix is hashed. Requests with different node inputs and a different request type (`Answer` vs `Value`) all assert a fingerprint equal to `context_fingerprint(\"short-lived\")`. Fingerprints of requests 9 and 10 are asserted to differ, which the string-and-str test does with `assert_ne!(requests[10].3, requests[9].3)`.\n\n**Trait signature and exports**\n- `public_api.rs#fn[public_exports_match_the_appendix]` covers the export inventory.\n\nI found no untested obligation. I did not treat empty elements inside multi-element collections as a gap, because the requirement text does not name that case.",
-  "references": "daa5e2cf00001f02a979a24d5758602bcb0a8caaaac2caa9763c2855546bd7db",
+  "rationale": "structural: The structural obligations in `requirements.sdk.graph.agent-calls.agent_context` are the `Context` trait signature (`fn contents(&self) -> Cow<'_, String>`), the listed trait implementations, and an owned, non-borrowing retention in `.context(value)`. I found roots for each in `crates/trust-but-verify/src/procedure.rs`.\n\n- **Trait:** `trait[Context]` declares `fn contents(&self) -> Cow<'_, String>`. Alternative: returning `String` or `&str` would give the same text, but it would break the prescribed signature.\n- **Leaf implementations:** `impl[String/Context]` borrows the string, and `impl[str/Context]` returns an owned copy. `impl[&C/Context]` forwards with `(**self).contents()` and carries `C: Context + ?Sized`.\n- **Collections:** `impl[%5BC%5D/Context]` renders elements in order, and `impl[Vec<C>/Context]` delegates to the slice implementation. The slice implementation's `fn[contents]` body is elided in the listing, but the search excerpt shows it mapping and collecting the elements. I did not read its join string, so the two-newline separator and empty-collection rendering rest on the tests rather than a source read.\n- **Tuples:** `macro[tuple_context]` generates the implementation, with `A: Context, B: Context, …` bounds and a `\\n\\n` join. It is instantiated for arities 2 through 12: `tuple_context!(A:0, B:1)` through `tuple_context!(A:0, …, L:11)`.\n- **Retention:** `impl[Ask<…ContextPhase>]/fn[context]` takes `impl Context`, calls `contents().into_owned()` once and pushes the owned `String` into `contexts`. It keeps no borrow of `value` and needs no `Hash`, `Serialize`, `Send` or `Sync` bound. Alternative: storing `&dyn Context` would call `contents()` twice, once for the prefix and once for the hash, and would hold a borrow. That violates the retention clause.\n- **Fingerprint:** `fn[context_fingerprint]` uses the versioned scheme `context-prefix-sha256-v1` over `prefix.as_bytes()`. It uses no addresses or type identities, and it is a pure function of the prefix text.\n\nThe remaining clauses specify observable behavior, not construction:\n\n- The two-newline separator between repeated calls is applied in `Ask::execute`, which joins `self.contexts` with `\\n\\n`.\n- The empty prefix matches the empty-string fingerprint.\n- The fingerprint covers the exact delivered prefix, including the question.\n- The fingerprint excludes node inputs, the schema and the rest of the request.\n\nAny implementation that produces these results would satisfy the text, so they need no `impl` marker. The tests in `validation_tests.rs` reference this requirement. They are `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text`, `string_and_str_contexts_deliver_identical_prefixes_and_fingerprints` and `prefix_hashes_match_known_utf8_sha256_without_normalization`.\n\nI found no missing structural root and no ambiguity.\n\nbehavioral: The reviewed tests cover each behavioral obligation of `requirements.sdk.graph.agent-calls.agent_context`.\n\n**Rendering table**\n- `String` and `str` are checked in `string_and_str_contexts_deliver_identical_prefixes_and_fingerprints`. It uses empty text, `héllo\\0\\n\\npolicy`, and `&str`, and asserts the delivered prefix and fingerprint.\n- `&C` forwarding is checked with `&custom` inside tuples in `every_heterogeneous_tuple_arity_renders_elements_in_order`, and with `&context` in `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text`.\n- Slice and `Vec` rendering uses `contexts.as_slice()` and `contexts.to_vec()`, both giving `policy\\n\\nquestion`. Empty collections are covered by `Vec::<String>::new()` and the empty `&[String]`, and both render an empty string.\n- Tuples of arity 2 through 12 are asserted one by one with exact two-newline output, mixing a custom context with `String`.\n- Nesting and repeated elements are checked by `(vec![\"a\",\"a\"], \"b\")`, which renders `a\\n\\na\\n\\nb`.\n\n**Per-`.context` behavior**\n- `CountingContext` counts renders, and the test asserts `renders == 1`. The text is mutated after the builder is created, and the delivered prefix still contains the original `héllo`. This shows the text is retained without a borrow.\n- The temporary `String` that is cleared before awaiting checks that no borrow is retained.\n- `CountingContext` holds an `Rc<Cell>` and implements no `Hash`, `Serialize`, `Send` or `Sync`. `assert_send(&future)` checks the future is still `Send`.\n- Repeated `.context` calls give `policy\\n\\nquestion`, the same two-newline separator as combinations.\n- Zero context calls, and an empty `Vec`, give the prefix \"\" and the fingerprint `context_fingerprint(\"\")`.\n\n**Fingerprint**\n- `prefix_hashes_match_known_utf8_sha256_without_normalization` asserts the scheme label `context-prefix-sha256-v1` and the known SHA-256 values for \"\" and `héllo`.\n- The same test shows `é` and `e\\u{301}` hash differently, so there is no Unicode normalization. It also shows `a b` and `a  b` hash differently.\n- Order sensitivity is asserted with `\"a\\n\\nb\"` against `\"b\\n\\na\"`. Repetition follows because the hash is over the full text.\n- Neither addresses nor type identities are used. `String` and `&str` inputs, and tuple, slice and `Vec` inputs, all give the same fingerprint for the same text.\n- Other request parts are outside the fingerprint. Requests with node inputs from `contents_of_current_node` and `contents_of_successors`, and requests with a different result type (`Value` instead of `Answer`), all still have `.1 == context_fingerprint(text)`.\n\n**Other clauses**\n- The `Cow<'_, String>` borrow-or-own signature is a type-level choice with no independent observable obligation.\n- `public_exports_match_the_appendix` gives compile-level support for the public trait and its implementations.\n\nI found no gaps and no acknowledgments apply.",
+  "references": "56e6cb4a6c24e99f3f49838dfa7ac61ab7e9bb748cf7d97ffb123ed6b834b2b7",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.agent-calls.agent_context",
@@ -67,6 +67,141 @@
       ]
     },
     {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "trait[Context]",
+      "hash": "cea3859acb32d735a329fb8c113bc198aeb83db763555c24b68a00f691f40664"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[&C/Context]",
+      "hash": "d9cd9d69c03efa06d97a40ab54b95b57708088e4abea382e37a60b0fbe99af7a"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[String/Context]",
+      "hash": "527b28b4ee0cbce60da05f74cc2d99ee1656a7563bf3d520efe127ef9b26a85a"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[str/Context]",
+      "hash": "8adb42eec5a3f6862f77c6dc244e6641020702c432feb854c5316f71f7076169"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[%5BC%5D/Context]",
+      "hash": "a9f9d5d3dc5eb8879e26c4665d42e6160534f286574a81b18e3281451f729440"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[Vec<C>/Context]",
+      "hash": "9711b4b18a4a5f17c6ce24eb7d936fe3ab4594da775abb9d4a532db2ee26c8c0"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "macro[tuple_context]",
+      "hash": "0214414ff5f38f5e94e7d590e89f65f0169bfa2133af61bafe34b385cd3a9643"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20ContextPhase>]/fn[context]",
+      "hash": "40ee4435e784f834abea244c54a5bcb4d17de21f805197b5532e500d619b7876"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "fn[context_fingerprint]",
+      "hash": "a122a8b746a68b027a6aa656a512141baf9185782c96100fb517969e141e931b"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "trait[Context]/fn[contents]",
+      "hash": "1071ac3ff3e05c9d5d9edaca9de7883a7a9101aa9795d1de35ee4bc303f7e897"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[&C/Context]/fn[contents]",
+      "hash": "929c4e6cb5b0474155c4a6385e517e460069af7dda6887c62242ba170389a3c2"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[String/Context]/fn[contents]",
+      "hash": "1bf8ef286171027c50dbc666d65c752859b50500d3151c8971412561e7da4459"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[str/Context]/fn[contents]",
+      "hash": "3b81e3f009412794df07bcd7d237ccd33d7bd58bb3981362a8afbad5c7e8301f"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[%5BC%5D/Context]/fn[contents]",
+      "hash": "29066a5642ca6309d7ef40553e9dfaae1dcbc3b8d9a633410a18e256240995dd"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[Vec<C>/Context]/fn[contents]",
+      "hash": "7881e6e86810231f80c3e8d7532042b6f18001070a7c7c9722e42997d94bafa0"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "macro@782459e7ece9",
+      "hash": "782459e7ece9f01530e4973cacecf876bc1bdf50a42ce5a29594b0c1b8478a16"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "macro@de8e86ae4b0b",
+      "hash": "de8e86ae4b0bfbc08693b72af20e109b532ebea03a90ab6fb37b1c96da2e2c76"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "macro@53e7189e56ce",
+      "hash": "53e7189e56ce335807a5418d2852b381c745ff26207ee4ed29aa986db95c006e"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "macro@4954063f3805",
+      "hash": "4954063f3805839c8ecffbccda0d53f3eed785344e579ea2dbd755edd3c6db22"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "macro@cad8fb9e77f5",
+      "hash": "cad8fb9e77f5af28f72d78a843cb96bee2653dcd42f2f7a258eea6fac8447f08"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "macro@e524e37ead34",
+      "hash": "e524e37ead3492ea315ecfb761651c58a0577297b5cb20b525788f3320a3087d"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "macro@8ee8d8772774",
+      "hash": "8ee8d8772774d2c62c3f1740722a9922584dc08dd2b6a59c507e79da3a2cad08"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "macro@2ab1f8052811",
+      "hash": "2ab1f8052811263087395bb37c88a41074441aec598d6720d2c02a328144871a"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "macro@e596cf8d4758",
+      "hash": "e596cf8d4758f3afe25de81303bafbb0d31f348ce4687a3bcf5dafbc668ecdd2"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "macro@4d35e12174a8",
+      "hash": "4d35e12174a8a0bbf1a48c4d324676a6c1607a6d7451aacb562d7d98f4d9b192"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "macro@c404910fe349",
+      "hash": "c404910fe349d17a23fd96bf21632674aacc60a889269c4fb34bfc7476908333"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]",
+      "hash": "9e4b5ea6e2f69024c28d89449ff56e32dad5ef953614bef0d5f48fe6ea190398"
+    },
+    {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text]",
       "hash": "01441102387ed039d6d594f89e6345ded7bd3d4eb83fd7a3ac86e75297c3cdc5"
@@ -89,12 +224,7 @@
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[public_exports_match_the_appendix]",
-      "hash": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
-      "item": "struct[MockAgent]",
-      "hash": "4134cf0e6fde8f08a550963658968a9320684b8cadf148dd6e5f60e523924d5a"
+      "hash": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
@@ -112,12 +242,688 @@
       "hash": "6a155d3d75d4b5e11bb88b7e8628187b791beb37b0e3703d429b56b313b0605a"
     },
     {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "fn[context_fingerprint]",
-      "hash": "a122a8b746a68b027a6aa656a512141baf9185782c96100fb517969e141e931b"
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "struct[MockAgent]",
+      "hash": "4134cf0e6fde8f08a550963658968a9320684b8cadf148dd6e5f60e523924d5a"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.agent-calls.agent_context"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "56e6cb4a6c24e99f3f49838dfa7ac61ab7e9bb748cf7d97ffb123ed6b834b2b7"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-calls.agent_context"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "970f3374a7e4dd2add862da561bd7e7b87ed1c45f808e7ec3c2eb4d347eefb96"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "trait[Context]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "bd161439de45e481ba352ddaee6d12965278ed3e7fb010434ae19bb99cd52f15"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[&C/Context]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "e3fa45a4b2dc150ef0867d16ba7bc0d682bcd78f6813e2615107ffffaabbe795"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[String/Context]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "e3d933417fa6f4a4cae58e52faca67b86ad05c0e444d5f5809cece36b11046c7"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[str/Context]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "a8aa1dd43e5a4b79fc8176f04f1ba6a16add6dba017d24f459eb7160fa64fe73"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[%5BC%5D/Context]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "0b2ca3b627260035f4740ac44707932cd3fc517bf3bcb8f0cc378aade0951a61"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[Vec<C>/Context]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "13441d064551f896c76a62542627a3deabfce49d4cfbbbfefce82e13b741b002"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "macro[tuple_context]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "0214414ff5f38f5e94e7d590e89f65f0169bfa2133af61bafe34b385cd3a9643"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20ContextPhase>]/fn[context]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "40ee4435e784f834abea244c54a5bcb4d17de21f805197b5532e500d619b7876"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "fn[context_fingerprint]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "a122a8b746a68b027a6aa656a512141baf9185782c96100fb517969e141e931b"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "trait[Context]/fn[contents]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "1071ac3ff3e05c9d5d9edaca9de7883a7a9101aa9795d1de35ee4bc303f7e897"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[&C/Context]/fn[contents]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "929c4e6cb5b0474155c4a6385e517e460069af7dda6887c62242ba170389a3c2"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[String/Context]/fn[contents]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "1bf8ef286171027c50dbc666d65c752859b50500d3151c8971412561e7da4459"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[str/Context]/fn[contents]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "3b81e3f009412794df07bcd7d237ccd33d7bd58bb3981362a8afbad5c7e8301f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[%5BC%5D/Context]/fn[contents]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "29066a5642ca6309d7ef40553e9dfaae1dcbc3b8d9a633410a18e256240995dd"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[Vec<C>/Context]/fn[contents]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "7881e6e86810231f80c3e8d7532042b6f18001070a7c7c9722e42997d94bafa0"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "macro@782459e7ece9"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "782459e7ece9f01530e4973cacecf876bc1bdf50a42ce5a29594b0c1b8478a16"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "macro@de8e86ae4b0b"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "de8e86ae4b0bfbc08693b72af20e109b532ebea03a90ab6fb37b1c96da2e2c76"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "macro@53e7189e56ce"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "53e7189e56ce335807a5418d2852b381c745ff26207ee4ed29aa986db95c006e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "macro@4954063f3805"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "4954063f3805839c8ecffbccda0d53f3eed785344e579ea2dbd755edd3c6db22"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "macro@cad8fb9e77f5"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "cad8fb9e77f5af28f72d78a843cb96bee2653dcd42f2f7a258eea6fac8447f08"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "macro@e524e37ead34"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "e524e37ead3492ea315ecfb761651c58a0577297b5cb20b525788f3320a3087d"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "macro@8ee8d8772774"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "8ee8d8772774d2c62c3f1740722a9922584dc08dd2b6a59c507e79da3a2cad08"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "macro@2ab1f8052811"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "2ab1f8052811263087395bb37c88a41074441aec598d6720d2c02a328144871a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "macro@e596cf8d4758"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "e596cf8d4758f3afe25de81303bafbb0d31f348ce4687a3bcf5dafbc668ecdd2"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "macro@4d35e12174a8"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "4d35e12174a8a0bbf1a48c4d324676a6c1607a6d7451aacb562d7d98f4d9b192"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "macro@c404910fe349"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "c404910fe349d17a23fd96bf21632674aacc60a889269c4fb34bfc7476908333"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "9e4b5ea6e2f69024c28d89449ff56e32dad5ef953614bef0d5f48fe6ea190398"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The structural obligations in `requirements.sdk.graph.agent-calls.agent_context` are the `Context` trait signature (`fn contents(&self) -> Cow<'_, String>`), the listed trait implementations, and an owned, non-borrowing retention in `.context(value)`. I found roots for each in `crates/trust-but-verify/src/procedure.rs`.\n\n- **Trait:** `trait[Context]` declares `fn contents(&self) -> Cow<'_, String>`. Alternative: returning `String` or `&str` would give the same text, but it would break the prescribed signature.\n- **Leaf implementations:** `impl[String/Context]` borrows the string, and `impl[str/Context]` returns an owned copy. `impl[&C/Context]` forwards with `(**self).contents()` and carries `C: Context + ?Sized`.\n- **Collections:** `impl[%5BC%5D/Context]` renders elements in order, and `impl[Vec<C>/Context]` delegates to the slice implementation. The slice implementation's `fn[contents]` body is elided in the listing, but the search excerpt shows it mapping and collecting the elements. I did not read its join string, so the two-newline separator and empty-collection rendering rest on the tests rather than a source read.\n- **Tuples:** `macro[tuple_context]` generates the implementation, with `A: Context, B: Context, …` bounds and a `\\n\\n` join. It is instantiated for arities 2 through 12: `tuple_context!(A:0, B:1)` through `tuple_context!(A:0, …, L:11)`.\n- **Retention:** `impl[Ask<…ContextPhase>]/fn[context]` takes `impl Context`, calls `contents().into_owned()` once and pushes the owned `String` into `contexts`. It keeps no borrow of `value` and needs no `Hash`, `Serialize`, `Send` or `Sync` bound. Alternative: storing `&dyn Context` would call `contents()` twice, once for the prefix and once for the hash, and would hold a borrow. That violates the retention clause.\n- **Fingerprint:** `fn[context_fingerprint]` uses the versioned scheme `context-prefix-sha256-v1` over `prefix.as_bytes()`. It uses no addresses or type identities, and it is a pure function of the prefix text.\n\nThe remaining clauses specify observable behavior, not construction:\n\n- The two-newline separator between repeated calls is applied in `Ask::execute`, which joins `self.contexts` with `\\n\\n`.\n- The empty prefix matches the empty-string fingerprint.\n- The fingerprint covers the exact delivered prefix, including the question.\n- The fingerprint excludes node inputs, the schema and the rest of the request.\n\nAny implementation that produces these results would satisfy the text, so they need no `impl` marker. The tests in `validation_tests.rs` reference this requirement. They are `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text`, `string_and_str_contexts_deliver_identical_prefixes_and_fingerprints` and `prefix_hashes_match_known_utf8_sha256_without_normalization`.\n\nI found no missing structural root and no ambiguity."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.agent-calls.agent_context"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "56e6cb4a6c24e99f3f49838dfa7ac61ab7e9bb748cf7d97ffb123ed6b834b2b7"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-calls.agent_context"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "970f3374a7e4dd2add862da561bd7e7b87ed1c45f808e7ec3c2eb4d347eefb96"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "eb15fcf83118155b8a9a790a7851de9cd58a337bfb384d07d8fdf0571bbbd6be"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[string_and_str_contexts_deliver_identical_prefixes_and_fingerprints]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "3046677c2fdd1a9a752aea9eff8fa95f055f926cabedbc176213249d5e7b32ba"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[every_heterogeneous_tuple_arity_renders_elements_in_order]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f69b754639db5fb8efab093c1522094cb77a40911eef88aabeb585924883dc95"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[prefix_hashes_match_known_utf8_sha256_without_normalization]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "6260e7b6f7fd9ef81b09190b6b481cf68f364975828569ce4fb949107002a26f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/public_api.rs"
+                },
+                "selector": "fn[public_exports_match_the_appendix]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "struct[CountingContext]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "d3433d172d94dd0db0253df9c9515a770184292a4868ca75802548e140bb3b0f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "impl[CountingContext/Context]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "d764825f6296b6cfb27a80d6fb52bfa77612cdf6cc6e20a4a8e681c5aefc3f6f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "impl[CountingContext/Context]/fn[contents]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "6a155d3d75d4b5e11bb88b7e8628187b791beb37b0e3703d429b56b313b0605a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "fn[context_fingerprint]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "a122a8b746a68b027a6aa656a512141baf9185782c96100fb517969e141e931b"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The reviewed tests cover each behavioral obligation of `requirements.sdk.graph.agent-calls.agent_context`.\n\n**Rendering table**\n- `String` and `str` are checked in `string_and_str_contexts_deliver_identical_prefixes_and_fingerprints`. It uses empty text, `héllo\\0\\n\\npolicy`, and `&str`, and asserts the delivered prefix and fingerprint.\n- `&C` forwarding is checked with `&custom` inside tuples in `every_heterogeneous_tuple_arity_renders_elements_in_order`, and with `&context` in `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text`.\n- Slice and `Vec` rendering uses `contexts.as_slice()` and `contexts.to_vec()`, both giving `policy\\n\\nquestion`. Empty collections are covered by `Vec::<String>::new()` and the empty `&[String]`, and both render an empty string.\n- Tuples of arity 2 through 12 are asserted one by one with exact two-newline output, mixing a custom context with `String`.\n- Nesting and repeated elements are checked by `(vec![\"a\",\"a\"], \"b\")`, which renders `a\\n\\na\\n\\nb`.\n\n**Per-`.context` behavior**\n- `CountingContext` counts renders, and the test asserts `renders == 1`. The text is mutated after the builder is created, and the delivered prefix still contains the original `héllo`. This shows the text is retained without a borrow.\n- The temporary `String` that is cleared before awaiting checks that no borrow is retained.\n- `CountingContext` holds an `Rc<Cell>` and implements no `Hash`, `Serialize`, `Send` or `Sync`. `assert_send(&future)` checks the future is still `Send`.\n- Repeated `.context` calls give `policy\\n\\nquestion`, the same two-newline separator as combinations.\n- Zero context calls, and an empty `Vec`, give the prefix \"\" and the fingerprint `context_fingerprint(\"\")`.\n\n**Fingerprint**\n- `prefix_hashes_match_known_utf8_sha256_without_normalization` asserts the scheme label `context-prefix-sha256-v1` and the known SHA-256 values for \"\" and `héllo`.\n- The same test shows `é` and `e\\u{301}` hash differently, so there is no Unicode normalization. It also shows `a b` and `a  b` hash differently.\n- Order sensitivity is asserted with `\"a\\n\\nb\"` against `\"b\\n\\na\"`. Repetition follows because the hash is over the full text.\n- Neither addresses nor type identities are used. `String` and `&str` inputs, and tuple, slice and `Vec` inputs, all give the same fingerprint for the same text.\n- Other request parts are outside the fingerprint. Requests with node inputs from `contents_of_current_node` and `contents_of_successors`, and requests with a different result type (`Value` instead of `Answer`), all still have `.1 == context_fingerprint(text)`.\n\n**Other clauses**\n- The `Cow<'_, String>` borrow-or-own signature is a type-level choice with no independent observable obligation.\n- `public_exports_match_the_appendix` gives compile-level support for the public trait and its implementations.\n\nI found no gaps and no acknowledgments apply."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -127,19 +933,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "daa5e2cf00001f02a979a24d5758602bcb0a8caaaac2caa9763c2855546bd7db"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.agent-calls.agent_context"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "29852b36a0e2c79fb1e668de031659c700ed356134e3eb414d12c211c2abc3ea"
+          "value": "56e6cb4a6c24e99f3f49838dfa7ac61ab7e9bb748cf7d97ffb123ed6b834b2b7"
         }
       ]
     },
@@ -151,6 +945,465 @@
         {
           "scheme": "habeas-input-v1",
           "value": "970f3374a7e4dd2add862da561bd7e7b87ed1c45f808e7ec3c2eb4d347eefb96"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "trait[Context]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "bd161439de45e481ba352ddaee6d12965278ed3e7fb010434ae19bb99cd52f15"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[&C/Context]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "e3fa45a4b2dc150ef0867d16ba7bc0d682bcd78f6813e2615107ffffaabbe795"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[String/Context]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "e3d933417fa6f4a4cae58e52faca67b86ad05c0e444d5f5809cece36b11046c7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[str/Context]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "a8aa1dd43e5a4b79fc8176f04f1ba6a16add6dba017d24f459eb7160fa64fe73"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[%5BC%5D/Context]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "0b2ca3b627260035f4740ac44707932cd3fc517bf3bcb8f0cc378aade0951a61"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[Vec<C>/Context]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "13441d064551f896c76a62542627a3deabfce49d4cfbbbfefce82e13b741b002"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "macro[tuple_context]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "0214414ff5f38f5e94e7d590e89f65f0169bfa2133af61bafe34b385cd3a9643"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20ContextPhase>]/fn[context]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "40ee4435e784f834abea244c54a5bcb4d17de21f805197b5532e500d619b7876"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "fn[context_fingerprint]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "a122a8b746a68b027a6aa656a512141baf9185782c96100fb517969e141e931b"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "trait[Context]/fn[contents]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "1071ac3ff3e05c9d5d9edaca9de7883a7a9101aa9795d1de35ee4bc303f7e897"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[&C/Context]/fn[contents]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "929c4e6cb5b0474155c4a6385e517e460069af7dda6887c62242ba170389a3c2"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[String/Context]/fn[contents]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "1bf8ef286171027c50dbc666d65c752859b50500d3151c8971412561e7da4459"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[str/Context]/fn[contents]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "3b81e3f009412794df07bcd7d237ccd33d7bd58bb3981362a8afbad5c7e8301f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[%5BC%5D/Context]/fn[contents]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "29066a5642ca6309d7ef40553e9dfaae1dcbc3b8d9a633410a18e256240995dd"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[Vec<C>/Context]/fn[contents]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "7881e6e86810231f80c3e8d7532042b6f18001070a7c7c9722e42997d94bafa0"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "macro@782459e7ece9"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "782459e7ece9f01530e4973cacecf876bc1bdf50a42ce5a29594b0c1b8478a16"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "macro@de8e86ae4b0b"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "de8e86ae4b0bfbc08693b72af20e109b532ebea03a90ab6fb37b1c96da2e2c76"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "macro@53e7189e56ce"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "53e7189e56ce335807a5418d2852b381c745ff26207ee4ed29aa986db95c006e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "macro@4954063f3805"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "4954063f3805839c8ecffbccda0d53f3eed785344e579ea2dbd755edd3c6db22"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "macro@cad8fb9e77f5"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "cad8fb9e77f5af28f72d78a843cb96bee2653dcd42f2f7a258eea6fac8447f08"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "macro@e524e37ead34"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "e524e37ead3492ea315ecfb761651c58a0577297b5cb20b525788f3320a3087d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "macro@8ee8d8772774"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "8ee8d8772774d2c62c3f1740722a9922584dc08dd2b6a59c507e79da3a2cad08"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "macro@2ab1f8052811"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "2ab1f8052811263087395bb37c88a41074441aec598d6720d2c02a328144871a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "macro@e596cf8d4758"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "e596cf8d4758f3afe25de81303bafbb0d31f348ce4687a3bcf5dafbc668ecdd2"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "macro@4d35e12174a8"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "4d35e12174a8a0bbf1a48c4d324676a6c1607a6d7451aacb562d7d98f4d9b192"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "macro@c404910fe349"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "c404910fe349d17a23fd96bf21632674aacc60a889269c4fb34bfc7476908333"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "9e4b5ea6e2f69024c28d89449ff56e32dad5ef953614bef0d5f48fe6ea190398"
         }
       ]
     },
@@ -235,24 +1488,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
-            },
-            "selector": "struct[MockAgent]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "4134cf0e6fde8f08a550963658968a9320684b8cadf148dd6e5f60e523924d5a"
+          "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
         }
       ]
     },
@@ -313,14 +1549,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
             },
-            "selector": "fn[context_fingerprint]"
+            "selector": "struct[MockAgent]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "a122a8b746a68b027a6aa656a512141baf9185782c96100fb517969e141e931b"
+          "value": "4134cf0e6fde8f08a550963658968a9320684b8cadf148dd6e5f60e523924d5a"
         }
       ]
     }

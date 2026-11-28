@@ -9,7 +9,9 @@ use std::future::Future;
 
 use crate::request::ValidationContext;
 
+// {impl}`requirements.sdk.filesystem-storage.interface`
 // {impl}`requirements.sdk.graph.fingerprint`
+// {impl}`requirements.sdk.public_api`
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Fingerprint {
@@ -17,13 +19,16 @@ pub struct Fingerprint {
     pub value: String,
 }
 
+// {impl}`requirements.sdk.public_api`
 impl Fingerprint {
+    // {impl}`requirements.sdk.graph.fingerprint`
     pub fn new(scheme: String, value: String) -> Self {
         Self { scheme, value }
     }
 }
 
 // {impl}`requirements.sdk.graph.snapshot`
+// {impl}`requirements.sdk.public_api`
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct Snapshot<T> {
@@ -31,6 +36,7 @@ pub struct Snapshot<T> {
     pub fingerprint: Fingerprint,
 }
 
+// {impl}`requirements.sdk.public_api`
 impl<T> Snapshot<T> {
     pub fn new(content: T, fingerprint: Fingerprint) -> Self {
         Self {
@@ -40,6 +46,7 @@ impl<T> Snapshot<T> {
     }
 }
 
+// {impl}`requirements.sdk.graph.node_path_struct`
 /// An ordered path with read-only access to its segments.
 ///
 /// ```compile_fail
@@ -48,26 +55,26 @@ impl<T> Snapshot<T> {
 /// path.segments.clear();
 /// ```
 // {test}`requirements.sdk.graph.node_path_struct`
-// {impl}`requirements.sdk.graph.node_path_struct`
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NodePath {
     segments: Vec<String>,
 }
 
 impl NodePath {
-    /// Construct a path, preserving segment order and boundaries.
     // {impl}`requirements.sdk.graph.node_path_struct`
+    /// Construct a path, preserving segment order and boundaries.
     pub fn new(segments: Vec<String>) -> Self {
         Self { segments }
     }
 
-    /// Read the ordered path segments.
     // {impl}`requirements.sdk.graph.node_path_struct`
+    /// Read the ordered path segments.
     pub fn segments(&self) -> &[String] {
         &self.segments
     }
 }
 
+// {impl}`requirements.sdk.graph.criteria.CriterionPath`
 /// An ordered path with read-only access to its segments.
 ///
 /// ```compile_fail
@@ -76,26 +83,26 @@ impl NodePath {
 /// path.segments.clear();
 /// ```
 // {test}`requirements.sdk.graph.criteria.criterion_path`
-// {impl}`requirements.sdk.graph.criteria.criterion_path`
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CriterionPath {
     segments: Vec<String>,
 }
 
 impl CriterionPath {
+    // {impl}`requirements.sdk.graph.criteria.CriterionPath`
     /// Construct a path, preserving segment order and boundaries.
-    // {impl}`requirements.sdk.graph.criteria.criterion_path`
     pub fn new(segments: Vec<String>) -> Self {
         Self { segments }
     }
 
+    // {impl}`requirements.sdk.graph.criteria.CriterionPath`
     /// Read the ordered path segments.
-    // {impl}`requirements.sdk.graph.criteria.criterion_path`
     pub fn segments(&self) -> &[String] {
         &self.segments
     }
 }
 
+// {impl}`requirements.sdk.filesystem-storage.interface`
 // {impl}`requirements.sdk.graph.evidence.dependencies`
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Dependency<N, L = ()> {
@@ -103,12 +110,13 @@ pub enum Dependency<N, L = ()> {
     OutgoingEdges(N, L, Fingerprint),
 }
 
-/// The application-defined version of a criterion's check and answer encoding.
 // {impl}`requirements.sdk.graph.criteria.criterion_version`
+/// The application-defined version of a criterion's check and answer encoding.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct CriterionVersion(String);
 
+// {impl}`requirements.sdk.graph.criteria.criterion_version`
 impl CriterionVersion {
     /// Construct a version for the current criterion. Panics if `value` is `"*"`.
     pub fn new(value: impl Into<String>) -> Self {
@@ -126,12 +134,12 @@ impl CriterionVersion {
     }
 
     /// An unversioned legacy record passes this check. A known version must match exactly.
-    // {impl}`requirements.sdk.graph.evidence.checking_records.version_match`
     pub fn is_compatible_with(&self, saved: Option<&Self>) -> bool {
         saved.is_none_or(|version| version == self)
     }
 }
 
+// {impl}`requirements.sdk.graph.criteria.criterion_version`
 impl<'de> Deserialize<'de> for CriterionVersion {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Self::from_recorded(String::deserialize(deserializer)?)
@@ -139,7 +147,6 @@ impl<'de> Deserialize<'de> for CriterionVersion {
     }
 }
 
-// {impl}`requirements.sdk.graph.evidence.recorded_criterion_version`
 mod stored_version {
     use super::CriterionVersion;
     use serde::{Deserialize, Deserializer, Serializer};
@@ -160,7 +167,10 @@ mod stored_version {
     }
 }
 
+// {impl}`requirements.sdk.filesystem-storage.interface`
 // {impl}`requirements.sdk.graph.evidence.record`
+// {impl}`requirements.sdk.graph.evidence.recorded_criterion_version`
+// {impl}`requirements.sdk.public_api`
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Record<N, L = ()> {
@@ -170,6 +180,7 @@ pub struct Record<N, L = ()> {
     pub output: serde_json::Value,
 }
 
+// {impl}`requirements.sdk.public_api`
 impl<N, L> Record<N, L> {
     pub fn new(
         version: Option<CriterionVersion>,
@@ -183,9 +194,9 @@ impl<N, L> Record<N, L> {
         }
     }
 
-    /// Check the criterion version and the current fingerprints of the saved inputs.
+    // {impl}`requirements.sdk.graph.evidence.checking_records.version_match`
     // {impl}`requirements.sdk.graph.evidence.record.is_current`
-    // {impl}`requirements.sdk.graph.evidence.checking_records`
+    /// Check the criterion version and the current fingerprints of the saved inputs.
     pub fn is_current<D>(&self, graph: &D, version: &CriterionVersion) -> Result<bool, D::Error>
     where
         D: Domain<NodeData = N, EdgeLabel = L>,
@@ -197,6 +208,7 @@ impl<N, L> Record<N, L> {
     }
 }
 
+// {impl}`requirements.sdk.graph.evidence.inputs`
 /// A computed value and the fingerprints of its dependencies.
 ///
 /// The captured evidence metadata is available through read-only accessors.
@@ -236,7 +248,6 @@ impl<N, L> Record<N, L> {
 /// }
 /// ```
 // {test}`requirements.sdk.graph.evidence.inputs`
-// {impl}`requirements.sdk.graph.evidence.inputs`
 pub struct Fingerprinted<D: Domain, O> {
     source: NodeId<D>,
     criterion: CriterionPath,
@@ -278,7 +289,7 @@ impl<D: Domain, O> Fingerprinted<D, O> {
     }
 }
 
-// {impl}`requirements.sdk.graph.criteria.execute`
+// {impl}`requirements.sdk.graph.running-criteria.ValidationError`
 #[derive(Debug)]
 pub enum ValidationError<E> {
     Graph(E),
@@ -288,6 +299,7 @@ pub enum ValidationError<E> {
     Output(serde_json::Error),
 }
 
+// {impl}`requirements.sdk.graph.running-criteria.ValidationError`
 impl<E: std::fmt::Display> std::fmt::Display for ValidationError<E> {
     // {cite}`habeas:util`
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -301,6 +313,7 @@ impl<E: std::fmt::Display> std::fmt::Display for ValidationError<E> {
     }
 }
 
+// {impl}`requirements.sdk.graph.running-criteria.ValidationError`
 impl<E: std::error::Error + 'static> std::error::Error for ValidationError<E> {
     // {cite}`habeas:util`
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
@@ -315,31 +328,34 @@ impl<E: std::error::Error + 'static> std::error::Error for ValidationError<E> {
 
 // {impl}`requirements.sdk.graph.criteria.criterion_trait`
 pub trait Criterion<D: Domain>: Send + Sized {
-    /// The completed answer, serialized for storage and reconstructed on reuse.
+    // {impl}`requirements.sdk.filesystem-storage.interface`
     // {impl}`requirements.sdk.graph.criteria.criterion_trait.answer`
+    /// The completed answer, serialized for storage and reconstructed on reuse.
     type Ok: Serialize + serde::de::DeserializeOwned + Send;
 
-    /// The node this question is about.
     // {impl}`requirements.sdk.graph.criteria.criterion_trait.source_node_id`
+    /// The node this question is about.
     fn source_node_id(&self) -> NodeId<D>;
-    /// Identify this question within the source node's saved evidence.
     // {impl}`requirements.sdk.graph.criteria.criterion_path`
+    /// Identify this question within the source node's saved evidence.
     fn criterion_path(&self) -> CriterionPath;
+    // {impl}`requirements.sdk.graph.criteria.criterion_trait.version`
     /// Version of the review rules and output encoding.
     /// Change it when an old answer should no longer be reused.
-    // {impl}`requirements.sdk.graph.criteria.criterion_trait.version`
     fn version(&self) -> CriterionVersion;
 
-    /// Select inputs through the context and compute the completed answer.
     // {impl}`requirements.sdk.graph.criteria.execute`
+    /// Select inputs through the context and compute the completed answer.
     fn execute(
         self,
         ctx: &mut ValidationContext<'_, D>,
     ) -> impl Future<Output = Result<Self::Ok, ValidationError<D::Error>>> + Send;
 }
 
-/// Provider, input, and tool usage accumulated during validation.
+// {impl}`requirements.sdk.graph.running-criteria.ToolUsage.by_name`
 // {impl}`requirements.sdk.graph.running-criteria.UsageStats`
+// {impl}`requirements.sdk.public_api`
+/// Provider, input, and tool usage accumulated during validation.
 #[derive(Clone, Debug, Default, Serialize)]
 #[non_exhaustive]
 pub struct UsageStats {
@@ -400,8 +416,9 @@ impl UsageStats {
     }
 }
 
-/// Invocations and UTF-8 result bytes accumulated for one tool.
 // {impl}`requirements.sdk.graph.running-criteria.ToolUsage`
+// {impl}`requirements.sdk.public_api`
+/// Invocations and UTF-8 result bytes accumulated for one tool.
 #[derive(Clone, Copy, Debug, Default, Serialize)]
 #[non_exhaustive]
 pub struct ToolUsage {
@@ -409,8 +426,9 @@ pub struct ToolUsage {
     pub result_bytes: u64,
 }
 
-/// Measured tokens and the number of attempts without a measurement for this category.
 // {impl}`requirements.sdk.graph.running-criteria.TokenCount`
+// {impl}`requirements.sdk.public_api`
+/// Measured tokens and the number of attempts without a measurement for this category.
 #[derive(Clone, Copy, Debug, Default, Serialize)]
 #[non_exhaustive]
 pub struct TokenCount {
@@ -432,8 +450,8 @@ impl TokenCount {
     }
 }
 
-/// Executes criteria on a borrowed domain and counts the provider usage of this operation.
 // {impl}`requirements.sdk.graph.running-criteria.Validator`
+/// Executes criteria on a borrowed domain and counts the provider usage of this operation.
 pub struct Validator<'d, D: Domain> {
     domain: &'d D,
     usage: UsageStats,
@@ -452,10 +470,10 @@ impl<'d, D: Domain> Validator<'d, D> {
     pub fn usage(&self) -> &UsageStats {
         &self.usage
     }
-    // {impl}`requirements.sdk.graph.evidence.refresh_evidence`
+    // {impl}`requirements.sdk.graph.evidence.checking_records.version_match`
+    // {impl}`requirements.sdk.graph.running-criteria.refresh_evidence`
     /// Reuse compatible, current evidence, or evaluate and save a new answer.
     /// Errors from loading, decoding, checking, execution, or saving propagate.
-    // {impl}`requirements.sdk.graph.running-criteria.refresh_evidence`
     pub fn refresh_evidence<V: Criterion<D>>(
         &mut self,
         criterion: V,
@@ -476,12 +494,9 @@ impl<'d, D: Domain> Validator<'d, D> {
         }
     }
 
-    // {impl}`requirements.sdk.graph.evidence.check_node`
-    // {impl}`requirements.sdk.graph.evidence.procedure_identity`
-    // {impl}`requirements.sdk.graph.evidence.record.output`
-    // {impl}`requirements.sdk.graph.evidence.inputs`
-    /// Load this criterion's evidence and decode its answer.
     // {impl}`requirements.sdk.graph.running-criteria.load_evidence`
+    // {impl}`requirements.sdk.graph.evidence.check_node`
+    /// Load this criterion's evidence and decode its answer.
     pub fn load_evidence<V: Criterion<D>>(
         &self,
         criterion: &V,
@@ -510,19 +525,13 @@ impl<'d, D: Domain> Validator<'d, D> {
         }
     }
 
-    // {impl}`requirements.sdk.graph.evidence.checking_records`
-    /// Compare recorded input fingerprints with the current domain state.
     // {impl}`requirements.sdk.graph.running-criteria.check_inputs`
+    /// Compare recorded input fingerprints with the current domain state.
     pub fn check_inputs<O>(&self, inputs: &Fingerprinted<D, O>) -> Result<bool, D::Error> {
         dependencies_are_current(self.domain, &inputs.dependencies)
     }
 
-    // {impl}`requirements.sdk.graph.evidence.procedure_identity`
-    // {impl}`requirements.sdk.graph.evidence.inputs`
     /// Execute the criterion and return its completed answer and observed inputs.
-    // {impl}`requirements.sdk.graph.running-criteria.verify`
-    // {impl}`requirements.sdk.graph.running-criteria.verify.concurrent`
-    // {impl}`requirements.sdk.graph.validation-context.shared_context`
     pub fn verify<V: Criterion<D>>(
         &mut self,
         criterion: V,
@@ -531,9 +540,7 @@ impl<'d, D: Domain> Validator<'d, D> {
         self.execute(criterion, None)
     }
 
-    // {impl}`requirements.sdk.graph.running-criteria.validate_node`
-    // {impl}`requirements.sdk.graph.running-criteria.validate_node.errors`
-    // {impl}`requirements.sdk.graph.running-criteria.Validator.usage`
+    // {impl}`requirements.sdk.graph.running-criteria.Validator`
     pub(crate) async fn execute<V: Criterion<D>>(
         &mut self,
         criterion: V,
@@ -555,10 +562,8 @@ impl<'d, D: Domain> Validator<'d, D> {
         })
     }
 
-    // {impl}`requirements.sdk.graph.evidence.store_evidence`
-    // {impl}`requirements.sdk.graph.evidence.record.output`
-    /// Encode the answer and atomically replace its source/criterion record.
     // {impl}`requirements.sdk.graph.running-criteria.store_evidence`
+    /// Encode the answer and atomically replace its source/criterion record.
     pub fn store_evidence<O: Serialize>(
         &self,
         inputs: &Fingerprinted<D, O>,
@@ -581,7 +586,6 @@ impl<'d, D: Domain> Validator<'d, D> {
     }
 }
 
-// {impl}`requirements.sdk.graph.evidence.persisted_dependencies`
 fn map_dependencies<N, M, L: Clone>(
     dependencies: &[Dependency<N, L>],
     mut map: impl FnMut(&N) -> M,
@@ -641,10 +645,10 @@ fn dependencies_are_current<D: Domain>(
     Ok(true)
 }
 
+// {impl}`requirements.sdk.graph.validation-context.snapshot`
 /// Hash the target set without requiring serialization or hashing of opaque IDs.
 /// JSON encodes segment boundaries and Unicode unambiguously; ordering and
 /// duplicate edges do not affect membership. Empty selections have a digest too.
-// {impl}`requirements.sdk.graph.validation-context.snapshot`
 pub fn edge_fingerprint<D: Domain>(graph: &D, targets: &[NodeId<D>]) -> Fingerprint {
     let mut paths = targets
         .iter()

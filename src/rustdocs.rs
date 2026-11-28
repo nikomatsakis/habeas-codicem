@@ -28,7 +28,6 @@ struct Import {
 }
 
 /// Prepare the Rustdoc static assets before mdBook's HTML renderer copies them.
-// {impl}`requirements.index.rustdocs`
 pub fn preprocess(book: &mut Book, root: &Path, config: &Config) -> io::Result<()> {
     let chapters = book
         .chapters()
@@ -239,7 +238,6 @@ pub fn preprocess(book: &mut Book, root: &Path, config: &Config) -> io::Result<(
 }
 
 /// Render the book with mdBook's HTML renderer, then finish the native-site copy.
-// {impl}`requirements.index.rustdocs`
 pub fn render(mut context: RenderContext) -> mdbook_renderer::errors::Result<()> {
     if let Some(html) = context
         .config

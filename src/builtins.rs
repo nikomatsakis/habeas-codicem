@@ -12,8 +12,6 @@ pub(crate) struct Builtin {
 }
 
 /// Every built-in definition.
-// {impl}`requirements.references.util`
-// {impl}`requirements.test-coverage.check.exceptions.anchor`
 pub(crate) const BUILTINS: &[Builtin] = &[
     Builtin {
         name: "habeas:util",
@@ -39,8 +37,6 @@ pub(crate) fn builtin(name: &str) -> Option<&'static Builtin> {
 
 impl Builtin {
     /// The built-in's fixed text, as quoted in its requirement.
-    // {impl}`requirements.references.util`
-    // {impl}`requirements.test-coverage.check.exceptions.anchor`
     pub(crate) fn text(&self) -> &'static str {
         static UTIL: OnceLock<String> = OnceLock::new();
         static COVERAGE: OnceLock<String> = OnceLock::new();

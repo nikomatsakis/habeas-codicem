@@ -175,6 +175,12 @@ fn serve(
         .find(|message| message["role"] == "user")
         .and_then(|message| message["content"].as_str())
         .unwrap();
+    // These batch scenarios script one behavioral outcome per ordinary requirement.
+    if prompt.contains("# Review roots") {
+        let body = json!({"model":"fixture-model","created_at":"2026-01-01T00:00:00Z","message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"submit_result","arguments":{"result":{"status":"success","rationale":"Structural review complete."}}}}]},"done":true,"done_reason":"stop","prompt_eval_count":0,"eval_count":0}).to_string();
+        write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+        return;
+    }
     let subject = prompt
         .lines()
         .find_map(|line| {
@@ -629,6 +635,7 @@ fn batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inp
     assert!(!fixture.project.join("evidence/rust").exists());
     let mut beta = fixture.evidence("requirements.beta");
     beta["determination"] = json!({"FIXME":["example/app#123"]});
+    beta["criteria"]["behavioral"]["output"] = json!({"status":"acknowledged_gap", "entries":beta["determination"]["FIXME"], "rationale":"Acknowledged test gap."});
     beta["rationale"] = "The source explicitly acknowledges the missing beta test.".into();
     fs::write(
         fixture.project.join("evidence/requirements.beta.json"),
@@ -703,9 +710,12 @@ fn batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inp
         .unwrap()
         .replace("-> u8 { 1 }", "-> u8 { 1_u8 }");
     fs::write(&source, changed).unwrap();
-    let unread_change = fixture.run(&["author", "--all"]);
-    assert!(unread_change.status.success(), "{unread_change:?}");
-    assert_eq!(server.subjects().len(), 6);
+    let implementation_change = fixture.run(&["author", "--all"]);
+    assert!(
+        implementation_change.status.success(),
+        "{implementation_change:?}"
+    );
+    assert_eq!(server.subjects().len(), 7);
     fs::write(
         &source,
         fs::read_to_string(&source).unwrap().replace(
@@ -731,12 +741,12 @@ fn batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inp
         "{}",
         String::from_utf8_lossy(&updated.stderr)
     );
-    assert_eq!(server.subjects().len(), 7);
+    assert_eq!(server.subjects().len(), 8);
     assert_eq!(
         server.subjects().last().unwrap(),
         "requirement requirements.alpha"
     );
-    assert_eq!(fixture.usage().len(), 7);
+    assert_eq!(fixture.usage().len(), 8);
     assert_eq!(
         String::from_utf8_lossy(&updated.stdout).trim(),
         "1 authored; 5 skipped as current; 0 failed; policy once"
@@ -855,14 +865,19 @@ fn throttled_assessment_retries_within_itself_while_others_proceed() {
         .iter()
         .find(|run| run["subject"] == "requirements.alpha")
         .unwrap();
-    assert_eq!(alpha["provider_usage"]["attempts"], 2);
+    assert_eq!(alpha["provider_usage"]["attempts"], 3);
     assert_eq!(alpha["provider_usage"]["failed_attempts"], 1);
     assert_eq!(alpha["provider_usage"]["retries"], 1);
     assert!(
         usage
             .iter()
             .filter(|run| run["subject"] != "requirements.alpha")
-            .all(|run| run["provider_usage"]["attempts"] == 1)
+            .all(|run| run["provider_usage"]["attempts"]
+                == if run["subject"].as_str().unwrap().ends_with("_case") {
+                    1
+                } else {
+                    2
+                })
     );
 }
 
@@ -905,7 +920,7 @@ fn failed_assessment_keeps_other_results_and_reports_failure() {
         .iter()
         .find(|run| run["subject"] == "requirements.alpha")
         .unwrap();
-    assert_eq!(failed["provider_usage"]["attempts"], 1);
+    assert_eq!(failed["provider_usage"]["attempts"], 2);
     assert_eq!(failed["provider_usage"]["failed_attempts"], 1);
     assert_eq!(failed["provider_usage"]["retries"], 0);
     assert_eq!(usage.len(), 6);
@@ -1483,6 +1498,7 @@ fn batch_preserves_current_false_judgments_and_reauthors_stale_ones() {
         let path = fixture.project.join(format!("evidence/{name}.json"));
         let mut record = fixture.evidence(name);
         record["determination"] = json!(false);
+        record["criteria"]["behavioral"]["output"] = json!({"status":"failed","corrections":[{"kind":"manual","instruction":"Add the missing test.","rationale":"A boundary case is absent."}]});
         record["rationale"] = json!("The tests omit a boundary case.");
         fs::write(&path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
         fs::read(path).unwrap()
@@ -1584,6 +1600,7 @@ fn batch_reauthors_a_false_judgment_when_its_reference_set_changes() {
     let mut record = fixture.evidence("requirements.delta");
     assert!(!record["inputs"].to_string().contains("src/lib.rs"));
     record["determination"] = json!(false);
+    record["criteria"]["behavioral"]["output"] = json!({"status":"failed","corrections":[{"kind":"manual","instruction":"Add the missing test.","rationale":"A boundary case is absent."}]});
     record["rationale"] = json!("The behavior has no {test} reference.");
     fs::write(&path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
 
@@ -2575,6 +2592,7 @@ fn closing_an_acknowledged_issue_makes_the_fixme_record_stale_and_reassessed() {
     // evidence.
     let mut beta = fixture.evidence("requirements.beta");
     beta["determination"] = json!({"FIXME": ["example/queue#125"]});
+    beta["criteria"]["behavioral"]["output"] = json!({"status":"acknowledged_gap", "entries":beta["determination"]["FIXME"], "rationale":"Acknowledged test gap."});
     fs::write(
         fixture.project.join("evidence/requirements.beta.json"),
         serde_json::to_vec_pretty(&beta).unwrap(),

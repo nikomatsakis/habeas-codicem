@@ -1,7 +1,5 @@
 //! Configure the SDK's supplied Bedrock, OpenAI, and Ollama agents.
 
-#[cfg(test)]
-use crate::domain::NodeId;
 use rig_core::{
     completion::{CompletionRequest, CompletionResponse, FinishReason, ToolDefinition},
     message::{Message, ToolCall, ToolResult, ToolResultContent, turn_failure},
@@ -23,9 +21,6 @@ pub(crate) mod project_sources;
 #[path = "agent/providers.rs"]
 #[doc(hidden)]
 pub mod providers;
-#[path = "agent/sources.rs"]
-#[cfg(test)]
-mod sources;
 #[path = "agent/tools.rs"]
 mod tools;
 #[cfg(test)]
@@ -37,50 +32,6 @@ use backoff::{RETRY_LIMIT, failure_codes};
 pub(crate) use configured::ConfiguredAgent;
 #[doc(hidden)]
 pub(crate) use tools::{ToolAgent, ToolDelivery, ToolFactory, ToolSession};
-
-/// Built-in project source tools with an application graph-observation mapping.
-///
-/// File access and outline languages use the SDK's defaults. The mapping
-/// receives the exact snapshot delivered to the agent.
-#[doc(hidden)]
-#[cfg(test)]
-pub struct SourceTools<F> {
-    inner: sources::SourceTools<crate::source_engine::LocalSources, F>,
-}
-
-#[cfg(test)]
-impl<F> SourceTools<F> {
-    // {impl}`requirements.sdk.sources.provider`
-    /// Inspect this project directory and map selected items into the graph.
-    pub fn new(root: impl Into<std::path::PathBuf>, observation: F) -> Self {
-        Self {
-            inner: sources::SourceTools {
-                analysis: crate::sources::Sources::new(root).analysis,
-                observation,
-            },
-        }
-    }
-}
-
-#[cfg(test)]
-impl<D, F> ToolFactory<D> for SourceTools<F>
-where
-    D: crate::domain::Domain,
-    F: Fn(
-            &crate::resource::OutlineId,
-            &crate::source_engine::ParsedSource,
-        ) -> Result<Option<crate::graph::Dependency<NodeId<D>, D::EdgeLabel>>, String>
-        + Send
-        + Sync,
-{
-    fn session<'a>(&'a self) -> Box<dyn ToolSession<D> + 'a>
-    where
-        NodeId<D>: 'a,
-        D::EdgeLabel: 'a,
-    {
-        self.inner.session()
-    }
-}
 
 #[doc(hidden)]
 pub trait CompletionProvider: Send + Sync {
@@ -147,15 +98,12 @@ pub trait Conversation: Send {
 }
 
 // Publish an interrupted attempt too. A dropped provider future supplies no token measurements.
-// {impl}`requirements.sdk.validation-cache.usage`
 struct ProviderAttempt<'a, 'd, D: crate::domain::Domain> {
     context: &'a crate::request::ValidationContext<'d, D>,
     usage: crate::graph::UsageStats,
 }
 
 impl<D: crate::domain::Domain> Drop for ProviderAttempt<'_, '_, D> {
-    // {impl}`requirements.sdk.validation-cache.usage`
-    // {impl}`requirements.sdk.graph.running-criteria.Validator.usage`
     fn drop(&mut self) {
         self.context.record_usage(&self.usage);
     }
@@ -169,17 +117,7 @@ fn tool_error(call: &ToolCall, text: impl Into<String>) -> ToolResult {
     }
 }
 
-// {impl}`requirements.sdk.graph.agent-calls.judge.submission`
-// {impl}`requirements.sdk.graph.agent-harness.submission.acceptance`
-// {impl}`requirements.sdk.graph.agent-harness.submission.reminder`
 // {impl}`requirements.sdk.graph.agent-harness.submission_count`
-// {impl}`requirements.authoring.provider_backoff`
-// {impl}`requirements.authoring.output_limit`
-// {impl}`requirements.sdk.graph.running-criteria.UsageStats`
-// {impl}`requirements.sdk.graph.running-criteria.ToolUsage.by_name`
-// {impl}`requirements.sdk.graph.running-criteria.ToolUsage.calls`
-// {impl}`requirements.sdk.graph.running-criteria.ToolUsage.result_bytes`
-// {impl}`requirements.sdk.graph.running-criteria.ToolUsage.replay`
 #[doc(hidden)]
 pub async fn converse<P: CompletionProvider, C: Conversation, D: crate::domain::Domain, T>(
     context: &crate::request::ValidationContext<'_, D>,
@@ -323,16 +261,15 @@ where
             request.chat_history.push(Message::user(reminder).into());
             continue;
         }
-        // {impl}`requirements.authoring.submission.searches.line_numbers`
         if !submissions.is_empty() {
             begin_tool(submit);
             let arguments = Value::Object(submissions[0].function.arguments.clone());
-            let submission =
-                tools::submitted_value(&arguments).and_then(|value| session.submit(submit, &value));
-            let vetted = match submission {
-                Ok(Submission::Accepted(value)) => finish(value),
-                Ok(Submission::Retry(message)) => Ok(Submission::Retry(message)),
-                Err(error) => Err(error.into()),
+            let vetted = match tools::submitted_value(&arguments) {
+                Ok(value) => match session.submit(submit, &value)? {
+                    Submission::Accepted(value) => finish(value),
+                    Submission::Retry(message) => Ok(Submission::Retry(message)),
+                },
+                Err(error) => Ok(Submission::Retry(error.to_string())),
             };
             match vetted {
                 Ok(Submission::Accepted(value)) => {

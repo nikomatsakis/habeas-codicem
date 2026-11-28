@@ -332,6 +332,7 @@ async fn empty_sources_errors_and_retained_snapshots_remain_distinct() {
     assert!(sources.search_text(&invalid).await.is_err());
 }
 
+// {test}`requirements.sdk.graph.search.SearchResults`
 // {test}`requirements.sdk.sources.provider_defaults`
 // {test}`requirements.sdk.sources.provider`
 // {test}`requirements.sdk.sources.provider_defaults.composition`

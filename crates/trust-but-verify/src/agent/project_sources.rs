@@ -30,8 +30,6 @@ pub(super) const TOOL_NAMES: &[&str] = &[
     FINISH_SEARCH,
 ];
 
-// {impl}`requirements.sdk.graph.search.windows`
-// {impl}`requirements.sdk.graph.search.omissions`
 fn excerpt(
     item: &crate::outline::OutlineContent,
     hits: &[crate::outline::Span],
@@ -83,7 +81,6 @@ fn excerpt(
     (result, spans)
 }
 
-// {impl}`requirements.sdk.graph.search.finish_search.inputs`
 fn excerpt_dependencies<D: crate::domain::Domain>(
     project: &ProjectSources<D>,
     hit: &crate::sources::SearchHit<NodeId<D>>,
@@ -406,6 +403,7 @@ mod tests {
         assert_eq!(tools.domain.0.lock().unwrap().reads, reads);
     }
 
+    // {test}`requirements.authoring.redaction_notice`
     // {test}`requirements.sdk.graph.validation-context.read_node.source_children`
     // {test}`requirements.sdk.sources.redaction`
     #[test]
@@ -824,6 +822,7 @@ mod tests {
         assert_eq!(seen, 200);
     }
 
+    // {test}`requirements.sdk.graph.search.search_text.mcp.description`
     // {test}`requirements.sdk.graph.validation-context.pages.behavior`
     // {test}`requirements.sdk.graph.search.search_text.mcp`
     #[tokio::test]
@@ -902,6 +901,7 @@ mod tests {
         assert_eq!(count, lines.len());
     }
 
+    // {test}`requirements.sdk.graph.search.search_structure.mcp.description`
     // {test}`requirements.sdk.graph.search.search_structure.inputs`
     // {test}`requirements.sdk.graph.search.finish_search.inputs`
     // {test}`requirements.sdk.graph.search.agent_search`
@@ -924,6 +924,25 @@ mod tests {
             domain: domain.clone().into(),
         };
         let mut session = SessionTools::new(tools.session());
+        let empty = session
+            .dispatch(
+                "search_structure",
+                &json!({"language":"rust","rule":{"rule":{"pattern":"absent()"}}}),
+            )
+            .await
+            .unwrap();
+        assert!(empty.dependencies.is_empty());
+        let empty: Value = serde_json::from_str(&empty.text).unwrap();
+        assert_eq!(empty["matches"], json!([]));
+        assert_eq!(empty["complete"], true);
+        let closed = session
+            .dispatch(
+                "finish_search",
+                &json!({"search_id":empty["search_id"],"used":[]}),
+            )
+            .await
+            .unwrap();
+        assert!(closed.dependencies.is_empty());
         let args = json!({"language":"rust","rule":{"rule":{"pattern":"call()"}}});
         let query = StructuralQuery::new("rust".into(), args["rule"].as_object().unwrap().clone());
         let hits = tools.search_structure(&query).await.unwrap();
@@ -1041,6 +1060,7 @@ mod tests {
         assert_eq!(domain.0.lock().unwrap().reads, 1);
     }
 
+    // {test}`requirements.sdk.graph.validation-context.pages.inputs`
     // {test}`requirements.sdk.graph.validation-context.outline_source.mcp`
     // {test}`requirements.sdk.graph.validation-context.outline_source.behavior`
     // {test}`requirements.sdk.graph.validation-context.pages.mcp`
@@ -1143,7 +1163,13 @@ mod tests {
             assert_eq!(page["file"], "code.rs");
             assert_eq!(page["selector"], "");
             received.push_str(page["text"].as_str().unwrap());
-            assert_eq!(root_read.dependencies.len(), 1);
+            assert_eq!(
+                root_read.dependencies,
+                [Dependency::Node(
+                    tools.domain.cache().intern_node("code.rs#".into()),
+                    crate::procedure::context_fingerprint(&root_text)
+                )]
+            );
             children.extend(
                 page["children"]
                     .as_array()
@@ -1174,6 +1200,7 @@ mod tests {
         );
     }
 
+    // {test}`requirements.sdk.graph.validation-context.pages.inputs`
     // {test}`requirements.sdk.graph.validation-context.list_sources.mcp`
     // {test}`requirements.sdk.graph.validation-context.pages.behavior`
     // {test}`requirements.sdk.graph.validation-context.list_sources.inputs`
@@ -1893,17 +1920,12 @@ where
         Some(self.tools)
     }
 
-    // {impl}`requirements.sdk.graph.validation-context.list_sources.mcp`
-    // {impl}`requirements.sdk.graph.validation-context.list_sources.mcp.description`
-    // {impl}`requirements.sdk.graph.validation-context.outline_source.mcp`
-    // {impl}`requirements.sdk.graph.validation-context.outline_source.mcp.description`
-    // {impl}`requirements.sdk.graph.search.search_text.mcp`
-    // {impl}`requirements.sdk.graph.search.search_text.mcp.description`
-    // {impl}`requirements.sdk.graph.search.search_structure.mcp`
-    // {impl}`requirements.sdk.graph.search.search_structure.mcp.description`
     // {impl}`requirements.sdk.graph.search.finish_search.mcp`
+    // {impl}`requirements.sdk.graph.validation-context.list_sources.mcp.description`
+    // {impl}`requirements.sdk.graph.validation-context.outline_source.mcp.description`
+    // {impl}`requirements.sdk.graph.search.search_text.mcp.description`
+    // {impl}`requirements.sdk.graph.search.search_structure.mcp.description`
     // {impl}`requirements.sdk.graph.search.finish_search.mcp.description`
-    // {impl}`requirements.authoring.tool_descriptions.common_case`
     fn definitions(&self) -> io::Result<Vec<ToolDefinition>> {
         [
             json!({"name":LIST_SOURCES,"description":"List available project file nodes.", "parameters":{"type":"object","properties":{}}}),
@@ -1924,23 +1946,8 @@ where
         .collect()
     }
 
+    // {impl}`requirements.sdk.graph.agent-harness.fixed_tools`
     // {impl}`requirements.sdk.graph.search.agent_search`
-    // {impl}`requirements.sdk.graph.search.group_hits`
-    // {impl}`requirements.sdk.graph.search.search_text.behavior`
-    // {impl}`requirements.sdk.graph.search.search_structure.behavior`
-    // {impl}`requirements.sdk.graph.search.search_text.inputs`
-    // {impl}`requirements.sdk.graph.search.search_text.mcp`
-    // {impl}`requirements.sdk.graph.search.search_structure.mcp`
-    // {impl}`requirements.sdk.graph.search.search_structure.inputs`
-    // {impl}`requirements.sdk.graph.validation-context.list_sources.behavior`
-    // {impl}`requirements.sdk.graph.validation-context.list_sources.inputs`
-    // {impl}`requirements.sdk.graph.validation-context.outline_source.behavior`
-    // {impl}`requirements.sdk.graph.validation-context.outline_source.inputs`
-    // {impl}`requirements.sdk.sources.provider_observations`
-    // {impl}`requirements.sdk.graph.validation-context.read_source.behavior`
-    // {impl}`requirements.sdk.graph.validation-context.read_source.inputs`
-    // {impl}`requirements.sdk.graph.validation-context.pages.inputs`
-    // {impl}`requirements.sdk.sources.redaction`
     fn dispatch<'a>(
         &'a mut self,
         name: &'a str,

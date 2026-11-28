@@ -1,8 +1,8 @@
 {
   "requirement": "Saved execution-coverage checks read the current coverage set under\n{cite}`requirements.test-coverage.storage.current` from SQLite. Each check\nuses one coherent database snapshot of test identities, states, provenance,\nand processed measurements, so a replacement or update cannot mix results\nfrom different snapshots within the same check.\n\nChecks do not search historical runs or use a separate report-selection\nmetadata cache. Current test identities, states, and provenance can be read\nwithout loading their detailed measurements.\n\nOnly current results with complete, available measurements contribute to\ncoverage under {cite}`requirements.test-coverage.index.freshness`.\nPending, running, and unavailable entries are reported under\n{cite}`requirements.test-coverage.check.measurement`. Checking does not build\nor execute tests and never restores a superseded attempt.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation in `requirements.test-coverage.index.selection`.\n\n**Fixtures.** The `record` helpers in `src/execution_coverage/book.rs` and `check.rs` save through `store::fixtures::save`. That helper writes invocation and attempt rows into SQLite, so the check-level tests do read from the SQLite store.\n\n**Coherent snapshot, no mixing across a replacement.**\n- `src/execution_coverage/store.rs#mod[tests]/fn[replacement_between_snapshot_queries_cannot_mix_configurations_or_results]` commits a replacement through a SQLite trace callback while the reader's snapshot is in progress.\n- It asserts that the reader keeps configuration `a`, the first run, the first test id and the count 7.\n- It then asserts that the next snapshot is wholly `b` with count 9.\n- `store.rs#mod[tests]/fn[metadata_queries_skip_measurements_and_snapshots_survive_subsequent_replacement]` also shows that a snapshot survives a later replacement.\n\n**Current set only, no historical search, no separate metadata cache.**\n- `book.rs#mod[tests]/fn[a_corrupt_optional_metadata_cache_does_not_hide_saved_measurements]` writes a corrupt `selection-cache.json`. It asserts that the store stays valid and the measurements are still selected.\n- `book.rs#mod[tests]/fn[filtered_runs_union_latest_attempts_and_invalidate_with_saved_source]` checks four things:\n  - Filtered runs are unioned.\n  - The latest attempt wins.\n  - A new `build-b` configuration leaves only one selected record.\n  - Stale source marks every record non-fresh and the check reports stale coverage.\n- `store.rs#mod[tests]/fn[focused_replacement_preserves_unselected_results_and_shared_artifacts]` and `fn[latest_started_retry_replaces_success_and_cannot_be_overwritten_by_old_conversion]` show that the current set has one entry per test and that a retry replaces the earlier success.\n\n**Metadata readable without detailed measurements.** `store.rs#mod[tests]/fn[metadata_queries_skip_measurements_and_snapshots_survive_subsequent_replacement]` corrupts the measurements column. `snapshot(false)` still returns the metadata and configuration with `measurements` set to `None`.\n\n**Only complete, available measurements contribute (freshness).**\n- The stale-source scenario in `filtered_runs_union_latest_attempts_and_invalidate_with_saved_source` covers stale results.\n- A failed or interrupted attempt with missing profile diagnostics fails the check, and the report says \"missing or unreadable coverage\".\n- `src/execution_coverage/check.rs#mod[tests]/fn[running_and_unreadable_entries_suppress_totals_even_alongside_fresh_measurements]` removes a profile, then sets the attempt to pending and running. The check fails, names the entry, and shows no totals or per-file lines. The entry alongside it with fresh measurements is not reported as unavailable.\n\n**Never restores a superseded attempt.** `book.rs#mod[tests]/fn[unreadable_history_cannot_reintroduce_an_older_success]` covers four failure modes on the newest attempt:\n- invalid metadata,\n- missing source,\n- an unsupported schema,\n- a missing profile.\n\nIn each case the check fails and the older success's counts are not substituted.\n\n**Checking does not build or execute tests.** `tests/execution_coverage.rs#fn[book_rendering_preserves_retained_coverage_and_never_launches_tests]` runs `coverage-check` with a shimmed `cargo`. It asserts that no forbidden command or test marker appears and that the retained files are unchanged.\n\nI found no unmet obligation, no missing marker and no ambiguity.",
-  "references": "314f11e87841b7c513839fe1dd0296b61a5a243bcce7e42a8247d4f65425e897",
+  "rationale": "structural: Structural obligations in `requirements.test-coverage.index.selection`: (1) the current set is read from SQLite; (2) one coherent database snapshot is used per check; (3) there is no historical-run search or separate report-selection metadata cache; (4) identities, states and provenance can be read without loading measurements. The remaining clauses (only complete, available results contribute; pending, running and unavailable entries are reported; no building or executing; no restoring a superseded attempt) describe observable behavior that other requirements govern.\n\nEach structural clause is implemented in the supplied roots:\n- `src/execution_coverage/store.rs#impl[Store]/fn[read]` opens `DATABASE` with rusqlite in read-only mode, which covers the SQLite obligation. It also rejects an unsupported schema version.\n- `src/execution_coverage/store.rs#impl[Store]/fn[snapshot]` does the whole read inside one `connection.transaction()`. That covers the state row, the invocations, the tests, and the measurements, so a concurrent replacement cannot mix results. A reader that reads state and tests in separate autocommit queries would break the clause, which makes this transaction a real structural choice.\n- The same function queries only the current `tests` rows and the `state.latest` invocation, so it does not search historical runs. It uses no separate selection cache.\n- Its `measurements: bool` parameter selects `NULL` instead of the `measurements` column for metadata-only reads, so metadata is readable without loading measurements.\n\nThe saved check path is `src/execution_coverage/book.rs#fn[load_saved]`. It calls `Store::read` once and `snapshot(true)` once, so each check uses a single snapshot. That caller needs no marker because the roots carry the obligations. I did not review the other clauses against any further roots.\n\nbehavioral: I judged the tests adequate for `requirements.test-coverage.index.selection`. I did not request implementation source. The reviewed tests cover each obligation, as follows.\n\n- **One coherent snapshot.** `src/execution_coverage/store.rs#mod[tests]/fn[replacement_between_snapshot_queries_cannot_mix_configurations_or_results]` commits a replacement while a reader's snapshot read is in progress. It asserts that the reader sees only the old configuration, run, test identity and measurements (value 7). It then asserts that the next snapshot sees only the new set (value 9). `src/execution_coverage/store.rs#mod[tests]/fn[metadata_queries_skip_measurements_and_snapshots_survive_subsequent_replacement]` checks that an existing snapshot survives a later replacement.\n- **Current set only, no history or metadata cache.**\n  - `src/execution_coverage/store.rs#mod[tests]/fn[latest_started_retry_replaces_success_and_cannot_be_overwritten_by_old_conversion]` and `src/execution_coverage/store.rs#mod[tests]/fn[focused_replacement_preserves_unselected_results_and_shared_artifacts]` show that the snapshot holds one current entry per test, with no accumulated attempts.\n  - `src/execution_coverage/book.rs#mod[tests]/fn[a_corrupt_optional_metadata_cache_does_not_hide_saved_measurements]` corrupts a `selection-cache.json` file. It asserts that the store stays valid and the measurements are still used.\n- **Metadata read without measurements.** The `metadata_queries_skip_measurements…` test corrupts the measurements column. `snapshot(false)` still returns identities and configuration, with `measurements` equal to `None`.\n- **Only complete, available, fresh results contribute.**\n  - `src/execution_coverage/check.rs#mod[tests]/fn[running_and_unreadable_entries_suppress_totals_even_alongside_fresh_measurements]` covers a missing profile and the pending and running states. Each is reported, the check fails, and no totals appear.\n  - `src/execution_coverage/book.rs#mod[tests]/fn[filtered_runs_union_latest_attempts_and_invalidate_with_saved_source]` covers failed and interrupted attempts that lack measurements, and stale results after a source change.\n- **Never restores a superseded attempt.**\n  - `src/execution_coverage/book.rs#mod[tests]/fn[unreadable_history_cannot_reintroduce_an_older_success]` runs four cases: invalid metadata, missing source, unsupported schema and a missing profile. In each, the newest attempt is unreadable and the older success is not restored.\n  - The retry test shows that an old conversion cannot overwrite a newer attempt, and that the replaced attempt's measurements are gone.\n- **No build or test execution.** `tests/execution_coverage.rs#fn[book_rendering_preserves_retained_coverage_and_never_launches_tests]` runs `coverage-check` with a `cargo` shim and an execution sentinel. It asserts that no test ran, that only `cargo metadata` was called, and that the stored files are unchanged.\n\nThe cited requirements `requirements.test-coverage.storage.current`, `requirements.test-coverage.index.freshness` and `requirements.test-coverage.check.measurement` are context only. I found no unmarked or missing scenarios.",
+  "references": "3d3344908f710244581427465eeef83bbc4c1d83ab399bd6185518edd64c919b",
   "inputs": [
     {
       "requirements": "requirements.test-coverage.index.selection",
@@ -104,6 +104,26 @@
       ]
     },
     {
+      "file": "src/execution_coverage/store.rs",
+      "item": "impl[Store]/fn[read]",
+      "hash": "f5f34ac6329d0823d8de65d29f4d893df1afd55a9ea02539df200d3d147b1d57"
+    },
+    {
+      "file": "src/execution_coverage/store.rs",
+      "item": "impl[Store]/fn[snapshot]",
+      "hash": "c6f53ac7c08df41aaf742ddf8c0572b291ed9a00d69227683832809f93ff0886"
+    },
+    {
+      "file": "src/execution_coverage/book.rs",
+      "item": "fn[load_saved]",
+      "hash": "93eedf9c5b01642403c3f7b8da72b9d99e3a9a700b840b7d00605edf815f1e34"
+    },
+    {
+      "file": "src/execution_coverage/runner.rs",
+      "item": "fn[finish]",
+      "hash": "54e423a8611feff26f84ae651493b82c4d0482a14b533c2aa7509d60622d8993"
+    },
+    {
       "file": "src/execution_coverage/book.rs",
       "item": "mod[tests]/fn[a_corrupt_optional_metadata_cache_does_not_hide_saved_measurements]",
       "hash": "b42a44ec320e65fb80b975fc59f70ef05d8a07d6a1b732878840bdc71e391067"
@@ -147,29 +167,360 @@
       "file": "tests/execution_coverage.rs",
       "item": "fn[book_rendering_preserves_retained_coverage_and_never_launches_tests]",
       "hash": "e2e407d46fc616051d9c46f0cb11dbb0bdcccd5f748f47edb5d52f89824bfd10"
-    },
-    {
-      "file": "src/execution_coverage/book.rs",
-      "item": "mod[tests]/fn[record]",
-      "hash": "37254058d11ebe85a96082f54e423935cda770484e3de27fd426697e3294c838"
-    },
-    {
-      "file": "src/execution_coverage/store.rs",
-      "item": "mod[fixtures]",
-      "hash": "5a500a41977ee8d8b47c5eb0633f5507c9c29ab49982630a5105fdfcba02000b"
-    },
-    {
-      "file": "src/execution_coverage/store.rs",
-      "item": "mod[fixtures]/fn[save]",
-      "hash": "41e2a9c2ef7a3f9944dd3bdb52502d33db627a2cb36e5d81c1bc43e0cdff2600"
-    },
-    {
-      "file": "src/execution_coverage/store.rs",
-      "item": "mod[fixtures]/use@a0259f98c77e",
-      "hash": "a0259f98c77eb01454a03e6d981b0a57804f5ba425b6d64e9784e2d85e09cc72"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.test-coverage.index.selection"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "3d3344908f710244581427465eeef83bbc4c1d83ab399bd6185518edd64c919b"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.test-coverage.index.selection"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "c0df750d6a0c04809dd1ba1a57a080d14f5a6327c4b7c25e333810505770457a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.test-coverage.storage.current"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "43d4bc056f0e089167ed153d03af58cff498f5d1b7956987dc34214f4a08e44e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.test-coverage.index.freshness"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "e18e2797cf78a847445d3d7f06159ade9e8bcbb0a51d56df3f782d78520a2b95"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.test-coverage.check.measurement"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "36ebd61ee44044efa5fed7fbc9b054d3d1c57c34854a950e007daa3af78be5ad"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/execution_coverage/store.rs"
+                },
+                "selector": "impl[Store]/fn[read]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f5f34ac6329d0823d8de65d29f4d893df1afd55a9ea02539df200d3d147b1d57"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/execution_coverage/store.rs"
+                },
+                "selector": "impl[Store]/fn[snapshot]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "c6f53ac7c08df41aaf742ddf8c0572b291ed9a00d69227683832809f93ff0886"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/execution_coverage/book.rs"
+                },
+                "selector": "fn[load_saved]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "93eedf9c5b01642403c3f7b8da72b9d99e3a9a700b840b7d00605edf815f1e34"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/execution_coverage/runner.rs"
+                },
+                "selector": "fn[finish]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "54e423a8611feff26f84ae651493b82c4d0482a14b533c2aa7509d60622d8993"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "Structural obligations in `requirements.test-coverage.index.selection`: (1) the current set is read from SQLite; (2) one coherent database snapshot is used per check; (3) there is no historical-run search or separate report-selection metadata cache; (4) identities, states and provenance can be read without loading measurements. The remaining clauses (only complete, available results contribute; pending, running and unavailable entries are reported; no building or executing; no restoring a superseded attempt) describe observable behavior that other requirements govern.\n\nEach structural clause is implemented in the supplied roots:\n- `src/execution_coverage/store.rs#impl[Store]/fn[read]` opens `DATABASE` with rusqlite in read-only mode, which covers the SQLite obligation. It also rejects an unsupported schema version.\n- `src/execution_coverage/store.rs#impl[Store]/fn[snapshot]` does the whole read inside one `connection.transaction()`. That covers the state row, the invocations, the tests, and the measurements, so a concurrent replacement cannot mix results. A reader that reads state and tests in separate autocommit queries would break the clause, which makes this transaction a real structural choice.\n- The same function queries only the current `tests` rows and the `state.latest` invocation, so it does not search historical runs. It uses no separate selection cache.\n- Its `measurements: bool` parameter selects `NULL` instead of the `measurements` column for metadata-only reads, so metadata is readable without loading measurements.\n\nThe saved check path is `src/execution_coverage/book.rs#fn[load_saved]`. It calls `Store::read` once and `snapshot(true)` once, so each check uses a single snapshot. That caller needs no marker because the roots carry the obligations. I did not review the other clauses against any further roots."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.test-coverage.index.selection"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "3d3344908f710244581427465eeef83bbc4c1d83ab399bd6185518edd64c919b"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.test-coverage.index.selection"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "c0df750d6a0c04809dd1ba1a57a080d14f5a6327c4b7c25e333810505770457a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.test-coverage.storage.current"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "43d4bc056f0e089167ed153d03af58cff498f5d1b7956987dc34214f4a08e44e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.test-coverage.index.freshness"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "e18e2797cf78a847445d3d7f06159ade9e8bcbb0a51d56df3f782d78520a2b95"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.test-coverage.check.measurement"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "36ebd61ee44044efa5fed7fbc9b054d3d1c57c34854a950e007daa3af78be5ad"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/execution_coverage/book.rs"
+                },
+                "selector": "mod[tests]/fn[a_corrupt_optional_metadata_cache_does_not_hide_saved_measurements]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "b42a44ec320e65fb80b975fc59f70ef05d8a07d6a1b732878840bdc71e391067"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/execution_coverage/book.rs"
+                },
+                "selector": "mod[tests]/fn[filtered_runs_union_latest_attempts_and_invalidate_with_saved_source]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "ef7f197de3b8f6d30dda85367daf95d48b7ba47bdd9351c7a7742874294b9619"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/execution_coverage/book.rs"
+                },
+                "selector": "mod[tests]/fn[unreadable_history_cannot_reintroduce_an_older_success]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "506f5437266965649f0a2799010f5c9c3778c4c96b298ac5003c334fb3a021c4"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/execution_coverage/check.rs"
+                },
+                "selector": "mod[tests]/fn[running_and_unreadable_entries_suppress_totals_even_alongside_fresh_measurements]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "bbe5e17ec17f643ce11d4d452c0ec49e9ddd93fc4df4f9130026379b4b307b57"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/execution_coverage/store.rs"
+                },
+                "selector": "mod[tests]/fn[focused_replacement_preserves_unselected_results_and_shared_artifacts]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "87e03d38d9f6783d0fd0e812bb47d412518d663fa4b7da506041434ea4b39881"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/execution_coverage/store.rs"
+                },
+                "selector": "mod[tests]/fn[latest_started_retry_replaces_success_and_cannot_be_overwritten_by_old_conversion]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "d45fddef380b26e7eecace6994b056824b63e403f072a27c12ed5f1b3818489e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/execution_coverage/store.rs"
+                },
+                "selector": "mod[tests]/fn[metadata_queries_skip_measurements_and_snapshots_survive_subsequent_replacement]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "b68f9772129077c7d936ab10dc64551aa72ecd951a3ae6964aeb0e16db1ec144"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/execution_coverage/store.rs"
+                },
+                "selector": "mod[tests]/fn[replacement_between_snapshot_queries_cannot_mix_configurations_or_results]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f3945945a5d3e0af3566a44b77ac096ad6075d995c5dd9ae0ca1d7582873a3ea"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/execution_coverage.rs"
+                },
+                "selector": "fn[book_rendering_preserves_retained_coverage_and_never_launches_tests]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "e7ddd857c65a61ee1350cb4cccedf045aad88f7c16dc7700c6eb5e01a45d7582"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "I judged the tests adequate for `requirements.test-coverage.index.selection`. I did not request implementation source. The reviewed tests cover each obligation, as follows.\n\n- **One coherent snapshot.** `src/execution_coverage/store.rs#mod[tests]/fn[replacement_between_snapshot_queries_cannot_mix_configurations_or_results]` commits a replacement while a reader's snapshot read is in progress. It asserts that the reader sees only the old configuration, run, test identity and measurements (value 7). It then asserts that the next snapshot sees only the new set (value 9). `src/execution_coverage/store.rs#mod[tests]/fn[metadata_queries_skip_measurements_and_snapshots_survive_subsequent_replacement]` checks that an existing snapshot survives a later replacement.\n- **Current set only, no history or metadata cache.**\n  - `src/execution_coverage/store.rs#mod[tests]/fn[latest_started_retry_replaces_success_and_cannot_be_overwritten_by_old_conversion]` and `src/execution_coverage/store.rs#mod[tests]/fn[focused_replacement_preserves_unselected_results_and_shared_artifacts]` show that the snapshot holds one current entry per test, with no accumulated attempts.\n  - `src/execution_coverage/book.rs#mod[tests]/fn[a_corrupt_optional_metadata_cache_does_not_hide_saved_measurements]` corrupts a `selection-cache.json` file. It asserts that the store stays valid and the measurements are still used.\n- **Metadata read without measurements.** The `metadata_queries_skip_measurements…` test corrupts the measurements column. `snapshot(false)` still returns identities and configuration, with `measurements` equal to `None`.\n- **Only complete, available, fresh results contribute.**\n  - `src/execution_coverage/check.rs#mod[tests]/fn[running_and_unreadable_entries_suppress_totals_even_alongside_fresh_measurements]` covers a missing profile and the pending and running states. Each is reported, the check fails, and no totals appear.\n  - `src/execution_coverage/book.rs#mod[tests]/fn[filtered_runs_union_latest_attempts_and_invalidate_with_saved_source]` covers failed and interrupted attempts that lack measurements, and stale results after a source change.\n- **Never restores a superseded attempt.**\n  - `src/execution_coverage/book.rs#mod[tests]/fn[unreadable_history_cannot_reintroduce_an_older_success]` runs four cases: invalid metadata, missing source, unsupported schema and a missing profile. In each, the newest attempt is unreadable and the older success is not restored.\n  - The retry test shows that an old conversion cannot overwrite a newer attempt, and that the replaced attempt's measurements are gone.\n- **No build or test execution.** `tests/execution_coverage.rs#fn[book_rendering_preserves_retained_coverage_and_never_launches_tests]` runs `coverage-check` with a `cargo` shim and an execution sentinel. It asserts that no test ran, that only `cargo metadata` was called, and that the stored files are unchanged.\n\nThe cited requirements `requirements.test-coverage.storage.current`, `requirements.test-coverage.index.freshness` and `requirements.test-coverage.check.measurement` are context only. I found no unmarked or missing scenarios."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -179,19 +530,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "314f11e87841b7c513839fe1dd0296b61a5a243bcce7e42a8247d4f65425e897"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.test-coverage.index.selection"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "deeb19ef63b96c6be67cdda80cf1cfe8a798c4ee5fb99d3058609713f884ed7f"
+          "value": "3d3344908f710244581427465eeef83bbc4c1d83ab399bd6185518edd64c919b"
         }
       ]
     },
@@ -236,6 +575,74 @@
         {
           "scheme": "habeas-input-v1",
           "value": "36ebd61ee44044efa5fed7fbc9b054d3d1c57c34854a950e007daa3af78be5ad"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/store.rs"
+            },
+            "selector": "impl[Store]/fn[read]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "f5f34ac6329d0823d8de65d29f4d893df1afd55a9ea02539df200d3d147b1d57"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/store.rs"
+            },
+            "selector": "impl[Store]/fn[snapshot]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "c6f53ac7c08df41aaf742ddf8c0572b291ed9a00d69227683832809f93ff0886"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/book.rs"
+            },
+            "selector": "fn[load_saved]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "93eedf9c5b01642403c3f7b8da72b9d99e3a9a700b840b7d00605edf815f1e34"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/runner.rs"
+            },
+            "selector": "fn[finish]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "54e423a8611feff26f84ae651493b82c4d0482a14b533c2aa7509d60622d8993"
         }
       ]
     },
@@ -389,74 +796,6 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "e7ddd857c65a61ee1350cb4cccedf045aad88f7c16dc7700c6eb5e01a45d7582"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/execution_coverage/book.rs"
-            },
-            "selector": "mod[tests]/fn[record]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "37254058d11ebe85a96082f54e423935cda770484e3de27fd426697e3294c838"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/execution_coverage/store.rs"
-            },
-            "selector": "mod[fixtures]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "2544ec0d343d96108ab4f3cd3c7e3d49e44569eaa9cba9fda424cdd7673aa5b8"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/execution_coverage/store.rs"
-            },
-            "selector": "mod[fixtures]/fn[save]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "41e2a9c2ef7a3f9944dd3bdb52502d33db627a2cb36e5d81c1bc43e0cdff2600"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/execution_coverage/store.rs"
-            },
-            "selector": "mod[fixtures]/use@a0259f98c77e"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "a0259f98c77eb01454a03e6d981b0a57804f5ba425b6d64e9784e2d85e09cc72"
         }
       ]
     }

@@ -7,6 +7,7 @@ use crate::domain::NodeId;
 use crate::outline::{OutlineContent, OutlineData, Span};
 
 impl<D: Domain> SourceProject<D> {
+    // {impl}`requirements.sdk.graph.search.domain_node`
     // {impl}`requirements.sdk.sources.source_nodes`
     pub(crate) fn intern_source(&self, address: &OutlineData) -> Result<NodeId<D>, SourceError> {
         Ok(self
@@ -15,7 +16,6 @@ impl<D: Domain> SourceProject<D> {
             .intern_source(self.domain.source_node(address)?, address))
     }
 
-    // {impl}`requirements.sdk.sources.source_nodes`
     pub(crate) fn address(&self, node: NodeId<D>) -> Option<OutlineData> {
         let cache = self.domain.cache();
         let known = cache
@@ -27,7 +27,6 @@ impl<D: Domain> SourceProject<D> {
         known.or_else(|| self.domain.source_address(cache.node_data(node)?.as_ref()))
     }
 
-    // {impl}`requirements.sdk.graph.validation-context.node_reference`
     pub(crate) fn resolve_outline(
         &self,
         address: &OutlineData,
@@ -56,6 +55,7 @@ impl<D: Domain> SourceProject<D> {
     }
 
     // {impl}`requirements.sdk.graph.search.occurrence`
+    // {impl}`requirements.sdk.sources.SourceProject`
     pub async fn search_text(
         &self,
         query: &TextQuery,
@@ -74,6 +74,8 @@ impl<D: Domain> SourceProject<D> {
         .await
     }
 
+    // {impl}`requirements.sdk.graph.search.occurrence`
+    // {impl}`requirements.sdk.sources.SourceProject`
     // {impl}`requirements.sdk.graph.search.StructuralRule`
     pub async fn search_structure(
         &self,
@@ -87,7 +89,6 @@ impl<D: Domain> SourceProject<D> {
         .await
     }
 
-    // {impl}`requirements.sdk.graph.search.enclosing_item`
     // {impl}`requirements.sdk.graph.search.domain_node`
     async fn find_hits(
         &self,

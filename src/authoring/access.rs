@@ -4,9 +4,6 @@ use std::path::{Path, PathBuf};
 mod policy;
 pub(crate) use policy::*;
 
-// {impl}`requirements.configuration.evidence_paths`
-// {impl}`requirements.configuration.workspace_location`
-// {impl}`requirements.configuration.loading`
 pub(crate) fn load_policy(root: &Path) -> io::Result<PathPolicy> {
     let Some(config) = crate::config::load_workspace_evidence(root)? else {
         return Ok(PathPolicy::default());
@@ -27,12 +24,10 @@ pub(crate) fn load_policy(root: &Path) -> io::Result<PathPolicy> {
     ))
 }
 
-// {impl}`requirements.authoring.deterministic_validation`
 pub(crate) fn discovery_files(root: &Path, errors: &mut Vec<String>) -> Vec<PathBuf> {
     policy::discover_files(root, load_policy(root).unwrap_or_default(), errors)
 }
 
-// {impl}`requirements.ci.input_containment`
 pub(crate) fn resolve_evidence_file(root: &Path, file: &str) -> io::Result<PathBuf> {
     let root = std::fs::canonicalize(root)?;
     policy::resolve_evidence_file(&root, file, || load_policy(&root))

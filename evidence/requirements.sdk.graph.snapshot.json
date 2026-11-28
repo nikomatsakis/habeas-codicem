@@ -1,8 +1,8 @@
 {
   "requirement": "For node reads, the SDK constructs a `Snapshot` from\nthe contents returned by `Domain::node_content` and their\n`NodeContents::fingerprint` under\n{cite}`requirements.sdk.graph.node_content.fingerprint`, without another read.\n\n```rust,ignore\n#[non_exhaustive]\npub struct Snapshot<T> {\n    pub content: T,\n    pub fingerprint: Fingerprint,\n}\n\nimpl<T> Snapshot<T> {\n    pub fn new(content: T, fingerprint: Fingerprint) -> Self;\n}\n```\n\nTrait implementations\n\n```rust,ignore\nimpl<T: Clone> Clone for Snapshot<T>;\nimpl<T: Debug> Debug for Snapshot<T>;\n```",
-  "determination": true,
-  "rationale": "**Obligations**\n1. For node reads, the SDK builds a `Snapshot` from the contents that `Domain::node_content` returns. Its fingerprint is `NodeContents::fingerprint` of those same contents, and it makes no further read.\n2. `Snapshot<T>` has public `content` and `fingerprint` fields and a `Snapshot::new(content, fingerprint)` constructor. It is `#[non_exhaustive]`.\n3. `Snapshot<T>` is `Clone` and `Debug` when `T` is.\n\n**Coverage**\n- **Fingerprint comes from the contents, with no extra read.**\n  - `crates/trust-but-verify/src/graph/validation_tests.rs#fn[direct_reads_return_complete_unicode_contents_and_snapshots]` calls `read_snapshot` on empty and large multi-byte contents. It asserts `snapshot.content.format()` and `snapshot.fingerprint == fp(original)`. It asserts that the dependency recorded for the read has that same fingerprint. It asserts the stored reads are `[1, 1]`, one per read.\n  - `crates/trust-but-verify/src/graph/validation_tests.rs#fn[snapshots_record_exact_reads_and_retain_distinct_versions]` asserts `read_snapshot(...).fingerprint == fp(\"before\")`. It asserts the reads are `[1,1,1,2]`, so `read_snapshot` adds exactly one read.\n  - `crates/trust-but-verify/tests/contracts.rs#fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]` asserts `snapshot.content.fingerprint() == snapshot.fingerprint` and `fingerprint.value == \"before\"`. It asserts the reads are `[1]`.\n- **The snapshot is not re-read.** The same tests change the underlying content after the read. They then check that the snapshot's content and fingerprint still show the original, and that the earlier dependency keeps `fp(\"before\")`. A re-read or later fingerprinting would show \"after\" or \"replacement\" and fail these assertions.\n- **Fingerprint under `requirements.sdk.graph.node_content.fingerprint`.**\n  - `src/sdk.rs#mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]` checks the fingerprints of reads on the real Habeas domain. The scheme and digest are exact, and they differ once the underlying source changes.\n  - The agent tests `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` and `explicit_insertions_preserve_order_repetition_and_selection_snapshots` check that the fingerprint reaches the recorded `Dependency::Node`. The Memory-graph assertion `fingerprint.value == \"x\".repeat(18_000)` is one example. The failure cases are also covered: a failed delivery records no dependency, and the prepared-versus-delivered distinction holds.\n- **Type shape.**\n  - `crates/trust-but-verify/tests/contracts.rs#fn[callers_can_pair_content_with_its_fingerprint]` is a test from outside the crate. It calls `Snapshot::new` and asserts both public fields.\n  - Because that test uses `new` rather than a struct literal, it is consistent with `#[non_exhaustive]`.\n\n**Exempt or not separately tested**\n- `Clone`, `Debug` and `#[non_exhaustive]` are declarative derives and attributes on `Snapshot` in `crates/trust-but-verify/src/graph.rs`. They contain no conditional or transformation of their own. The `public_api.rs` export check also covers the item's presence.\n- This is not a case of an obligation that a value \"stays unchanged\".\n\n**Result**\nNo requirement-violating behavior in the stated obligations would pass the reviewed tests. The tests carry `{test}` markers for the subject.",
-  "references": "6783b2a4d0b4e2c98352e3255d1bb07342bc13f8749e2cee76ad5948eb461b69",
+  "determination": false,
+  "rationale": "Add `{impl}` to `crates/trust-but-verify/src/graph.rs#impl[Snapshot<T>]/fn[new]` — The text prescribes the signature `pub fn new(content: T, fingerprint: Fingerprint) -> Self` on `impl<T> Snapshot<T>`. An alternative that keeps `Snapshot`'s fields and derives but drops `new`, or makes it `pub(crate)`, would break this clause. Code that builds `Snapshot` through the struct literal inside the SDK would behave the same, so the constructor is a distinct structural obligation. The marked root `struct[Snapshot]` covers the fields, `#[non_exhaustive]` and the `Clone`/`Debug` derives. It does not call or reach `new`, so the constructor is a separate unreached root. A reviewer can verify the signature, generics and body from `impl[Snapshot<T>]/fn[new]`, which has no marker. No other root covers it.\n\nAdd `{impl}` to `crates/trust-but-verify/src/procedure.rs#impl[ValidationContext<'d, D>]#2/fn[prepare_read]` — The text says: \"For node reads, the SDK constructs a `Snapshot` from the contents returned by `Domain::node_content` and their `NodeContents::fingerprint` ... without another read.\" This prescribes delegation to named interfaces. An alternative that still returns equivalent results would compute the fingerprint by hashing the content itself or re-reading the node, and that would violate the clause. `prepare_read` is where this happens. It calls `self.graph.node_content(node)`, takes `content.fingerprint()`, and builds `Snapshot { content, fingerprint }` with no second read. `read_snapshot` only calls `prepare_read` and records the read. It is marked for a different requirement, and nothing marked for `requirements.sdk.graph.snapshot` reaches `prepare_read`. It is therefore an unmarked root for that requirement. A reviewer can verify the construction and the lack of a second read from this item.",
+  "references": "6e73148fe13cf631dbf2046426f194a3d8fc63c6291f1e5e3777d2c0c8ed2648",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.snapshot",
@@ -69,9 +69,44 @@
       ]
     },
     {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "struct[Snapshot]",
+      "hash": "e9d6631a26d4e1c45d47715b2e5ec32b86afcc492f9d438ef6ed9bcced605789"
+    },
+    {
+      "definition": "requirements.sdk.graph.observation_fingerprint",
+      "text": [
+        ":::{definition} observation_fingerprint",
+        ":phrase: fingerprint",
+        "",
+        "A *fingerprint* is a digest together with the scheme identifying how it was",
+        "computed, represented by",
+        "[`Fingerprint`](../../rustdocs/trust_but_verify/graph/struct.Fingerprint.html).",
+        "It describes an observation under those rules; it does not identify the node or",
+        "say whether a criterion's answer is favorable.",
+        "Both the scheme and digest participate in comparisons.",
+        ":::"
+      ]
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "impl[Snapshot<T>]",
+      "hash": "f005de92aa3d66c7efa5b63abe5ae8bfe58d2bdcd115dd820d8b62d0d49174a8"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#2/fn[prepare_read]",
+      "hash": "fbcf18f9d49e19cd802b06c9e7f7c44e95e1a92cbfe433f6f876632ce008b54a"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#2/fn[read_snapshot]",
+      "hash": "5e3efe54a48c8f95e29eb184caacad03019678d83ccf4910bcd1f67c52801b00"
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[agent_edge_tools_record_selections_without_validating_targets]",
-      "hash": "b6a97104378322ec71f0706145d948cd08299ea50133f0316b1795f099e9aa2c"
+      "hash": "6a6bd3af3286f4b548affea9dc304e83307c85c71496bd76aaa4e955e8fb5577"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -111,45 +146,399 @@
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[public_exports_match_the_appendix]",
-      "hash": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
-    },
-    {
-      "definition": "requirements.sdk.graph.observation_fingerprint",
-      "text": [
-        ":::{definition} observation_fingerprint",
-        ":phrase: fingerprint",
-        "",
-        "A *fingerprint* is a digest together with the scheme identifying how it was",
-        "computed, represented by",
-        "[`Fingerprint`](../../rustdocs/trust_but_verify/graph/struct.Fingerprint.html).",
-        "It describes an observation under those rules; it does not identify the node or",
-        "say whether a criterion's answer is favorable.",
-        "Both the scheme and digest participate in comparisons.",
-        ":::"
-      ]
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "struct[Snapshot]",
-      "hash": "e9d6631a26d4e1c45d47715b2e5ec32b86afcc492f9d438ef6ed9bcced605789"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "impl[Snapshot<T>]",
-      "hash": "f005de92aa3d66c7efa5b63abe5ae8bfe58d2bdcd115dd820d8b62d0d49174a8"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "impl[Snapshot<T>]/fn[new]",
-      "hash": "d857562647702d31867389337df4883697bb7c4c3c367651566c8945d6b718a1"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[ValidationContext<'d,%20D>]#2/fn[prepare_read]",
-      "hash": "fbcf18f9d49e19cd802b06c9e7f7c44e95e1a92cbfe433f6f876632ce008b54a"
+      "hash": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.snapshot"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "6e73148fe13cf631dbf2046426f194a3d8fc63c6291f1e5e3777d2c0c8ed2648"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.snapshot"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "3901e3eb1569772058e1f0a7d9550a4faaf95a52d629f712ae026b8ac2cb9318"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.node_content.fingerprint"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "c3f633b5cc403745223c8db45a81956792958ab316c7b405f324d5d875dceec2"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph.rs"
+                },
+                "selector": "struct[Snapshot]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "e9d6631a26d4e1c45d47715b2e5ec32b86afcc492f9d438ef6ed9bcced605789"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Definition": "requirements.sdk.graph.observation_fingerprint"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "9fcff1854eb767707b8efdb4a3a1edb436b8e6992cf8da3f4ccfc486672a1cdd"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph.rs"
+                },
+                "selector": "impl[Snapshot<T>]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "b2c440ccb85b681b462a9518b81a17e2bb272dabadcc47894def6b047362200b"
+            }
+          ]
+        },
+        {
+          "OutgoingEdges": [
+            {
+              "Requirement": "requirements.sdk.graph.snapshot"
+            },
+            "Implements",
+            {
+              "scheme": "node-path-set-sha256-v1",
+              "value": "9c735c2e6344ae462f0af985ee15fc51ad42d0382a19408cdb7a1d5253d5678f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[ValidationContext<'d,%20D>]#2/fn[prepare_read]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "fbcf18f9d49e19cd802b06c9e7f7c44e95e1a92cbfe433f6f876632ce008b54a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[ValidationContext<'d,%20D>]#2/fn[read_snapshot]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "5e3efe54a48c8f95e29eb184caacad03019678d83ccf4910bcd1f67c52801b00"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "failed",
+        "corrections": [
+          {
+            "kind": "add_reference",
+            "role": "impl",
+            "file": "crates/trust-but-verify/src/graph.rs",
+            "selector": "impl[Snapshot<T>]/fn[new]",
+            "rationale": "The text prescribes the signature `pub fn new(content: T, fingerprint: Fingerprint) -> Self` on `impl<T> Snapshot<T>`. An alternative that keeps `Snapshot`'s fields and derives but drops `new`, or makes it `pub(crate)`, would break this clause. Code that builds `Snapshot` through the struct literal inside the SDK would behave the same, so the constructor is a distinct structural obligation. The marked root `struct[Snapshot]` covers the fields, `#[non_exhaustive]` and the `Clone`/`Debug` derives. It does not call or reach `new`, so the constructor is a separate unreached root. A reviewer can verify the signature, generics and body from `impl[Snapshot<T>]/fn[new]`, which has no marker. No other root covers it."
+          },
+          {
+            "kind": "add_reference",
+            "role": "impl",
+            "file": "crates/trust-but-verify/src/procedure.rs",
+            "selector": "impl[ValidationContext<'d, D>]#2/fn[prepare_read]",
+            "rationale": "The text says: \"For node reads, the SDK constructs a `Snapshot` from the contents returned by `Domain::node_content` and their `NodeContents::fingerprint` ... without another read.\" This prescribes delegation to named interfaces. An alternative that still returns equivalent results would compute the fingerprint by hashing the content itself or re-reading the node, and that would violate the clause. `prepare_read` is where this happens. It calls `self.graph.node_content(node)`, takes `content.fingerprint()`, and builds `Snapshot { content, fingerprint }` with no second read. `read_snapshot` only calls `prepare_read` and records the read. It is marked for a different requirement, and nothing marked for `requirements.sdk.graph.snapshot` reaches `prepare_read`. It is therefore an unmarked root for that requirement. A reviewer can verify the construction and the lack of a second read from this item."
+          }
+        ]
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.snapshot"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "6e73148fe13cf631dbf2046426f194a3d8fc63c6291f1e5e3777d2c0c8ed2648"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.snapshot"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "3901e3eb1569772058e1f0a7d9550a4faaf95a52d629f712ae026b8ac2cb9318"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.node_content.fingerprint"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "c3f633b5cc403745223c8db45a81956792958ab316c7b405f324d5d875dceec2"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[agent_edge_tools_record_selections_without_validating_targets]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "b1c00c1e246a9d3cad5d832802238ee07b4387536a473825251974c9a82c5923"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "c7885e4745b0ff03722c7fce69141d3f4f47d1b948da6955f161cac7606bae4d"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[snapshots_record_exact_reads_and_retain_distinct_versions]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f8ea3ec9bfea77fff1dd9ea1ecbcc8cb80aa310da9dad91e241a49ac2fd1125d"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "d6e99ab39b78a5458f7c497ed3f69a053fff9f8bb31ded9d41e7f9e70fa0ab90"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[direct_reads_return_complete_unicode_contents_and_snapshots]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "70a10d4d72283c94cabf0fac6591f0f2a097104d8a4321c8d87c3196b534da0d"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[callers_can_pair_content_with_its_fingerprint]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "936a8aed992ffd7a4ccac5f7855515d3a7b08eeda3994582bc4dd5c6ae98a92b"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "39b621f61ac860578f1ce6544cd645bb9cabd138be2466122e877ef621164150"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/sdk.rs"
+                },
+                "selector": "mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "31f193d35a164fef1a88a2b59a8c2b7be575148cb46f4a4c12acf57f20bdfe48"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/public_api.rs"
+                },
+                "selector": "fn[public_exports_match_the_appendix]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Definition": "requirements.sdk.graph.observation_fingerprint"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "9fcff1854eb767707b8efdb4a3a1edb436b8e6992cf8da3f4ccfc486672a1cdd"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph.rs"
+                },
+                "selector": "struct[Snapshot]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "e9d6631a26d4e1c45d47715b2e5ec32b86afcc492f9d438ef6ed9bcced605789"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "**Obligations.** (1) A node read builds a `Snapshot` from the contents `Domain::node_content` returned, plus those contents' `NodeContents::fingerprint`. (2) It does this without another read. (3) `Snapshot` has public `content` and `fingerprint` fields, `Snapshot::new(content, fingerprint)`, and `Clone` and `Debug` impls bounded on `T`. The `#[non_exhaustive]` attribute and the derived trait impls are structural. The `{cite}` of `requirements.sdk.graph.node_content.fingerprint` is context, so its own behavior is not reassessed here.\n\n**Coverage.**\n- **Content and fingerprint pairing on reads.**\n  - `crates/trust-but-verify/src/graph/validation_tests.rs#fn[snapshots_record_exact_reads_and_retain_distinct_versions]` calls `read_snapshot` and asserts `.fingerprint == fp(\"before\")`. It then changes the underlying content and asserts that the recorded dependencies keep the \"before\" and \"after\" versions distinct.\n  - `#fn[direct_reads_return_complete_unicode_contents_and_snapshots]` covers an empty string and a large multi-byte Unicode string. It asserts `snapshot.content.format() == original` and `snapshot.fingerprint == fp(original)`. After the source is replaced, the snapshot still holds the original content.\n- **Fingerprint comes from the same retained contents, with no extra read.**\n  - `crates/trust-but-verify/tests/contracts.rs#fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]` reads a snapshot and then changes the backing content. It asserts `snapshot.content.fingerprint() == snapshot.fingerprint`, that the content still formats as \"before\", and that the backing read log is exactly `[1]`. A re-read would break these assertions.\n  - `src/sdk.rs#mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]` checks that retained contents keep their fingerprint after the source changes.\n- **Constructor and public fields.**\n  - `contracts.rs#fn[callers_can_pair_content_with_its_fingerprint]` is an external-crate test. It calls `Snapshot::new` and asserts both public fields. Using the constructor rather than a struct literal is consistent with `#[non_exhaustive]`.\n- **Use in agent paths.**\n  - `agent/tests.rs#fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]` and `#fn[agent_edge_tools_record_selections_without_validating_targets]` check the recorded node dependencies and fingerprints. Examples are `Dependency::Node(.., fingerprint.value == \"x\".repeat(18_000))`.\n- **Structure.**\n  - `public_api.rs#fn[public_exports_match_the_appendix]` checks the exported inventory.\n  - `src/graph.rs#struct[Snapshot]` uses `#[derive(Clone, Debug)]`. Those impls have no conditional logic and no transformation of their own, so they need no separate behavioral test.\n\nI found no requirement-violating behavior that these tests would accept. The tests cover the pairing of content with its fingerprint, the single read, and the constructor and fields. They have no ambiguity or marking gaps for this requirement."
+      }
+    }
+  },
+  "corrections": [
+    {
+      "kind": "add_reference",
+      "role": "impl",
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "selector": "impl[Snapshot<T>]/fn[new]",
+      "rationale": "The text prescribes the signature `pub fn new(content: T, fingerprint: Fingerprint) -> Self` on `impl<T> Snapshot<T>`. An alternative that keeps `Snapshot`'s fields and derives but drops `new`, or makes it `pub(crate)`, would break this clause. Code that builds `Snapshot` through the struct literal inside the SDK would behave the same, so the constructor is a distinct structural obligation. The marked root `struct[Snapshot]` covers the fields, `#[non_exhaustive]` and the `Clone`/`Debug` derives. It does not call or reach `new`, so the constructor is a separate unreached root. A reviewer can verify the signature, generics and body from `impl[Snapshot<T>]/fn[new]`, which has no marker. No other root covers it."
+    },
+    {
+      "kind": "add_reference",
+      "role": "impl",
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "selector": "impl[ValidationContext<'d, D>]#2/fn[prepare_read]",
+      "rationale": "The text says: \"For node reads, the SDK constructs a `Snapshot` from the contents returned by `Domain::node_content` and their `NodeContents::fingerprint` ... without another read.\" This prescribes delegation to named interfaces. An alternative that still returns equivalent results would compute the fingerprint by hashing the content itself or re-reading the node, and that would violate the clause. `prepare_read` is where this happens. It calls `self.graph.node_content(node)`, takes `content.fingerprint()`, and builds `Snapshot { content, fingerprint }` with no second read. `read_snapshot` only calls `prepare_read` and records the read. It is marked for a different requirement, and nothing marked for `requirements.sdk.graph.snapshot` reaches `prepare_read`. It is therefore an unmarked root for that requirement. A reviewer can verify the construction and the lack of a second read from this item."
+    }
+  ],
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -159,19 +548,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "6783b2a4d0b4e2c98352e3255d1bb07342bc13f8749e2cee76ad5948eb461b69"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.snapshot"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "2d3a2c6a0d7f599e54bab4f62b4f614c6de086e663e62de2f45b642adb1ef5cd"
+          "value": "6e73148fe13cf631dbf2046426f194a3d8fc63c6291f1e5e3777d2c0c8ed2648"
         }
       ]
     },
@@ -203,6 +580,97 @@
           "Source": {
             "resource": {
               "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "struct[Snapshot]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "e9d6631a26d4e1c45d47715b2e5ec32b86afcc492f9d438ef6ed9bcced605789"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Definition": "requirements.sdk.graph.observation_fingerprint"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "9fcff1854eb767707b8efdb4a3a1edb436b8e6992cf8da3f4ccfc486672a1cdd"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "impl[Snapshot<T>]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b2c440ccb85b681b462a9518b81a17e2bb272dabadcc47894def6b047362200b"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.sdk.graph.snapshot"
+        },
+        "Implements",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "9c735c2e6344ae462f0af985ee15fc51ad42d0382a19408cdb7a1d5253d5678f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[prepare_read]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "fbcf18f9d49e19cd802b06c9e7f7c44e95e1a92cbfe433f6f876632ce008b54a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[read_snapshot]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "5e3efe54a48c8f95e29eb184caacad03019678d83ccf4910bcd1f67c52801b00"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
             "selector": "fn[agent_edge_tools_record_selections_without_validating_targets]"
@@ -210,7 +678,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "1923ba1a1e40335b0976450eaedbabe266a0cbc1c568947f37797528e5a0c0d0"
+          "value": "b1c00c1e246a9d3cad5d832802238ee07b4387536a473825251974c9a82c5923"
         }
       ]
     },
@@ -346,86 +814,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Definition": "requirements.sdk.graph.observation_fingerprint"
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "9fcff1854eb767707b8efdb4a3a1edb436b8e6992cf8da3f4ccfc486672a1cdd"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
-            },
-            "selector": "struct[Snapshot]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "e9d6631a26d4e1c45d47715b2e5ec32b86afcc492f9d438ef6ed9bcced605789"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
-            },
-            "selector": "impl[Snapshot<T>]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "b2c440ccb85b681b462a9518b81a17e2bb272dabadcc47894def6b047362200b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
-            },
-            "selector": "impl[Snapshot<T>]/fn[new]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "d857562647702d31867389337df4883697bb7c4c3c367651566c8945d6b718a1"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[prepare_read]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "fbcf18f9d49e19cd802b06c9e7f7c44e95e1a92cbfe433f6f876632ce008b54a"
+          "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
         }
       ]
     }

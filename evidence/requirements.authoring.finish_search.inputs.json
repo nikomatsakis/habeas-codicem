@@ -1,8 +1,8 @@
 {
   "requirement": "Habeas MUST store the source dependencies selected by `finish_search` under {cite}`requirements.sdk.graph.search.finish_search.inputs` as outline inputs under {cite}`requirements.ci.outline_inputs`. Each input identifies the file, selector, and structural hash from the snapshot that supplied the selected excerpt.",
   "determination": true,
-  "rationale": "**Obligation.** `requirements.authoring.finish_search.inputs` says Habeas MUST store the dependencies that `finish_search` selects as outline inputs. Each input must identify the file, the selector and the structural hash from the snapshot that supplied the excerpt. I did not read implementation source. The judgment rests on the supplied tests.\n\n**End-to-end test.** `tests/authoring_cli.rs#fn[relying_on_a_helper_excerpt_makes_edits_to_that_helper_stale]` is marked `{test}` for the subject. It runs the real `author` flow with a scripted model:\n- The model calls `search_text` on `src/lib.rs`. It then calls `finish_search` with the first match, whose excerpt is the `assert_refusal` helper.\n- The file is rewritten between the search and the finish, so the snapshot that supplied the excerpt differs from the current file.\n- The test builds the expected input with `habeas::outline_input(project, \"src/lib.rs\", \"fn[assert_refusal]\")` from the original file. It asserts that the saved evidence `inputs` contains exactly that input. The input carries the file, the item selector and the hash, so this checks that the pre-edit snapshot hash is stored rather than the current one.\n- It also asserts that the explicitly read `fn[read_me]` input is present and that the unselected `fn[unselected]` is absent. Only selected excerpts therefore become inputs.\n- Afterwards, `validate_repository` reports `fn[assert_refusal]` as changed. This shows the stored input is a real outline input that is checked against the file's current hash.\n\n**Selection-level test.** `search_obligations_follow_delivery_and_keep_the_original_snapshot` in `crates/trust-but-verify/src/agent/project_sources.rs` is also marked `{test}` for the subject. It changes the file after the search and then calls `finish_search`. It asserts that `dependencies` equals `Dependency::Node(node id, original fingerprint)` for the selected tag, and that the same dependency comes back when the call is repeated. It asserts that a later page's selection yields that later hit's node and fingerprint. It asserts that `used: []` adds no dependencies and that an invalid call is rejected. These checks show that the harness records the node identity and the original-snapshot fingerprint that become the stored inputs.\n\n**Delegated obligations.** Re-selection, an empty `used` list, invalid calls and extra owner nodes belong to the cited `requirements.sdk.graph.search.finish_search.inputs`. Outline-input resolution and hash comparison belong to `requirements.ci.outline_inputs`. Neither needs a separate test here.\n\nI found no requirement-violating behavior that these tests would accept.",
-  "references": "75560d5d733426a0a70331ba8dd19b93dc46bb8e3f366b8bc281ad8893b9f00a",
+  "rationale": "structural: The only structural obligation is the serialized form of the stored dependency. The clause is: \"store the source dependencies selected by `finish_search` ... as outline inputs ... Each input identifies the file, selector, and structural hash from the snapshot that supplied the selected excerpt.\" An implementation that recorded a bare path or a freshly re-read workspace hash would give the same results on an unchanged tree, but it would not keep the file, selector and snapshot hash that this clause requires. So this clause is structural, and the root implements it.\n\n`src/authoring/sdk.rs#fn[run]` projects each observed `Dependency::Node` for a `HabeasNode::Source` into an outline input. It reopens the pinned snapshot through `OutlineContent::from_path(...).select(item)`. It then checks that `contents.fingerprint()` matches the observed fingerprint, and it fails if the snapshot is unavailable. It builds `json!({\"file\":file,\"item\":item,\"hash\":contents.structural_hash()})` and passes that to `sources.record_inputs`. `record_inputs` in `src/authoring/inputs.rs` is reached from `run`, so it needs no marker of its own. It de-duplicates and stores the input.\n\nThe other clauses cover which tags are selected, re-selection, empty `used` lists and invalid calls. They also cover how `requirements.ci.outline_inputs` validates hashes and line ranges. These describe observable behavior or are cited, delegated requirements that supply context. They do not create further structural obligations for this root, so no other root needs a reference.\n\nbehavioral: **Obligation.** `requirements.authoring.finish_search.inputs` has one behavioral obligation. Habeas must store the dependencies that `finish_search` selects as outline inputs. Each input must carry the file, selector and structural hash from the snapshot that supplied the excerpt. The tag-selection rules belong to the cited `requirements.sdk.graph.search.finish_search.inputs`. Input validation belongs to `requirements.ci.outline_inputs`. I did not reassess either one.\n\n**Evidence reviewed.** I reviewed two tests. I did not request any implementation source.\n\n1. `tests/authoring_cli.rs#fn[relying_on_a_helper_excerpt_makes_edits_to_that_helper_stale]` is the end-to-end test. It runs the real `author` flow against a mock model.\n   - **Setup.** The model runs `search_text` for `assert_eq!` with `window_bytes` 0. It also runs an explicit `read_node`. It then calls `finish_search` using the first tag only.\n   - **Edit timing.** The file is edited while the model is between turns. The edit happens after the search was delivered and before or around `finish_search`.\n   - **Expected inputs.** The expected inputs are built with `habeas::outline_input(project, \"src/lib.rs\", selector)` on the original source. They cover `fn[assert_refusal]` (selected) and `fn[read_me]` (read).\n   - **Assertions.** The test asserts that the saved `evidence.inputs` contain the selected helper input. That input carries the file, the selector and the hash from the pre-edit snapshot. It asserts that `fn[unselected]` is absent, so only selected excerpts are stored. It then validates the repository. It asserts an error mentioning `fn[assert_refusal]` and \"changed\", so the stored hash really is the original one and later edits are detected.\n\n2. `crates/trust-but-verify/src/agent/project_sources.rs#mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]` checks the harness side. It asserts the `Dependency::Node(id, fingerprint)` values that `finish_search` returns.\n   - The fingerprint is from the original snapshot even though the file is changed after the search.\n   - Repeated selection keeps the original dependency.\n   - An empty `used` list adds no dependency.\n   - Invalid calls are rejected.\n\n**Result.** Together these tests cover the stored outline input's identity (file, selector, hash). They cover snapshot fidelity. They cover the conversion from selected search dependencies into saved evidence inputs. The remaining SDK-level obligations, such as other-node fingerprints, are covered by the cited requirement's own tests. I found no requirement-violating behavior that the reviewed tests would accept, and both tests are marked.",
+  "references": "338c896f92cd564c45a4a07c8b57a12cbbf852693b70df6efec265b3fce1941e",
   "inputs": [
     {
       "requirements": "requirements.authoring.finish_search.inputs",
@@ -52,6 +52,16 @@
       ]
     },
     {
+      "file": "src/authoring/sdk.rs",
+      "item": "fn[run]",
+      "hash": "3dc06c6dba13aac42ec7add468b17ea903f8d0ef1d00660174374edb509cd75d"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[record_inputs]",
+      "hash": "b7e67c476cd4eca057eb377efbb99b23ae0b0c84a884d0ab6e69741f231369de"
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]",
       "hash": "d50fc16c3dbbf946e0b67d84304739d14998f92261ecab2f9a492b0c4fd9dcbe"
@@ -81,7 +91,194 @@
       "hash": "c8cf41ce711ed83ad541a87ca0bc48a77a8733be84d5db10d94346b1b6aa74b3"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.authoring.finish_search.inputs"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "338c896f92cd564c45a4a07c8b57a12cbbf852693b70df6efec265b3fce1941e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.authoring.finish_search.inputs"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "d914de3275c3d56bb9750eebf9e9e1717c9f4fb36cdb2aa8e48fc89ef95dba82"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.search.finish_search.inputs"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "30c8c5d3ddbed7f971674e7dc08e23c57eee86cc5b934d854ce2f5b4aff8a347"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.ci.outline_inputs"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "ad97757ed22ae433b773dac34f9de4b86890d65137d3d5949c4b143df251bce5"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/authoring/sdk.rs"
+                },
+                "selector": "fn[run]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "3dc06c6dba13aac42ec7add468b17ea903f8d0ef1d00660174374edb509cd75d"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/authoring/inputs.rs"
+                },
+                "selector": "impl[AssessmentSources]/fn[record_inputs]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "b7e67c476cd4eca057eb377efbb99b23ae0b0c84a884d0ab6e69741f231369de"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The only structural obligation is the serialized form of the stored dependency. The clause is: \"store the source dependencies selected by `finish_search` ... as outline inputs ... Each input identifies the file, selector, and structural hash from the snapshot that supplied the selected excerpt.\" An implementation that recorded a bare path or a freshly re-read workspace hash would give the same results on an unchanged tree, but it would not keep the file, selector and snapshot hash that this clause requires. So this clause is structural, and the root implements it.\n\n`src/authoring/sdk.rs#fn[run]` projects each observed `Dependency::Node` for a `HabeasNode::Source` into an outline input. It reopens the pinned snapshot through `OutlineContent::from_path(...).select(item)`. It then checks that `contents.fingerprint()` matches the observed fingerprint, and it fails if the snapshot is unavailable. It builds `json!({\"file\":file,\"item\":item,\"hash\":contents.structural_hash()})` and passes that to `sources.record_inputs`. `record_inputs` in `src/authoring/inputs.rs` is reached from `run`, so it needs no marker of its own. It de-duplicates and stores the input.\n\nThe other clauses cover which tags are selected, re-selection, empty `used` lists and invalid calls. They also cover how `requirements.ci.outline_inputs` validates hashes and line ranges. These describe observable behavior or are cited, delegated requirements that supply context. They do not create further structural obligations for this root, so no other root needs a reference."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.authoring.finish_search.inputs"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "338c896f92cd564c45a4a07c8b57a12cbbf852693b70df6efec265b3fce1941e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.authoring.finish_search.inputs"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "d914de3275c3d56bb9750eebf9e9e1717c9f4fb36cdb2aa8e48fc89ef95dba82"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.search.finish_search.inputs"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "30c8c5d3ddbed7f971674e7dc08e23c57eee86cc5b934d854ce2f5b4aff8a347"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.ci.outline_inputs"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "ad97757ed22ae433b773dac34f9de4b86890d65137d3d5949c4b143df251bce5"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+                },
+                "selector": "mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "d50fc16c3dbbf946e0b67d84304739d14998f92261ecab2f9a492b0c4fd9dcbe"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.authoring.search_accounting.helper_freshness"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "e9bdf720826f7887a6a1f1a92e413e383e3858d2bfa38acfe86adfe9afee96eb"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/authoring_cli.rs"
+                },
+                "selector": "fn[relying_on_a_helper_excerpt_makes_edits_to_that_helper_stale]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "c8cf41ce711ed83ad541a87ca0bc48a77a8733be84d5db10d94346b1b6aa74b3"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "**Obligation.** `requirements.authoring.finish_search.inputs` has one behavioral obligation. Habeas must store the dependencies that `finish_search` selects as outline inputs. Each input must carry the file, selector and structural hash from the snapshot that supplied the excerpt. The tag-selection rules belong to the cited `requirements.sdk.graph.search.finish_search.inputs`. Input validation belongs to `requirements.ci.outline_inputs`. I did not reassess either one.\n\n**Evidence reviewed.** I reviewed two tests. I did not request any implementation source.\n\n1. `tests/authoring_cli.rs#fn[relying_on_a_helper_excerpt_makes_edits_to_that_helper_stale]` is the end-to-end test. It runs the real `author` flow against a mock model.\n   - **Setup.** The model runs `search_text` for `assert_eq!` with `window_bytes` 0. It also runs an explicit `read_node`. It then calls `finish_search` using the first tag only.\n   - **Edit timing.** The file is edited while the model is between turns. The edit happens after the search was delivered and before or around `finish_search`.\n   - **Expected inputs.** The expected inputs are built with `habeas::outline_input(project, \"src/lib.rs\", selector)` on the original source. They cover `fn[assert_refusal]` (selected) and `fn[read_me]` (read).\n   - **Assertions.** The test asserts that the saved `evidence.inputs` contain the selected helper input. That input carries the file, the selector and the hash from the pre-edit snapshot. It asserts that `fn[unselected]` is absent, so only selected excerpts are stored. It then validates the repository. It asserts an error mentioning `fn[assert_refusal]` and \"changed\", so the stored hash really is the original one and later edits are detected.\n\n2. `crates/trust-but-verify/src/agent/project_sources.rs#mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]` checks the harness side. It asserts the `Dependency::Node(id, fingerprint)` values that `finish_search` returns.\n   - The fingerprint is from the original snapshot even though the file is changed after the search.\n   - Repeated selection keeps the original dependency.\n   - An empty `used` list adds no dependency.\n   - Invalid calls are rejected.\n\n**Result.** Together these tests cover the stored outline input's identity (file, selector, hash). They cover snapshot fidelity. They cover the conversion from selected search dependencies into saved evidence inputs. The remaining SDK-level obligations, such as other-node fingerprints, are covered by the cited requirement's own tests. I found no requirement-violating behavior that the reviewed tests would accept, and both tests are marked."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -91,19 +288,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "75560d5d733426a0a70331ba8dd19b93dc46bb8e3f366b8bc281ad8893b9f00a"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.authoring.finish_search.inputs"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "dabef51f0a7cd9d2ff4ba8fae972d20b96076311f029429560db14a8d279b449"
+          "value": "338c896f92cd564c45a4a07c8b57a12cbbf852693b70df6efec265b3fce1941e"
         }
       ]
     },
@@ -137,6 +322,40 @@
         {
           "scheme": "habeas-input-v1",
           "value": "ad97757ed22ae433b773dac34f9de4b86890d65137d3d5949c4b143df251bce5"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/sdk.rs"
+            },
+            "selector": "fn[run]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "3dc06c6dba13aac42ec7add468b17ea903f8d0ef1d00660174374edb509cd75d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/inputs.rs"
+            },
+            "selector": "impl[AssessmentSources]/fn[record_inputs]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b7e67c476cd4eca057eb377efbb99b23ae0b0c84a884d0ab6e69741f231369de"
         }
       ]
     },

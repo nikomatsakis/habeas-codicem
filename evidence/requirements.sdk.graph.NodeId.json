@@ -1,8 +1,8 @@
 {
   "requirement": "`trust_but_verify::domain::NodeId<D>` is an opaque, `Copy` integer handle for a node interned in a `ValidationCache<D>`. Its meaning is scoped to that cache and its clones. The domain type distinguishes handles belonging to different domain types.\n\n```rust,ignore\npub struct NodeId<D: Domain> { /* private fields */ }\n```\n\n`NodeId<D>` serializes as an unsigned integer. These implementations apply to every domain.\n\n```rust,ignore\nimpl<D: Domain> Copy for NodeId<D>;\nimpl<D: Domain> Clone for NodeId<D>;\nimpl<D: Domain> Debug for NodeId<D>;\nimpl<D: Domain> Eq for NodeId<D>;\nimpl<D: Domain> PartialEq for NodeId<D>;\nimpl<D: Domain> Hash for NodeId<D>;\nimpl<D: Domain> Serialize for NodeId<D>;\nimpl<'de, D: Domain> Deserialize<'de> for NodeId<D>;\nimpl<D: Domain> JsonSchema for NodeId<D>;\n```",
   "determination": true,
-  "rationale": "The two marked tests cover every obligation in `requirements.sdk.graph.NodeId`.\n\n**Serialization and trait obligations.** `crates/trust-but-verify/tests/contracts.rs#fn[node_handles_round_trip_as_unsigned_integers_for_any_domain]` runs the generic `check::<D>` on a real handle from `Application::default().cache().intern_node(Node(3))`. The assertions are:\n- `serde_json::to_value(node)` produces a value where `is_u64()` holds. This covers serializing as an unsigned integer.\n- `from_value` returns a value equal to the original (`assert_eq!`). This covers `Deserialize`, `PartialEq`/`Eq` and `Debug`.\n- The decoded value is found in a `HashSet` built from the original handle. This covers `Hash`.\n- `node` is used again after `to_value(node)` takes it by value. This covers `Copy` and `Clone`.\n- Deserializing `-1` fails. This covers the unsigned-only form.\n- `schema_for!(NodeId<D>)` has type `integer` and minimum 0. This covers `JsonSchema`.\n\n**Every domain.** The test only instantiates `Application`. `Application` holds an `Arc` and so is not `Copy`. A `D: Copy` or `D: Hash` bound, as a derive would add, would therefore fail to compile. That makes the single instantiation sufficient evidence that the impls do not depend on `D`'s own traits.\n\n**Cache scoping.** `saved_node_and_edge_inputs_survive_a_different_handle_allocation_order` shows these properties:\n- A handle interned through a clone of the cache is equal to the original handle.\n- A fresh cache does not resolve the old handle: `node_data(subject)` is `None`.\n- Handles in a different cache differ: `assert_ne!(fresh_target, target)`.\n- Evidence is mapped between caches through durable data.\n\n**Domain-type distinction.** The requirement that the domain type separates handles of different domains is a compile-time property. No runtime behavior needs a test.",
-  "references": "5cefc57dd7b1797e80577bd0aa61bc01aa7b259b1d8a01618628395446bb8230",
+  "rationale": "structural: The structural obligations in `requirements.sdk.graph.NodeId` are: a generic `NodeId<D: Domain>` struct with private fields, a domain-type parameter that distinguishes handles, an unsigned integer serialization, and the listed trait impls for every domain: Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize and JsonSchema. The roots cover all of them.\n\n- `crates/trust-but-verify/src/domain.rs#struct[NodeId]` declares `NodeId<D: Domain>` with a private `index: usize` field. It also has a `PhantomData<fn(D) -> D>` marker, which makes the handle domain-typed. It uses `#[serde(transparent, bound = \"\")]` with a skipped marker, so it serializes as a bare unsigned integer and Serialize and Deserialize apply to every `D`. It derives `JsonSchema` with `schemars(transparent, inline, bound = \"\")`, which gives the same unbounded impl.\n- `impl[NodeId<D>/Copy]` and `impl[NodeId<D>/Clone]` are written manually for every `D`, with no bound on `D::NodeData`. Clone is `*self`. A derive would add a `D: Copy` bound, so the manual impls are what satisfy the \"applies to every domain\" clause.\n- `impl[NodeId<D>/std::fmt::Debug]`, `impl[NodeId<D>/PartialEq]`, `impl[NodeId<D>/Eq]` and `impl[NodeId<D>/std::hash::Hash]` are manual impls over `index` that apply to every `D`.\n\nThe cache-scoped meaning of a handle is produced by `ValidationCache::intern_node` and resolved by `node_data`. Those items fall under the cache requirements, not this one, so they need no marker here. No gaps found.\n\nbehavioral: The reviewed tests cover the observable obligations of `requirements.sdk.graph.NodeId`.\n\n**Serialization and trait obligations** (`crates/trust-but-verify/tests/contracts.rs#fn[node_handles_round_trip_as_unsigned_integers_for_any_domain]/fn[check]`):\n- Serializing the handle gives a JSON value for which `is_u64()` holds, so it serializes as an unsigned integer.\n- Deserializing that value gives a handle equal to the original, which exercises `Serialize`, `Deserialize`, `PartialEq` and `Eq`.\n- A `HashSet` built from the handle contains the decoded handle, which exercises `Hash`.\n- The handle is used again after being passed by value to `to_value`, which exercises `Copy`.\n- Deserializing `-1` fails, so only unsigned integers are accepted.\n- The `JsonSchema` output has `type` equal to `integer` and `minimum` equal to 0.\n- `check` is generic over `D: Domain`, which covers the \"applies to every domain\" clause. It is called with one concrete domain, `Application`. The tests also include `domain_relationships_accept_opaque_types_and_send_only_errors`, which uses a second fixture domain, but I did not assess it for `NodeId`.\n- `Debug` and `Clone` have no explicit assertions. The clause only requires the impls to exist, and the generic function compiles against them. `Clone` is implied by `Copy`.\n\n**Scoping to the cache and its clones** (`saved_node_and_edge_inputs_survive_a_different_handle_allocation_order`):\n- Interning `Node(1)` through `first.clone().cache()` returns a handle equal to the one from `first`, so clones share handles.\n- A fresh `ValidationCache` does not know the old handle: `node_data(subject)` is `None`.\n- The same node interned in the fresh cache gets a handle unequal to the original (`assert_ne!(fresh_target, target)`), so a handle's meaning is scoped to its cache.\n- The test also checks that saved inputs are translated correctly across caches.\n\n**Domain-type distinction**: the requirement says the domain type distinguishes handles of different domains. That is a compile-time property with no runtime behavior to assert, so it needs no runtime test.\n\nI found no requirement-violating behavior that these tests would accept.",
+  "references": "eac51376aa7b5331e8dad90cffd92b930ae9f55b649c704fa1a064236fa8df35",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.NodeId",
@@ -34,6 +34,61 @@
       ]
     },
     {
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "struct[NodeId]",
+      "hash": "8d04b901c7278519c7d9bd5af6b244bc7dfef8cf674eb1edf0a998c0405fc6a5"
+    },
+    {
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "impl[NodeId<D>/Copy]",
+      "hash": "e10aa8e1e263a32625d41a1d217d8abc19d5b0d2909f04f8f2d076697ac116ca"
+    },
+    {
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "impl[NodeId<D>/Clone]",
+      "hash": "423bcd44360fd0e2829f7d322f89719dcfed5ea192e30655db5617b8d11879b0"
+    },
+    {
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "impl[NodeId<D>/std::fmt::Debug]",
+      "hash": "46e5af30f7b1bd032c0fa5d4cb58f7ffb6d0d20e6db34ef8e271a801473928ef"
+    },
+    {
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "impl[NodeId<D>/PartialEq]",
+      "hash": "71a706e8b09653871fdf7e2a9726be8a296468fd4322def54fce637d5ade92dc"
+    },
+    {
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "impl[NodeId<D>/Eq]",
+      "hash": "bd143f82c0f77f34911ca16f4c9f8d27d93fc9d1f4be7ae4f6cff19c1020a963"
+    },
+    {
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "impl[NodeId<D>/std::hash::Hash]",
+      "hash": "8ac15653463819aa058d79e1818e274a308f3e9836bcad7f209355cd83c09bf0"
+    },
+    {
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "impl[NodeId<D>/Clone]/fn[clone]",
+      "hash": "a35659fc719b147dfbcdd6e923903a9efb2b823ad3750cedf91827c664d9db21"
+    },
+    {
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "impl[NodeId<D>/std::fmt::Debug]/fn[fmt]",
+      "hash": "e303147e52f195536363b2084dd10b3725ac53a33fd788861ff82fe7a8d35282"
+    },
+    {
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "impl[NodeId<D>/PartialEq]/fn[eq]",
+      "hash": "0ecd6cbfc4ed82057967c6868fd21b490c85dffa64f3713161341649abfdd399"
+    },
+    {
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "impl[NodeId<D>/std::hash::Hash]/fn[hash]",
+      "hash": "9d7ffa3ddf3020d3fc09630527c3b6b05dbaffb039ad4cecb08bf41e6d135f62"
+    },
+    {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[saved_node_and_edge_inputs_survive_a_different_handle_allocation_order]",
       "hash": "24be22a97937d7a23b55a93bac3f9ef02f30fa5814eadf47a9bb02f4f0a11faf"
@@ -47,14 +102,311 @@
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[node_handles_round_trip_as_unsigned_integers_for_any_domain]/fn[check]",
       "hash": "969b4edb811562fb2236451c00baafcd8ce8de26a072fb3c14560247fbd5e21f"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "struct[Application]",
-      "hash": "f5308299caaa5e45d1f4c773bbd0660309b69cf530e71209953481f70a231a10"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.NodeId"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "eac51376aa7b5331e8dad90cffd92b930ae9f55b649c704fa1a064236fa8df35"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.NodeId"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "ad823100c304caceaf9d16a2585326ce80275be7927184fcc1208c82d0f96010"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/domain.rs"
+                },
+                "selector": "struct[NodeId]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "8d04b901c7278519c7d9bd5af6b244bc7dfef8cf674eb1edf0a998c0405fc6a5"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/domain.rs"
+                },
+                "selector": "impl[NodeId<D>/Copy]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "e10aa8e1e263a32625d41a1d217d8abc19d5b0d2909f04f8f2d076697ac116ca"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/domain.rs"
+                },
+                "selector": "impl[NodeId<D>/Clone]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "2e447efb906cd53a1df61f0710b10136ff43e13662381e8d8a6fafb6407426f0"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/domain.rs"
+                },
+                "selector": "impl[NodeId<D>/std::fmt::Debug]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "a317894fd0a343d58aff9d6c886bad27af3ede38336e7fafef40da9e88a1bc06"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/domain.rs"
+                },
+                "selector": "impl[NodeId<D>/PartialEq]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "07f59c1451a87b0fea20dd506b733d2f1d403d9e65bbcac6d3aa4c43a14a754f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/domain.rs"
+                },
+                "selector": "impl[NodeId<D>/Eq]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "bd143f82c0f77f34911ca16f4c9f8d27d93fc9d1f4be7ae4f6cff19c1020a963"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/domain.rs"
+                },
+                "selector": "impl[NodeId<D>/std::hash::Hash]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "b76ec7588734035dd8748d63f5906cc84cb57413986221b11fc7c05c3420d7df"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/domain.rs"
+                },
+                "selector": "impl[NodeId<D>/Clone]/fn[clone]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "a35659fc719b147dfbcdd6e923903a9efb2b823ad3750cedf91827c664d9db21"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/domain.rs"
+                },
+                "selector": "impl[NodeId<D>/std::fmt::Debug]/fn[fmt]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "e303147e52f195536363b2084dd10b3725ac53a33fd788861ff82fe7a8d35282"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/domain.rs"
+                },
+                "selector": "impl[NodeId<D>/PartialEq]/fn[eq]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "0ecd6cbfc4ed82057967c6868fd21b490c85dffa64f3713161341649abfdd399"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/domain.rs"
+                },
+                "selector": "impl[NodeId<D>/std::hash::Hash]/fn[hash]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "9d7ffa3ddf3020d3fc09630527c3b6b05dbaffb039ad4cecb08bf41e6d135f62"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The structural obligations in `requirements.sdk.graph.NodeId` are: a generic `NodeId<D: Domain>` struct with private fields, a domain-type parameter that distinguishes handles, an unsigned integer serialization, and the listed trait impls for every domain: Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize and JsonSchema. The roots cover all of them.\n\n- `crates/trust-but-verify/src/domain.rs#struct[NodeId]` declares `NodeId<D: Domain>` with a private `index: usize` field. It also has a `PhantomData<fn(D) -> D>` marker, which makes the handle domain-typed. It uses `#[serde(transparent, bound = \"\")]` with a skipped marker, so it serializes as a bare unsigned integer and Serialize and Deserialize apply to every `D`. It derives `JsonSchema` with `schemars(transparent, inline, bound = \"\")`, which gives the same unbounded impl.\n- `impl[NodeId<D>/Copy]` and `impl[NodeId<D>/Clone]` are written manually for every `D`, with no bound on `D::NodeData`. Clone is `*self`. A derive would add a `D: Copy` bound, so the manual impls are what satisfy the \"applies to every domain\" clause.\n- `impl[NodeId<D>/std::fmt::Debug]`, `impl[NodeId<D>/PartialEq]`, `impl[NodeId<D>/Eq]` and `impl[NodeId<D>/std::hash::Hash]` are manual impls over `index` that apply to every `D`.\n\nThe cache-scoped meaning of a handle is produced by `ValidationCache::intern_node` and resolved by `node_data`. Those items fall under the cache requirements, not this one, so they need no marker here. No gaps found."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.NodeId"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "eac51376aa7b5331e8dad90cffd92b930ae9f55b649c704fa1a064236fa8df35"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.NodeId"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "ad823100c304caceaf9d16a2585326ce80275be7927184fcc1208c82d0f96010"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[saved_node_and_edge_inputs_survive_a_different_handle_allocation_order]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "24be22a97937d7a23b55a93bac3f9ef02f30fa5814eadf47a9bb02f4f0a11faf"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[node_handles_round_trip_as_unsigned_integers_for_any_domain]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "ec2dcd56461ea3e136a6b1681f60264bb1f4021424fc4df3350d02fd91ce9095"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[node_handles_round_trip_as_unsigned_integers_for_any_domain]/fn[check]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "969b4edb811562fb2236451c00baafcd8ce8de26a072fb3c14560247fbd5e21f"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The reviewed tests cover the observable obligations of `requirements.sdk.graph.NodeId`.\n\n**Serialization and trait obligations** (`crates/trust-but-verify/tests/contracts.rs#fn[node_handles_round_trip_as_unsigned_integers_for_any_domain]/fn[check]`):\n- Serializing the handle gives a JSON value for which `is_u64()` holds, so it serializes as an unsigned integer.\n- Deserializing that value gives a handle equal to the original, which exercises `Serialize`, `Deserialize`, `PartialEq` and `Eq`.\n- A `HashSet` built from the handle contains the decoded handle, which exercises `Hash`.\n- The handle is used again after being passed by value to `to_value`, which exercises `Copy`.\n- Deserializing `-1` fails, so only unsigned integers are accepted.\n- The `JsonSchema` output has `type` equal to `integer` and `minimum` equal to 0.\n- `check` is generic over `D: Domain`, which covers the \"applies to every domain\" clause. It is called with one concrete domain, `Application`. The tests also include `domain_relationships_accept_opaque_types_and_send_only_errors`, which uses a second fixture domain, but I did not assess it for `NodeId`.\n- `Debug` and `Clone` have no explicit assertions. The clause only requires the impls to exist, and the generic function compiles against them. `Clone` is implied by `Copy`.\n\n**Scoping to the cache and its clones** (`saved_node_and_edge_inputs_survive_a_different_handle_allocation_order`):\n- Interning `Node(1)` through `first.clone().cache()` returns a handle equal to the one from `first`, so clones share handles.\n- A fresh `ValidationCache` does not know the old handle: `node_data(subject)` is `None`.\n- The same node interned in the fresh cache gets a handle unequal to the original (`assert_ne!(fresh_target, target)`), so a handle's meaning is scoped to its cache.\n- The test also checks that saved inputs are translated correctly across caches.\n\n**Domain-type distinction**: the requirement says the domain type distinguishes handles of different domains. That is a compile-time property with no runtime behavior to assert, so it needs no runtime test.\n\nI found no requirement-violating behavior that these tests would accept."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -64,19 +416,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "5cefc57dd7b1797e80577bd0aa61bc01aa7b259b1d8a01618628395446bb8230"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.NodeId"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "e90ab7145cf17feeebe56698007517c3c75210e57f7a47f65f231e8e582fb308"
+          "value": "eac51376aa7b5331e8dad90cffd92b930ae9f55b649c704fa1a064236fa8df35"
         }
       ]
     },
@@ -88,6 +428,193 @@
         {
           "scheme": "habeas-input-v1",
           "value": "ad823100c304caceaf9d16a2585326ce80275be7927184fcc1208c82d0f96010"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "struct[NodeId]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "8d04b901c7278519c7d9bd5af6b244bc7dfef8cf674eb1edf0a998c0405fc6a5"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "impl[NodeId<D>/Copy]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "e10aa8e1e263a32625d41a1d217d8abc19d5b0d2909f04f8f2d076697ac116ca"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "impl[NodeId<D>/Clone]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "2e447efb906cd53a1df61f0710b10136ff43e13662381e8d8a6fafb6407426f0"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "impl[NodeId<D>/std::fmt::Debug]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "a317894fd0a343d58aff9d6c886bad27af3ede38336e7fafef40da9e88a1bc06"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "impl[NodeId<D>/PartialEq]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "07f59c1451a87b0fea20dd506b733d2f1d403d9e65bbcac6d3aa4c43a14a754f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "impl[NodeId<D>/Eq]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "bd143f82c0f77f34911ca16f4c9f8d27d93fc9d1f4be7ae4f6cff19c1020a963"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "impl[NodeId<D>/std::hash::Hash]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b76ec7588734035dd8748d63f5906cc84cb57413986221b11fc7c05c3420d7df"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "impl[NodeId<D>/Clone]/fn[clone]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "a35659fc719b147dfbcdd6e923903a9efb2b823ad3750cedf91827c664d9db21"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "impl[NodeId<D>/std::fmt::Debug]/fn[fmt]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "e303147e52f195536363b2084dd10b3725ac53a33fd788861ff82fe7a8d35282"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "impl[NodeId<D>/PartialEq]/fn[eq]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "0ecd6cbfc4ed82057967c6868fd21b490c85dffa64f3713161341649abfdd399"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "impl[NodeId<D>/std::hash::Hash]/fn[hash]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "9d7ffa3ddf3020d3fc09630527c3b6b05dbaffb039ad4cecb08bf41e6d135f62"
         }
       ]
     },
@@ -139,23 +666,6 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "969b4edb811562fb2236451c00baafcd8ce8de26a072fb3c14560247fbd5e21f"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "struct[Application]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "f5308299caaa5e45d1f4c773bbd0660309b69cf530e71209953481f70a231a10"
         }
       ]
     }

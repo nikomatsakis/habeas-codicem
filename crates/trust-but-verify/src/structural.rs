@@ -26,7 +26,6 @@ pub struct QueryLanguage {
 }
 
 impl QueryLanguage {
-    // {impl}`requirements.references.distributed`
     /// The language named by an outline profile with a grammar.
     pub fn named(name: &str) -> Result<Self, String> {
         crate::outline_engine::profile::profiles()
@@ -51,7 +50,6 @@ impl QueryLanguage {
             .collect()
     }
 
-    // {impl}`requirements.references.distributed`
     /// Extensions accepted by this rule's language.
     pub fn extensions(&self) -> &[&str] {
         self.profile.extensions
@@ -59,12 +57,10 @@ impl QueryLanguage {
 }
 
 impl Language for QueryLanguage {
-    // {impl}`requirements.authoring.structural_search`
     fn kind_to_id(&self, kind: &str) -> u16 {
         self.get_ts_language().id_for_node_kind(kind, true)
     }
 
-    // {impl}`requirements.authoring.structural_search`
     fn field_to_id(&self, field: &str) -> Option<u16> {
         self.get_ts_language()
             .field_id_for_name(field)
@@ -78,7 +74,6 @@ impl Language for QueryLanguage {
         self.profile.expando_char
     }
 
-    // {impl}`requirements.authoring.structural_search`
     fn pre_process_pattern<'q>(&self, query: &'q str) -> Cow<'q, str> {
         let expando = self.expando_char();
         if expando == '$' {
@@ -104,7 +99,6 @@ impl Language for QueryLanguage {
         Cow::Owned(processed)
     }
 
-    // {impl}`requirements.authoring.structural_search`
     fn build_pattern(&self, builder: &PatternBuilder) -> Result<Pattern, PatternError> {
         builder.build(|source| StrDoc::try_new(source, *self))
     }
@@ -203,7 +197,6 @@ fn error_chain(error: &dyn std::error::Error) -> String {
 /// The innermost outline node containing a byte range of the source the
 /// outline was parsed from. A match within a comment belongs to the
 /// comment's owner; a node contains the lines attached before it.
-// {impl}`requirements.references.outline_comments`
 pub(crate) fn innermost_node(
     outline: &LegacyOutline,
     _source: &str,

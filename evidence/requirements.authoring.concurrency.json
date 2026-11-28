@@ -1,8 +1,8 @@
 {
   "requirement": "Each named authoring configuration MUST accept an optional positive integer\n`concurrency` in its configuration table. When omitted, the maximum number of\nsimultaneous assessments MUST default to the number of available logical CPUs\nfor Bedrock and OpenAI, falling back to one when that count is unavailable, and to one for\nOllama. A configured value MUST override the default for each backend; zero\nMUST be rejected as invalid configuration.\n\nBatch authoring MUST use asynchronous tasks on a runtime with a fixed worker\nthread pool. The number of assessments running at once MUST NOT exceed the\nselected concurrency. Each assessment MUST retain its own model conversation and\nusage record. Transient provider failures, including throttling, MUST be\nretried within the affected assessment under\n{cite}`requirements.authoring.provider_backoff`; every other provider error MUST\nbe reported through the ordinary assessment-failure path.",
   "determination": true,
-  "rationale": "I found no unacknowledged gap. The tests cover each obligation as follows.\n\n**Configuration**\n- `tests/configuration.rs#fn[authoring_concurrency_defaults_overrides_and_invalid_values]` runs for bedrock, ollama and openai.\n  - With `concurrency` omitted, `resolved.concurrency` is `None`. `effective_concurrency()` equals `available_parallelism().unwrap_or(1)` for Bedrock and OpenAI, and 1 for Ollama.\n  - With `concurrency = 7`, the value overrides the default and round-trips through serialization.\n  - `0`, `-1`, `1.5` and `'2'` are rejected, and the error names the file and `concurrency`. This covers the zero-rejected clause and the positive-integer type.\n- `tests/configuration.rs#fn[workspace_configurations_accept_validate_and_override_concurrency]` covers the same defaults, override and invalid values for workspace configurations. It also checks that the workspace config replaces the user config, including its concurrency.\n- `tests/configuration.rs#fn[backend_configuration_round_trips_without_materializing_defaults]` checks that an omitted `concurrency` is not materialized on serialization.\n- The fallback to one when the CPU count is unavailable cannot be forced in a test, because `available_parallelism` is process-wide. The tests do assert the `unwrap_or(1)` expression for the normal case. I treat this as exempt.\n\n**Bound on simultaneous assessments**\n- `tests/authoring_batch.rs#fn[batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs]` uses concurrency 2. It asserts that the server's peak in-flight requests equal 2, so the bound is not exceeded and is actually used. It also asserts `first_pair_overlapped`, which shows that assessments really run concurrently.\n- `tests/authoring_batch.rs#fn[ollama_batches_are_serial_by_default]` asserts a peak of 1 for the Ollama default, running a real batch.\n- `tests/authoring_batch.rs#fn[interrupted_terminal_progress_keeps_unstarted_work_incomplete]` runs with concurrency 1 and 2.\n- `tests/authoring_batch.rs#fn[throttled_assessment_retries_within_itself_while_others_proceed]` asserts a peak of at most 2.\n- `tests/authoring_batch.rs#fn[a_denied_mandatory_input_aborts_only_its_assessment]` runs with concurrency 1.\n\n**Async tasks on a fixed worker pool**\n- This is an internal runtime structure with no distinct observable outcome beyond concurrent execution, which the overlap and peak assertions exercise. I do not count it as a testable gap.\n\n**Own conversation and usage record**\n- `tests/authoring_batch.rs#fn[concurrent_assessments_keep_their_own_continuing_histories]` runs 4 concurrent assessments with tool calls. For each subject, the second request's messages extend that subject's first request, followed by that subject's own assistant tool call and tool result.\n- Usage records are asserted per subject in `fn[throttled_assessment_retries_within_itself_while_others_proceed]` and `fn[failed_assessment_keeps_other_results_and_reports_failure]`.\n\n**Transient failures retried within the affected assessment**\n- `fn[throttled_assessment_retries_within_itself_while_others_proceed]` throttles one subject once with HTTP 429. It asserts that:\n  - the subject is requested twice;\n  - it ends with a true determination;\n  - its usage shows attempts 2, failed_attempts 1 and retries 1;\n  - the other five assessments have 1 attempt each and every outcome is completed.\n- The details of the retry (backoff timing, the other transient codes) belong to `requirements.authoring.provider_backoff`. That requirement is cited here, not reassessed.\n\n**Other provider errors go through the ordinary failure path**\n- `fn[failed_assessment_keeps_other_results_and_reports_failure]` has one subject receive a non-transient error. It asserts the following:\n  - there is no retry (attempts 1, retries 0);\n  - there is a failed usage record and no evidence file for that subject;\n  - the other evidence is kept;\n  - the diagnostic names the subject and the error;\n  - the exit status is a failure.\n- `fn[a_denied_mandatory_input_aborts_only_its_assessment]` additionally checks that one failed assessment does not affect the others.\n\nThe test `fn[drop]` in `impl[Server/Drop]` is a helper.",
-  "references": "da5efc360b3776f92b4eab5192cf38f0094d0c29ab6901b00f51eaf11682000e",
+  "rationale": "structural: The structural clause is: \"Batch authoring MUST use asynchronous tasks on a runtime with a fixed worker thread pool.\" A replacement that used OS threads, or a current-thread runtime, could give the same observable results but would violate it. The supplied roots cover this clause.\n- `src/main.rs#fn[main]` builds `tokio::runtime::Runtime::new()` for `Command::Author` and drives the batch with `block_on`. That is tokio's multi-thread runtime, which has a fixed worker pool. `Cargo.toml` enables `rt-multi-thread`.\n- `src/authoring/batch.rs#fn[assess_round]` spawns each assessment as an async task on a `JoinSet`. It launches only while `tasks.len() < concurrency`, and `concurrency` comes from `config.effective_concurrency()`. This enforces the \"MUST NOT exceed the selected concurrency\" limit. Each task calls `prepare_assessment` with its own subject, so conversation and usage state stay per assessment.\n\nThe config clause is: \"optional positive integer `concurrency` in its configuration table ... zero MUST be rejected\". `src/config.rs#struct[AuthoringConfig]` declares `concurrency: Option<NonZeroUsize>`. A type that accepts zero would let invalid configuration through, so this prescribes a type for the field, and the root covers it.\n\nThe other clauses state observable behavior only:\n- Backend defaults: the logical-CPU count, with a fallback to one, for Bedrock and OpenAI, and one for Ollama.\n- A configured value overrides the default.\n- Each assessment keeps its own conversation and usage record.\n- Transient errors are retried within the affected assessment under `requirements.authoring.provider_backoff`, and every other error goes through the ordinary failure path.\n\nAny implementation that produces these results conforms, so they create no structural obligation needing implementation evidence. The retry mechanism is delegated to `requirements.authoring.provider_backoff`, which is only cited here.\n\nbehavioral: The marked tests cover each observable obligation in `requirements.authoring.concurrency`.\n\n**Configuration (`tests/configuration.rs`)**\n- `authoring_concurrency_defaults_overrides_and_invalid_values` runs for bedrock, ollama and openai. It checks that an omitted value leaves `concurrency` as `None`. It checks that `effective_concurrency()` is `available_parallelism` (falling back to 1) for bedrock and openai, and 1 for ollama. It checks that `concurrency = 7` overrides the default and survives a TOML round trip. It checks that `0`, `-1`, `1.5` and `'2'` are rejected with an error naming the path and `concurrency`.\n- `workspace_configurations_accept_validate_and_override_concurrency` covers workspace configurations: override, default, whole-config replacement of the user config, and the same invalid values.\n- `backend_configuration_round_trips_without_materializing_defaults` checks that defaults are not written out.\n\n**Concurrency bound (`tests/authoring_batch.rs`)**\n- `batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs` uses concurrency 2. It asserts the server's observed peak of in-flight requests is exactly 2, and that a second assessment starts before the first response. That checks both the limit and real parallelism.\n- `throttled_assessment_retries_within_itself_while_others_proceed` asserts `peak <= 2`.\n- `ollama_batches_are_serial_by_default` asserts a peak of 1 with no configured value.\n- `interrupted_terminal_progress_keeps_unstarted_work_incomplete` runs with concurrency 2 and 1.\n- `a_denied_mandatory_input_aborts_only_its_assessment` runs with concurrency 1.\n\n**Own conversation and usage record**\n- `concurrent_assessments_keep_their_own_continuing_histories` runs at concurrency 4. For each subject, the second request's messages extend the first request's, plus exactly one assistant tool call and one tool result for that subject.\n- The usage assertions in `throttled_assessment_retries_within_itself_while_others_proceed` and `failed_assessment_keeps_other_results_and_reports_failure` check per-assessment attempts, failed attempts and retries.\n\n**Transient failures and other errors**\n- In `throttled_assessment_retries_within_itself_while_others_proceed`, the mock returns 429 once for alpha. The assertions are:\n  - alpha is requested twice and ends with determination true;\n  - alpha's usage shows 3 attempts, 1 failed attempt and 1 retry;\n  - every other assessment has its normal attempt count, and all outcomes are completed.\n- In `failed_assessment_keeps_other_results_and_reports_failure`, the mock returns 400 for alpha. The assertions are:\n  - alpha has 0 retries, so the 400 was not retried;\n  - the usage record is failed and no alpha evidence is written;\n  - the other five complete;\n  - the command exits non-zero with a diagnostic naming alpha and the provider message.\n- `a_denied_mandatory_input_aborts_only_its_assessment` covers a further failure case.\n\n**Out of scope or structural**\n- The backoff details (window, jitter, `Retry-After`) belong to `requirements.authoring.provider_backoff`, which the subject only cites.\n- \"Asynchronous tasks on a runtime with a fixed worker thread pool\" states an implementation choice. It has no independent observable obligation beyond the in-flight bound, which is tested.\n\nI found no gaps.",
+  "references": "739e9a074600ad464f186d18af25d617318c9d9f97fcb104c8afbca85a088c80",
   "inputs": [
     {
       "requirements": "requirements.authoring.concurrency",
@@ -66,6 +66,36 @@
       ]
     },
     {
+      "file": "src/authoring/batch.rs",
+      "item": "fn[assess_round]",
+      "hash": "a11b1eebba2cc8b7f2b7b31842c211ee5e41c27752df7675629dc7d340324564"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[AuthoringConfig]",
+      "hash": "d374f32df0798a6e989353a20db09dd6fbf087ffd4ba829ba3bc3dcf0eb3b133"
+    },
+    {
+      "file": "src/main.rs",
+      "item": "fn[main]",
+      "hash": "990afeab8e01a217fe0ef5f943a2c19082b656ee4bf38ec0029a78bcb3d48e3f"
+    },
+    {
+      "file": "Cargo.toml",
+      "item": "table[dependencies]/pair[tokio]",
+      "hash": "767ec8c22d862b63ca2bb0e23aedd113e48dddcb6d0b6bd619f699567f168b45"
+    },
+    {
+      "file": "Cargo.toml",
+      "item": "table[dependencies]/pair[tokio]/pair[features]",
+      "hash": "1593b89caf272d22f15d1f1b5f100b2e95cbf60084b06deae0cbfd6a716dddec"
+    },
+    {
+      "file": "Cargo.toml",
+      "item": "table[dependencies]/pair[tokio]/pair[version]",
+      "hash": "1c10778a37088421177ed1a974ca934a1664f31055c1a1c3ea216ba5f0f14ec2"
+    },
+    {
       "file": "tests/authoring_batch.rs",
       "item": "impl[Server/Drop]/fn[drop]",
       "hash": "baeccd89c75573c80e9f49a32cbc764cba1e5a4d08eece25fc5300ca9f8b4aea"
@@ -73,7 +103,7 @@
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs]",
-      "hash": "d5fe7916120b5e614107b2a33a2e72ace34608dd79154f34093b64929a56c8b3"
+      "hash": "f6b03fb9aee4638e9e7e135a7a1c099ff113acd7c2d5550cd9db249bdd55da0c"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -88,12 +118,12 @@
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[throttled_assessment_retries_within_itself_while_others_proceed]",
-      "hash": "ee8aa200c1764db7de7d1afd41f79f65a07535cfe59bfc2ecd162729bb8d5206"
+      "hash": "382860091c66388b65e93d42952ca1487224ee109a401c28b6b33da5e6e009e2"
     },
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[failed_assessment_keeps_other_results_and_reports_failure]",
-      "hash": "cd9a481bd89685e0b7160c54ec226008e038e4847dd6c35a97534128dd1bd563"
+      "hash": "bc6ff33587e0e945b73f71a4b165e3559dcefe8c813fdc2f238e39ee2d8a924b"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -122,21 +152,413 @@
     },
     {
       "file": "tests/authoring_batch.rs",
-      "item": "struct[Requests]",
-      "hash": "9f8d1de9fdaaec2a71f85b54ce0ba179aab6fe74d1e8fe787e065a4a7bd3d749"
+      "item": "fn[serve]",
+      "hash": "0f9608ac6a370572db93f41229c04be7eb1250d0420db3490d0cc2b473d10bf4"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[ResolvedAuthoringConfig]/fn[effective_concurrency]",
+      "hash": "d35e71f241a60ccf9263c1850d13d303b209ec1a1bf42ae496c3257c32ecf316"
     },
     {
       "file": "tests/authoring_batch.rs",
-      "item": "fn[serve]",
-      "hash": "484487c4c165a8959345754a04641d146cd811d002c28e9ad2e5dcb7736626f9"
-    },
-    {
-      "file": "benchmarks/assessment/results/adaptive-pilot-2026-11-15.json",
-      "item": "line@79ebdac65a89",
-      "hash": "79ebdac65a89083e2fceff93590cebd946cd0c5738c5110933212bc4d036b22f"
+      "item": "impl[Fixture]/fn[new]",
+      "hash": "4232a9d642af56c7f0602db994ae0c5ec034f0548d1eb34d695a9845328845c0"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.authoring.concurrency"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "739e9a074600ad464f186d18af25d617318c9d9f97fcb104c8afbca85a088c80"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.authoring.concurrency"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "720e2c81849d7dc39f86f306c93aa2da4847c0edc6309753a52c4878e4ba2851"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.authoring.provider_backoff"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "094a1c1082cd15150a46703d3d023eebf82dbd16058264f9b17254777e7c21b0"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/authoring/batch.rs"
+                },
+                "selector": "fn[assess_round]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "a11b1eebba2cc8b7f2b7b31842c211ee5e41c27752df7675629dc7d340324564"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/config.rs"
+                },
+                "selector": "struct[AuthoringConfig]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "d374f32df0798a6e989353a20db09dd6fbf087ffd4ba829ba3bc3dcf0eb3b133"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/main.rs"
+                },
+                "selector": "fn[main]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "037de8b6430f7d7bfa6eb74961a92b4a0a8f09bd97d64c621791b5dfd9b9cffd"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "Cargo.toml"
+                },
+                "selector": "table[dependencies]/pair[tokio]"
+              }
+            },
+            {
+              "scheme": "toml-structural-v1:own-v1",
+              "value": "cfe14f14b66aec44b0f19009352d65ec75c08356965cfdb46cd5fcb02f0e4a6a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "Cargo.toml"
+                },
+                "selector": "table[dependencies]/pair[tokio]/pair[features]"
+              }
+            },
+            {
+              "scheme": "toml-structural-v1:own-v1",
+              "value": "1593b89caf272d22f15d1f1b5f100b2e95cbf60084b06deae0cbfd6a716dddec"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "Cargo.toml"
+                },
+                "selector": "table[dependencies]/pair[tokio]/pair[version]"
+              }
+            },
+            {
+              "scheme": "toml-structural-v1:own-v1",
+              "value": "1c10778a37088421177ed1a974ca934a1664f31055c1a1c3ea216ba5f0f14ec2"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The structural clause is: \"Batch authoring MUST use asynchronous tasks on a runtime with a fixed worker thread pool.\" A replacement that used OS threads, or a current-thread runtime, could give the same observable results but would violate it. The supplied roots cover this clause.\n- `src/main.rs#fn[main]` builds `tokio::runtime::Runtime::new()` for `Command::Author` and drives the batch with `block_on`. That is tokio's multi-thread runtime, which has a fixed worker pool. `Cargo.toml` enables `rt-multi-thread`.\n- `src/authoring/batch.rs#fn[assess_round]` spawns each assessment as an async task on a `JoinSet`. It launches only while `tasks.len() < concurrency`, and `concurrency` comes from `config.effective_concurrency()`. This enforces the \"MUST NOT exceed the selected concurrency\" limit. Each task calls `prepare_assessment` with its own subject, so conversation and usage state stay per assessment.\n\nThe config clause is: \"optional positive integer `concurrency` in its configuration table ... zero MUST be rejected\". `src/config.rs#struct[AuthoringConfig]` declares `concurrency: Option<NonZeroUsize>`. A type that accepts zero would let invalid configuration through, so this prescribes a type for the field, and the root covers it.\n\nThe other clauses state observable behavior only:\n- Backend defaults: the logical-CPU count, with a fallback to one, for Bedrock and OpenAI, and one for Ollama.\n- A configured value overrides the default.\n- Each assessment keeps its own conversation and usage record.\n- Transient errors are retried within the affected assessment under `requirements.authoring.provider_backoff`, and every other error goes through the ordinary failure path.\n\nAny implementation that produces these results conforms, so they create no structural obligation needing implementation evidence. The retry mechanism is delegated to `requirements.authoring.provider_backoff`, which is only cited here."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.authoring.concurrency"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "739e9a074600ad464f186d18af25d617318c9d9f97fcb104c8afbca85a088c80"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.authoring.concurrency"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "720e2c81849d7dc39f86f306c93aa2da4847c0edc6309753a52c4878e4ba2851"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.authoring.provider_backoff"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "094a1c1082cd15150a46703d3d023eebf82dbd16058264f9b17254777e7c21b0"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/authoring_batch.rs"
+                },
+                "selector": "impl[Server/Drop]/fn[drop]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "baeccd89c75573c80e9f49a32cbc764cba1e5a4d08eece25fc5300ca9f8b4aea"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/authoring_batch.rs"
+                },
+                "selector": "fn[batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f6b03fb9aee4638e9e7e135a7a1c099ff113acd7c2d5550cd9db249bdd55da0c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/authoring_batch.rs"
+                },
+                "selector": "fn[ollama_batches_are_serial_by_default]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "a5101e530004e2e082992ebac366ba931366d77b57a2e7b030e7043b947dc141"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/authoring_batch.rs"
+                },
+                "selector": "fn[concurrent_assessments_keep_their_own_continuing_histories]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "3b2c3d51128f36eb4b7af67232316f5af8d25d7cde1dec2041ef8ac0a552fd79"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/authoring_batch.rs"
+                },
+                "selector": "fn[throttled_assessment_retries_within_itself_while_others_proceed]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "382860091c66388b65e93d42952ca1487224ee109a401c28b6b33da5e6e009e2"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/authoring_batch.rs"
+                },
+                "selector": "fn[failed_assessment_keeps_other_results_and_reports_failure]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "bc6ff33587e0e945b73f71a4b165e3559dcefe8c813fdc2f238e39ee2d8a924b"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/authoring_batch.rs"
+                },
+                "selector": "fn[interrupted_terminal_progress_keeps_unstarted_work_incomplete]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "1a92f700ba506a8cb5b70bb00380535d3fc0b446fe4e267587e0dfc776617993"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/authoring_batch.rs"
+                },
+                "selector": "fn[a_denied_mandatory_input_aborts_only_its_assessment]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "d9157619c97e291b1a269126850be87ca2eb863d5890aed80ad4fa1e462a7374"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/configuration.rs"
+                },
+                "selector": "fn[backend_configuration_round_trips_without_materializing_defaults]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "7ca17bb2973b249554d2b3596889dd7011afaa21f69224953f6d065a40359724"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/configuration.rs"
+                },
+                "selector": "fn[authoring_concurrency_defaults_overrides_and_invalid_values]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "63eabea03cd37b19d8e7119a6b382cde0bfd165e4807445eeec5fcee30f6ae2e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/configuration.rs"
+                },
+                "selector": "fn[workspace_configurations_accept_validate_and_override_concurrency]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "8f26077cf1963093fb58bb543ac945427f6513efcaa412ef009d1dcedd6bb34c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/authoring_batch.rs"
+                },
+                "selector": "fn[serve]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "0f9608ac6a370572db93f41229c04be7eb1250d0420db3490d0cc2b473d10bf4"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The marked tests cover each observable obligation in `requirements.authoring.concurrency`.\n\n**Configuration (`tests/configuration.rs`)**\n- `authoring_concurrency_defaults_overrides_and_invalid_values` runs for bedrock, ollama and openai. It checks that an omitted value leaves `concurrency` as `None`. It checks that `effective_concurrency()` is `available_parallelism` (falling back to 1) for bedrock and openai, and 1 for ollama. It checks that `concurrency = 7` overrides the default and survives a TOML round trip. It checks that `0`, `-1`, `1.5` and `'2'` are rejected with an error naming the path and `concurrency`.\n- `workspace_configurations_accept_validate_and_override_concurrency` covers workspace configurations: override, default, whole-config replacement of the user config, and the same invalid values.\n- `backend_configuration_round_trips_without_materializing_defaults` checks that defaults are not written out.\n\n**Concurrency bound (`tests/authoring_batch.rs`)**\n- `batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs` uses concurrency 2. It asserts the server's observed peak of in-flight requests is exactly 2, and that a second assessment starts before the first response. That checks both the limit and real parallelism.\n- `throttled_assessment_retries_within_itself_while_others_proceed` asserts `peak <= 2`.\n- `ollama_batches_are_serial_by_default` asserts a peak of 1 with no configured value.\n- `interrupted_terminal_progress_keeps_unstarted_work_incomplete` runs with concurrency 2 and 1.\n- `a_denied_mandatory_input_aborts_only_its_assessment` runs with concurrency 1.\n\n**Own conversation and usage record**\n- `concurrent_assessments_keep_their_own_continuing_histories` runs at concurrency 4. For each subject, the second request's messages extend the first request's, plus exactly one assistant tool call and one tool result for that subject.\n- The usage assertions in `throttled_assessment_retries_within_itself_while_others_proceed` and `failed_assessment_keeps_other_results_and_reports_failure` check per-assessment attempts, failed attempts and retries.\n\n**Transient failures and other errors**\n- In `throttled_assessment_retries_within_itself_while_others_proceed`, the mock returns 429 once for alpha. The assertions are:\n  - alpha is requested twice and ends with determination true;\n  - alpha's usage shows 3 attempts, 1 failed attempt and 1 retry;\n  - every other assessment has its normal attempt count, and all outcomes are completed.\n- In `failed_assessment_keeps_other_results_and_reports_failure`, the mock returns 400 for alpha. The assertions are:\n  - alpha has 0 retries, so the 400 was not retried;\n  - the usage record is failed and no alpha evidence is written;\n  - the other five complete;\n  - the command exits non-zero with a diagnostic naming alpha and the provider message.\n- `a_denied_mandatory_input_aborts_only_its_assessment` covers a further failure case.\n\n**Out of scope or structural**\n- The backoff details (window, jitter, `Retry-After`) belong to `requirements.authoring.provider_backoff`, which the subject only cites.\n- \"Asynchronous tasks on a runtime with a fixed worker thread pool\" states an implementation choice. It has no independent observable obligation beyond the in-flight bound, which is tested.\n\nI found no gaps."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -146,19 +568,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "da5efc360b3776f92b4eab5192cf38f0094d0c29ab6901b00f51eaf11682000e"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.authoring.concurrency"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "2e14faeb76dadf565ebd38d86f6390276a5dde2299a8a50e83fd9b5cd721ad3d"
+          "value": "739e9a074600ad464f186d18af25d617318c9d9f97fcb104c8afbca85a088c80"
         }
       ]
     },
@@ -181,6 +591,108 @@
         {
           "scheme": "habeas-input-v1",
           "value": "094a1c1082cd15150a46703d3d023eebf82dbd16058264f9b17254777e7c21b0"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/batch.rs"
+            },
+            "selector": "fn[assess_round]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "a11b1eebba2cc8b7f2b7b31842c211ee5e41c27752df7675629dc7d340324564"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/config.rs"
+            },
+            "selector": "struct[AuthoringConfig]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "d374f32df0798a6e989353a20db09dd6fbf087ffd4ba829ba3bc3dcf0eb3b133"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/main.rs"
+            },
+            "selector": "fn[main]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "037de8b6430f7d7bfa6eb74961a92b4a0a8f09bd97d64c621791b5dfd9b9cffd"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "Cargo.toml"
+            },
+            "selector": "table[dependencies]/pair[tokio]"
+          }
+        },
+        {
+          "scheme": "toml-structural-v1:own-v1",
+          "value": "cfe14f14b66aec44b0f19009352d65ec75c08356965cfdb46cd5fcb02f0e4a6a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "Cargo.toml"
+            },
+            "selector": "table[dependencies]/pair[tokio]/pair[features]"
+          }
+        },
+        {
+          "scheme": "toml-structural-v1:own-v1",
+          "value": "1593b89caf272d22f15d1f1b5f100b2e95cbf60084b06deae0cbfd6a716dddec"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "Cargo.toml"
+            },
+            "selector": "table[dependencies]/pair[tokio]/pair[version]"
+          }
+        },
+        {
+          "scheme": "toml-structural-v1:own-v1",
+          "value": "1c10778a37088421177ed1a974ca934a1664f31055c1a1c3ea216ba5f0f14ec2"
         }
       ]
     },
@@ -214,7 +726,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "d5fe7916120b5e614107b2a33a2e72ace34608dd79154f34093b64929a56c8b3"
+          "value": "f6b03fb9aee4638e9e7e135a7a1c099ff113acd7c2d5550cd9db249bdd55da0c"
         }
       ]
     },
@@ -265,7 +777,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "ee8aa200c1764db7de7d1afd41f79f65a07535cfe59bfc2ecd162729bb8d5206"
+          "value": "382860091c66388b65e93d42952ca1487224ee109a401c28b6b33da5e6e009e2"
         }
       ]
     },
@@ -282,7 +794,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "cd9a481bd89685e0b7160c54ec226008e038e4847dd6c35a97534128dd1bd563"
+          "value": "bc6ff33587e0e945b73f71a4b165e3559dcefe8c813fdc2f238e39ee2d8a924b"
         }
       ]
     },
@@ -379,12 +891,29 @@
               "scheme": "repo",
               "location": "tests/authoring_batch.rs"
             },
-            "selector": "struct[Requests]"
+            "selector": "fn[serve]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "9f8d1de9fdaaec2a71f85b54ce0ba179aab6fe74d1e8fe787e065a4a7bd3d749"
+          "value": "0f9608ac6a370572db93f41229c04be7eb1250d0420db3490d0cc2b473d10bf4"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/config.rs"
+            },
+            "selector": "impl[ResolvedAuthoringConfig]/fn[effective_concurrency]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "d35e71f241a60ccf9263c1850d13d303b209ec1a1bf42ae496c3257c32ecf316"
         }
       ]
     },
@@ -396,29 +925,12 @@
               "scheme": "repo",
               "location": "tests/authoring_batch.rs"
             },
-            "selector": "fn[serve]"
+            "selector": "impl[Fixture]/fn[new]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "484487c4c165a8959345754a04641d146cd811d002c28e9ad2e5dcb7736626f9"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "benchmarks/assessment/results/adaptive-pilot-2026-11-15.json"
-            },
-            "selector": "line@79ebdac65a89"
-          }
-        },
-        {
-          "scheme": "plain-text-structural-v1:own-v1",
-          "value": "79ebdac65a89083e2fceff93590cebd946cd0c5738c5110933212bc4d036b22f"
+          "value": "4232a9d642af56c7f0602db994ae0c5ec034f0548d1eb34d695a9845328845c0"
         }
       ]
     }

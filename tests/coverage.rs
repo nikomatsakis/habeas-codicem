@@ -86,6 +86,62 @@ fn unmarked_tests_and_parse_failures_remain_validation_errors() {
     );
 }
 
+// {test}`requirements.references.coverage.tests`
+#[test]
+fn a_test_annotation_counts_even_when_its_target_has_a_finding() {
+    let project = project();
+    fs::write(
+        project.path().join("md/example.md"),
+        ":::{example} empty\nAn empty list has zero items.\n:::\n",
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("src/lib.rs"),
+        concat!(
+            "// {test}`example.empty`\n#[test]\nfn empty_list() {}\n",
+            "// {test}`example.missing`\n#[test]\nfn missing_target() {}\n",
+        ),
+    )
+    .unwrap();
+    let errors = habeas::validate_repository(project.path())
+        .unwrap()
+        .errors
+        .join("\n");
+    assert!(
+        errors.contains("example example.empty must reference at least one requirement"),
+        "{errors}"
+    );
+    assert!(errors.contains("example.missing"), "{errors}");
+    assert!(!errors.contains("has no {test}"), "{errors}");
+}
+
+// {test}`requirements.cli.status.test_annotations`
+#[test]
+fn status_reports_an_unmarked_test_and_exits_successfully() {
+    let project = project();
+    let file = project.path().join("src/lib.rs");
+    let test = "#[tokio::test]\nasync fn ready() {}\n";
+    let status = || {
+        Command::new(env!("CARGO_BIN_EXE_habeas"))
+            .current_dir(project.path())
+            .arg("status")
+            .output()
+            .unwrap()
+    };
+    fs::write(&file, test).unwrap();
+    let output = status();
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("src/lib.rs:2: test function ready has no {test}"),
+        "{output:?}"
+    );
+    fs::write(file, format!("// {{test}}`rules.ready`\n{test}")).unwrap();
+    let output = status();
+    assert!(output.status.success(), "{output:?}");
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("test function ready"));
+}
+
 // {test}`requirements.cli.status`
 // {test}`requirements.cli.clap`
 #[test]

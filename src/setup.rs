@@ -21,7 +21,6 @@ fn css_relative(source_path: &Path) -> String {
         .join("/")
 }
 
-// {impl}`requirements.cli.setup`
 fn has_habeas_dev_dependency(manifest: &DocumentMut) -> bool {
     manifest
         .get("dev-dependencies")
@@ -30,7 +29,6 @@ fn has_habeas_dev_dependency(manifest: &DocumentMut) -> bool {
         .is_some()
 }
 
-// {impl}`requirements.cli.setup_project`
 fn book_source(book: &DocumentMut) -> Result<&str, &'static str> {
     let table = book
         .get("book")
@@ -58,7 +56,6 @@ pub(crate) fn find_project_root(cwd: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-// {impl}`requirements.cli.setup_project`
 pub(crate) fn project_root() -> Result<PathBuf, Box<dyn Error>> {
     let cwd = std::env::current_dir()?;
     find_project_root(&cwd)
@@ -83,13 +80,10 @@ pub(crate) fn write_new_or_same(path: &Path, content: &str) -> Result<(), Box<dy
     Ok(())
 }
 
-// {impl}`requirements.test-coverage.setup`
-// {impl}`requirements.cli.mdbook`
 pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {
     let root = project_root()?;
     let book_path = root.join("book.toml");
     let mut book: DocumentMut = fs::read_to_string(&book_path)?.parse()?;
-    // {impl}`requirements.cli.setup_project`
     let source = book_source(&book)?.to_owned();
     let source_path = Path::new(&source);
     if source.is_empty()
@@ -119,7 +113,6 @@ pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {
     book["preprocessor"]["habeas"]["renderers"] = value(renderers);
 
     let css_relative = css_relative(source_path);
-    // {impl}`requirements.cli.setup_css`
     let additional_css = &mut book["output"]["html"]["additional-css"];
     if additional_css.is_none() {
         let mut css = Array::new();
@@ -136,7 +129,6 @@ pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {
         return Err("output.html.additional-css must be an array".into());
     }
 
-    // {impl}`requirements.index.detail_pages`
     let fold = &mut book["output"]["html"]["fold"];
     if fold.is_none() {
         let mut table = Table::new();
@@ -183,8 +175,6 @@ pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-// {impl}`requirements.cli.setup_project`
-// {impl}`requirements.integration.symposium_setup_hook`
 // {cite}`requirements.cli.setup_css`
 pub(crate) fn is_configured(root: &Path) -> bool {
     if habeas::execution_coverage::validate_setup(root).is_err() {

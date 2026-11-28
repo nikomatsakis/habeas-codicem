@@ -1,8 +1,8 @@
 {
   "requirement": "`AgentWithTools<D>` holds the backend settings and the tools that can execute on a\n`ValidationContext` for `D`. Each `with_tool` call returns the updated configuration.\n\n```rust,ignore\npub struct AgentWithTools<D: Domain> { /* private fields */ }\nimpl<D: Domain> AgentWithTools<D> {\n    pub fn with_tool<A: DeserializeOwned + JsonSchema + 'static, R: Serialize + 'static>(\n        self,\n        tool: Arc<impl Tool<D, A, R> + 'static>,\n    ) -> Self;\n}\n```\n\nTrait implementations\n\n```rust,ignore\nimpl<D: Domain> AgentSettings<D> for AgentWithTools<D>;\n```",
   "determination": true,
-  "rationale": "One test is supplied, `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[registered_tools_use_the_current_context_and_ordinary_node_ids]`. It carries a {test} reference to the subject. I read the test as supplied and did not read any implementation source.\n\nObligations derived from `requirements.sdk.graph.agent-harness.AgentWithTools`, with the test scenario that covers each:\n\n1. **`AgentWithTools<D>` holds the backend settings.** The test builds `backend.clone().with_tool(...)` and passes it to `ValidationCache::with_agent`. Every request reaches the local backend server. The base tool list `read_node`, `outgoing_edges`, `get_next_page`, `submit_result` is asserted on the first four requests, so the backend settings survive `with_tool`.\n\n2. **It holds the tools that execute on a `ValidationContext` for `D`.**\n   - `cx.ask::<bool>()` makes the model call `lookup_requirements` and `inspect`.\n   - The test asserts the tool outputs: `[1, 2]` for the lookup, and the outline text for `inspect`.\n   - It asserts `lookup_calls == [\"requirements.sdk.*\"]`.\n   - It asserts the recorded dependencies, `Node` and `OutgoingEdges`, against the context.\n   - It asserts usage stats per tool name, including `calls` and `result_bytes`.\n   - Together these show the registered tools run against the current context.\n\n3. **Each `with_tool` call returns the updated configuration.**\n   - Two chained calls (`Lookup`, then `Inspect`) yield both tools. The advertised tool list is asserted to be the base tools followed by `lookup_requirements` and `inspect`, in registration order.\n   - A tool's schema and description are asserted: the `pattern` type is `string`, and the description text is checked.\n   - A tool can be registered with a different argument type (`Inspect`) and result type (`Lookup`'s `[1, 2]` result versus `Inspect`'s string result).\n   - Invalid arguments (`pattern: false`) produce an \"invalid type\" output, which shows `DeserializeOwned` handling of `A`.\n   - Results are serialized, as the JSON-parsed outputs show.\n\n4. **The updated value is independent of the original.** A second configuration is built from `backend.with_tool(Lookup(\"other\"))`. Its request lists `other` and neither `inspect` nor `lookup_requirements`. This confirms that tools are held per configuration and do not leak between them.\n\n5. **`impl AgentSettings<D> for AgentWithTools<D>`.** The value is accepted by `ValidationCache::with_agent` and drives a full agent run, which exercises the trait implementation. The test also carries a {test} reference to `requirements.sdk.graph.agent-harness.AgentSettings`.\n\nThe assertions would catch the plausible violations: dropping a tool, reordering tools, losing the backend settings, sharing tools across configurations, or not running tools on the current context. I found no unaddressed obligation or marking gap.",
-  "references": "c689784aa6d0075c4ca17e4c6f88ce668a43c6da3e8c4b42528d0a29a6085fa3",
+  "rationale": "structural: The structural obligations in `requirements.sdk.graph.agent-harness.AgentWithTools` are:\n- A public generic type `AgentWithTools<D: Domain>` that holds the backend settings and the tools. The tools are the ones that can run on a `ValidationContext` for `D`.\n- A `with_tool` method with the prescribed generic signature. It takes `self` and an `Arc<impl Tool<D, A, R>>`, and returns `Self`.\n- The trait implementation `impl<D: Domain> AgentSettings<D> for AgentWithTools<D>`.\n\nA different declaration could produce the same runtime behavior. Examples are a non-generic struct, a `with_tool` that takes `&mut self`, or no `AgentSettings` impl. Each of these would break the stated declarations, so these clauses are structural.\n\nThe supplied roots cover all three obligations:\n- `crates/trust-but-verify/src/agent/config.rs#struct[AgentWithTools]` is marked `{impl}`. It is generic over `D: Domain`. It holds `backend: AgentConfig` and `tools: Vec<Arc<dyn RegisteredTool<D>>>`, which are the backend settings and the registered tools.\n- `crates/trust-but-verify/src/agent/config.rs#impl[AgentWithTools<D>]/fn[with_tool]` is marked `{impl}`. It has the prescribed signature with `A: DeserializeOwned + JsonSchema + 'static`, `R: Serialize + 'static` and `Arc<impl Tool<D, A, R> + 'static>`. It pushes a `TypedTool` wrapper onto `tools` and returns the updated `self`.\n- `crates/trust-but-verify/src/agent/config.rs#impl[AgentWithTools<D>/AgentSettings<D>]` is marked `{impl}` and is `impl<D: Domain> AgentSettings<D> for AgentWithTools<D> {}`, the required trait implementation.\n\nThe helpers `TypedTool` and `RegisteredTool` are reached from these marked items. They are the type-erasure mechanism behind the field and the method, so they need no separate marker. No other structural obligations are left without evidence.\n\nbehavioral: The marked test `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[registered_tools_use_the_current_context_and_ordinary_node_ids]` covers the observable obligations of `requirements.sdk.graph.agent-harness.AgentWithTools`.\n\n- **Holding backend settings.** `backend.clone().with_tool(...)` is passed to `ValidationCache::with_agent`, and requests still reach the local server. The requests list the base tools (`read_node`, `outgoing_edges`, `get_next_page`, `submit_result`), so the backend configuration is kept.\n- **Each `with_tool` returns the updated configuration.** Two chained calls register `Lookup(\"lookup_requirements\")` and `Inspect`, which have different argument types. The first four requests list the tool names in order, ending with `lookup_requirements` and `inspect`. The `lookup_requirements` tool's schema (`pattern` is a string) and description are also asserted.\n- **The original configuration is unchanged.** `backend.with_tool(Lookup(\"other\"))` is built separately. Its request lists `other` and neither `inspect` nor `lookup_requirements`. Tools from one configuration therefore do not leak into another.\n- **Tools run on a `ValidationContext` for `D`.** Tool calls execute against the `LookupDomain` context. The assertions cover the recorded `lookup_calls`, the `cx.dependencies()` entries, the output of `lookup_requirements` (`[1, 2]`), the output of `inspect`, and the error for invalid arguments (`output(2)` contains \"invalid type\"). The per-tool usage stats are checked too.\n- **`AgentSettings` implementation.** `with_agent` accepts the `AgentWithTools` value and drives a full run with it, so the trait implementation is exercised.\n\nI found no obligation that lacks a test, and no plausible violating behavior that these assertions would accept.",
+  "references": "f535f7e792d58d138cbce12f444212f858237e34124b6e3d5c3c6c325e4bff05",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.agent-harness.AgentWithTools",
@@ -33,12 +33,159 @@
       ]
     },
     {
+      "file": "crates/trust-but-verify/src/agent/config.rs",
+      "item": "struct[AgentWithTools]",
+      "hash": "d0f7e836ee2c4c9de45615e648e60124128a3222e8424fcf6ee576d2eca808c4"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/config.rs",
+      "item": "impl[AgentWithTools<D>]/fn[with_tool]",
+      "hash": "a0d54d79c61b9b7b4e77a0a930ee6117d8447697423a6e794a125df390e03ccd"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/config.rs",
+      "item": "impl[AgentWithTools<D>/AgentSettings<D>]",
+      "hash": "b615fa8ac710f318887ef4697911148ebad9180492cc974b35b90294e0303872"
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[registered_tools_use_the_current_context_and_ordinary_node_ids]",
       "hash": "1bf97cc8cd53fefba38eba8a9c2426fe72f0fd8d8f2f957083dc512fc16577cb"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.agent-harness.AgentWithTools"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "f535f7e792d58d138cbce12f444212f858237e34124b6e3d5c3c6c325e4bff05"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-harness.AgentWithTools"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "4720a3a804cd75b5999986ca0f7875eea7515a3bd9f7d6f0eae7327cf5aa6d63"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/config.rs"
+                },
+                "selector": "struct[AgentWithTools]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "d0f7e836ee2c4c9de45615e648e60124128a3222e8424fcf6ee576d2eca808c4"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/config.rs"
+                },
+                "selector": "impl[AgentWithTools<D>]/fn[with_tool]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "a0d54d79c61b9b7b4e77a0a930ee6117d8447697423a6e794a125df390e03ccd"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/config.rs"
+                },
+                "selector": "impl[AgentWithTools<D>/AgentSettings<D>]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "b615fa8ac710f318887ef4697911148ebad9180492cc974b35b90294e0303872"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The structural obligations in `requirements.sdk.graph.agent-harness.AgentWithTools` are:\n- A public generic type `AgentWithTools<D: Domain>` that holds the backend settings and the tools. The tools are the ones that can run on a `ValidationContext` for `D`.\n- A `with_tool` method with the prescribed generic signature. It takes `self` and an `Arc<impl Tool<D, A, R>>`, and returns `Self`.\n- The trait implementation `impl<D: Domain> AgentSettings<D> for AgentWithTools<D>`.\n\nA different declaration could produce the same runtime behavior. Examples are a non-generic struct, a `with_tool` that takes `&mut self`, or no `AgentSettings` impl. Each of these would break the stated declarations, so these clauses are structural.\n\nThe supplied roots cover all three obligations:\n- `crates/trust-but-verify/src/agent/config.rs#struct[AgentWithTools]` is marked `{impl}`. It is generic over `D: Domain`. It holds `backend: AgentConfig` and `tools: Vec<Arc<dyn RegisteredTool<D>>>`, which are the backend settings and the registered tools.\n- `crates/trust-but-verify/src/agent/config.rs#impl[AgentWithTools<D>]/fn[with_tool]` is marked `{impl}`. It has the prescribed signature with `A: DeserializeOwned + JsonSchema + 'static`, `R: Serialize + 'static` and `Arc<impl Tool<D, A, R> + 'static>`. It pushes a `TypedTool` wrapper onto `tools` and returns the updated `self`.\n- `crates/trust-but-verify/src/agent/config.rs#impl[AgentWithTools<D>/AgentSettings<D>]` is marked `{impl}` and is `impl<D: Domain> AgentSettings<D> for AgentWithTools<D> {}`, the required trait implementation.\n\nThe helpers `TypedTool` and `RegisteredTool` are reached from these marked items. They are the type-erasure mechanism behind the field and the method, so they need no separate marker. No other structural obligations are left without evidence."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.agent-harness.AgentWithTools"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "f535f7e792d58d138cbce12f444212f858237e34124b6e3d5c3c6c325e4bff05"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-harness.AgentWithTools"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "4720a3a804cd75b5999986ca0f7875eea7515a3bd9f7d6f0eae7327cf5aa6d63"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/configured.rs"
+                },
+                "selector": "mod[tests]/fn[registered_tools_use_the_current_context_and_ordinary_node_ids]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "2a2cd72d471bf2cf18e6987128b2d9c2c22deeaa2d3e269118486369534f0a29"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The marked test `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[registered_tools_use_the_current_context_and_ordinary_node_ids]` covers the observable obligations of `requirements.sdk.graph.agent-harness.AgentWithTools`.\n\n- **Holding backend settings.** `backend.clone().with_tool(...)` is passed to `ValidationCache::with_agent`, and requests still reach the local server. The requests list the base tools (`read_node`, `outgoing_edges`, `get_next_page`, `submit_result`), so the backend configuration is kept.\n- **Each `with_tool` returns the updated configuration.** Two chained calls register `Lookup(\"lookup_requirements\")` and `Inspect`, which have different argument types. The first four requests list the tool names in order, ending with `lookup_requirements` and `inspect`. The `lookup_requirements` tool's schema (`pattern` is a string) and description are also asserted.\n- **The original configuration is unchanged.** `backend.with_tool(Lookup(\"other\"))` is built separately. Its request lists `other` and neither `inspect` nor `lookup_requirements`. Tools from one configuration therefore do not leak into another.\n- **Tools run on a `ValidationContext` for `D`.** Tool calls execute against the `LookupDomain` context. The assertions cover the recorded `lookup_calls`, the `cx.dependencies()` entries, the output of `lookup_requirements` (`[1, 2]`), the output of `inspect`, and the error for invalid arguments (`output(2)` contains \"invalid type\"). The per-tool usage stats are checked too.\n- **`AgentSettings` implementation.** `with_agent` accepts the `AgentWithTools` value and drives a full run with it, so the trait implementation is exercised.\n\nI found no obligation that lacks a test, and no plausible violating behavior that these assertions would accept."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -48,19 +195,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "c689784aa6d0075c4ca17e4c6f88ce668a43c6da3e8c4b42528d0a29a6085fa3"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.agent-harness.AgentWithTools"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "1bbf50cd82780e7312704cdd9e366f1bc15b761d698cb3acd2ecd87a896cd9b2"
+          "value": "f535f7e792d58d138cbce12f444212f858237e34124b6e3d5c3c6c325e4bff05"
         }
       ]
     },
@@ -72,6 +207,57 @@
         {
           "scheme": "habeas-input-v1",
           "value": "4720a3a804cd75b5999986ca0f7875eea7515a3bd9f7d6f0eae7327cf5aa6d63"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/config.rs"
+            },
+            "selector": "struct[AgentWithTools]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "d0f7e836ee2c4c9de45615e648e60124128a3222e8424fcf6ee576d2eca808c4"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/config.rs"
+            },
+            "selector": "impl[AgentWithTools<D>]/fn[with_tool]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "a0d54d79c61b9b7b4e77a0a930ee6117d8447697423a6e794a125df390e03ccd"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/config.rs"
+            },
+            "selector": "impl[AgentWithTools<D>/AgentSettings<D>]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b615fa8ac710f318887ef4697911148ebad9180492cc974b35b90294e0303872"
         }
       ]
     },

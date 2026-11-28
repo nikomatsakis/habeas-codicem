@@ -313,8 +313,10 @@ Awaiting the builder returns the decoded `R` that passes answer vetting under
 :::
 
 :::{req} judge.submission.decoding
-If the submitted result cannot be deserialized into `R`, the call ends with
-`ValidationError::Agent` before invoking any vetting callbacks.
+Decode the submitted `result` directly as `R` and invoke vetting callbacks only
+for successfully decoded answers. If decoding fails, return the decoding error
+and guidance on the expected `result` to the model as a tool error. Keep the
+conversation open for a corrected submission.
 :::
 
 [Agent harness](agent-harness.md#submit-a-structured-answer) defines the submission

@@ -22,7 +22,6 @@ pub(super) struct TypedTool<T, A, R> {
     pub(super) signature: PhantomData<fn(A) -> R>,
 }
 
-// {impl}`requirements.sdk.graph.agent-harness.domain_tool_dispatch`
 impl<D: Domain, A: DeserializeOwned + JsonSchema, R: Serialize, T: Tool<D, A, R>> RegisteredTool<D>
     for TypedTool<T, A, R>
 {

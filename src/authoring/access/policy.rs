@@ -4,7 +4,6 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
-// {impl}`requirements.configuration.evidence_paths`
 #[derive(Default)]
 pub struct PathPolicy {
     allow: Vec<PathBuf>,
@@ -12,19 +11,16 @@ pub struct PathPolicy {
 }
 
 impl PathPolicy {
-    // {impl}`requirements.configuration.evidence_paths`
     pub fn new(allow: Vec<PathBuf>, disallow: Vec<PathBuf>) -> Self {
         Self { allow, disallow }
     }
 
-    // {impl}`requirements.configuration.evidence_paths`
     pub fn allowed(&self, requested: &Path, target: &Path) -> bool {
         self.allow
             .iter()
             .any(|rule| matches_rule(rule, requested, target))
     }
 
-    // {impl}`requirements.configuration.evidence_paths`
     pub fn check_disallow(&self, requested: &Path, target: &Path) -> io::Result<()> {
         if self.disallow.is_empty() {
             return Ok(());
@@ -52,7 +48,6 @@ impl PathPolicy {
 }
 
 /// The SDK source provider used by Habeas authoring.
-// {impl}`requirements.authoring.source_tools`
 pub struct SourceAccess {
     sources: trust_but_verify::sources::Sources,
 }
@@ -79,9 +74,6 @@ impl SourceAccess {
         Ok(relative)
     }
 
-    // {impl}`requirements.authoring.source_tools`
-    // {impl}`requirements.authoring.mandatory_inputs`
-    // {impl}`requirements.authoring.tool_descriptions.special_cases`
     pub fn read(
         &self,
         root: &Path,
@@ -107,9 +99,6 @@ impl SourceAccess {
     }
 }
 
-// {impl}`requirements.authoring.deterministic_validation`
-// {impl}`requirements.references.discovery`
-// {impl}`requirements.ci.errors`
 pub(super) fn discover_files(
     root: &Path,
     policy: PathPolicy,
@@ -147,7 +136,6 @@ pub(super) fn discover_files(
     files
 }
 
-// {impl}`requirements.configuration.evidence_paths`
 pub(crate) fn considers(root: &Path, policy: &PathPolicy, path: &Path, directory: bool) -> bool {
     !excluded_from_discovery(root, path, directory) && policy.check_disallow(path, path).is_ok()
 }
@@ -155,7 +143,6 @@ pub(crate) fn considers(root: &Path, policy: &PathPolicy, path: &Path, directory
 /// Whether a file, or a directory when `directory` is set, lies in a `.git`
 /// or `target` directory at any depth or in the project-root `book` or
 /// `evidence` directory.
-// {impl}`requirements.references.discovery`
 fn excluded_from_discovery(root: &Path, path: &Path, directory: bool) -> bool {
     let Ok(relative) = path.strip_prefix(root) else {
         return true;
@@ -175,7 +162,6 @@ fn excluded_from_discovery(root: &Path, path: &Path, directory: bool) -> bool {
         || components.any(|component| is(Some(component), &[".git", "target"]))
 }
 
-// {impl}`requirements.configuration.evidence_paths`
 fn matches_rule(rule: &Path, requested: &Path, target: &Path) -> bool {
     requested_location(rule)
         .is_ok_and(|rule| requested.starts_with(&rule) || target.starts_with(rule))
@@ -183,7 +169,6 @@ fn matches_rule(rule: &Path, requested: &Path, target: &Path) -> bool {
             .is_ok_and(|rule| requested.starts_with(&rule) || target.starts_with(rule))
 }
 
-// {impl}`requirements.configuration.evidence_paths`
 fn requested_location(path: &Path) -> io::Result<PathBuf> {
     match (path.parent(), path.components().next_back()) {
         (Some(parent), Some(Component::Normal(name))) => Ok(fs::canonicalize(parent)?.join(name)),
@@ -198,7 +183,6 @@ fn requested_location(path: &Path) -> io::Result<PathBuf> {
 struct PolicyDenial(String);
 
 impl std::fmt::Display for PolicyDenial {
-    // {impl}`requirements.authoring.read_denial`
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(&self.0)
     }
@@ -214,7 +198,6 @@ fn denied(message: impl Into<String>) -> io::Error {
     )
 }
 
-// {impl}`requirements.configuration.evidence_paths`
 fn resolve(root: &Path, relative: &Path) -> io::Result<(PathBuf, PathBuf)> {
     if relative.as_os_str().is_empty() {
         return Err(io::Error::new(
@@ -299,7 +282,6 @@ pub(crate) fn tracked_sources(root: &Path) -> io::Result<Option<BTreeSet<PathBuf
     Ok(Some(tracked))
 }
 
-// {impl}`requirements.authoring.generated_inputs`
 pub fn generated_roots(root: &Path) -> Vec<PathBuf> {
     let Ok(output) = Command::new("cargo")
         .current_dir(root)
@@ -333,7 +315,6 @@ pub fn generated_roots(root: &Path) -> Vec<PathBuf> {
     discover_generated_roots(&directory)
 }
 
-// {impl}`requirements.authoring.generated_inputs`
 fn discover_generated_roots(build_root: &Path) -> Vec<PathBuf> {
     let mut roots = BTreeSet::new();
     let mut directories = vec![(build_root.to_owned(), 0)];
@@ -370,9 +351,6 @@ fn discover_generated_roots(build_root: &Path) -> Vec<PathBuf> {
     roots.into_iter().collect()
 }
 
-// {impl}`requirements.configuration.evidence_paths`
-// {impl}`requirements.authoring.generated_inputs`
-// {impl}`requirements.configuration.loading`
 pub fn resolve_evidence_file(
     root: &Path,
     file: &str,

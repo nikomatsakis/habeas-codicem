@@ -1,8 +1,8 @@
 {
   "requirement": "LLVM profiles are collected independently for each test process, identifying\nits nextest binary, test name, and attempt. Concurrent tests, same-named tests\nin different binaries, and different attempts do not overwrite or combine\none another's profiles during collection. Instrumented child-process profiles\nremain separate and associated with the attempt that spawned them.\n\nProfiles for a current result remain available until that result is replaced\nunder {cite}`requirements.test-coverage.storage.current`.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation in `requirements.test-coverage.processes`. I did not read the `assert_profiles_present` helper or the implementation.\n\n- **Independent profiles per process, identified by binary, test name and attempt.** `tests/execution_coverage.rs#fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]` runs real nextest with `-j 2` and `--retries 1`.\n  - It checks that five attempt records exist. The record for `retries` has `attempt` equal to `\"2\"`. Records carry binary and test.\n  - It checks that each `processes[].pid` matches its profile file names, which start with the pid. It also checks that no raw profile path is shared between processes.\n- **Concurrent tests do not overwrite or combine.**\n  - The integration test uses a rendezvous in the fixture (`HABEAS_FIXTURE_OVERLAP`), so `same_name` and `second` must overlap or one of them fails. It then asserts disjoint per-test line counts: the true branch is nonzero for `same_name` and the false branch is nonzero for `second`.\n  - `src/execution_coverage/store.rs#mod[tests]/fn[concurrent_writers_preserve_each_tests_state_and_measurements]` runs 64 simultaneous writers. They use the same test name across different binaries. It asserts that every attempt's state and measurements survive uncombined, using a distinct count per writer.\n- **Same-named tests in different binaries.** The integration test asserts that `same_name` records exist for both `coverage-fixture` and `coverage-fixture::processes`. The store test does the same with 64 binaries.\n- **Different attempts are not combined.** The `retries` test behaves differently on attempt 1 than on attempt 2. The final record has exactly one process, with line 3 equal to 0 and line 5 greater than 0, so attempt 1 is not merged in. Superseded attempt profiles are also removed, and the `attempts` directory holds exactly five entries.\n- **Child-process profiles stay separate and associated with the spawning attempt.** `child_process` has two processes. Each process's profiles are files under that attempt's own directory, and profile paths are distinct.\n- **Profiles remain available until replaced.**\n  - The integration test asserts profile presence for every record, and for the retained failed attempt. It also asserts that a later attempt removes the failed run's profiles.\n  - `src/execution_coverage/store.rs#mod[tests]/fn[focused_replacement_preserves_unselected_results_and_shared_artifacts]` asserts that unselected results keep their `1.profraw` files. It also asserts that the replaced entry's attempt directory is removed.\n\nAll of these tests carry `{test}` references to the subject. `src/execution_coverage/runner.rs#mod[tests]/fn[parallel_conversion_is_bounded_and_retains_every_result_in_order]` also carries one and checks bounded parallel conversion, which supports the subject only indirectly. I found no unaddressed obligation.",
-  "references": "e091bcb50128111fc4c5b82a3f1f4f375d74bfb6f2dd6f11db3d476909a94598",
+  "rationale": "structural: `requirements.test-coverage.processes` states only observable behavior, so it has no structural obligation that needs {impl} evidence. The review roots are empty, and the requirement has no implementation edges. It does have four test edges.\n\nI checked each clause for a required library, algorithm, signature, type, field, or named interface:\n- \"LLVM profiles are collected independently for each test process, identifying its nextest binary, test name, and attempt.\" This describes which profiles exist and how they are identified. Any layout that keeps profiles distinct and attributable to binary, test name, and attempt gives the same results, for example a different directory scheme, file-name encoding, or metadata index. The clause does not prescribe a naming format, a type, or an interface, so the choice is discretionary.\n- \"Concurrent tests, same-named tests in different binaries, and different attempts do not overwrite or combine one another's profiles during collection.\" This is a non-interference property that tests can check.\n- \"Instrumented child-process profiles remain separate and associated with the attempt that spawned them.\" This is also observable behavior. It could be met by an environment-variable pattern, a post-hoc association, or another mechanism.\n- \"Profiles for a current result remain available until that result is replaced under {cite}`requirements.test-coverage.storage.current`.\" This is a retention behavior. The cited requirement supplies context, and its replacement rules belong to that requirement, not this one.\n\nA structural obligation here would need the text to name a mechanism. It does not.\n\nbehavioral: The reviewed tests cover each obligation in `requirements.test-coverage.processes`.\n\n**Main evidence.** The main test is `tests/execution_coverage.rs#fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]`. It runs real nextest with two parallel jobs and one retry. Two tests in the same binary use file rendezvous (each waits for the other's marker file), so they must overlap. The test also checks that both marker files exist.\n\n**Obligation 1: per-process profiles identified by binary, test name and attempt.**\n- The test asserts that the selection has five tests and that there are five attempt records.\n- Every process has a non-null, non-empty `lines` map.\n- Each profile filename starts with its own process's pid.\n- Each profile exists under that attempt's directory.\n- The set of profile paths has no duplicates.\n\n**Obligation 2: concurrent tests do not overwrite or combine.**\n- The overlapping `same_name` and `second` tests each get their own record.\n- `same_name` hits only the true branch of the fixture function. `second` hits only the false branch.\n- Combined profiles would break these assertions.\n- `src/execution_coverage/store.rs#mod[tests]/fn[concurrent_writers_preserve_each_tests_state_and_measurements]` adds 64 barrier-synchronised concurrent writers. Each writer's measurement value is preserved in its own entry.\n- `src/execution_coverage/runner.rs#mod[tests]/fn[parallel_conversion_is_bounded_and_retains_every_result_in_order]` shows parallel conversion keeps every result in order.\n\n**Obligation 3: same-named tests in different binaries.**\n- The `same_name` records come from exactly the two binaries `coverage-fixture` and `coverage-fixture::processes`.\n- The store test uses 64 binaries that all share the test name `same_name`.\n- The focused replacement test uses `lib::same` and `integration::same`.\n\n**Obligation 4: different attempts.**\n- The `retries` test takes the true branch on attempt 1 and the false branch on attempt 2.\n- The record is attempt `2` with exactly one process. The true-branch count is zero and the false-branch count is positive. Attempt 1's counts are therefore not combined.\n- The test also checks that superseded retry profiles are removed (five attempt directories remain).\n\n**Obligation 5: child-process profiles stay separate and attached to the spawning attempt.**\n- The `child_process` record has two processes.\n- Their profiles are distinct, pid-prefixed, and stored under that attempt's directory.\n\n**Obligation 6: profiles remain available until the result is replaced.**\n- `assert_profiles_present` runs for every record, including the failed attempt.\n- The focused-run replacement drops only the replaced attempt (four attempts remain, and the old `second` directory is gone).\n- The failed run's profiles stay until the later retry run replaces them.\n- `src/execution_coverage/store.rs#mod[tests]/fn[focused_replacement_preserves_unselected_results_and_shared_artifacts]` checks that unselected entries keep their raw profile files and the removed entry's directory is gone.\n\nI found no uncovered obligation and no marking gap.",
+  "references": "d7c347f6c2f535e6f399e5c94a03d35cb25ffd9d433f39c20a12a6f364504132",
   "inputs": [
     {
       "requirements": "requirements.test-coverage.processes",
@@ -61,7 +61,185 @@
       "hash": "19e2b1e61d5027ab192843ceed1beb865e8669c2d0aed71d8b68d8c31680c076"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.test-coverage.processes"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "d7c347f6c2f535e6f399e5c94a03d35cb25ffd9d433f39c20a12a6f364504132"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.test-coverage.processes"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "1c01a3e718051df96fb951fcfcc12f1f0be53310a05fdf7c0373b9fc85ea8030"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.test-coverage.storage.current"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "43d4bc056f0e089167ed153d03af58cff498f5d1b7956987dc34214f4a08e44e"
+            }
+          ]
+        },
+        {
+          "OutgoingEdges": [
+            {
+              "Requirement": "requirements.test-coverage.processes"
+            },
+            "Implements",
+            {
+              "scheme": "node-path-set-sha256-v1",
+              "value": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+            }
+          ]
+        },
+        {
+          "OutgoingEdges": [
+            {
+              "Requirement": "requirements.test-coverage.processes"
+            },
+            "Tests",
+            {
+              "scheme": "node-path-set-sha256-v1",
+              "value": "d858d2f52c39cd74cf03cf5eedf1bae6be1c75585f41fd3ad6f87887b7bf4385"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "`requirements.test-coverage.processes` states only observable behavior, so it has no structural obligation that needs {impl} evidence. The review roots are empty, and the requirement has no implementation edges. It does have four test edges.\n\nI checked each clause for a required library, algorithm, signature, type, field, or named interface:\n- \"LLVM profiles are collected independently for each test process, identifying its nextest binary, test name, and attempt.\" This describes which profiles exist and how they are identified. Any layout that keeps profiles distinct and attributable to binary, test name, and attempt gives the same results, for example a different directory scheme, file-name encoding, or metadata index. The clause does not prescribe a naming format, a type, or an interface, so the choice is discretionary.\n- \"Concurrent tests, same-named tests in different binaries, and different attempts do not overwrite or combine one another's profiles during collection.\" This is a non-interference property that tests can check.\n- \"Instrumented child-process profiles remain separate and associated with the attempt that spawned them.\" This is also observable behavior. It could be met by an environment-variable pattern, a post-hoc association, or another mechanism.\n- \"Profiles for a current result remain available until that result is replaced under {cite}`requirements.test-coverage.storage.current`.\" This is a retention behavior. The cited requirement supplies context, and its replacement rules belong to that requirement, not this one.\n\nA structural obligation here would need the text to name a mechanism. It does not."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.test-coverage.processes"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "d7c347f6c2f535e6f399e5c94a03d35cb25ffd9d433f39c20a12a6f364504132"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.test-coverage.processes"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "1c01a3e718051df96fb951fcfcc12f1f0be53310a05fdf7c0373b9fc85ea8030"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.test-coverage.storage.current"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "43d4bc056f0e089167ed153d03af58cff498f5d1b7956987dc34214f4a08e44e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/execution_coverage/runner.rs"
+                },
+                "selector": "mod[tests]/fn[parallel_conversion_is_bounded_and_retains_every_result_in_order]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "8df90d268097ed5c8a2a444599a1a9a8f75308d8bdd7ba24cd2d9c98f19c5620"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/execution_coverage/store.rs"
+                },
+                "selector": "mod[tests]/fn[concurrent_writers_preserve_each_tests_state_and_measurements]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "d770869c8f4d8c257c96e0831ef4553634833903b6bdb7ec9aad4f6a21c0668e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/execution_coverage/store.rs"
+                },
+                "selector": "mod[tests]/fn[focused_replacement_preserves_unselected_results_and_shared_artifacts]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "87e03d38d9f6783d0fd0e812bb47d412518d663fa4b7da506041434ea4b39881"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/execution_coverage.rs"
+                },
+                "selector": "fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "19e2b1e61d5027ab192843ceed1beb865e8669c2d0aed71d8b68d8c31680c076"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The reviewed tests cover each obligation in `requirements.test-coverage.processes`.\n\n**Main evidence.** The main test is `tests/execution_coverage.rs#fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]`. It runs real nextest with two parallel jobs and one retry. Two tests in the same binary use file rendezvous (each waits for the other's marker file), so they must overlap. The test also checks that both marker files exist.\n\n**Obligation 1: per-process profiles identified by binary, test name and attempt.**\n- The test asserts that the selection has five tests and that there are five attempt records.\n- Every process has a non-null, non-empty `lines` map.\n- Each profile filename starts with its own process's pid.\n- Each profile exists under that attempt's directory.\n- The set of profile paths has no duplicates.\n\n**Obligation 2: concurrent tests do not overwrite or combine.**\n- The overlapping `same_name` and `second` tests each get their own record.\n- `same_name` hits only the true branch of the fixture function. `second` hits only the false branch.\n- Combined profiles would break these assertions.\n- `src/execution_coverage/store.rs#mod[tests]/fn[concurrent_writers_preserve_each_tests_state_and_measurements]` adds 64 barrier-synchronised concurrent writers. Each writer's measurement value is preserved in its own entry.\n- `src/execution_coverage/runner.rs#mod[tests]/fn[parallel_conversion_is_bounded_and_retains_every_result_in_order]` shows parallel conversion keeps every result in order.\n\n**Obligation 3: same-named tests in different binaries.**\n- The `same_name` records come from exactly the two binaries `coverage-fixture` and `coverage-fixture::processes`.\n- The store test uses 64 binaries that all share the test name `same_name`.\n- The focused replacement test uses `lib::same` and `integration::same`.\n\n**Obligation 4: different attempts.**\n- The `retries` test takes the true branch on attempt 1 and the false branch on attempt 2.\n- The record is attempt `2` with exactly one process. The true-branch count is zero and the false-branch count is positive. Attempt 1's counts are therefore not combined.\n- The test also checks that superseded retry profiles are removed (five attempt directories remain).\n\n**Obligation 5: child-process profiles stay separate and attached to the spawning attempt.**\n- The `child_process` record has two processes.\n- Their profiles are distinct, pid-prefixed, and stored under that attempt's directory.\n\n**Obligation 6: profiles remain available until the result is replaced.**\n- `assert_profiles_present` runs for every record, including the failed attempt.\n- The focused-run replacement drops only the replaced attempt (four attempts remain, and the old `second` directory is gone).\n- The failed run's profiles stay until the later retry run replaces them.\n- `src/execution_coverage/store.rs#mod[tests]/fn[focused_replacement_preserves_unselected_results_and_shared_artifacts]` checks that unselected entries keep their raw profile files and the removed entry's directory is gone.\n\nI found no uncovered obligation and no marking gap."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -71,19 +249,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "e091bcb50128111fc4c5b82a3f1f4f375d74bfb6f2dd6f11db3d476909a94598"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.test-coverage.processes"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "ecc71f50b502483899f3ca08101c06e3f3d801310fcd3fa4fc74e44456ba638c"
+          "value": "d7c347f6c2f535e6f399e5c94a03d35cb25ffd9d433f39c20a12a6f364504132"
         }
       ]
     },
@@ -106,6 +272,30 @@
         {
           "scheme": "habeas-input-v1",
           "value": "43d4bc056f0e089167ed153d03af58cff498f5d1b7956987dc34214f4a08e44e"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.test-coverage.processes"
+        },
+        "Implements",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.test-coverage.processes"
+        },
+        "Tests",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "d858d2f52c39cd74cf03cf5eedf1bae6be1c75585f41fd3ad6f87887b7bf4385"
         }
       ]
     },

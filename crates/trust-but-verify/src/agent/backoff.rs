@@ -19,7 +19,6 @@ impl Default for ProviderBackoff {
     }
 }
 
-// {impl}`requirements.authoring.provider_backoff.limit`
 pub const RETRY_LIMIT: Duration = Duration::from_secs(60);
 // {cite}`habeas:util`
 pub enum Retry {
@@ -27,7 +26,6 @@ pub enum Retry {
     Stop(io::Error),
 }
 
-// {impl}`requirements.authoring.usage_requests.failures`
 pub fn failure_codes(error: &io::Error) -> (Option<u16>, Option<String>) {
     error
         .get_ref()
@@ -39,7 +37,6 @@ pub fn failure_codes(error: &io::Error) -> (Option<u16>, Option<String>) {
 }
 
 impl ProviderBackoff {
-    // {impl}`requirements.authoring.provider_backoff.limit`
     pub fn retry(&mut self, error: io::Error, now: Instant) -> Retry {
         let Some(delay) = self.next_delay(&error) else {
             return Retry::Stop(error);

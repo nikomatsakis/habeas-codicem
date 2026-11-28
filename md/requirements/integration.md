@@ -8,6 +8,12 @@ NOT invoke authoring itself. {cite}`requirements.authoring.batch`
 {cite}`requirements.authoring.deterministic_validation`
 :::
 
+:::{req} validate.test_annotations
+`habeas::validate()` MUST fail its Cargo test for violations of
+{cite}`requirements.references.coverage.tests` and report the file, line, and
+name of each test that violates the rule. This check MUST be deterministic.
+:::
+
 :::{req} self_test
 The Habeas crate MUST use the same `habeas::validate()` Cargo integration test as downstream projects to check its own requirements and evidence.
 :::

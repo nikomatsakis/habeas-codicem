@@ -1,8 +1,8 @@
 {
   "requirement": "Every {term}`requirements.sdk.graph.criteria.criterion` type implements\n`trust_but_verify::graph::Criterion<D>` for its\n{term}`requirements.sdk.application_domain`.\n\n```rust,ignore\npub trait Criterion<D: Domain>: Send + Sized {\n    type Ok: Serialize + DeserializeOwned + Send;\n\n    fn source_node_id(&self) -> NodeId<D>;\n    fn criterion_path(&self) -> CriterionPath;\n    fn version(&self) -> CriterionVersion;\n    fn execute(\n        self,\n        ctx: &mut ValidationContext<'_, D>,\n    ) -> impl Future<Output = Result<Self::Ok, ValidationError<D::Error>>> + Send;\n}\n```",
   "determination": true,
-  "rationale": "The requirement says every criterion type implements `Criterion<D>` for the application domain. It gives the trait shape: `Send + Sized`, an `Ok` type that is `Serialize + DeserializeOwned + Send`, the methods `source_node_id`, `criterion_path` and `version`, and an `execute` that takes `self` and `&mut ValidationContext` and returns a `Send` future of `Result<Ok, ValidationError<D::Error>>`.\n\nThe tests check this mostly at compile time, which is the only way to check a trait shape. Several test criteria implement the trait with exactly this signature: `Review` in `crates/trust-but-verify/src/agent/tests.rs`, `Review` in `crates/trust-but-verify/src/graph/validation_tests.rs`, and `Review<O>` in `crates/trust-but-verify/tests/contracts.rs`. If the trait had a different shape, these impls would not compile.\n\nI map the obligations to tests as follows.\n- **`Ok` bounds and `Send` without `Sync`:** `validation_and_answer_need_send_without_sync` uses a `Cell<u32>` answer, which is `Send` but not `Sync`. It runs verify, store, load and refresh through a `send()` helper that requires the futures to be `Send`. This shows `Ok` needs only `Send`, not `Sync`. It also shows the `execute` future is `Send` and that `Ok` survives serialization and deserialization.\n- **The three identity methods are used and their values asserted:** `criteria_keep_typed_answers_and_persist_only_when_requested` asserts `source_node_id`, `criterion_path` and `version` on the verified and the reloaded record. `caller_reuses_negative_answers_and_compares_revisions_explicitly` covers version compatibility. The `Review` impl's `source_node_id` bumps a `descriptor_reads` counter. `validation_and_answer_need_send_without_sync` asserts the counter reads 1.\n- **`execute` behavior:** `deterministic_validation_uses_required_storage_without_an_agent` runs a deterministic `execute` that uses `ValidationContext`. It asserts the output, the stored dependencies, and `NoAgentConfigured`. `criteria_keep_typed_answers_and_persist_only_when_requested` asserts the execution count and the stored JSON output, so it checks the `Ok` serialization.\n- **`Sized`:** the `Sized` supertrait and the trait's name and path can't be tested at runtime. Compilation of the impls and `public_exports_match_the_appendix` cover the export path.\n\nI found no gap.",
-  "references": "a879f0ae49401bc00fac45ea5398c96091e5d5707b6490f80c3427a3894f1a04",
+  "rationale": "structural: The requirement prescribes the signature of `trust_but_verify::graph::Criterion<D>`. The root `crates/trust-but-verify/src/graph.rs#trait[Criterion]` declares it exactly as written.\n\n- It has the bounds `D: Domain` and `Send + Sized`.\n- The associated type is `Ok: Serialize + DeserializeOwned + Send`.\n- The methods are `source_node_id(&self) -> NodeId<D>`, `criterion_path(&self) -> CriterionPath` and `version(&self) -> CriterionVersion`.\n- `execute(self, ctx: &mut ValidationContext<'_, D>)` returns `impl Future<Output = Result<Self::Ok, ValidationError<D::Error>>> + Send`.\n\nA different declaration would break the stated signature. Examples are `&self` instead of `self` in `execute`, a boxed future, a missing `Send` bound, or a different `Ok` bound. The trait declaration is therefore the one place that carries this structural obligation, and it carries it.\n\nThe clause \"Every criterion type implements the trait\" falls on individual criterion types. They are not supplied roots, and the trait declaration is the only item that could need an {impl} marker. Delegation and ownership concerns do not arise beyond that.\n\nbehavioral: The requirement is structural. It says every criterion type implements `trust_but_verify::graph::Criterion<D>` for its application domain, and it gives the trait's shape: the `Send + Sized` bound, `Ok: Serialize + DeserializeOwned + Send`, the three identity methods, and an `execute` that returns a `Send` future. It has no separate observable behavioral obligation, so the tests only need to show that implementers can use that shape.\n\nThe marked tests do this:\n- `crates/trust-but-verify/tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` uses the test criterion `impl[Review<O>/Criterion<Application>]` through `Validator` calls. It checks `source_node_id`, `criterion_path` and `version` on the resulting evidence, and it checks that the `Ok` values round-trip through serde storage.\n- `crates/trust-but-verify/tests/contracts.rs#fn[validation_and_answer_need_send_without_sync]` uses an `Ok` type that is `Send` but not `Sync`, so the trait cannot require `Sync` on `Ok`. It drives `verify`, `store_evidence`, `load_evidence` and `refresh_evidence` through a `send(...)` helper that needs `Send` futures. It also exercises the version-compatibility check and the identity members.\n- `crates/trust-but-verify/src/graph/validation_tests.rs#fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]` and `crates/trust-but-verify/src/agent/tests.rs#fn[deterministic_validation_uses_required_storage_without_an_agent]` implement and run further criteria. They exercise `version`, `source_node_id` and the deterministic `execute` path against different domains.\n- `crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]` checks that the public export inventory matches the spec, and that the shipping Habeas consumer compiles against the SDK.\n\nA wrong trait shape would be caught at compile time by these implementations and uses. For example, a missing `Send` bound on the `execute` future, or an extra `Sync` bound on `Ok`, would break the `Cell` test. I found no other obligation that needs test evidence, and I found no missing test marker.",
+  "references": "c51d89ebbe0e9db7289dc44eea235406d9b538fde1ab1186961a1af7e69267e4",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.criteria.criterion_trait",
@@ -33,29 +33,9 @@
       ]
     },
     {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "fn[deterministic_validation_uses_required_storage_without_an_agent]",
-      "hash": "744f61b15e6acace9d745f474ecd3efd0733907389f6bc82870a8a9ea5769173"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
-      "item": "fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]",
-      "hash": "4050d7164d344983064df2ae023af8d39fc28f0cfe0437e2e558d3f65111498c"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[criteria_keep_typed_answers_and_persist_only_when_requested]",
-      "hash": "f47c40151c7d8ba4e5cd3b84d1c8d19288a02beb3f6148a79bdbcf6bc857964c"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[validation_and_answer_need_send_without_sync]",
-      "hash": "2bf006acebdb8fc3df250c66c66a218d7e2e7d0edd1566f398067c9a9012f735"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/public_api.rs",
-      "item": "fn[public_exports_match_the_appendix]",
-      "hash": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "trait[Criterion]",
+      "hash": "1e54a27b0978d1d2758de368f0f5649b433e22753f38113b7de8e7ab345ba563"
     },
     {
       "definition": "requirements.sdk.application_domain",
@@ -99,34 +79,19 @@
       ]
     },
     {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "impl[Review/Criterion<Memory>]",
-      "hash": "796dc2263eb492998b4bad572b52b52c4ab23b615ad6f4d83444e47bfdfb59c3"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "impl[Review/Criterion<Memory>]/fn[version]",
-      "hash": "39ba91029e394681371eb2fec0710b0912350a1a5a0f1fbfa5d75db0348cddf1"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "impl[Review/Criterion<Memory>]/fn[criterion_path]",
-      "hash": "67e20d3c28759ffdc496816a65c671d0ac7396621b0f09e63a19b87d31c7675c"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "impl[Review/Criterion<Memory>]/fn[source_node_id]",
-      "hash": "1e69c2ea0f65b351b0a1768a2b280cc335d56ae778bcd706a120cf5cc16db63b"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "impl[Review/Criterion<Memory>]/type[Ok]",
-      "hash": "b2e727054ac0a2d5b1c9f35133ff12ba939df44ae8df5efc0c76478d7965c9e0"
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "trait[Criterion]/fn[execute]",
+      "hash": "aeb36550aef4a87c004dd456aa8978a0f94e979e6c0ecdbcb3a2826128718e7c"
     },
     {
       "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "trait[Criterion]",
-      "hash": "1e54a27b0978d1d2758de368f0f5649b433e22753f38113b7de8e7ab345ba563"
+      "item": "trait[Criterion]/fn[version]",
+      "hash": "610e059f91e31dee6f0c13c9c814fcd726bd0f9ed47635c7f0ae39650e8c7bec"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "trait[Criterion]/fn[criterion_path]",
+      "hash": "1b4b23166699198f7d2be4da36b3f8df882afe22422ed3cee29a33a9569b722d"
     },
     {
       "file": "crates/trust-but-verify/src/graph.rs",
@@ -139,9 +104,39 @@
       "hash": "c005c9f0fc610830fb5e7c1d7af7491b7f8e4bdb5121675ad4c755b1e54a68c5"
     },
     {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "fn[deterministic_validation_uses_required_storage_without_an_agent]",
+      "hash": "744f61b15e6acace9d745f474ecd3efd0733907389f6bc82870a8a9ea5769173"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]",
+      "hash": "4050d7164d344983064df2ae023af8d39fc28f0cfe0437e2e558d3f65111498c"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "fn[criteria_keep_typed_answers_and_persist_only_when_requested]",
+      "hash": "f47c40151c7d8ba4e5cd3b84d1c8d19288a02beb3f6148a79bdbcf6bc857964c"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "fn[validation_and_answer_need_send_without_sync]",
+      "hash": "2bf006acebdb8fc3df250c66c66a218d7e2e7d0edd1566f398067c9a9012f735"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/public_api.rs",
+      "item": "fn[public_exports_match_the_appendix]",
+      "hash": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+    },
+    {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "impl[Review/Criterion<Memory>]",
       "hash": "c167d3766022648705f123728722776c0c0321f692e423b749a4b89574b5f006"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "impl[Review/Criterion<Memory>]/fn[execute]",
+      "hash": "8196c0bba0464433c879e2a09a8400e9f2267940e8f1adcaa0c217af306eb4c1"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
@@ -170,6 +165,11 @@
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "impl[Review<O>/Criterion<Application>]/fn[execute]",
+      "hash": "9d26a67d5a4cead54b0c25e6135bcc2ce90c3014138cc5f27910df87d12d2d50"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "impl[Review<O>/Criterion<Application>]/fn[version]",
       "hash": "c7506f521ea7a55932383b6b854976e168558337320cd6bb812b38828b693ca8"
     },
@@ -189,12 +189,329 @@
       "hash": "2adc7eafdf19dcb7651c9f4fa36235edc8896dfffae2433359f666daaee65335"
     },
     {
-      "file": "src/authoring/sdk.rs",
-      "item": "struct[Review]",
-      "hash": "e5dfe1829d5e432dce6c759dab79c712f4e027312828b63b144bbb4e8e8c6790"
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "fn[send]",
+      "hash": "8584e807e9abc79dc59d3352ed10789b3f88c34eaf2710718740786192bf2708"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.criteria.criterion_trait"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "c51d89ebbe0e9db7289dc44eea235406d9b538fde1ab1186961a1af7e69267e4"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.criteria.criterion_trait"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "86b698eeb7e0ae44ee6b26bbf841ea8969e970a67a43e87ce3ad89e39f22e790"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph.rs"
+                },
+                "selector": "trait[Criterion]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "c20f755f84964fc5d50ea5a085b7114b6e6af15f74595a9cb5bf098620206e3c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Definition": "requirements.sdk.application_domain"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "1f3d0d387ce356e5b4cc0cc22d20543142b5dcd7352c1eb5e4dd8dd73b058a34"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Definition": "requirements.sdk.graph.criteria.criterion"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "ce135060049411121ee9cf88ce6fd97b151985f68bb28824a43122d09c669145"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Definition": "requirements.sdk.graph.node"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "c5438e4c69410f90b991a8e65c5cbc3482ce549c5179c3189a0215aa5bf1ae5f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph.rs"
+                },
+                "selector": "trait[Criterion]/fn[execute]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "aeb36550aef4a87c004dd456aa8978a0f94e979e6c0ecdbcb3a2826128718e7c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph.rs"
+                },
+                "selector": "trait[Criterion]/fn[version]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "610e059f91e31dee6f0c13c9c814fcd726bd0f9ed47635c7f0ae39650e8c7bec"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph.rs"
+                },
+                "selector": "trait[Criterion]/fn[criterion_path]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "1b4b23166699198f7d2be4da36b3f8df882afe22422ed3cee29a33a9569b722d"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph.rs"
+                },
+                "selector": "trait[Criterion]/fn[source_node_id]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "172d2e28b67a256b637c268a4caa172edc98907008b7500bab5da8fd6b17014d"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph.rs"
+                },
+                "selector": "trait[Criterion]/type[Ok]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "c005c9f0fc610830fb5e7c1d7af7491b7f8e4bdb5121675ad4c755b1e54a68c5"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The requirement prescribes the signature of `trust_but_verify::graph::Criterion<D>`. The root `crates/trust-but-verify/src/graph.rs#trait[Criterion]` declares it exactly as written.\n\n- It has the bounds `D: Domain` and `Send + Sized`.\n- The associated type is `Ok: Serialize + DeserializeOwned + Send`.\n- The methods are `source_node_id(&self) -> NodeId<D>`, `criterion_path(&self) -> CriterionPath` and `version(&self) -> CriterionVersion`.\n- `execute(self, ctx: &mut ValidationContext<'_, D>)` returns `impl Future<Output = Result<Self::Ok, ValidationError<D::Error>>> + Send`.\n\nA different declaration would break the stated signature. Examples are `&self` instead of `self` in `execute`, a boxed future, a missing `Send` bound, or a different `Ok` bound. The trait declaration is therefore the one place that carries this structural obligation, and it carries it.\n\nThe clause \"Every criterion type implements the trait\" falls on individual criterion types. They are not supplied roots, and the trait declaration is the only item that could need an {impl} marker. Delegation and ownership concerns do not arise beyond that."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.criteria.criterion_trait"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "c51d89ebbe0e9db7289dc44eea235406d9b538fde1ab1186961a1af7e69267e4"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.criteria.criterion_trait"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "86b698eeb7e0ae44ee6b26bbf841ea8969e970a67a43e87ce3ad89e39f22e790"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[deterministic_validation_uses_required_storage_without_an_agent]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "744f61b15e6acace9d745f474ecd3efd0733907389f6bc82870a8a9ea5769173"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "4050d7164d344983064df2ae023af8d39fc28f0cfe0437e2e558d3f65111498c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[criteria_keep_typed_answers_and_persist_only_when_requested]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f47c40151c7d8ba4e5cd3b84d1c8d19288a02beb3f6148a79bdbcf6bc857964c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[validation_and_answer_need_send_without_sync]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "2bf006acebdb8fc3df250c66c66a218d7e2e7d0edd1566f398067c9a9012f735"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/public_api.rs"
+                },
+                "selector": "fn[public_exports_match_the_appendix]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Definition": "requirements.sdk.application_domain"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "1f3d0d387ce356e5b4cc0cc22d20543142b5dcd7352c1eb5e4dd8dd73b058a34"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Definition": "requirements.sdk.graph.criteria.criterion"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "ce135060049411121ee9cf88ce6fd97b151985f68bb28824a43122d09c669145"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Definition": "requirements.sdk.graph.node"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "c5438e4c69410f90b991a8e65c5cbc3482ce549c5179c3189a0215aa5bf1ae5f"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The requirement is structural. It says every criterion type implements `trust_but_verify::graph::Criterion<D>` for its application domain, and it gives the trait's shape: the `Send + Sized` bound, `Ok: Serialize + DeserializeOwned + Send`, the three identity methods, and an `execute` that returns a `Send` future. It has no separate observable behavioral obligation, so the tests only need to show that implementers can use that shape.\n\nThe marked tests do this:\n- `crates/trust-but-verify/tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` uses the test criterion `impl[Review<O>/Criterion<Application>]` through `Validator` calls. It checks `source_node_id`, `criterion_path` and `version` on the resulting evidence, and it checks that the `Ok` values round-trip through serde storage.\n- `crates/trust-but-verify/tests/contracts.rs#fn[validation_and_answer_need_send_without_sync]` uses an `Ok` type that is `Send` but not `Sync`, so the trait cannot require `Sync` on `Ok`. It drives `verify`, `store_evidence`, `load_evidence` and `refresh_evidence` through a `send(...)` helper that needs `Send` futures. It also exercises the version-compatibility check and the identity members.\n- `crates/trust-but-verify/src/graph/validation_tests.rs#fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]` and `crates/trust-but-verify/src/agent/tests.rs#fn[deterministic_validation_uses_required_storage_without_an_agent]` implement and run further criteria. They exercise `version`, `source_node_id` and the deterministic `execute` path against different domains.\n- `crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]` checks that the public export inventory matches the spec, and that the shipping Habeas consumer compiles against the SDK.\n\nA wrong trait shape would be caught at compile time by these implementations and uses. For example, a missing `Send` bound on the `execute` future, or an extra `Sync` bound on `Ok`, would break the `Cell` test. I found no other obligation that needs test evidence, and I found no missing test marker."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -204,19 +521,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "a879f0ae49401bc00fac45ea5398c96091e5d5707b6490f80c3427a3894f1a04"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.criteria.criterion_trait"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "6f2e288e6a1c48c563cdb23cc6c4da204b4c823db899228520edc19f0609f548"
+          "value": "c51d89ebbe0e9db7289dc44eea235406d9b538fde1ab1186961a1af7e69267e4"
         }
       ]
     },
@@ -228,6 +533,141 @@
         {
           "scheme": "habeas-input-v1",
           "value": "86b698eeb7e0ae44ee6b26bbf841ea8969e970a67a43e87ce3ad89e39f22e790"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "trait[Criterion]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "c20f755f84964fc5d50ea5a085b7114b6e6af15f74595a9cb5bf098620206e3c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Definition": "requirements.sdk.application_domain"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "1f3d0d387ce356e5b4cc0cc22d20543142b5dcd7352c1eb5e4dd8dd73b058a34"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Definition": "requirements.sdk.graph.criteria.criterion"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "ce135060049411121ee9cf88ce6fd97b151985f68bb28824a43122d09c669145"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Definition": "requirements.sdk.graph.node"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "c5438e4c69410f90b991a8e65c5cbc3482ce549c5179c3189a0215aa5bf1ae5f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "trait[Criterion]/fn[execute]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "aeb36550aef4a87c004dd456aa8978a0f94e979e6c0ecdbcb3a2826128718e7c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "trait[Criterion]/fn[version]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "610e059f91e31dee6f0c13c9c814fcd726bd0f9ed47635c7f0ae39650e8c7bec"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "trait[Criterion]/fn[criterion_path]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "1b4b23166699198f7d2be4da36b3f8df882afe22422ed3cee29a33a9569b722d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "trait[Criterion]/fn[source_node_id]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "172d2e28b67a256b637c268a4caa172edc98907008b7500bab5da8fd6b17014d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "trait[Criterion]/type[Ok]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "c005c9f0fc610830fb5e7c1d7af7491b7f8e4bdb5121675ad4c755b1e54a68c5"
         }
       ]
     },
@@ -312,176 +752,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Definition": "requirements.sdk.application_domain"
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "1f3d0d387ce356e5b4cc0cc22d20543142b5dcd7352c1eb5e4dd8dd73b058a34"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Definition": "requirements.sdk.graph.criteria.criterion"
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "ce135060049411121ee9cf88ce6fd97b151985f68bb28824a43122d09c669145"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Definition": "requirements.sdk.graph.node"
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "c5438e4c69410f90b991a8e65c5cbc3482ce549c5179c3189a0215aa5bf1ae5f"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "impl[Review/Criterion<Memory>]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "b4650e6255e7f7effc482fd937bf26362232ee04aaa1cb0fb34d04436f2b18b7"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "impl[Review/Criterion<Memory>]/fn[version]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "39ba91029e394681371eb2fec0710b0912350a1a5a0f1fbfa5d75db0348cddf1"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "impl[Review/Criterion<Memory>]/fn[criterion_path]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "67e20d3c28759ffdc496816a65c671d0ac7396621b0f09e63a19b87d31c7675c"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "impl[Review/Criterion<Memory>]/fn[source_node_id]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "1e69c2ea0f65b351b0a1768a2b280cc335d56ae778bcd706a120cf5cc16db63b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "impl[Review/Criterion<Memory>]/type[Ok]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "b2e727054ac0a2d5b1c9f35133ff12ba939df44ae8df5efc0c76478d7965c9e0"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
-            },
-            "selector": "trait[Criterion]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "c20f755f84964fc5d50ea5a085b7114b6e6af15f74595a9cb5bf098620206e3c"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
-            },
-            "selector": "trait[Criterion]/fn[source_node_id]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "172d2e28b67a256b637c268a4caa172edc98907008b7500bab5da8fd6b17014d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
-            },
-            "selector": "trait[Criterion]/type[Ok]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "c005c9f0fc610830fb5e7c1d7af7491b7f8e4bdb5121675ad4c755b1e54a68c5"
+          "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
         }
       ]
     },
@@ -499,6 +770,23 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "b4650e6255e7f7effc482fd937bf26362232ee04aaa1cb0fb34d04436f2b18b7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+            },
+            "selector": "impl[Review/Criterion<Memory>]/fn[execute]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "8196c0bba0464433c879e2a09a8400e9f2267940e8f1adcaa0c217af306eb4c1"
         }
       ]
     },
@@ -595,6 +883,23 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/tests/contracts.rs"
             },
+            "selector": "impl[Review<O>/Criterion<Application>]/fn[execute]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "9d26a67d5a4cead54b0c25e6135bcc2ce90c3014138cc5f27910df87d12d2d50"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/contracts.rs"
+            },
             "selector": "impl[Review<O>/Criterion<Application>]/fn[version]"
           }
         },
@@ -656,43 +961,19 @@
       ]
     },
     {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.criteria.criterion_trait"
-        },
-        "Implements",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "ea1c39c78a5a686002cd45b603b37a05706211a347c723aeede0581a70eac0be"
-        }
-      ]
-    },
-    {
       "Node": [
         {
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "src/authoring/sdk.rs"
+              "location": "crates/trust-but-verify/tests/contracts.rs"
             },
-            "selector": "struct[Review]"
+            "selector": "fn[send]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "e5dfe1829d5e432dce6c759dab79c712f4e027312828b63b144bbb4e8e8c6790"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.criteria.criterion_trait"
-        },
-        "Tests",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "3614ff176557b6305a38ab7eb0ed20b299e2435a35594fcb9f7e272aed4ed64b"
+          "value": "8584e807e9abc79dc59d3352ed10789b3f88c34eaf2710718740786192bf2708"
         }
       ]
     }

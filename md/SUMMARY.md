@@ -49,4 +49,4 @@
 # Appendix
 
 - [Requirements index](./requirements-index.md)
-- [Rustdocs](./rustdocs.md)
+- [Rustdocs](./rustdocs.md) {impl}`requirements.index.rustdocs.publication`

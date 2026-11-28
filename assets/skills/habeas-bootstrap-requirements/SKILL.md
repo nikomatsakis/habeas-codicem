@@ -124,13 +124,15 @@ requirement instead of marking each site `{impl}`; read the habeas skill's
 
 Give every inventoried test and each requirement's roots their references by
 "Choosing references" in the habeas-requirements skill: `{test}` on tests and `{impl}`
-on roots; code a root or test reaches needs none. Map each other inventoried
+on roots for stated structural obligations. You can add a structural marker during the inventory
+or when a structural reviewer recommends it. Code a
+root or test reaches needs none. Map each other inventoried
 item to the requirement whose root reaches it. Every test must end up with a `{test}` reference to a requirement or example,
 attached to the test as the habeas-requirements skill describes; a test whose behavior no agreed requirement states goes on the gap
 list, never `habeas:util`. For a parameterized test, put the reference on the
 case source or the generating declaration; one file-level tag must not stand in
-for unrelated tests. Where one behavior follows from several requirements,
-mark each with `{impl}` where it applies and explain how they combine, as the
+for unrelated tests. Where one test verifies several requirements,
+mark each with `{test}` and explain how they combine, as the
 habeas-requirements skill describes. An item that neither carries out a
 requirement nor serves other code goes on the gap list: it needs a requirement
 or is not needed.

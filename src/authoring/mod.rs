@@ -28,7 +28,6 @@ use inputs::{AssessmentKind, AssessmentSources};
 
 use usage::UsageLog;
 
-// {impl}`requirements.authoring.invocation`
 pub struct AuthoringOutcome {
     pub subject: String,
     pub backend: String,
@@ -38,16 +37,13 @@ pub struct AuthoringOutcome {
     pub determination: Judgment,
     pub rationale: String,
     /// The assessment policy the subject was assessed under.
-    // {impl}`requirements.authoring.policy`
     pub policy: AssessmentPolicy,
 }
 
 /// The opening of the note a recorded rationale ends with when its
 /// assessments disagreed under the `confirm` policy.
-// {impl}`requirements.cli.status`
 pub(crate) const DISAGREEMENT_NOTE: &str = "**Confirmation:** the assessments disagreed";
 
-// {impl}`requirements.authoring.policy`
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AuthoringOptions {
     pub verbose: bool,
@@ -59,10 +55,8 @@ pub struct AuthoringOptions {
     pub force: bool,
 }
 
-// :::{impl} requirements.authoring.invocation
 // The `Definition` variant is the one requirement or named example given on the
 // command line: the subject the command assesses and reports.
-// :::
 #[derive(Clone, Debug)]
 pub(crate) enum AuthoringSubject {
     Definition(String),
@@ -85,9 +79,6 @@ impl AuthoringSubject {
     /// or empty selector names the file's root node.
     /// `sites:<full-name>/<file>#<selector>` names a site review, where an
     /// omitted selector names the file's root node.
-    // {impl}`requirements.authoring.invocation`
-    // {impl}`requirements.references.citation_review`
-    // {impl}`requirements.references.site_review`
     pub(crate) fn parse(subject: &str) -> Self {
         if let Some(rest) = subject.strip_prefix("sites:") {
             let (requirement, path) = rest.split_once('/').unwrap_or((rest, ""));
@@ -123,7 +114,6 @@ impl AuthoringSubject {
     }
 
     /// Where the subject's record is written.
-    // {impl}`requirements.authoring.persistence`
     pub(crate) fn evidence_path(&self, root: &Path) -> PathBuf {
         match self {
             Self::Definition(name) => root.join("evidence").join(format!("{name}.json")),
@@ -153,7 +143,6 @@ impl AuthoringSubject {
     }
 
     /// Prepares the subject's sources and mandatory inputs.
-    // {impl}`requirements.authoring.mandatory_inputs`
     #[cfg(test)]
     fn sources(&self, root: &Path) -> io::Result<AssessmentSources> {
         self.domain_sources(crate::sdk::HabeasDomain::discover(root)?)
@@ -196,9 +185,6 @@ struct Assessment {
 }
 
 impl PendingAssessment {
-    // {impl}`requirements.authoring.persistence`
-    // {impl}`requirements.authoring.usage_storage`
-    // {impl}`requirements.configuration.state_location`
     fn persisted(
         mut self,
         path: PathBuf,
@@ -214,8 +200,6 @@ impl PendingAssessment {
         Ok((self.outcome, self.findings))
     }
 
-    // {impl}`requirements.authoring.usage_storage`
-    // {impl}`requirements.configuration.state_location`
     pub(crate) fn failed(mut self, error: io::Error) -> io::Error {
         let outcome = if error.kind() == io::ErrorKind::Interrupted {
             "cancelled"
@@ -238,7 +222,6 @@ impl PendingAssessment {
     }
 }
 
-// {impl}`requirements.authoring.invocation`
 #[derive(Clone, Copy)]
 pub enum EvidenceOutput {
     File,
@@ -247,8 +230,6 @@ pub enum EvidenceOutput {
 
 /// Authors one subject's evidence file under `--missing`, returning `None`
 /// when its evidence is current.
-// {impl}`requirements.authoring.invocation`
-// {impl}`requirements.authoring.refresh`
 pub async fn author_evidence(
     root: &Path,
     subject: &str,
@@ -257,10 +238,6 @@ pub async fn author_evidence(
     author_evidence_with_output(root, subject, selection, EvidenceOutput::File).await
 }
 
-// {impl}`requirements.authoring.invocation`
-// {impl}`requirements.authoring.usage_storage`
-// {impl}`requirements.configuration.state_location`
-// {impl}`requirements.authoring.read_denial`
 pub async fn author_evidence_with_output(
     root: &Path,
     subject: &str,
@@ -280,12 +257,6 @@ pub async fn author_evidence_with_output(
 /// Assesses one subject under its assessment policy, returning `None`
 /// without resolving configuration or invoking a model when, under
 /// `--missing`, its evidence is current. `--stdout` implies `--force`.
-// {impl}`requirements.authoring.invocation`
-// {impl}`requirements.configuration.state_location`
-// {impl}`requirements.authoring.policy`
-// {impl}`requirements.authoring.read_denial.mandatory`
-// {impl}`requirements.authoring.provider_backoff`
-// {impl}`requirements.references.citation_review`
 pub async fn author_evidence_with_options(
     root: &Path,
     subject: &str,
@@ -392,7 +363,6 @@ pub async fn author_evidence_with_options(
 
 /// Resolves the usage state root, refusing a location inside the project
 /// before any state directory is created.
-// {impl}`requirements.configuration.state_location`
 fn usage_state_root(root: &Path) -> io::Result<PathBuf> {
     let state = config::state_root()?;
     if config::state_in_project(&state, root)? {
@@ -413,10 +383,6 @@ fn usage_state_root(root: &Path) -> io::Result<PathBuf> {
     Ok(state)
 }
 
-// {impl}`requirements.authoring.usage_storage`
-// {impl}`requirements.configuration.state_location`
-// {impl}`requirements.authoring.policy`
-// {impl}`requirements.authoring.provider_backoff`
 pub(crate) async fn prepare_assessment(
     domain: crate::sdk::HabeasDomain,
     subject: &AuthoringSubject,
@@ -504,14 +470,6 @@ pub(crate) async fn prepare_assessment(
     }
 }
 
-// {impl}`requirements.authoring.invocation`
-// {impl}`requirements.authoring.rig_configuration_mapping`
-// {impl}`requirements.authoring.persistence`
-// {impl}`requirements.configuration.loading`
-// {impl}`requirements.authoring.policy`
-// {impl}`requirements.authoring.configuration`
-// {impl}`requirements.authoring.submission`
-// {impl}`requirements.authoring.persistence.destination`
 async fn configured_assessment(
     root: &Path,
     subject: &str,
@@ -574,13 +532,6 @@ async fn configured_assessment(
     ))
 }
 
-// {impl}`requirements.authoring.invocation`
-// {impl}`requirements.authoring.mandatory_inputs`
-// {impl}`requirements.authoring.usage_inputs`
-// {impl}`requirements.authoring.provider`
-// {impl}`requirements.authoring.policy`
-// {impl}`requirements.authoring.read_denial.mandatory`
-// {impl}`requirements.authoring.adaptive`
 async fn configured_record(
     domain: crate::sdk::HabeasDomain,
     subject: &AuthoringSubject,
@@ -615,7 +566,6 @@ async fn configured_record(
     .await
 }
 
-// {impl}`requirements.authoring.usage_storage`
 /// The backend name usage records give a model's backend.
 fn backend_name(model: &config::ModelRef) -> &'static str {
     match model.backend {
@@ -628,9 +578,6 @@ fn backend_name(model: &config::ModelRef) -> &'static str {
 /// Assesses a subject and, under the `confirm` policy, confirms a `true` or FIXME result
 /// in an independent second conversation. Each conversation has its own usage
 /// record; `usage` is the first's.
-// {impl}`requirements.authoring.confirmation`
-// {impl}`requirements.authoring.mandatory_inputs`
-// {impl}`requirements.authoring.policy`
 async fn assess_subject(
     provider: &config::BackendConfig,
     root: &Path,
@@ -660,8 +607,6 @@ async fn assess_subject(
 }
 
 // {cite}`habeas:util`
-// {impl}`requirements.authoring.confirmation.selection`
-// {impl}`requirements.authoring.confirmation.disagreement`
 fn select_assessment(first: Assessment, second: Assessment) -> Assessment {
     let description = |Assessment {
                            determination: judgment,
@@ -725,7 +670,6 @@ fn favorability(assessment: &Assessment) -> (u8, bool) {
 }
 
 /// Starts the usage record of a further conversation about a subject.
-// {impl}`requirements.authoring.policy`
 fn followup_log(
     state: &Path,
     root: &Path,
@@ -774,9 +718,6 @@ fn finish_followup<T>(mut usage: UsageLog, purpose: &str, result: io::Result<T>)
 
 /// The `index`th text block of approved requirement `name` in the authoring
 /// chapter, which is the sole source of these instructions.
-// {impl}`requirements.authoring.initial_prompt`
-// {impl}`requirements.authoring.habeas_background`
-// {impl}`requirements.authoring.judgment_rules`
 fn approved_text(name: &str, index: usize) -> &'static str {
     let chapter = include_str!("../../md/requirements/authoring.md");
     let opening = format!(":::{{req}} {name}\n");
@@ -791,8 +732,6 @@ fn approved_text(name: &str, index: usize) -> &'static str {
 
 /// The shared blocks every assessment prompt fills: Habeas's terms, the
 /// reference roles, and the judgment rules.
-// {impl}`requirements.authoring.habeas_background`
-// {impl}`requirements.authoring.judgment_rules`
 fn shared_blocks() -> [(&'static str, &'static str); 3] {
     [
         ("habeas_background", approved_text("habeas_background", 0)),
@@ -803,7 +742,6 @@ fn shared_blocks() -> [(&'static str, &'static str); 3] {
 
 /// The judgment rules' guidance on citing source locations, which a
 /// rejection for citing line numbers repeats.
-// {impl}`requirements.authoring.line_numbers.rejection`
 fn location_guidance() -> &'static str {
     let rules = approved_text("judgment_rules", 0);
     let start = rules
@@ -815,7 +753,6 @@ fn location_guidance() -> &'static str {
 
 /// The account of distributed requirements that the site prompt, the
 /// distributed task receive.
-// {impl}`requirements.authoring.habeas_background`
 fn distributed_background() -> &'static str {
     approved_text("habeas_background", 2)
 }
@@ -823,7 +760,6 @@ fn distributed_background() -> &'static str {
 /// Replaces `{{name}}` placeholders in one pass, so substituted text that
 /// itself contains a placeholder, such as a requirement quoting a template,
 /// is left as written.
-// {impl}`requirements.authoring.initial_prompt`
 fn fill(template: &str, values: &[(&str, &str)]) -> String {
     let mut result = String::with_capacity(template.len());
     let mut rest = template;
@@ -846,10 +782,6 @@ fn fill(template: &str, values: &[(&str, &str)]) -> String {
 }
 
 /// The task text of a requirement or example review.
-// {impl}`requirements.authoring.initial_prompt`
-// {impl}`requirements.authoring.requirement_task`
-// {impl}`requirements.authoring.testing_bar`
-// {impl}`requirements.authoring.example_task`
 fn subject_task(kind: &DefinitionKind) -> String {
     match kind {
         DefinitionKind::Requirement => format!(
@@ -866,9 +798,6 @@ fn subject_task(kind: &DefinitionKind) -> String {
 
 /// The filled distributed task a distributed requirement's subject message
 /// carries, or nothing for any other subject.
-// {impl}`requirements.authoring.initial_prompt`
-// {impl}`requirements.authoring.distributed_task`
-// {impl}`requirements.authoring.habeas_background`
 fn distributed_task(kind: &DefinitionKind, distributed: bool) -> String {
     if *kind == DefinitionKind::Requirement && distributed {
         fill(
@@ -891,7 +820,6 @@ struct Prompt {
 
 impl Prompt {
     /// Fills the system and subject blocks of approved prompt `name`.
-    // {impl}`requirements.authoring.initial_prompt`
     fn filled(name: &str, values: &[(&str, &str)]) -> Self {
         Self {
             system: fill(approved_text(name, 0), values),
@@ -907,47 +835,54 @@ impl Prompt {
     }
 }
 
-// {impl}`requirements.authoring.initial_prompt`
-// {impl}`requirements.ci.review_criteria`
-// {impl}`requirements.ci.outcomes`
-// {impl}`requirements.examples.evidence`
-// {impl}`requirements.examples.definition`
-// {impl}`requirements.authoring.mandatory_inputs`
-// {impl}`requirements.authoring.citation_prompt`
-// {impl}`requirements.authoring.redaction`
-// {impl}`requirements.authoring.github_reads`
-// {impl}`requirements.authoring.site_prompt`
-// {impl}`requirements.authoring.habeas_background`
-// {impl}`requirements.authoring.judgment_rules`
-// {impl}`requirements.authoring.credentials`
-// {impl}`requirements.authoring.structural_prompt`
-#[cfg(test)]
-fn initial_prompt(sources: &AssessmentSources) -> io::Result<Prompt> {
-    initial_prompt_with_inputs(sources, &sources.model_mandatory_inputs())
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReviewKind {
+    Standard,
+    Structural,
+    Behavioral,
 }
 
-// :::{fixme} requirements.ci.review_criteria
-// :github: nikomatsakis/habeas-codicem#51
-// One prompt is selected rather than ensuring independent structural and
-// behavioral checks. Mixed requirements receive only the behavioral task; absent
-// edge kinds do not each receive an explicit absence check. Tests exercise the
-// exclusive prompt paths and confirmation, not the full independent-check matrix.
-// :::
-// :::{fixme} requirements.ci.outcomes
-// :github: nikomatsakis/habeas-codicem#51
-// The current single-task result does not ensure both structural and behavioral
-// conclusions before accepting true. Regression tests cover existing outcomes,
-// but do not yet reject an overall success when the omitted check would find a gap.
-// :::
-// {impl}`requirements.authoring.corrections.coverage`
-fn initial_prompt_with_inputs(sources: &AssessmentSources, inputs: &[Value]) -> io::Result<Prompt> {
+impl ReviewKind {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Standard => "review",
+            Self::Structural => "structural",
+            Self::Behavioral => "behavioral",
+        }
+    }
+}
+
+#[cfg(test)]
+fn initial_prompt(sources: &AssessmentSources) -> io::Result<Prompt> {
+    let kind = if sources.review_roots.is_some() {
+        ReviewKind::Structural
+    } else {
+        ReviewKind::Standard
+    };
+    criterion_prompt(sources, kind)
+}
+
+#[cfg(test)]
+fn criterion_prompt(sources: &AssessmentSources, kind: ReviewKind) -> io::Result<Prompt> {
+    initial_prompt_with_inputs(sources, kind, &sources.inputs_for(kind)?)
+}
+
+// {impl}`requirements.authoring.prompt_parts`
+fn initial_prompt_with_inputs(
+    sources: &AssessmentSources,
+    review: ReviewKind,
+    inputs: &[Value],
+) -> io::Result<Prompt> {
     let mandatory = serde_json::to_string_pretty(inputs)?;
     let mut values = shared_blocks().to_vec();
     values.push(("mandatory_inputs", &mandatory));
     Ok(match &sources.subject_kind {
         AssessmentKind::Definition(kind, distributed) => {
             let acknowledgments = serde_json::to_string_pretty(&sources.model_acknowledgments())?;
-            let task = subject_task(kind);
+            let mut task = subject_task(kind);
+            if review == ReviewKind::Behavioral {
+                task = format!("{}\n\n{task}", approved_text("behavioral_review", 0));
+            }
             let distributed = distributed_task(kind, *distributed);
             values.extend([
                 ("subject_kind", sources.subject_kind.noun()),
@@ -956,14 +891,19 @@ fn initial_prompt_with_inputs(sources: &AssessmentSources, inputs: &[Value]) -> 
                 ("distributed_task", &distributed),
                 ("acknowledgments", &acknowledgments),
             ]);
-            Prompt::filled(
-                if sources.structural {
-                    "structural_prompt"
-                } else {
-                    "initial_prompt"
-                },
-                &values,
-            )
+            if review == ReviewKind::Structural {
+                let roots = serde_json::to_string_pretty(
+                    &sources
+                        .review_roots
+                        .as_ref()
+                        .expect("requirement roots")
+                        .implementation,
+                )?;
+                values.push(("review_roots", &roots));
+                Prompt::filled("structural_prompt", &values)
+            } else {
+                Prompt::filled("initial_prompt", &values)
+            }
         }
         AssessmentKind::Citation(item) => {
             let citations = serde_json::to_string(&item.model_citations_value())?;
@@ -1011,7 +951,6 @@ fn submission(arguments: &Value) -> io::Result<(Judgment, String)> {
 
 /// A submitted site review: its judgment, rationale, and `applies`.
 /// `applies` false requires a `true` determination.
-// {impl}`requirements.authoring.site_prompt`
 fn site_submission(arguments: &Value) -> io::Result<(Judgment, String, bool)> {
     let object = arguments
         .as_object()
@@ -1035,7 +974,6 @@ fn site_submission(arguments: &Value) -> io::Result<(Judgment, String, bool)> {
     Ok((judgment, rationale, applies))
 }
 
-// {impl}`requirements.authoring.persistence`
 fn record(
     sources: &AssessmentSources,
     judgment: &Judgment,
@@ -1197,7 +1135,9 @@ mod tests {
     fn initial_prompt_carries_the_review_criteria() {
         let project = inputs::tests::project();
         let sources = AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
-        let prompt = initial_prompt(&sources).unwrap().joined();
+        let prompt = criterion_prompt(&sources, ReviewKind::Behavioral)
+            .unwrap()
+            .joined();
         for criterion in [
             "Subject: requirement requirements.ready\nJudge against: the subject's text.",
             approved_text("habeas_background", 0),
@@ -1552,7 +1492,10 @@ mod tests {
             assert!(!record.to_string().contains(stale));
             assert!(!provider.prompts()[0].0.contains(stale));
         }
-        assert_eq!(record["rationale"], "Fresh assessment.");
+        assert_eq!(
+            record["criteria"]["behavioral"]["output"]["rationale"],
+            "Fresh assessment."
+        );
     }
 
     // {test}`requirements.authoring.github_reads`
@@ -1901,14 +1844,17 @@ mod tests {
             ..
         } = result.unwrap();
         assert_eq!(judgment, Judgment::Fixme(vec!["#1".into()]));
-        assert_eq!(record["rationale"], "First.");
+        assert_eq!(
+            record["criteria"]["behavioral"]["output"]["rationale"],
+            "First."
+        );
         // Two independent conversations, each with the initial prompt and its
         // own usage record.
         let prompts = provider.prompts();
         assert_eq!(prompts.len(), 2);
         assert_eq!(prompts[0], prompts[1]);
         assert!(prompts.iter().all(|(text, tools)| {
-            text.contains("Assess whether a project's tests adequately check")
+            text.contains("Assess only the requirement's observable behavioral obligations")
                 && tools.contains(&"submit_result".to_owned())
         }));
         assert_eq!(logs.len(), 2);
@@ -2496,7 +2442,7 @@ mod tests {
             (
                 "requirements.other",
                 "requirements.second",
-                "initial_prompt",
+                "structural_prompt",
             ),
             (
                 "requirements.structure_one",
@@ -2544,8 +2490,14 @@ mod tests {
                     assert!(!position.is_match(&metadata.to_string()), "{metadata}");
                 }
             }
-            assert_eq!(first.structural, template == "structural_prompt");
-            assert_eq!(second.structural, template == "structural_prompt");
+            assert_eq!(
+                first.review_roots.is_some(),
+                template == "structural_prompt"
+            );
+            assert_eq!(
+                second.review_roots.is_some(),
+                template == "structural_prompt"
+            );
             let (one, two) = (
                 initial_prompt(&first).unwrap(),
                 initial_prompt(&second).unwrap(),
@@ -2913,10 +2865,16 @@ no_match:
         assert_eq!(record["item"], "fn[check_two]");
         assert_eq!(record["queries"], json!(["checkers"]));
         assert_eq!(record["applies"], true);
-        let outside_scope = RecordingProvider::new(vec![(
-            "submit_result",
-            json!({"result":{"applies": false, "determination": true, "rationale": "Outside scope."}}),
-        )]);
+        let outside_scope = RecordingProvider::new(vec![
+            (
+                "submit_result",
+                json!({"result":{"applies":false,"determination":false,"rationale":"Outside scope."}}),
+            ),
+            (
+                "submit_result",
+                json!({"result":{"applies":false,"determination":true,"rationale":"Outside scope."}}),
+            ),
+        ]);
         let mut sources = subject.sources(root).unwrap();
         let Assessment {
             record: outside_record,
@@ -2925,6 +2883,11 @@ no_match:
             .await
             .unwrap();
         assert_eq!(outside_record["applies"], false);
+        assert!(
+            outside_scope.prompts()[1]
+                .0
+                .contains("determination must be true when applies is false")
+        );
         assert_eq!(
             record["fixmes"],
             json!([{"item": "fn[check_two]", "commentary": "Panics."}])
@@ -3001,7 +2964,7 @@ no_match:
         fs::write(root.path().join("md/requirements.md"), declaration).unwrap();
         fs::write(root.path().join("src/lib.rs"), &implementation).unwrap();
         let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-        assert!(sources.structural);
+        assert!(sources.review_roots.is_some());
         let inputs = sources.mandatory_inputs();
         let roots = inputs
             .iter()
@@ -3022,7 +2985,7 @@ no_match:
         )
         .unwrap();
         let unanchored = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-        assert!(unanchored.structural);
+        assert!(unanchored.review_roots.is_some());
         assert_eq!(unanchored.mandatory_inputs(), inputs);
         // A structural assessment also includes plain-text implementation roots
         // and complete refining declarations, without recursively reading helpers.
@@ -3030,7 +2993,7 @@ no_match:
         fs::write(root.path().join("src/details.txt"), &plain).unwrap();
         fs::write(root.path().join("md/requirements.md"), format!(":::{{req}} ready\nThe public api function delegates to helper.\n:::\n:::{{req}} refined\n{impl_role}\nComplete refinement.\nSecond paragraph.\n:::\n")).unwrap();
         let refined = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-        assert!(refined.structural);
+        assert!(refined.review_roots.is_some());
         let refined_inputs = refined.mandatory_inputs();
         assert!(
             refined_inputs
@@ -3058,6 +3021,14 @@ no_match:
             .unwrap();
         let historical = crate::evidence::digest_entries(entries);
         assert_ne!(sources.reference_set, historical);
+        use sha2::{Digest, Sha256};
+        let structural_only =
+            Sha256::digest(format!("habeas-structural-assessment-v1\0{historical}"));
+        let structural_only: String = structural_only
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_ne!(sources.reference_set, structural_only);
         fs::create_dir_all(root.path().join("evidence")).unwrap();
         let record = json!({"requirement": sources.subject_text, "determination": true,
             "rationale":"A former test-adequacy review.", "references":historical,
@@ -3096,23 +3067,23 @@ no_match:
                 .iter()
                 .any(|error| error.contains("input") && error.contains("changed"))
         );
-        // Adding a test selects test adequacy, including with an implementation anchor.
+        // Adding a test keeps the implementation root in the review.
         fs::write(
             root.path().join("src/lib.rs"),
             format!("{implementation}\n// {test_role}\n#[test]\nfn checks_api() {{ api(); }}\n"),
         )
         .unwrap();
         let tested = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-        assert!(!tested.structural);
+        assert!(tested.review_roots.is_some());
         assert!(
-            !tested
+            tested
                 .mandatory_inputs()
                 .iter()
                 .any(|input| input["item"] == "fn[api]")
         );
         let definitions = crate::evidence::load_definitions(root.path()).unwrap();
         let domain = crate::sdk::HabeasDomain::new(root.path(), &definitions, &tested.outlines);
-        assert_eq!(
+        assert_ne!(
             tested.reference_set,
             crate::evidence::digest_entries(
                 domain
@@ -3120,7 +3091,7 @@ no_match:
                     .unwrap()
             )
         );
-        // Test anchors have the same precedence as in-source test references.
+        // Test anchors also keep the implementation root.
         fs::write(root.path().join("src/lib.rs"), &implementation).unwrap();
         fs::write(
             root.path().join("md/requirements.md"),
@@ -3128,9 +3099,10 @@ no_match:
         )
         .unwrap();
         assert!(
-            !AssessmentSources::prepare(root.path(), "requirements.ready")
+            AssessmentSources::prepare(root.path(), "requirements.ready")
                 .unwrap()
-                .structural
+                .review_roots
+                .is_some()
         );
         // An implementation anchor alone is enough, without an in-source reference.
         fs::write(root.path().join("src/lib.rs"), "pub fn api() {}\n").unwrap();
@@ -3138,7 +3110,8 @@ no_match:
         assert!(
             AssessmentSources::prepare(root.path(), "requirements.ready")
                 .unwrap()
-                .structural
+                .review_roots
+                .is_some()
         );
         fs::write(
             root.path().join("md/requirements.md"),
@@ -3147,24 +3120,87 @@ no_match:
         .unwrap();
         fs::write(root.path().join("src/lib.rs"), &implementation).unwrap();
         assert!(
-            !AssessmentSources::prepare(root.path(), "requirements.ready")
+            AssessmentSources::prepare(root.path(), "requirements.ready")
                 .unwrap()
-                .structural
+                .review_roots
+                .is_none()
         );
         let distributed = format!("{declaration}\n").replace("The public api", "::::{sites} functions\n```yaml\nlanguage: rust\nrule: {kind: function_item}\nmatch: ['fn api() {}']\nno_match: ['struct Other;']\n```\n::::\nThe public api");
         fs::write(root.path().join("md/requirements.md"), distributed).unwrap();
         assert!(
-            !AssessmentSources::prepare(root.path(), "requirements.ready")
+            AssessmentSources::prepare(root.path(), "requirements.ready")
                 .unwrap()
-                .structural
+                .review_roots
+                .is_none()
         );
         fs::write(root.path().join("md/requirements.md"), format!(":::{{req}} ready\nStructure.\n:::\n:::{{req}} refined\n{impl_role}\nRefinement.\n:::\n")).unwrap();
         fs::write(root.path().join("src/lib.rs"), "fn unreferenced() {}\n").unwrap();
         assert!(
-            !AssessmentSources::prepare(root.path(), "requirements.ready")
+            AssessmentSources::prepare(root.path(), "requirements.ready")
                 .unwrap()
-                .structural
+                .review_roots
+                .is_some()
         );
+    }
+
+    // {test}`requirements.ci.review_criteria`
+    // {test}`requirements.references.authoring_inputs`
+    // {test}`requirements.authoring.structural_review`
+    // {test}`requirements.authoring.behavioral_review`
+    // {test}`requirements.authoring.structural_inputs`
+    // {test}`requirements.ci.reference_set`
+    #[test]
+    fn removing_either_root_changes_the_evidence_but_keeps_both_checks() {
+        let project = inputs::tests::project();
+        let root = project.path();
+        fs::write(
+            root.join("api.md"),
+            "# API\n\nThe public signature is `fn ready() -> bool`.\n",
+        )
+        .unwrap();
+        let mut digests = std::collections::HashSet::new();
+        let mut systems = std::collections::HashSet::new();
+        for has_impl in [true, false] {
+            for has_test in [true, false] {
+                let anchor = if has_impl { ":impl: api.md\n" } else { "" };
+                let marker = if has_test {
+                    "// {test}`requirements.ready`\n"
+                } else {
+                    ""
+                };
+                fs::write(root.join("md/requirements.md"), format!(":::{{req}} ready\n{anchor}Document the public signature and return true when ready.\n:::\n")).unwrap();
+                fs::write(
+                    root.join("src/lib.rs"),
+                    format!("{marker}fn checks_readiness() {{ assert!(ready()); }}\n"),
+                )
+                .unwrap();
+                let sources = AssessmentSources::prepare(root, "requirements.ready").unwrap();
+                for (kind, own, other, present, instruction) in [
+                    (
+                        ReviewKind::Structural,
+                        "api.md",
+                        "src/lib.rs",
+                        has_impl,
+                        "Without implementation edges",
+                    ),
+                    (
+                        ReviewKind::Behavioral,
+                        "src/lib.rs",
+                        "api.md",
+                        has_test,
+                        "Without test edges",
+                    ),
+                ] {
+                    let prompt = criterion_prompt(&sources, kind).unwrap();
+                    assert_eq!(prompt.subject.contains(own), present);
+                    assert!(!prompt.subject.contains(other));
+                    assert!(prompt.system.contains(instruction));
+                    systems.insert(prompt.system);
+                }
+                assert!(digests.insert(sources.reference_set));
+            }
+        }
+        assert_eq!(systems.len(), 2);
     }
 
     // {test}`requirements.authoring.structural_inputs`
@@ -3213,7 +3249,7 @@ no_match:
         .unwrap();
         fs::write(root.path().join("src/lib.rs"), "fn unreferenced() {}\n").unwrap();
         let allowed = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
-        assert!(allowed.structural);
+        assert!(allowed.review_roots.is_some());
         assert!(
             allowed
                 .mandatory_inputs()
@@ -3222,9 +3258,55 @@ no_match:
         );
     }
 
+    // {test}`requirements.authoring.submission`
+    // {test}`requirements.authoring.structural_review`
+    // {test}`requirements.authoring.behavioral_review`
+    #[tokio::test]
+    async fn each_criterion_rejects_markers_belonging_to_its_peer() {
+        let root = inputs::tests::project();
+        let mut sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let mut usage = UsageLog::start(state.path(), root.path(), "requirements.ready").unwrap();
+        let misplaced = |role| {
+            (
+                "submit_result",
+                json!({"result":{"status":"failed","corrections":[{"kind":"add_reference","role":role,"file":"src/lib.rs","selector":"fn[ready]","rationale":"Missing marker for the other criterion."}]}}),
+            )
+        };
+        let provider = RecordingProvider::script(
+            vec![
+                misplaced("test"),
+                judgment(json!(true), "No structural obligations."),
+                misplaced("impl"),
+                judgment(json!(true), "The tests cover readiness."),
+            ],
+            true,
+        );
+        let assessment = assess(&provider, &mut sources, &mut usage).await.unwrap();
+        assert_eq!(assessment.determination, Judgment::True);
+        assert!(assessment.findings.is_empty());
+        let prompts = provider.prompts();
+        assert_eq!(prompts.len(), 4);
+        assert!(
+            prompts[1]
+                .0
+                .contains("structural criterion cannot propose a {test} marker")
+        );
+        assert!(!prompts[2].0.contains("No structural obligations."));
+        assert!(
+            prompts[3]
+                .0
+                .contains("behavioral criterion cannot propose a {impl} marker")
+        );
+    }
+
+    // {test}`requirements.authoring.submission`
+    // {test}`requirements.sdk.habeas.assessment_policy`
     // {test}`requirements.authoring.structural_prompt`
     // {test}`requirements.authoring.structural_review`
     // {test}`requirements.authoring.confirmation`
+    // {test}`requirements.authoring.behavioral_review`
+    // {test}`requirements.ci.outcomes`
     // {test}`requirements.ci.review_criteria`
     #[tokio::test]
     async fn structural_assessments_and_confirmation_use_the_same_structural_contract() {
@@ -3240,9 +3322,6 @@ no_match:
         for text in [
             "stated structural obligations",
             "Inspect the supplied implementation roots",
-            "Observable runtime",
-            "testing gap",
-            "marking gap",
             "pub fn api()",
         ] {
             assert!(initial.joined().contains(text), "missing {text}");
@@ -3269,10 +3348,15 @@ no_match:
             .unwrap(),
             json!(acknowledgment)
         );
-        let provider = RecordingProvider::new(vec![
-            judgment(json!(true), "The structure is present."),
-            judgment(json!(false), "The required signature is absent."),
-        ]);
+        let provider = RecordingProvider::script(
+            vec![
+                judgment(json!(true), "The API exposes the required signature."),
+                judgment(json!(true), "No behavioral obligation."),
+                judgment(json!(false), "The required signature is absent."),
+                judgment(json!(true), "No behavioral obligation."),
+            ],
+            true,
+        );
         let state = tempfile::tempdir().unwrap();
         let mut usage = UsageLog::start(state.path(), root.path(), "requirements.ready").unwrap();
         let subject = AuthoringSubject::Definition("requirements.ready".into());
@@ -3300,15 +3384,45 @@ no_match:
                 .any(|input| input["item"] == "fn[api]")
         );
         let prompts = provider.prompts();
-        assert_eq!(prompts.len(), 2);
-        provider.assert_tools(0);
-        provider.assert_tools(1);
-        assert!(prompts.iter().all(
-            |(prompt, _)| prompt.contains("stated structural obligations")
-                || prompt.contains("Inspect the supplied implementation roots")
-        ));
-        for (prompt, _) in &prompts {
-            assert!(prompt.contains("requirements.ready"));
+        assert_eq!(prompts.len(), 4);
+        assert_eq!(
+            record["criteria"]["structural"]["output"]["status"],
+            "failed"
+        );
+        assert_eq!(
+            record["criteria"]["behavioral"]["output"]["status"],
+            "success"
+        );
+        use trust_but_verify::domain::Domain;
+        let graph = crate::sdk::HabeasDomain::discover(root.path()).unwrap();
+        let node = graph
+            .cache()
+            .intern_node(crate::sdk::HabeasNode::review_subject(&subject));
+        crate::evidence_format::write_atomic(&subject.evidence_path(root.path()), &record).unwrap();
+        for name in ["structural", "behavioral"] {
+            let path = trust_but_verify::graph::CriterionPath::new(vec![name.into()]);
+            let loaded = graph.load_evidence(&node, &path).await.unwrap().unwrap();
+            assert_eq!(loaded.output, record["criteria"][name]["output"]);
+            assert_eq!(
+                serde_json::to_string(&loaded.dependencies)
+                    .unwrap()
+                    .contains("fn[api]"),
+                name == "structural"
+            );
+        }
+        let mut incomplete = record.clone();
+        incomplete.as_object_mut().unwrap().remove("criteria");
+        assert!(crate::evidence_format::view(&incomplete).is_err());
+        for (index, (prompt, _)) in prompts.iter().enumerate() {
+            let structural = index % 2 == 0;
+            provider.assert_tools(index);
+            assert_eq!(
+                prompt.contains("Inspect the supplied implementation roots"),
+                structural
+            );
+            assert_eq!(prompt.contains("pub fn api()"), structural);
+            assert_eq!(prompt.contains("Testing criteria:"), !structural);
+            assert!(!prompt.contains("The required signature is absent."));
             assert!(prompt.contains("The remaining structural gap."));
         }
     }

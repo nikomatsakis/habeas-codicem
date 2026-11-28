@@ -1,8 +1,8 @@
 {
   "requirement": "{cite}`requirements.sdk.domain`\n\n`trust_but_verify::domain::Domain` provides evidence persistence for the\n{term}`requirements.sdk.application_domain`:\n\n```rust,ignore\nuse std::future::Future;\n\n// Defined in trust_but_verify::domain.\npub trait Domain: Clone + Send + Sync {\n    // ...\n\n    /// Ok(None) means absent; Err means loading failed.\n    fn load_evidence(\n        &self,\n        source: &NodeId<Self>,\n        criterion: &CriterionPath,\n    ) -> impl Future<Output = Result<\n        Option<Record<Self::NodeData, Self::EdgeLabel>>,\n        Self::Error,\n    >> + Send;\n\n    /// Atomically replace only this source/criterion pair's complete record.\n    fn store_evidence(\n        &self,\n        source: &NodeId<Self>,\n        criterion: &CriterionPath,\n        record: &Record<Self::NodeData, Self::EdgeLabel>,\n    ) -> impl Future<Output = Result<(), Self::Error>> + Send;\n\n    // ...\n}\n```\n\nThe SDK passes the source identity and criterion path to both methods. The\nkey preserves both parts: source paths `[\"a\"]` and `[\"a\", \"b\"]` with criteria\n`[\"b\", \"c\"]` and `[\"c\"]` identify different records, even though flattening each\npair would produce the same segments.\n\nDifferent criteria of a source have independent records. A version change\ninvalidates the same criterion's record rather than creating another key.\n\nSuccessful loads observe either an old or new complete record, or absence\nbefore the first save. Successful competing saves leave one complete record;\nits version, dependencies, and output all belong to that save. No ordering\nbetween competing saves is guaranteed.",
   "determination": true,
-  "rationale": "Each obligation in `requirements.sdk.graph.evidence.evidence_storage` maps to at least one marked test with real assertions. I found no unacknowledged gap. There were no acknowledgments.\n\n- **Absence versus failure** (`Ok(None)` means absent, `Err` means loading failed):\n  - Absence is asserted in `contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]`, which loads before any save and gets `None`.\n  - Absence is also asserted in `storage.rs#fn[consumer_delegates_evidence_storage_using_only_the_requested_nodes_path]`, where an unknown node returns `None`.\n  - Absence is asserted again in `src/sdk.rs#mod[tests]/fn[domain_storage_round_trips_each_review_kind_and_preserves_records_on_errors]`.\n  - Load failure is asserted in the consumer test, where corrupt record bytes give `Err(FileStorageError::Json(_))` instead of `None`.\n- **Key preserves source and criterion, with no flattening collisions**: `storage.rs#fn[source_and_criterion_boundaries_preserve_independent_records]` covers this.\n  - It uses the spec's pair `[\"a\"]/[\"b\",\"c\"]` versus `[\"a\",\"b\"]/[\"c\"]`.\n  - It adds empty segments, a segment named `criteria`, and control-character and escaping edge cases.\n  - It asserts distinct record paths.\n  - It saves every pair first, then reloads every pair and compares each output, so a collision would show up.\n- **SDK passes source and criterion to both methods; criteria are independent**:\n  - The in-memory `Application` domain in `contracts.rs` keys records by `(node, criterion)`.\n  - `criteria_keep_typed_answers_and_persist_only_when_requested` saves the `behavior`, `structure` and `text` criteria of one source. It asserts that `behavior` is untouched by the later saves and by a later `verify`, and that `text` loads as `None` until it is saved.\n  - The consumer test and the `Habeas` test cover different nodes and an `other_criterion` at the domain level.\n  - The contracts tests only use source `Node(1)`, so no SDK-level test stores under two sources. The source is passed through unchanged, and the keying itself is covered by the filesystem and `Habeas` tests, so I did not count this as a gap.\n- **Version change invalidates the same criterion's record instead of creating a new key**: the `revision` case in `contracts.rs#fn[refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace]` stores an old record, then refreshes with revision `v2`. It asserts `records.len() == 1` and that the stored record has the new output, dependencies and version.\n- **Atomic replace of only this pair's complete record**:\n  - The filesystem test asserts the record directory contains only `record.json`, so no temporary file is left behind.\n  - The `Habeas` test asserts that failed stores (wrong criterion, inconsistent record, a directory in place of the file) leave the original bytes unchanged and add no stray files.\n- **Loads see an old record, a new record, or absence**: `storage.rs#fn[concurrent_readers_only_observe_complete_records_from_competing_writes]` runs two writers and one reader. Each read must be internally consistent: the metadata id, the 8192-byte padding, the version and the dependencies must all come from the same record. A seeded initial record `A` with version `v1` is allowed.\n- **Competing saves leave one complete record, with no ordering guaranteed**:\n  - `contracts.rs#fn[concurrent_same_criterion_executions_keep_complete_independent_records]` and `contracts.rs#fn[concurrent_refreshes_execute_independently_and_store_complete_records]` run two saves of the same criterion.\n  - Both assert one stored record whose output, version and dependencies all belong to the same save (either winner).\n  - Neither asserts which save wins.\n  - The filesystem test asserts a single file remains.",
-  "references": "b61f0c752f1499fb2963ebb894468587f8968bc95f3319d85a6bfe3cd06dd64a",
+  "rationale": "structural: The structural obligations in `requirements.sdk.graph.evidence.evidence_storage` are the two prescribed `Domain` trait method signatures. The clause is \"`trust_but_verify::domain::Domain` provides evidence persistence\". The text gives `load_evidence(&self, source: &NodeId<Self>, criterion: &CriterionPath) -> impl Future<Output = Result<Option<Record<Self::NodeData, Self::EdgeLabel>>, Self::Error>> + Send` and `store_evidence(&self, source, criterion, record: &Record<..>) -> impl Future<Output = Result<(), Self::Error>> + Send`.\n\nThe two roots are `crates/trust-but-verify/src/domain.rs#trait[Domain]/fn[load_evidence]` and `crates/trust-but-verify/src/domain.rs#trait[Domain]/fn[store_evidence]`. I read them in the supplied nodes, and they declare exactly these signatures. They take `&self`, a `&NodeId<Self>`, a `&CriterionPath`, and for store a `&Record<Self::NodeData, Self::EdgeLabel>`. They return the same `impl Future<Output = ...> + Send` types. The roots name the node parameter `node`, not `source`. That is a cosmetic difference, because a different parameter name would not change the signature. Both roots carry the `{impl}` marker for this requirement.\n\nIf the roots returned a boxed future, dropped `Send`, or took a flattened key, they would violate the clause. They do not.\n\nI treat the other clauses as behavioral, so they need no implementation root here:\n- The SDK passes the source identity and criterion path to both methods.\n- Source path and criterion path stay distinct, so `[\"a\"]`/`[\"b\",\"c\"]` and `[\"a\",\"b\"]`/`[\"c\"]` identify different records.\n- Criteria of a source have independent records.\n- A version change invalidates the same criterion's record.\n- Loads see an old or new complete record, or absence.\n- Competing saves leave one complete record.\n\nThese describe how callers use the trait and how an application's `Domain` implementation stores records. Each is checked through behavior, not through a structure the trait declaration fixes.\n\nThe `Clone + Send + Sync` supertraits belong to `requirements.sdk.domain`, which this requirement only cites.\n\nbehavioral: The reviewed tests cover each observable obligation of `requirements.sdk.graph.evidence.evidence_storage`. The trait signatures are structural and need no behavioral test. I didn't request implementation source.\n\n**The SDK passes source identity and criterion path to both methods.**\n- `crates/trust-but-verify/tests/contracts.rs#fn[wildcard_revision_does_not_supply_other_criteria_or_nodes]` loads with a different criterion and with a different source node. Both return None. This shows both parts reach the domain.\n- `crates/trust-but-verify/tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` stores and loads through `Validator` and asserts the stored record's node, criterion path, output and version.\n- `crates/trust-but-verify/tests/storage.rs#fn[consumer_delegates_evidence_storage_using_only_the_requested_nodes_path]` checks that a different node gets None.\n\n**The key preserves both parts.** `crates/trust-but-verify/tests/storage.rs#fn[source_and_criterion_boundaries_preserve_independent_records]` stores records for source `[\"a\"]` with criterion `[\"b\",\"c\"]`, and for source `[\"a\",\"b\"]` with criterion `[\"c\"]`. It also covers empty, empty-string and escaped segments and other collision-prone pairs. It asserts the distinct record paths, loads every record back, and asserts each output is its own.\n\n**Different criteria of a source have independent records.**\n- `criteria_keep_typed_answers_and_persist_only_when_requested` stores `behavior`, `structure` and `text` for one source. It asserts the `behavior` record is unchanged after other saves and after a `verify` that doesn't save.\n- `domain_storage_round_trips_each_review_kind_and_preserves_records_on_errors` in `src/sdk.rs` loads another criterion as None and leaves the stored file bytes unchanged.\n\n**A version change invalidates the same criterion's record rather than creating another key.** `crates/trust-but-verify/tests/contracts.rs#fn[refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace]` covers the revision-change case. It asserts that exactly one record remains, with the new output and version.\n\n**Loads observe old or new complete records, or absence.**\n- `Ok(None)` for absence is asserted before the first save in several tests.\n- `crates/trust-but-verify/tests/storage.rs#fn[concurrent_readers_only_observe_complete_records_from_competing_writes]` runs concurrent readers against two competing writers. Every read must be a whole A or B record with consistent version, dependencies and output. The test also checks that no stray files are left.\n- `Err` for a failed load is asserted by the bad-JSON case in `consumer_delegates_evidence_storage_using_only_the_requested_nodes_path`.\n\n**Competing saves leave one complete record from a single save.** `crates/trust-but-verify/tests/contracts.rs#fn[concurrent_same_criterion_executions_keep_complete_independent_records]` and `crates/trust-but-verify/tests/contracts.rs#fn[concurrent_refreshes_execute_independently_and_store_complete_records]` race two saves. Each asserts one record remains, and its version, dependencies and output all belong to the same winner. No ordering is asserted, which matches the requirement.\n\n**Atomic replacement of only this pair's record.** The failed-store cases in `domain_storage_round_trips_each_review_kind_and_preserves_records_on_errors` assert the existing record is byte-identical after an error. They also assert that no extra files appear.\n\nI found no unexercised obligation or boundary.",
+  "references": "162a99c6cf20aafeea3d60f6583d04f25369f063028229a95e41b74543517154",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.evidence.evidence_storage",
@@ -115,9 +115,44 @@
       ]
     },
     {
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "trait[Domain]/fn[load_evidence]",
+      "hash": "8ec941154a72aeada388430fbae74362dccc195f0f33c9e98076857b977b36db"
+    },
+    {
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "trait[Domain]/fn[store_evidence]",
+      "hash": "b467be098cbbbbc089b671ccabc3354238da19c3aa2a8a404cf62761e7afe7b5"
+    },
+    {
+      "definition": "requirements.sdk.application_domain",
+      "text": [
+        "::::{definition} application_domain",
+        ":phrase: application domain",
+        "",
+        ":::{cite} requirements.sdk.domain",
+        "An *application domain* is the application's graph, node contents, and evidence",
+        "storage, made available together for criterion execution. In the SDK, it",
+        "implements [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html) to supply",
+        "its shared types, node and edge operations, and evidence persistence.",
+        ":::",
+        "::::"
+      ]
+    },
+    {
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "",
+      "hash": "14cf9f2cee545827d7acf808ca74ea45cc788ea70b4b81518f51cb524e01b6d1"
+    },
+    {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[criteria_keep_typed_answers_and_persist_only_when_requested]",
       "hash": "f47c40151c7d8ba4e5cd3b84d1c8d19288a02beb3f6148a79bdbcf6bc857964c"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "fn[wildcard_revision_does_not_supply_other_criteria_or_nodes]",
+      "hash": "0433495b024591d9502b4ea7d229eeaced87022be0a6733f43ff4e1476011405"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
@@ -155,47 +190,329 @@
       "hash": "9f880086be90a9d7231dc1d91e24cf6b2d5d4a3df9d9ab7c572d23114d757caa"
     },
     {
-      "definition": "requirements.sdk.application_domain",
-      "text": [
-        "::::{definition} application_domain",
-        ":phrase: application domain",
-        "",
-        ":::{cite} requirements.sdk.domain",
-        "An *application domain* is the application's graph, node contents, and evidence",
-        "storage, made available together for criterion execution. In the SDK, it",
-        "implements [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html) to supply",
-        "its shared types, node and edge operations, and evidence persistence.",
-        ":::",
-        "::::"
-      ]
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "impl[Validator<'d,%20D>]/fn[load_evidence]",
+      "hash": "bde37aab7f8c36fe6e9fea0051d849d53a6b3fb0afe3e8e134a5c073f1896d5d"
     },
     {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[wildcard_revision_does_not_supply_other_criteria_or_nodes]",
-      "hash": "0433495b024591d9502b4ea7d229eeaced87022be0a6733f43ff4e1476011405"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "impl[Application/Domain]/fn[load_evidence]",
-      "hash": "2cc7f384640062255612f5e11cb51ed0c0e75ae7fab5639ab9ef80b10b941251"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "impl[Application/Domain]/fn[store_evidence]",
-      "hash": "3dd98a235cd1e756ab0a71fdce213cceb360eee03b82a9aeb3924a67b09eb252"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "impl[Review<O>]/fn[new]",
-      "hash": "80e8164afcd362997f2ae1239edb611cad79907f830c21b7cfd3f72efafa65c6"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "struct[Review]",
-      "hash": "652b0fbf1429a07f1f684ae3909df03bd45fa67026c91ad5f951a06c00a5cb24"
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "impl[Validator<'d,%20D>]/fn[store_evidence]",
+      "hash": "f102d22aa4e7d1e1b656e215b1de8c72c49ac2993a5b98b251539d7116e94a1c"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.evidence.evidence_storage"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "162a99c6cf20aafeea3d60f6583d04f25369f063028229a95e41b74543517154"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.evidence.evidence_storage"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "c7f27458b6588b955695e577d871fa935e4f6fde516107710f6681f589279d73"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.domain"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "2e0a36b62ec75626b47edc2d133582146b235b039c605e398ae3dcc838c69532"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/domain.rs"
+                },
+                "selector": "trait[Domain]/fn[load_evidence]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "8ec941154a72aeada388430fbae74362dccc195f0f33c9e98076857b977b36db"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/domain.rs"
+                },
+                "selector": "trait[Domain]/fn[store_evidence]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "b467be098cbbbbc089b671ccabc3354238da19c3aa2a8a404cf62761e7afe7b5"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Definition": "requirements.sdk.application_domain"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "1f3d0d387ce356e5b4cc0cc22d20543142b5dcd7352c1eb5e4dd8dd73b058a34"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/domain.rs"
+                },
+                "selector": ""
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "8d679f726600c775a90044656e6d132de3976f43aca5deb9542504144c97fe1a"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The structural obligations in `requirements.sdk.graph.evidence.evidence_storage` are the two prescribed `Domain` trait method signatures. The clause is \"`trust_but_verify::domain::Domain` provides evidence persistence\". The text gives `load_evidence(&self, source: &NodeId<Self>, criterion: &CriterionPath) -> impl Future<Output = Result<Option<Record<Self::NodeData, Self::EdgeLabel>>, Self::Error>> + Send` and `store_evidence(&self, source, criterion, record: &Record<..>) -> impl Future<Output = Result<(), Self::Error>> + Send`.\n\nThe two roots are `crates/trust-but-verify/src/domain.rs#trait[Domain]/fn[load_evidence]` and `crates/trust-but-verify/src/domain.rs#trait[Domain]/fn[store_evidence]`. I read them in the supplied nodes, and they declare exactly these signatures. They take `&self`, a `&NodeId<Self>`, a `&CriterionPath`, and for store a `&Record<Self::NodeData, Self::EdgeLabel>`. They return the same `impl Future<Output = ...> + Send` types. The roots name the node parameter `node`, not `source`. That is a cosmetic difference, because a different parameter name would not change the signature. Both roots carry the `{impl}` marker for this requirement.\n\nIf the roots returned a boxed future, dropped `Send`, or took a flattened key, they would violate the clause. They do not.\n\nI treat the other clauses as behavioral, so they need no implementation root here:\n- The SDK passes the source identity and criterion path to both methods.\n- Source path and criterion path stay distinct, so `[\"a\"]`/`[\"b\",\"c\"]` and `[\"a\",\"b\"]`/`[\"c\"]` identify different records.\n- Criteria of a source have independent records.\n- A version change invalidates the same criterion's record.\n- Loads see an old or new complete record, or absence.\n- Competing saves leave one complete record.\n\nThese describe how callers use the trait and how an application's `Domain` implementation stores records. Each is checked through behavior, not through a structure the trait declaration fixes.\n\nThe `Clone + Send + Sync` supertraits belong to `requirements.sdk.domain`, which this requirement only cites."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.evidence.evidence_storage"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "162a99c6cf20aafeea3d60f6583d04f25369f063028229a95e41b74543517154"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.evidence.evidence_storage"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "c7f27458b6588b955695e577d871fa935e4f6fde516107710f6681f589279d73"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.domain"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "2e0a36b62ec75626b47edc2d133582146b235b039c605e398ae3dcc838c69532"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[criteria_keep_typed_answers_and_persist_only_when_requested]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f47c40151c7d8ba4e5cd3b84d1c8d19288a02beb3f6148a79bdbcf6bc857964c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[wildcard_revision_does_not_supply_other_criteria_or_nodes]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "0433495b024591d9502b4ea7d229eeaced87022be0a6733f43ff4e1476011405"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "095ffe75cc4d85fbea4a2822dacee31a5304b8dc3e8ca5daa34b26cee5410f12"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[concurrent_refreshes_execute_independently_and_store_complete_records]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "a327024b14ab898c67fb067253f0154c154c59c11b8ba9a205e2f91f85fd037b"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[concurrent_same_criterion_executions_keep_complete_independent_records]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "70754a4e4c0dca2f9b977cedc23fb77732e752f36e72e309fe495e2ee218931a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/storage.rs"
+                },
+                "selector": "fn[source_and_criterion_boundaries_preserve_independent_records]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "1c3e7204f5bad56b73019830133a1de4f68da5c27c2c737d5ee12146c312b0a9"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/storage.rs"
+                },
+                "selector": "fn[concurrent_readers_only_observe_complete_records_from_competing_writes]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "104d8fdc65ee1e6a630e60fb25b6d67c3b0a92393f9add08216e39031345b700"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/storage.rs"
+                },
+                "selector": "fn[consumer_delegates_evidence_storage_using_only_the_requested_nodes_path]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "a933cf0b6bdc18abf82f30ed8e593c342b43aa40f8a89702192d9b6955013de3"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/sdk.rs"
+                },
+                "selector": "mod[tests]/fn[domain_storage_round_trips_each_review_kind_and_preserves_records_on_errors]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "9f880086be90a9d7231dc1d91e24cf6b2d5d4a3df9d9ab7c572d23114d757caa"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Definition": "requirements.sdk.application_domain"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "1f3d0d387ce356e5b4cc0cc22d20543142b5dcd7352c1eb5e4dd8dd73b058a34"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The reviewed tests cover each observable obligation of `requirements.sdk.graph.evidence.evidence_storage`. The trait signatures are structural and need no behavioral test. I didn't request implementation source.\n\n**The SDK passes source identity and criterion path to both methods.**\n- `crates/trust-but-verify/tests/contracts.rs#fn[wildcard_revision_does_not_supply_other_criteria_or_nodes]` loads with a different criterion and with a different source node. Both return None. This shows both parts reach the domain.\n- `crates/trust-but-verify/tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` stores and loads through `Validator` and asserts the stored record's node, criterion path, output and version.\n- `crates/trust-but-verify/tests/storage.rs#fn[consumer_delegates_evidence_storage_using_only_the_requested_nodes_path]` checks that a different node gets None.\n\n**The key preserves both parts.** `crates/trust-but-verify/tests/storage.rs#fn[source_and_criterion_boundaries_preserve_independent_records]` stores records for source `[\"a\"]` with criterion `[\"b\",\"c\"]`, and for source `[\"a\",\"b\"]` with criterion `[\"c\"]`. It also covers empty, empty-string and escaped segments and other collision-prone pairs. It asserts the distinct record paths, loads every record back, and asserts each output is its own.\n\n**Different criteria of a source have independent records.**\n- `criteria_keep_typed_answers_and_persist_only_when_requested` stores `behavior`, `structure` and `text` for one source. It asserts the `behavior` record is unchanged after other saves and after a `verify` that doesn't save.\n- `domain_storage_round_trips_each_review_kind_and_preserves_records_on_errors` in `src/sdk.rs` loads another criterion as None and leaves the stored file bytes unchanged.\n\n**A version change invalidates the same criterion's record rather than creating another key.** `crates/trust-but-verify/tests/contracts.rs#fn[refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace]` covers the revision-change case. It asserts that exactly one record remains, with the new output and version.\n\n**Loads observe old or new complete records, or absence.**\n- `Ok(None)` for absence is asserted before the first save in several tests.\n- `crates/trust-but-verify/tests/storage.rs#fn[concurrent_readers_only_observe_complete_records_from_competing_writes]` runs concurrent readers against two competing writers. Every read must be a whole A or B record with consistent version, dependencies and output. The test also checks that no stray files are left.\n- `Err` for a failed load is asserted by the bad-JSON case in `consumer_delegates_evidence_storage_using_only_the_requested_nodes_path`.\n\n**Competing saves leave one complete record from a single save.** `crates/trust-but-verify/tests/contracts.rs#fn[concurrent_same_criterion_executions_keep_complete_independent_records]` and `crates/trust-but-verify/tests/contracts.rs#fn[concurrent_refreshes_execute_independently_and_store_complete_records]` race two saves. Each asserts one record remains, and its version, dependencies and output all belong to the same winner. No ordering is asserted, which matches the requirement.\n\n**Atomic replacement of only this pair's record.** The failed-store cases in `domain_storage_round_trips_each_review_kind_and_preserves_records_on_errors` assert the existing record is byte-identical after an error. They also assert that no extra files appear.\n\nI found no unexercised obligation or boundary."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -205,19 +522,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "b61f0c752f1499fb2963ebb894468587f8968bc95f3319d85a6bfe3cd06dd64a"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.evidence.evidence_storage"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "e7f3f2cdcbd18c316ca97c589607fdcc6b1b76165a7d0c484dd220c7237c8634"
+          "value": "162a99c6cf20aafeea3d60f6583d04f25369f063028229a95e41b74543517154"
         }
       ]
     },
@@ -249,6 +554,68 @@
           "Source": {
             "resource": {
               "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "trait[Domain]/fn[load_evidence]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "8ec941154a72aeada388430fbae74362dccc195f0f33c9e98076857b977b36db"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "trait[Domain]/fn[store_evidence]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b467be098cbbbbc089b671ccabc3354238da19c3aa2a8a404cf62761e7afe7b5"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Definition": "requirements.sdk.application_domain"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "1f3d0d387ce356e5b4cc0cc22d20543142b5dcd7352c1eb5e4dd8dd73b058a34"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": ""
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "8d679f726600c775a90044656e6d132de3976f43aca5deb9542504144c97fe1a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
               "location": "crates/trust-but-verify/tests/contracts.rs"
             },
             "selector": "fn[criteria_keep_typed_answers_and_persist_only_when_requested]"
@@ -257,6 +624,23 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "f47c40151c7d8ba4e5cd3b84d1c8d19288a02beb3f6148a79bdbcf6bc857964c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/contracts.rs"
+            },
+            "selector": "fn[wildcard_revision_does_not_supply_other_criteria_or_nodes]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "0433495b024591d9502b4ea7d229eeaced87022be0a6733f43ff4e1476011405"
         }
       ]
     },
@@ -380,13 +764,14 @@
       ]
     },
     {
-      "Node": [
+      "OutgoingEdges": [
         {
-          "Definition": "requirements.sdk.application_domain"
+          "Requirement": "requirements.sdk.graph.evidence.evidence_storage"
         },
+        "Implements",
         {
-          "scheme": "habeas-input-v1",
-          "value": "1f3d0d387ce356e5b4cc0cc22d20543142b5dcd7352c1eb5e4dd8dd73b058a34"
+          "scheme": "node-path-set-sha256-v1",
+          "value": "f2aa21d3cab4cb4edb5ec7db85a16127ef76688c0ffa7207d254d8169d0c0a85"
         }
       ]
     },
@@ -396,14 +781,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
+              "location": "crates/trust-but-verify/src/graph.rs"
             },
-            "selector": "fn[wildcard_revision_does_not_supply_other_criteria_or_nodes]"
+            "selector": "impl[Validator<'d,%20D>]/fn[load_evidence]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "0433495b024591d9502b4ea7d229eeaced87022be0a6733f43ff4e1476011405"
+          "value": "bde37aab7f8c36fe6e9fea0051d849d53a6b3fb0afe3e8e134a5c073f1896d5d"
         }
       ]
     },
@@ -413,65 +798,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
+              "location": "crates/trust-but-verify/src/graph.rs"
             },
-            "selector": "impl[Application/Domain]/fn[load_evidence]"
+            "selector": "impl[Validator<'d,%20D>]/fn[store_evidence]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "2cc7f384640062255612f5e11cb51ed0c0e75ae7fab5639ab9ef80b10b941251"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "impl[Application/Domain]/fn[store_evidence]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "3dd98a235cd1e756ab0a71fdce213cceb360eee03b82a9aeb3924a67b09eb252"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "impl[Review<O>]/fn[new]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "80e8164afcd362997f2ae1239edb611cad79907f830c21b7cfd3f72efafa65c6"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "struct[Review]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "652b0fbf1429a07f1f684ae3909df03bd45fa67026c91ad5f951a06c00a5cb24"
+          "value": "f102d22aa4e7d1e1b656e215b1de8c72c49ac2993a5b98b251539d7116e94a1c"
         }
       ]
     }

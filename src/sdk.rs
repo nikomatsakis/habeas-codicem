@@ -42,6 +42,7 @@ pub(crate) struct ResourceId {
 )]
 pub(crate) struct RequirementId(pub String);
 
+// {impl}`requirements.sdk.habeas.github_nodes`
 // {cite}`habeas:util`
 /// Habeas node identities preserve the source address stored in existing evidence.
 #[derive(
@@ -183,12 +184,9 @@ impl HabeasNodeContent {
 }
 
 impl NodeContents for HabeasNodeContent {
-    // {impl}`requirements.sdk.graph.node_content.fingerprint`
     fn fingerprint(&self) -> Fingerprint {
         self.fingerprint.clone()
     }
-    // {impl}`requirements.sdk.graph.node_content.format`
-    // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
     fn format(&self) -> String {
         self.text.clone()
     }
@@ -205,8 +203,6 @@ fn project_source_path(path: &std::path::Path) -> bool {
         })
 }
 
-// {impl}`requirements.sdk.graph.domain_types`
-// {impl}`requirements.sdk.domain`
 impl Domain for HabeasDomain {
     fn source_node(
         &self,
@@ -227,7 +223,6 @@ impl Domain for HabeasDomain {
             item: item.selector.clone(),
         }))
     }
-    // {impl}`requirements.sdk.sources.source_nodes`
     fn source_address(
         &self,
         data: &Self::NodeData,
@@ -371,7 +366,6 @@ impl Domain for HabeasDomain {
             .collect())
     }
 
-    // {impl}`requirements.sdk.habeas.evidence_format.loading`
     async fn load_evidence(
         &self,
         node: &NodeId<Self>,
@@ -382,9 +376,16 @@ impl Domain for HabeasDomain {
             .node_data(*node)
             .ok_or_else(|| std::io::Error::other("unassigned node handle"))?;
         let node = data.as_ref();
-        if criterion != &node.review_criterion() {
-            return Ok(None);
-        }
+        let dimension = match criterion.segments() {
+            [name]
+                if matches!(node, HabeasNode::Requirement(_))
+                    && matches!(name.as_str(), "behavioral" | "structural") =>
+            {
+                Some(name)
+            }
+            _ if criterion == &node.review_criterion() => None,
+            _ => return Ok(None),
+        };
         let Some(path) = node.evidence_path(&self.root) else {
             return Ok(None);
         };
@@ -393,7 +394,15 @@ impl Domain for HabeasDomain {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error),
         };
-        let value = serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
+        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+        if let Some(name) = dimension {
+            return value["criteria"]
+                .get(name)
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(std::io::Error::other);
+        }
         crate::evidence_format::decode(&value, node).map(Some)
     }
 
@@ -420,7 +429,7 @@ impl Domain for HabeasDomain {
 
     type NodeContent = HabeasNodeContent;
 
-    // {impl}`requirements.sdk.graph.node_content`
+    // {impl}`requirements.sdk.habeas.github_nodes`
     fn node_content(&self, node: &NodeId<Self>) -> std::io::Result<HabeasNodeContent> {
         let data = self
             .cache()
@@ -461,8 +470,8 @@ impl Domain for HabeasDomain {
 }
 
 impl HabeasDomain {
-    /// Discover the repository using the cache this domain retains for its reviews.
     // {impl}`requirements.sdk.habeas.graph_discovery`
+    /// Discover the repository using the cache this domain retains for its reviews.
     pub(crate) fn discover(root: &Path) -> std::io::Result<Self> {
         let mut domain = Self {
             root: std::fs::canonicalize(root)?.into(),
@@ -568,6 +577,7 @@ impl HabeasDomain {
         Ok(())
     }
 
+    // {impl}`requirements.sdk.habeas.graph_discovery`
     pub(crate) fn new(
         root: &Path,
         definitions: &BTreeMap<String, Declaration>,
@@ -583,7 +593,6 @@ impl HabeasDomain {
         }
     }
 
-    // {impl}`requirements.sdk.habeas.graph_discovery`
     pub(crate) fn install_edges(
         &mut self,
         source: HabeasNode,
@@ -670,7 +679,6 @@ impl HabeasNode {
         }
     }
 
-    // {impl}`requirements.sdk.habeas.citation_criterion`
     pub(crate) fn review_criterion(&self) -> CriterionPath {
         match self {
             Self::Source(_) => CriterionPath::new(vec!["citation-review".into()]),
@@ -700,12 +708,10 @@ impl HabeasNode {
 
 pub(crate) const REVIEW_VERSION: &str = "habeas-review-v1";
 
-// {impl}`requirements.sdk.graph.criteria.criterion_trait.version`
 pub(crate) fn review_version() -> CriterionVersion {
     CriterionVersion::new(REVIEW_VERSION)
 }
 
-// {impl}`requirements.sdk.graph.criteria.criterion_path`
 pub(crate) fn review_criterion() -> CriterionPath {
     CriterionPath::new(vec!["review".into()])
 }

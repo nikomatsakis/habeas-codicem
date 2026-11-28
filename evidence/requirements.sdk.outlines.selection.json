@@ -1,8 +1,8 @@
 {
   "requirement": "`OutlineContent::select` resolves a selector from the file's root against the\nretained outline. It returns another owned `OutlineContent` for that item,\nsharing the original source snapshot and fingerprinting rules. Selection\nperforms no additional file read and remains usable after the original handle\nis dropped. Resolution follows\n{cite}`requirements.sdk.outlines.selector_syntax`, including its rule that\nidentical plain-text lines are interchangeable. Invalid, missing, or ambiguous\nselections return an error under {cite}`requirements.sdk.outlines.errors`.\n\n```rust,ignore\nimpl OutlineContent {\n    /// Select an item from this retained file snapshot.\n    pub fn select(&self, selector: &str) -> Result<Self, OutlineError>;\n\n    /// Address of the selected item.\n    pub fn id(&self) -> &OutlineData;\n\n    /// Original selected text, including attached source, before redaction.\n    pub fn text(&self) -> &str;\n}\n```",
   "determination": true,
-  "rationale": "I judged the tests against `requirements.sdk.outlines.selection` by mapping each obligation to the supplied tests in `crates/trust-but-verify/tests/outline_content.rs`. I did not request implementation source.\n\n- **Resolution from the root against the retained outline, returning an owned `OutlineContent`.**\n  - `fn[rust_items_attach_documentation_and_preserve_structural_hashes]` selects every outline item. For each it asserts that `text()` equals the source span and that the structural hash matches.\n  - `fn[markdown_heading_levels_resolve_encoded_duplicates_and_anonymous_items]` selects nested, duplicate (`#1`/`#2`), anonymous and encoded selectors.\n  - `fn[css_duplicate_names_are_numbered_after_normalization_within_each_parent]` selects numbered CSS duplicates.\n  - `fn[selecting_multipart_impls_and_literal_slashes_preserves_label_boundaries]` selects multipart `impl` labels, and it also selects `fn[run]` below one.\n  - Empty-selector (root) selection is covered by `fn[selected_contents_outlive_handles_and_later_file_edits]` and by the root checks in the Rust and unicode tests.\n  - Selecting from an already-selected (non-root) handle resolves from the file root. The Markdown test checks `second.select(main)`.\n- **Sharing the source snapshot and fingerprinting rules.**\n  - The Rust and Markdown tests assert `std::ptr::eq(selected.outline(), contents.outline())`.\n  - `fn[explicit_languages_share_configuration_and_retain_their_scheme]` checks that the language, fingerprint scheme and fingerprint are retained by selected items. The selected structural hash is also checked.\n  - `fn[selected_contents_outlive_handles_and_later_file_edits]` checks the `fingerprint().scheme` format.\n- **No additional file read, and usable after the original handle is dropped.** `fn[selected_contents_outlive_handles_and_later_file_edits]` drops `file` and rewrites the file on disk. It then asserts that `selected_again.text()` is unchanged. It also asserts that `selected.select(\"\")` still returns the original root text, and that a fresh `from_id` now fails. That shows the retained snapshot is used and the file is not re-read.\n- **Identical plain-text lines are interchangeable.**\n  - `fn[unknown_extensions_keep_nonblank_lines_and_content_selectors]` asserts that the two `alpha` lines have the same selector and that selecting it yields `alpha`.\n  - `fn[ambiguous_items_are_errors_except_for_identical_plain_text_lines]` asserts that identical `same` lines select successfully.\n- **Invalid, missing and ambiguous selections return errors.**\n  - `fn[missing_file_and_invalid_selections_are_errors]` covers the malformed selector `fn[` and the missing item `fn[absent]`.\n  - `fn[ambiguous_items_are_errors_except_for_identical_plain_text_lines]` covers an ambiguous non-line kind and a `line` kind with differing hashes. Both must return errors containing \"ambiguous\".\n  - The CSS test asserts that the un-numbered `rule[a%20b]` errors.\n  - The multipart and literal-slash test asserts that `impl[Thing%2Fcore::fmt::Display]` and `section[A/B]` error.\n- **`id()` and `text()`.**\n  - `id()` is asserted for selected and root handles in `fn[selected_contents_outlive_handles_and_later_file_edits]`.\n  - `text()` is the original text, including attached doc comments and attributes, in the Rust test. It is also the pre-redaction raw text in `fn[formatted_contents_redact_credentials_while_retaining_raw_text_and_spans]`.\n\nThe selector-syntax and error requirements are cited context. The tests apply them to selection in the cases above. I found no unmapped obligation and no marking gap.",
-  "references": "eb0d100a55fea471645517c027add99e5a7af03249516b099d2fd3836834590e",
+  "rationale": "structural: The structural obligations in `requirements.sdk.outlines.selection` are the three prescribed signatures, plus the requirement that a selection is an owned `OutlineContent` that shares the original snapshot, does no further file read, and outlives the original handle. The three roots implement these.\n\n- `select`: `crates/trust-but-verify/src/outline/contents.rs#impl[OutlineContent]/fn[select]` has the signature `pub fn select(&self, selector: &str) -> Result<Self, OutlineError>`. It resolves the selector against `self.snapshot.outline.items`, which is the retained outline. It then returns a new `Self` whose `snapshot` is `self.snapshot.clone()`, an `Arc<Snapshot>` clone. That clone shares the source and outline without re-reading the file, and it keeps working after the original handle is dropped. An alternative that re-read the file or copied the source would violate this clause, and this code does neither. Errors for an invalid, missing or ambiguous selector come from `selection_error`. The `line` interchangeability rule is checked through the structural hash comparison. Both behaviors are governed by the cited `requirements.sdk.outlines.selector_syntax` and `requirements.sdk.outlines.errors`, which supply context only.\n- `id`: `impl[OutlineContent]/fn[id]` has the signature `pub fn id(&self) -> &OutlineData` and returns the stored `id`.\n- `text`: `impl[OutlineContent]/fn[text]` has the signature `pub fn text(&self) -> &str`. It slices the shared `snapshot.source` by the selected item's span, so the text is unredacted and includes attached source.\n\nThe supporting declarations need no separate reference. `struct[OutlineContent]` holds `snapshot: Arc<Snapshot>`, and `struct[Snapshot]` holds `source: Arc<str>`. Both are types used by the marked items and are already referenced by `requirements.sdk.outlines.outline_file.lifetime`. The `item()` helper is reached from `text`. No structural obligation is left without an implementation root.\n\nbehavioral: The reviewed tests cover every behavioral obligation in `requirements.sdk.outlines.selection`. Each test below is marked `{test}` for the requirement.\n\n- **Resolving a selector from the root and returning an owned item handle.**\n  - `rust_items_attach_documentation_and_preserve_structural_hashes` selects every outline item. It asserts that the text equals the item's span and that the structural hash matches.\n  - `markdown_heading_levels_resolve_encoded_duplicates_and_anonymous_items` selects Markdown items through nested, encoded, `#N` and anonymous selectors.\n  - `css_duplicate_names_are_numbered_after_normalization_within_each_parent` does the same for CSS.\n  - `selecting_multipart_impls_and_literal_slashes_preserves_label_boundaries` selects multipart `impl[...]` labels and `%2F`-encoded slashes.\n  - `unicode_spans_use_bytes_and_whitespace_only_lines_create_no_items` and `unknown_extensions_keep_nonblank_lines_and_content_selectors` select plain-text `line@hash` items.\n  - In `selected_contents_outlive_handles_and_later_file_edits`, `select(\"\")` returns the root, checked with `OutlineData::root` and the full text.\n- **`id()` and `text()` of the selected item.**\n  - `selected_contents_outlive_handles_and_later_file_edits` asserts `selected_again.id()` equals the id and the text is `second`.\n  - `formatted_contents_redact_credentials_while_retaining_raw_text_and_spans` asserts that the selected `text()` keeps the raw token, while `format()` shows `[REDACTED:GitHub Token]`. This covers \"original text before redaction\".\n- **Sharing the source snapshot and fingerprinting rules.**\n  - `explicit_languages_share_configuration_and_retain_their_scheme` checks that a selected item keeps the language and the `custom-v2` scheme. It checks that selecting from a path-loaded handle and from a source-supplied handle gives equal fingerprints. It also checks that a `custom-v3` language gives a different fingerprint.\n  - The Rust and Markdown tests assert `std::ptr::eq(selected.outline(), contents.outline())`, so the outline is shared.\n- **No additional file read, and usability after the original handle is dropped.** `selected_contents_outlive_handles_and_later_file_edits` calls `drop(file)` and then rewrites the file on disk. It then asserts that `selected_again.text()` and the fingerprint are unchanged. It also selects `\"\"` from `selected` after the edit and gets the original full text. A fresh `from_id` fails, which shows the file really changed.\n- **Selector-syntax rules, including interchangeable identical plain-text lines.** `ambiguous_items_are_errors_except_for_identical_plain_text_lines` and the `alpha` selection in `unknown_extensions_keep_nonblank_lines_and_content_selectors` cover this. Identical lines have equal selectors, and selecting one succeeds.\n- **Errors for invalid, missing and ambiguous selections.**\n  - `missing_file_and_invalid_selections_are_errors` asserts an error for the malformed selector `fn[` and for the missing item `fn[absent]`.\n  - `ambiguous_items_are_errors_except_for_identical_plain_text_lines` asserts an \"ambiguous\" error for duplicate `part` and `line` items with differing hashes.\n  - The CSS test asserts an error for the unnumbered duplicate `rule[a%20b]`.\n  - The multipart and Markdown test asserts an error for `impl[Thing%2Fcore::fmt::Display]` and `section[A/B]`.\n\nThe requirement does not say how to distinguish a malformed selector from a missing item, so I found no gap there. The detailed selector grammar and the error rules belong to `requirements.sdk.outlines.selector_syntax` and `requirements.sdk.outlines.errors`. They are cited context and I did not reassess them here.",
+  "references": "f5a55ee17a994c89a6c6a78ca7452b914ad633e6f7790d42e7a7743cd9deaf6e",
   "inputs": [
     {
       "requirements": "requirements.sdk.outlines.selection",
@@ -75,6 +75,31 @@
       ]
     },
     {
+      "file": "crates/trust-but-verify/src/outline/contents.rs",
+      "item": "impl[OutlineContent]/fn[select]",
+      "hash": "33d1beebc0df0d646a2f26046abb75fab11069b321345e7638c8c647823e1afc"
+    },
+    {
+      "file": "crates/trust-but-verify/src/outline/contents.rs",
+      "item": "impl[OutlineContent]/fn[id]",
+      "hash": "26b74bbe6e18cfb17c0148cb7be9e8b9fdc838edd0c116e9efcf6f230a37290a"
+    },
+    {
+      "file": "crates/trust-but-verify/src/outline/contents.rs",
+      "item": "impl[OutlineContent]/fn[text]",
+      "hash": "e916334ce80f30a2c9c939d3474d61f972ea1e2f85ddde507a733c3cd07431bc"
+    },
+    {
+      "file": "crates/trust-but-verify/src/outline/contents.rs",
+      "item": "struct[OutlineContent]",
+      "hash": "5bfe9b86858250f7111c57b69cb9de563ac399a1d2fbba2469558fdcae00e0b7"
+    },
+    {
+      "file": "crates/trust-but-verify/src/outline/contents.rs",
+      "item": "struct[Snapshot]",
+      "hash": "e22fe718090d3eec84069d8d4fecba3f0193648931c2eb715541b322862c0db6"
+    },
+    {
       "file": "crates/trust-but-verify/tests/outline_content.rs",
       "item": "fn[unknown_extensions_keep_nonblank_lines_and_content_selectors]",
       "hash": "94d7c178d939104d53f22b0e1d8f3dda14222b94c019532148467e15f989ce92"
@@ -130,7 +155,387 @@
       "hash": "7c29e0482d78c22515bf87f9af3d8590531cd6a106505ccb1855e4752051c0e7"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.outlines.selection"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "f5a55ee17a994c89a6c6a78ca7452b914ad633e6f7790d42e7a7743cd9deaf6e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.outlines.selection"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "9e0eaf22147c4672a51eb1931f33456bff6d721c29e2b67b46863b165dce194e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.outlines.selector_syntax"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "d4f491f21a4d8156e1bebdc0bea781fbcc9e94634745d15ac6567b710da16d3e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.outlines.errors"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "8d9b3d1c42a799dc0a6e57bf4a0b13b68b088bb0d5b7938693c4da10a284b24d"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/outline/contents.rs"
+                },
+                "selector": "impl[OutlineContent]/fn[select]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "33d1beebc0df0d646a2f26046abb75fab11069b321345e7638c8c647823e1afc"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/outline/contents.rs"
+                },
+                "selector": "impl[OutlineContent]/fn[id]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "26b74bbe6e18cfb17c0148cb7be9e8b9fdc838edd0c116e9efcf6f230a37290a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/outline/contents.rs"
+                },
+                "selector": "impl[OutlineContent]/fn[text]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "e916334ce80f30a2c9c939d3474d61f972ea1e2f85ddde507a733c3cd07431bc"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/outline/contents.rs"
+                },
+                "selector": "struct[OutlineContent]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "5bfe9b86858250f7111c57b69cb9de563ac399a1d2fbba2469558fdcae00e0b7"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/outline/contents.rs"
+                },
+                "selector": "struct[Snapshot]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "e22fe718090d3eec84069d8d4fecba3f0193648931c2eb715541b322862c0db6"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The structural obligations in `requirements.sdk.outlines.selection` are the three prescribed signatures, plus the requirement that a selection is an owned `OutlineContent` that shares the original snapshot, does no further file read, and outlives the original handle. The three roots implement these.\n\n- `select`: `crates/trust-but-verify/src/outline/contents.rs#impl[OutlineContent]/fn[select]` has the signature `pub fn select(&self, selector: &str) -> Result<Self, OutlineError>`. It resolves the selector against `self.snapshot.outline.items`, which is the retained outline. It then returns a new `Self` whose `snapshot` is `self.snapshot.clone()`, an `Arc<Snapshot>` clone. That clone shares the source and outline without re-reading the file, and it keeps working after the original handle is dropped. An alternative that re-read the file or copied the source would violate this clause, and this code does neither. Errors for an invalid, missing or ambiguous selector come from `selection_error`. The `line` interchangeability rule is checked through the structural hash comparison. Both behaviors are governed by the cited `requirements.sdk.outlines.selector_syntax` and `requirements.sdk.outlines.errors`, which supply context only.\n- `id`: `impl[OutlineContent]/fn[id]` has the signature `pub fn id(&self) -> &OutlineData` and returns the stored `id`.\n- `text`: `impl[OutlineContent]/fn[text]` has the signature `pub fn text(&self) -> &str`. It slices the shared `snapshot.source` by the selected item's span, so the text is unredacted and includes attached source.\n\nThe supporting declarations need no separate reference. `struct[OutlineContent]` holds `snapshot: Arc<Snapshot>`, and `struct[Snapshot]` holds `source: Arc<str>`. Both are types used by the marked items and are already referenced by `requirements.sdk.outlines.outline_file.lifetime`. The `item()` helper is reached from `text`. No structural obligation is left without an implementation root."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.outlines.selection"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "f5a55ee17a994c89a6c6a78ca7452b914ad633e6f7790d42e7a7743cd9deaf6e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.outlines.selection"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "9e0eaf22147c4672a51eb1931f33456bff6d721c29e2b67b46863b165dce194e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.outlines.selector_syntax"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "d4f491f21a4d8156e1bebdc0bea781fbcc9e94634745d15ac6567b710da16d3e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.outlines.errors"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "8d9b3d1c42a799dc0a6e57bf4a0b13b68b088bb0d5b7938693c4da10a284b24d"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/outline_content.rs"
+                },
+                "selector": "fn[unknown_extensions_keep_nonblank_lines_and_content_selectors]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "d99771d9c1babd9585399af2dc693bbbe6d8b5f8e83df526e7604da405319e0e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/outline_content.rs"
+                },
+                "selector": "fn[selected_contents_outlive_handles_and_later_file_edits]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "e7a3c4d40930e936e4d6f3c777d8601fb4b57e35b31b6260e2328b02fcc7c8aa"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/outline_content.rs"
+                },
+                "selector": "fn[missing_file_and_invalid_selections_are_errors]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "a14f91068c15aa846cb6255f9d656e919ad45062fd6ae1c3784a1323ef3e8200"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/outline_content.rs"
+                },
+                "selector": "fn[explicit_languages_share_configuration_and_retain_their_scheme]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "b4d217f3849454ecb528cf860851500af60f692fc6c269d9683f85fc2378dcb4"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/outline_content.rs"
+                },
+                "selector": "fn[ambiguous_items_are_errors_except_for_identical_plain_text_lines]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "c8df19eeef0185837be7fc70e1ddadc43f09a0d777b74f7564d5938d00b99441"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/outline_content.rs"
+                },
+                "selector": "fn[unicode_spans_use_bytes_and_whitespace_only_lines_create_no_items]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "a56075f5eb5f0491db5b9fcedd24a08fa7c3252d8919cbb3342ba7d6b339a05e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/outline_content.rs"
+                },
+                "selector": "fn[markdown_heading_levels_resolve_encoded_duplicates_and_anonymous_items]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "ea2426468e0ddc93642f3c7266bbc988646c174782f2a06ad4ead4b6a977375d"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/outline_content.rs"
+                },
+                "selector": "fn[css_duplicate_names_are_numbered_after_normalization_within_each_parent]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "17a09b1ac773427b2b3c4e9028dfc74629a436017e59c264b22633e98630caca"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/outline_content.rs"
+                },
+                "selector": "fn[rust_items_attach_documentation_and_preserve_structural_hashes]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f8f1ae6a062ae4033c87c20215bd0a08c367158e4e8403fd3471cb5e51b514c8"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/outline_content.rs"
+                },
+                "selector": "fn[formatted_contents_redact_credentials_while_retaining_raw_text_and_spans]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "164af09c9e68a582349fc36c1b0a454c248fa916f38bcc02775522628ec75cb1"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/outline_content.rs"
+                },
+                "selector": "fn[selecting_multipart_impls_and_literal_slashes_preserves_label_boundaries]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "7c29e0482d78c22515bf87f9af3d8590531cd6a106505ccb1855e4752051c0e7"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The reviewed tests cover every behavioral obligation in `requirements.sdk.outlines.selection`. Each test below is marked `{test}` for the requirement.\n\n- **Resolving a selector from the root and returning an owned item handle.**\n  - `rust_items_attach_documentation_and_preserve_structural_hashes` selects every outline item. It asserts that the text equals the item's span and that the structural hash matches.\n  - `markdown_heading_levels_resolve_encoded_duplicates_and_anonymous_items` selects Markdown items through nested, encoded, `#N` and anonymous selectors.\n  - `css_duplicate_names_are_numbered_after_normalization_within_each_parent` does the same for CSS.\n  - `selecting_multipart_impls_and_literal_slashes_preserves_label_boundaries` selects multipart `impl[...]` labels and `%2F`-encoded slashes.\n  - `unicode_spans_use_bytes_and_whitespace_only_lines_create_no_items` and `unknown_extensions_keep_nonblank_lines_and_content_selectors` select plain-text `line@hash` items.\n  - In `selected_contents_outlive_handles_and_later_file_edits`, `select(\"\")` returns the root, checked with `OutlineData::root` and the full text.\n- **`id()` and `text()` of the selected item.**\n  - `selected_contents_outlive_handles_and_later_file_edits` asserts `selected_again.id()` equals the id and the text is `second`.\n  - `formatted_contents_redact_credentials_while_retaining_raw_text_and_spans` asserts that the selected `text()` keeps the raw token, while `format()` shows `[REDACTED:GitHub Token]`. This covers \"original text before redaction\".\n- **Sharing the source snapshot and fingerprinting rules.**\n  - `explicit_languages_share_configuration_and_retain_their_scheme` checks that a selected item keeps the language and the `custom-v2` scheme. It checks that selecting from a path-loaded handle and from a source-supplied handle gives equal fingerprints. It also checks that a `custom-v3` language gives a different fingerprint.\n  - The Rust and Markdown tests assert `std::ptr::eq(selected.outline(), contents.outline())`, so the outline is shared.\n- **No additional file read, and usability after the original handle is dropped.** `selected_contents_outlive_handles_and_later_file_edits` calls `drop(file)` and then rewrites the file on disk. It then asserts that `selected_again.text()` and the fingerprint are unchanged. It also selects `\"\"` from `selected` after the edit and gets the original full text. A fresh `from_id` fails, which shows the file really changed.\n- **Selector-syntax rules, including interchangeable identical plain-text lines.** `ambiguous_items_are_errors_except_for_identical_plain_text_lines` and the `alpha` selection in `unknown_extensions_keep_nonblank_lines_and_content_selectors` cover this. Identical lines have equal selectors, and selecting one succeeds.\n- **Errors for invalid, missing and ambiguous selections.**\n  - `missing_file_and_invalid_selections_are_errors` asserts an error for the malformed selector `fn[` and for the missing item `fn[absent]`.\n  - `ambiguous_items_are_errors_except_for_identical_plain_text_lines` asserts an \"ambiguous\" error for duplicate `part` and `line` items with differing hashes.\n  - The CSS test asserts an error for the unnumbered duplicate `rule[a%20b]`.\n  - The multipart and Markdown test asserts an error for `impl[Thing%2Fcore::fmt::Display]` and `section[A/B]`.\n\nThe requirement does not say how to distinguish a malformed selector from a missing item, so I found no gap there. The detailed selector grammar and the error rules belong to `requirements.sdk.outlines.selector_syntax` and `requirements.sdk.outlines.errors`. They are cited context and I did not reassess them here."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -140,19 +545,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "eb0d100a55fea471645517c027add99e5a7af03249516b099d2fd3836834590e"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.outlines.selection"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "91d544788d65c40c6b66bb5779b3f924a88e91f39407cd9a9da034e1a04b733b"
+          "value": "f5a55ee17a994c89a6c6a78ca7452b914ad633e6f7790d42e7a7743cd9deaf6e"
         }
       ]
     },
@@ -186,6 +579,91 @@
         {
           "scheme": "habeas-input-v1",
           "value": "8d9b3d1c42a799dc0a6e57bf4a0b13b68b088bb0d5b7938693c4da10a284b24d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/outline/contents.rs"
+            },
+            "selector": "impl[OutlineContent]/fn[select]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "33d1beebc0df0d646a2f26046abb75fab11069b321345e7638c8c647823e1afc"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/outline/contents.rs"
+            },
+            "selector": "impl[OutlineContent]/fn[id]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "26b74bbe6e18cfb17c0148cb7be9e8b9fdc838edd0c116e9efcf6f230a37290a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/outline/contents.rs"
+            },
+            "selector": "impl[OutlineContent]/fn[text]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "e916334ce80f30a2c9c939d3474d61f972ea1e2f85ddde507a733c3cd07431bc"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/outline/contents.rs"
+            },
+            "selector": "struct[OutlineContent]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "5bfe9b86858250f7111c57b69cb9de563ac399a1d2fbba2469558fdcae00e0b7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/outline/contents.rs"
+            },
+            "selector": "struct[Snapshot]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "e22fe718090d3eec84069d8d4fecba3f0193648931c2eb715541b322862c0db6"
         }
       ]
     },

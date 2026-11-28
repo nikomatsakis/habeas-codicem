@@ -431,7 +431,14 @@ impl Agent<Memory> for MockAgent {
             };
             match (request.finish)(result)? {
                 crate::agent_runtime::Submission::Accepted(()) => Ok(()),
-                crate::agent_runtime::Submission::Retry(_) => panic!("unexpected correction"),
+                crate::agent_runtime::Submission::Retry(message) => {
+                    assert!(
+                        self.invalid && message.contains("invalid type"),
+                        "{message}"
+                    );
+                    // This fixture ends the conversation without sending a correction.
+                    Ok(())
+                }
             }
         })
     }
@@ -1629,7 +1636,7 @@ async fn concurrent_single_node_validations_keep_separate_traces() {
 // {test}`requirements.sdk.graph.running-criteria.ValidationError`
 // {test}`requirements.sdk.graph.agent-calls.Ask`
 #[tokio::test]
-async fn invalid_typed_submission_is_an_agent_error() {
+async fn ending_without_a_corrected_submission_is_an_agent_error() {
     let graph = Memory {
         ask_in_callback: true,
         ..Memory::default()

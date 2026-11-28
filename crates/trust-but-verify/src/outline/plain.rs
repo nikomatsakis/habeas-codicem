@@ -10,7 +10,7 @@
 
 use super::profile::{Profile, kind_is_comment, never};
 
-// {impl}`requirements.references.structural_hash`
+// {impl}`requirements.references.outlines`
 pub static PROFILE: Profile = Profile {
     expando_char: '$',
     name: "plain-text",

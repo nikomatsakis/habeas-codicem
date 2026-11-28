@@ -16,6 +16,12 @@ Running `habeas setup` in an existing Cargo and mdBook project MUST add Habeas a
 `habeas status [<selection>] [--all] [--verbose]` MUST consider requirements and named examples matched by the {term}`requirements.references.definition_selection`; without a selection it MUST consider every definition. By default, it MUST list matching definitions in full-name order when their evidence is missing, has a false determination, or fails the same evidence and reference checks as `habeas::validate()`. It MUST summarize FIXME judgments under {cite}`requirements.cli.fixme_summary`, with accepted FIXME subjects listed individually only when `--verbose` or `--all` is selected. `--all` MUST list every matching definition with its kind and evidence state. Every form MUST show validation findings, work from within a Cargo and mdBook project, and report invalid arguments or a supplied selection matching no definition clearly. Every form MUST also list, in a "Disagreements" section, each selected definition, citation review, and site review whose recorded rationale states that its assessments disagreed under {cite}`requirements.authoring.confirmation.disagreement`, regardless of whether validation accepts the recorded judgment.
 :::
 
+:::{req} status.test_annotations
+`habeas status` MUST display the file, line, and test name for each violation of
+{cite}`requirements.references.coverage.tests`. The command MUST exit successfully
+when it completes the report with these findings.
+:::
+
 :::{req} fixme_summary
 `habeas status` MUST group the selected requirement and example judgments marked
 FIXME by issue reference and report how many distinct judgments each issue
@@ -362,7 +368,7 @@ The review prompt MUST tell the reviewer that a report with only wording changes
 :impl: assets/skills/habeas-requirements/SKILL.md
 :impl: assets/skills/habeas-bootstrap-requirements/SKILL.md
 :impl: assets/skills/habeas-evidence/SKILL.md
-Habeas's bundled agent skills MUST direct agents reviewing code against requirements to inspect every end-user-observable result and branch, including errors and input handling, and verify both that the code fulfills each applicable requirement and that it introduces no additional end-user-observable behavior without an agreed requirement. They MUST explain the requirement and example review criteria in {cite}`requirements.ci.review_criteria`, including test adequacy and justified absence of tests for requirements, and the three outcomes and documented-gap convention in {cite}`requirements.ci.outcomes`. Agents MUST mark the roots of a requirement's implementation with `{impl}` and the tests that verify it with `{test}`, leaving code reached from those items unmarked, and use `{cite}` only for related code that does neither, under {cite}`requirements.references.procedure`. Where requirements interact, agents MUST mark every requirement implemented at the relevant point and explain how their texts jointly account for the behavior. A citation alone MUST NOT count as that explanation.
+Habeas's bundled agent skills MUST direct agents reviewing code against requirements to inspect every end-user-observable result and branch, including errors and input handling, and verify both that the code fulfills each applicable requirement and that it introduces no additional end-user-observable behavior without an agreed requirement. They MUST explain the requirement and example review criteria in {cite}`requirements.ci.review_criteria`, including test adequacy and justified absence of tests for requirements, and the three outcomes and documented-gap convention in {cite}`requirements.ci.outcomes`. The skills MUST teach the test annotation rule under {cite}`requirements.references.coverage.tests`, the structural marker guidance under {cite}`requirements.references.structural_markers`, and the citation rule under {cite}`requirements.references.procedure`. Where requirements interact, agents MUST explain how their texts jointly account for the behavior. A citation alone MUST NOT count as that explanation.
 :::
 
 :::{req} internal_detail_guidance

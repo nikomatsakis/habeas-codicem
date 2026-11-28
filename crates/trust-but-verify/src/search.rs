@@ -1,13 +1,11 @@
 //! In-process, case-sensitive regular-expression search.
 use std::io;
 
-// {impl}`requirements.authoring.source_tools`
 pub struct RegexSearch {
     matcher: grep_regex::RegexMatcher,
 }
 
 impl RegexSearch {
-    // {impl}`requirements.authoring.source_tools`
     pub fn compile(pattern: &str) -> io::Result<Self> {
         let matcher = grep_regex::RegexMatcherBuilder::new()
             .case_insensitive(false)

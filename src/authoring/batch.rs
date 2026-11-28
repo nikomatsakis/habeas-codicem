@@ -17,7 +17,6 @@ use crate::config::{self, AssessmentPolicy};
 use crate::evidence::{InspectionProgress, RepositoryInspection, inspect_repository_with_progress};
 use crate::index::{EvidenceState, LoadedDetailEvidence};
 
-// {impl}`requirements.authoring.policy`
 pub struct BatchOutcome {
     pub completed: Vec<AuthoringOutcome>,
     pub failures: Vec<(String, String)>,
@@ -32,23 +31,12 @@ pub struct BatchOutcome {
 }
 
 /// The inspection phase that selects definitions and citation reviews.
-// {impl}`requirements.authoring.progress`
 const SELECTION_STAGE: &str = "selecting assessments";
 
-// {impl}`requirements.authoring.batch`
-// {impl}`requirements.authoring.concurrency`
-// {impl}`requirements.authoring.configuration_precedence`
-// {impl}`requirements.authoring.read_denial`
-// {impl}`requirements.authoring.progress`
 pub async fn author_all(root: &Path, selection: Option<&str>) -> io::Result<BatchOutcome> {
     author_all_with_options(root, selection, AuthoringOptions::default()).await
 }
 
-// {impl}`requirements.ci.authoring_inputs`
-// {impl}`requirements.configuration.loading`
-// {impl}`requirements.references.citation_review`
-// {impl}`requirements.authoring.github_reads`
-// {impl}`requirements.authoring.policy`
 pub async fn author_all_with_options(
     root: &Path,
     selection: Option<&str>,
@@ -59,7 +47,6 @@ pub async fn author_all_with_options(
 
 /// Authors the site reviews of one distributed requirement, as
 /// `habeas author sites:<full-name>`, under the batch's refresh rules.
-// {impl}`requirements.references.site_review`
 pub async fn author_sites_with_options(
     root: &Path,
     requirement: &str,
@@ -71,10 +58,6 @@ pub async fn author_sites_with_options(
 
 /// Runs a batch over every subject, or, with `sites_of`, over the site
 /// reviews of one distributed requirement.
-// {impl}`requirements.authoring.github_reads`
-// {impl}`requirements.authoring.policy`
-// {impl}`requirements.authoring.cache_warmup`
-// {impl}`requirements.authoring.read_denial.mandatory`
 async fn run_batch(
     root: &Path,
     selection: Option<&str>,
@@ -89,7 +72,6 @@ async fn run_batch(
         return Err(io::Error::other(inspection.discovery_errors.join("\n")));
     }
     // A FIXME record whose acknowledging issue closed is stale.
-    // {impl}`requirements.authoring.github_reads`
     crate::github::add_issue_findings(
         &mut inspection,
         &crate::github::GithubIssues::from_env(&root),
@@ -137,7 +119,6 @@ async fn run_batch(
         cancelled: false,
     };
     // With nothing to assess, no configuration or credentials are resolved.
-    // {impl}`requirements.authoring.configuration`
     if subjects.is_empty() {
         return Ok(outcome);
     }
@@ -166,7 +147,6 @@ async fn run_batch(
 
 /// Each round commits its evidence before this barrier. Inspect on both sides
 /// of source edits so unrelated, previously stale evidence is left alone.
-// {impl}`requirements.authoring.reassessment`
 pub(super) async fn finish_corrections(
     root: &Path,
     config: &config::ResolvedAuthoringConfig,
@@ -275,6 +255,7 @@ pub(super) async fn finish_corrections(
     Ok(())
 }
 
+// {impl}`requirements.authoring.concurrency`
 async fn assess_round(
     root: &Path,
     inspection: &RepositoryInspection,
@@ -421,25 +402,18 @@ async fn assess_round(
 }
 
 /// The kind of a subject's assessment, whose system prompt every
-/// assessment of that kind shares. Structural and test-adequacy requirements
+/// assessment of that kind shares. Distributed and ordinary requirements
 /// have different system prompts, while both retain the "requirement" usage label.
-// {impl}`requirements.authoring.prompt_parts`
 fn assessment_kind(inspection: &RepositoryInspection, subject: &AuthoringSubject) -> &'static str {
     match subject {
         AuthoringSubject::Definition(name) => {
             let Some(definition) = inspection.definitions.get(name) else {
                 return "requirement";
             };
-            let entries = crate::evidence::reference_set_entries(
-                &inspection.root,
-                &inspection.outlines,
-                name,
-                definition,
-                &inspection.references,
-                &inspection.sites,
-            );
-            if crate::evidence::structural_assessment(definition, &entries) {
-                "structural requirement"
+            if definition.kind == crate::DefinitionKind::Requirement
+                && !crate::evidence::reviews_both_dimensions(definition)
+            {
+                "distributed requirement"
             } else {
                 definition.kind.noun()
             }
@@ -553,14 +527,12 @@ fn current(evidence: &LoadedDetailEvidence) -> bool {
 /// Whether one named subject's evidence is current, so that `--missing`
 /// keeps it without resolving configuration. A subject naming no current
 /// definition, item, or site is not current; its assessment reports it.
-// {impl}`requirements.authoring.invocation`
 pub(super) fn subject_is_current(root: &Path, subject: &AuthoringSubject) -> io::Result<bool> {
     let mut inspection = crate::evidence::inspect_repository(root)?;
     if !inspection.discovery_errors.is_empty() {
         return Err(io::Error::other(inspection.discovery_errors.join("\n")));
     }
     // A FIXME record whose acknowledging issue closed is stale.
-    // {impl}`requirements.authoring.github_reads`
     crate::github::add_issue_findings(
         &mut inspection,
         &crate::github::GithubIssues::from_env(root),
@@ -715,7 +687,6 @@ fn cancel_on_error(cancel: &watch::Sender<Option<&'static str>>, error: &io::Err
     }
 }
 
-// {impl}`requirements.authoring.batch`
 /// Records an interruption that has already arrived, without waiting. The
 /// first poll registers the listener.
 async fn observe_interrupt(
@@ -738,7 +709,6 @@ async fn observe_interrupt(
     }
 }
 
-// {impl}`requirements.authoring.batch`
 /// Signals every assessment and the launcher that the batch is stopping.
 fn stop(cancel: &watch::Sender<Option<&'static str>>) {
     cancel.send_if_modified(|current| {
@@ -751,7 +721,6 @@ fn stop(cancel: &watch::Sender<Option<&'static str>>) {
     });
 }
 
-// {impl}`requirements.authoring.persistence`
 fn stage_record(
     root: &Path,
     pending: &PendingAssessment,
@@ -767,8 +736,6 @@ fn stage_record(
     Ok((file, path))
 }
 
-// {impl}`requirements.authoring.batch`
-// {impl}`requirements.authoring.persistence`
 fn persist_record(
     file: tempfile::NamedTempFile,
     path: PathBuf,
@@ -867,7 +834,7 @@ mod tests {
     // {test}`requirements.authoring.prompt_parts`
     // {test}`requirements.authoring.structural_review`
     #[test]
-    fn structural_and_test_reviews_warm_separately_without_changing_usage_labels() {
+    fn requirements_share_a_cache_across_edge_combinations() {
         let project = super::super::inputs::tests::project();
         let root = project.path();
         fs::write(
@@ -889,20 +856,15 @@ mod tests {
             })
             .to_vec();
         let mut warmup = CacheWarmup::default();
-        assert_eq!(warmup.next(&mut queue).unwrap().0, "structural requirement");
         assert_eq!(warmup.next(&mut queue).unwrap().0, "requirement");
         assert!(warmup.next(&mut queue).is_none());
-        warmup.warmed("structural requirement");
-        let (kind, subject, warms) = warmup.next(&mut queue).unwrap();
-        assert_eq!(kind, "structural requirement");
-        assert_eq!(subject.label(), "requirements.more_structure");
-        assert!(!warms);
-        assert!(warmup.next(&mut queue).is_none());
         warmup.warmed("requirement");
-        assert_eq!(
-            warmup.next(&mut queue).unwrap().1.label(),
-            "requirements.more_behavior"
-        );
+        for expected in ["behavior", "more_structure", "more_behavior"] {
+            let (kind, subject, warms) = warmup.next(&mut queue).unwrap();
+            assert_eq!(kind, "requirement");
+            assert_eq!(subject.label(), format!("requirements.{expected}"));
+            assert!(!warms);
+        }
         assert!(queue.is_empty());
     }
 

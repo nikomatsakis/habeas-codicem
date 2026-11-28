@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+// {impl}`requirements.sdk.outlines.HASH_DIGITS`
 /// Number of identity-hash hex digits in an anonymous segment.
 pub const HASH_DIGITS: usize = 12;
 
@@ -22,7 +23,6 @@ pub(crate) fn encode_name(name: &str) -> String {
     encoded
 }
 
-// {impl}`requirements.sdk.outlines.selector_syntax`
 /// Reverses [`encode_name`], rejecting malformed escapes and unescaped
 /// delimiters.
 pub(crate) fn decode_name(encoded: &str) -> Result<String, SelectorError> {
@@ -61,7 +61,7 @@ pub(crate) fn decode_name(encoded: &str) -> Result<String, SelectorError> {
         .map_err(|_| SelectorError::new(encoded, "percent escapes are not UTF-8"))
 }
 
-// {impl}`requirements.sdk.outlines.selector_syntax`
+// {impl}`requirements.sdk.outlines.Label`
 /// A segment's label: a name, made of `/`-joined parts, or an identity hash.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Label {
@@ -69,9 +69,10 @@ pub enum Label {
     Hash(String),
 }
 
+// {impl}`requirements.sdk.outlines.Segment`
+// {impl}`requirements.sdk.public_api`
 /// One parsed selector segment.
 #[derive(Clone, Debug, PartialEq, Eq)]
-// {impl}`requirements.sdk.outlines.selector_syntax`
 #[non_exhaustive]
 pub struct Segment {
     pub kind: String,
@@ -79,6 +80,8 @@ pub struct Segment {
     pub ordinal: Option<usize>,
 }
 
+// {impl}`requirements.sdk.outlines.Segment`
+// {impl}`requirements.sdk.public_api`
 impl Segment {
     pub fn new(kind: String, label: Label) -> Self {
         Self {
@@ -110,6 +113,7 @@ impl Segment {
     }
 }
 
+// {impl}`requirements.sdk.outlines.Segment`
 impl fmt::Display for Segment {
     // {cite}`habeas:util`
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -121,6 +125,8 @@ impl fmt::Display for Segment {
     }
 }
 
+// {impl}`requirements.sdk.outlines.SelectorError`
+// {impl}`requirements.sdk.public_api`
 // {cite}`habeas:util`
 /// An invalid selector.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -130,7 +136,9 @@ pub struct SelectorError {
     pub message: String,
 }
 
+// {impl}`requirements.sdk.public_api`
 impl SelectorError {
+    // {impl}`requirements.sdk.outlines.SelectorError`
     // {cite}`habeas:util`
     pub fn new(selector: &str, message: impl Into<String>) -> Self {
         Self {
@@ -140,6 +148,7 @@ impl SelectorError {
     }
 }
 
+// {impl}`requirements.sdk.outlines.SelectorError`
 impl fmt::Display for SelectorError {
     // {cite}`habeas:util`
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -151,9 +160,9 @@ impl fmt::Display for SelectorError {
     }
 }
 
+// {impl}`requirements.sdk.outlines.SelectorError`
 impl std::error::Error for SelectorError {}
 
-// {impl}`requirements.sdk.outlines.selector_syntax`
 /// Splits a selector at `/` outside brackets.
 fn split_segments(selector: &str) -> Result<Vec<&str>, SelectorError> {
     let mut segments = Vec::new();
@@ -245,9 +254,9 @@ fn parse_segment(selector: &str, segment: &str) -> Result<Segment, SelectorError
     })
 }
 
-/// Parses a selector; the empty selector has no segments and selects the root.
-// {impl}`requirements.sdk.outlines.selector_syntax`
+// {impl}`requirements.sdk.outlines.parse_selector`
 // {impl}`requirements.sdk.outlines.selector_parser`
+/// Parses a selector; the empty selector has no segments and selects the root.
 pub fn parse_selector(selector: &str) -> Result<Vec<Segment>, SelectorError> {
     if selector.is_empty() {
         return Ok(Vec::new());

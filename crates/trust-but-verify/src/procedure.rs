@@ -14,30 +14,29 @@ use std::{borrow::Cow, future::IntoFuture, marker::PhantomData};
 
 // {impl}`requirements.sdk.graph.agent-calls.agent_context`
 pub trait Context {
-    // {impl}`requirements.sdk.graph.agent-calls.agent_context`
     fn contents(&self) -> Cow<'_, String>;
 }
 
+// {impl}`requirements.sdk.graph.agent-calls.agent_context`
 impl<C: Context + ?Sized> Context for &C {
-    // {impl}`requirements.sdk.graph.agent-calls.agent_context`
     fn contents(&self) -> Cow<'_, String> {
         (**self).contents()
     }
 }
+// {impl}`requirements.sdk.graph.agent-calls.agent_context`
 impl Context for String {
-    // {impl}`requirements.sdk.graph.agent-calls.agent_context`
     fn contents(&self) -> Cow<'_, String> {
         Cow::Borrowed(self)
     }
 }
+// {impl}`requirements.sdk.graph.agent-calls.agent_context`
 impl Context for str {
-    // {impl}`requirements.sdk.graph.agent-calls.agent_context`
     fn contents(&self) -> Cow<'_, String> {
         Cow::Owned(self.to_owned())
     }
 }
+// {impl}`requirements.sdk.graph.agent-calls.agent_context`
 impl<C: Context> Context for [C] {
-    // {impl}`requirements.sdk.graph.agent-calls.agent_context`
     fn contents(&self) -> Cow<'_, String> {
         Cow::Owned(
             self.iter()
@@ -47,16 +46,16 @@ impl<C: Context> Context for [C] {
         )
     }
 }
+// {impl}`requirements.sdk.graph.agent-calls.agent_context`
 impl<C: Context> Context for Vec<C> {
-    // {impl}`requirements.sdk.graph.agent-calls.agent_context`
     fn contents(&self) -> Cow<'_, String> {
         self.as_slice().contents()
     }
 }
+// {impl}`requirements.sdk.graph.agent-calls.agent_context`
 macro_rules! tuple_context {
     ($($type:ident:$index:tt),+) => {
         impl<$($type: Context),+> Context for ($($type,)+) {
-            // {impl}`requirements.sdk.graph.agent-calls.agent_context`
             fn contents(&self) -> Cow<'_, String> {
                 Cow::Owned(vec![$(self.$index.contents().into_owned()),+].join("\n\n"))
             }
@@ -106,6 +105,7 @@ pub(crate) trait Agent<D: Domain>: Send + Sync {
 }
 
 // {impl}`requirements.sdk.graph.agent-calls.author_procedure`
+// {impl}`requirements.sdk.graph.validation-context.ValidationContext`
 pub struct ValidationContext<'d, D: Domain> {
     node: NodeId<D>,
     graph: &'d D,
@@ -116,8 +116,8 @@ pub struct ValidationContext<'d, D: Domain> {
 }
 
 impl<'d, D: Domain> ValidationContext<'d, D> {
-    // {cite}`habeas:util`
     // {impl}`requirements.sdk.graph.validation-context.ValidationContext.new`
+    // {cite}`habeas:util`
     pub fn new(graph: &'d D, node: NodeId<D>) -> Self {
         Self::configured(graph, node, None)
     }
@@ -130,7 +130,6 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
     }
 
     // {cite}`habeas:util`
-    // {impl}`requirements.sdk.graph.validation-context.shared_context`
     pub(crate) fn configured(
         graph: &'d D,
         node: NodeId<D>,
@@ -145,16 +144,14 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
         }
     }
 
-    // {impl}`requirements.sdk.graph.validation-context.root_inputs`
-    /// The source node this criterion examines.
     // {impl}`requirements.sdk.graph.validation-context.ValidationContext.node_id`
+    /// The source node this criterion examines.
     pub fn node_id(&self) -> &NodeId<D> {
         &self.node
     }
 
-    // {impl}`requirements.sdk.graph.validation-context.root_inputs`
-    /// Select this source's successors and record their target-set fingerprint.
     // {impl}`requirements.sdk.graph.validation-context.ValidationContext.successors`
+    /// Select this source's successors and record their target-set fingerprint.
     pub fn successors(&self, label: &D::EdgeLabel) -> Result<Vec<NodeId<D>>, D::Error>
     where
         D::EdgeLabel: PartialEq,
@@ -163,26 +160,20 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
     }
 }
 
-// {impl}`requirements.sdk.graph.validation-context.tracked_inspection`
 impl<'d, D: Domain> ValidationContext<'d, D> {
-    // {cite}`habeas:util`
     // {impl}`requirements.sdk.graph.validation-context.ValidationContext.graph`
+    // {cite}`habeas:util`
     pub fn graph(&self) -> &'d D {
         self.graph
     }
 
-    // {cite}`habeas:util`
-    // {impl}`requirements.sdk.graph.validation-context.read_node.behavior`
-    // {impl}`requirements.sdk.graph.validation-context.read_node.fn`
-    // {impl}`requirements.sdk.graph.validation-context.read_node.inputs`
+    // {impl}`requirements.sdk.graph.agent-calls.author_procedure`
     // {impl}`requirements.sdk.graph.validation-context.ValidationContext.read`
-    // {impl}`requirements.sdk.graph.validation-context.shared_context`
+    // {cite}`habeas:util`
     pub fn read(&self, node: &NodeId<D>) -> Result<D::NodeContent, D::Error> {
         Ok(self.read_snapshot(node)?.content)
     }
 
-    // {impl}`requirements.sdk.graph.evidence.node_inputs`
-    // {impl}`requirements.sdk.graph.snapshot`
     // {impl}`requirements.sdk.graph.validation-context.ValidationContext.read_snapshot`
     pub fn read_snapshot(&self, node: &NodeId<D>) -> Result<Snapshot<D::NodeContent>, D::Error> {
         let snapshot = self.prepare_read(node)?;
@@ -203,11 +194,9 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
         })
     }
 
-    // {impl}`requirements.sdk.graph.validation-context.outgoing_edges.behavior`
-    // {impl}`requirements.sdk.graph.validation-context.outgoing_edges.fn`
-    // {impl}`requirements.sdk.graph.validation-context.outgoing_edges.inputs`
-    // {impl}`requirements.sdk.graph.validation-context.snapshot`
+    // {impl}`requirements.sdk.graph.agent-calls.author_procedure`
     // {impl}`requirements.sdk.graph.validation-context.ValidationContext.outgoing_edges`
+    // {impl}`requirements.sdk.graph.validation-context.outgoing_edges.fn`
     pub fn outgoing_edges(
         &self,
         node: &NodeId<D>,
@@ -221,7 +210,6 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
         Ok(snapshot)
     }
 
-    // {impl}`requirements.sdk.graph.running-criteria.UsageStats`
     pub(crate) fn record_usage(&self, delta: &UsageStats) {
         self.update_usage(|usage| usage.accumulate(delta));
     }
@@ -255,8 +243,8 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
         })
     }
 
+    // {impl}`requirements.sdk.graph.agent-calls.author_procedure`
     /// Import the fingerprint of the exact snapshot delivered to the caller.
-    // {impl}`requirements.sdk.graph.validation-context.shared_context`
     pub(crate) fn record_read(&self, node: NodeId<D>, fingerprint: Fingerprint) {
         let mut observations = self.observations.lock().expect("dependency trace poisoned");
         if !observations.iter().any(|dependency| {
@@ -298,7 +286,6 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
     }
 
     // {cite}`habeas:util`
-    // {impl}`requirements.sdk.graph.validation-context.ValidationContext.dependencies`
     pub fn dependencies(&self) -> Vec<Dependency<NodeId<D>, D::EdgeLabel>> {
         self.observations
             .lock()
@@ -306,8 +293,6 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
             .clone()
     }
 
-    // {impl}`requirements.sdk.graph.evidence.record`
-    // {impl}`requirements.sdk.graph.validation-context.ValidationContext.finish`
     pub fn finish(
         &self,
         version: CriterionVersion,
@@ -325,9 +310,8 @@ impl<D: Domain> ValidationContext<'_, D>
 where
     D::Error: From<crate::sources::SourceError>,
 {
-    // {impl}`requirements.sdk.graph.validation-context.read_source.fn`
-    // {impl}`requirements.sdk.sources.provider_observations`
     // {impl}`requirements.sdk.graph.validation-context.ValidationContext.read_source`
+    // {impl}`requirements.sdk.graph.validation-context.read_source.behavior`
     pub fn read_source(
         &self,
         item: &crate::outline::OutlineData,
@@ -338,8 +322,10 @@ where
 }
 
 impl<'d, D: Domain> ValidationContext<'d, D> {
+    // {impl}`requirements.sdk.graph.agent-calls.author_procedure`
+    // {impl}`requirements.sdk.graph.agent-calls.judge.phases`
+    // {impl}`requirements.sdk.graph.agent-calls.judge`
     /// Start a request whose submitted answer is decoded into R.
-    // {impl}`requirements.sdk.graph.validation-context.ValidationContext.ask`
     pub fn ask<R>(&self) -> Ask<'_, 'd, D, R, ContextPhase>
     where
         R: DeserializeOwned + JsonSchema + Send,
@@ -355,8 +341,9 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
     }
 }
 
-// {impl}`requirements.sdk.graph.agent-calls.judge.phases`
+// {impl}`requirements.sdk.graph.agent-calls.ContextPhase`
 pub struct ContextPhase;
+// {impl}`requirements.sdk.graph.agent-calls.NodePhase`
 /// The reusable prefix is sealed after the first node insertion.
 ///
 /// ```compile_fail
@@ -390,8 +377,8 @@ enum Insertion<N, L> {
     Successors(L, fn(&L, &L) -> bool),
 }
 
-/// The outcome of one check on a decoded agent answer.
 // {impl}`requirements.sdk.graph.agent-calls.VetResult`
+/// The outcome of one check on a decoded agent answer.
 pub enum VetResult {
     Accept,
     CorrectAndTryAgain(String),
@@ -399,7 +386,7 @@ pub enum VetResult {
 
 type Vet<'a, R, E> = Box<dyn FnMut(&R) -> Result<VetResult, E> + Send + 'a>;
 
-// {impl}`requirements.sdk.graph.agent-calls.judge`
+// {impl}`requirements.sdk.graph.agent-calls.Ask`
 pub struct Ask<'a, 'd, D: Domain, R, P> {
     ctx: &'a ValidationContext<'d, D>,
     contexts: Vec<String>,
@@ -409,6 +396,8 @@ pub struct Ask<'a, 'd, D: Domain, R, P> {
     state: PhantomData<fn() -> (R, P)>,
 }
 
+// {impl}`requirements.sdk.graph.agent-calls.Ask`
+// {impl}`requirements.sdk.graph.agent-calls.judge.phases`
 impl<'a, 'd, D: Domain, R> Ask<'a, 'd, D, R, ContextPhase> {
     // {impl}`requirements.sdk.graph.agent-calls.agent_context`
     pub fn context(mut self, value: impl Context) -> Self {
@@ -417,16 +406,16 @@ impl<'a, 'd, D: Domain, R> Ask<'a, 'd, D, R, ContextPhase> {
     }
 }
 
+// {impl}`requirements.sdk.graph.agent-calls.Ask`
 impl<'a, 'd, D: Domain, R, P> Ask<'a, 'd, D, R, P> {
     /// Set the task-specific user message presented before the supplied nodes.
-    // {impl}`requirements.sdk.graph.agent-calls.subject_message`
     pub fn message(mut self, text: impl Into<String>) -> Self {
         self.message = text.into();
         self
     }
 
-    /// Append a check to run on each decoded submission in this conversation.
     // {impl}`requirements.sdk.graph.agent-calls.vet_answer`
+    /// Append a check to run on each decoded submission in this conversation.
     pub fn vet_answer(
         mut self,
         vet: impl FnMut(&R) -> Result<VetResult, D::Error> + Send + 'a,
@@ -454,13 +443,14 @@ impl<'a, 'd, D: Domain, R, P> Ask<'a, 'd, D, R, P> {
         self.into_node_phase()
     }
 
+    // {impl}`requirements.sdk.graph.agent-calls.judge.phases`
     /// Queue the contents of a specified node.
-    // {impl}`requirements.sdk.graph.agent-calls.named_input`
     pub fn contents_of_node(mut self, node: NodeId<D>) -> Ask<'a, 'd, D, R, NodePhase> {
         self.insertions.push(Insertion::Node(node));
         self.into_node_phase()
     }
 
+    // {impl}`requirements.sdk.graph.agent-calls.judge.phases`
     /// Queue contents of successors with this label and enter the node phase.
     pub fn contents_of_successors(mut self, label: D::EdgeLabel) -> Ask<'a, 'd, D, R, NodePhase>
     where
@@ -480,13 +470,8 @@ where
     D::EdgeLabel: DeserializeOwned + JsonSchema + PartialEq,
     'd: 'a,
 {
-    // {impl}`requirements.sdk.graph.agent-calls.judge.node_contents`
-    // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
-    // {impl}`requirements.sdk.graph.agent-calls.model_capability`
-    // {impl}`requirements.sdk.graph.validation-context.shared_context`
-    // {impl}`requirements.sdk.graph.agent-calls.vet_answer`
-    // {impl}`requirements.sdk.graph.agent-calls.vet_answer.ok`
-    // {impl}`requirements.sdk.graph.agent-calls.vet_answer.corrections`
+    // {impl}`requirements.sdk.graph.agent-harness.submission.mcp`
+    // {impl}`requirements.sdk.graph.agent-harness.with_agent`
     async fn execute(self) -> Result<R, ValidationError<D::Error>> {
         let agent = self
             .ctx
@@ -539,8 +524,15 @@ where
         let prefix_fingerprint = context_fingerprint(&prefix);
         let mut callbacks = self.callbacks;
         let mut accepted = None;
-        let mut finish = |value| {
-            let answer = serde_json::from_value(value).map_err(std::io::Error::other)?;
+        let mut finish = |value: Value| {
+            let answer = match serde_json::from_value::<R>(value) {
+                Ok(answer) => answer,
+                Err(error) => {
+                    return Ok(Submission::Retry(format!(
+                        "Invalid `result`: {error}. Resubmit with the JSON value described by the submit_result tool schema in the `result` field."
+                    )));
+                }
+            };
             let mut corrections = Vec::new();
             for vet in &mut callbacks {
                 match vet(&answer).map_err(AgentError::Domain)? {
@@ -583,6 +575,7 @@ where
     }
 }
 
+// {impl}`requirements.sdk.graph.agent-calls.Ask`
 macro_rules! await_phase {
     ($phase:ty) => {
         impl<'a, 'd, D: Domain, R> IntoFuture for Ask<'a, 'd, D, R, $phase>
@@ -600,7 +593,10 @@ macro_rules! await_phase {
         }
     };
 }
+// {impl}`requirements.sdk.graph.agent-calls.judge`
 await_phase!(ContextPhase);
+// {impl}`requirements.sdk.graph.agent-calls.judge.phases`
+// {impl}`requirements.sdk.graph.agent-calls.judge`
 await_phase!(NodePhase);
 
 // {impl}`requirements.sdk.graph.agent-calls.agent_context`

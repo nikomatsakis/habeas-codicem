@@ -1,8 +1,8 @@
 {
   "requirement": "`trust_but_verify` exposes `Ask` and its public `ContextPhase` and\n`NodePhase` state types. The validation context starts a builder:\n\n```rust,ignore\n/// Create an independent request borrowing this context through a shared reference.\npub fn ask<R>(&self) -> Ask<'_, 'd, D, R, ContextPhase>\nwhere\n    R: serde::de::DeserializeOwned + schemars::JsonSchema + Send;\n```\n\nBoth states implement `std::future::IntoFuture` with\n`Output = Result<R, ValidationError<D::Error>>` and a `Send` future for\n`R: serde::de::DeserializeOwned + schemars::JsonSchema + Send`.\nAwaiting executes the assembled request, even with no contexts or node\ninsertions. Building it does not invoke an agent.",
   "determination": true,
-  "rationale": "The tests cover each obligation in `requirements.sdk.graph.agent-calls.judge`. I did not read the implementation. The tests in `validation_tests.rs` elide some lines (`…`), so I relied on the visible assertions.\n\n- **`ask` starts an independent builder through a shared reference.** `shared_context_allows_independent_concurrent_agent_calls` starts two `ctx.ask::<Answer>()` requests from one `&ValidationContext` and joins them. Each request has its own inputs, and the test asserts two agent calls with results 7 and 11. A barrier proves they run concurrently.\n- **Both states implement `IntoFuture` with a `Send` future.**\n  - `ContextPhase`: `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` calls `builder.into_future()` on a context-only builder and runs `assert_send` on it. It then awaits the result and unwraps it as the answer type.\n  - `NodePhase`: `explicit_insertions_preserve_order_repetition_and_selection_snapshots` calls `.into_future()` after `contents_of_*`, runs `assert_send(&future)`, awaits it, and checks `answer.n == 7`.\n  - The `Result<R, ValidationError<D::Error>>` output type is checked by the `matches!(…, Err(ValidationError::Graph(..)))` and `NoAgentConfigured` assertions. These appear in `queued_reads_selection_and_rendering_fail_before_agent_invocation` and `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs`. The `.unwrap()` calls elsewhere check the `Ok` side.\n- **Awaiting executes the request, even with no contexts or insertions.** In the contexts test, `ctx.ask::<Answer>().await` and `.context(Vec::<String>::new()).await` each reach the agent. The test asserts the recorded requests have an empty prefix, the matching fingerprint, and no node contents. Node-only builders with empty or unrelated successor edges are awaited in the queued-reads test and succeed.\n- **Building does not invoke an agent.** `queued_reads_selection_and_rendering_fail_before_agent_invocation` drops a builder with queued node reads and asserts the agent's requests are empty. `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` drops a builder and asserts no reads, no selections and no dependencies. Awaiting with no agent configured returns `NoAgentConfigured`.\n- **Queued node inputs resolve only on await, in order.** The explicit-insertions test checks order, repetition and the resolved reads. The queued-reads test covers read, edge and render failures returning `Err` without agent invocation.\n\nThe tests are marked `{test}` for the subject. I found no unexercised obligation and no marking gap.",
-  "references": "f4a6a6911b3085a081b20fc75e6f64c38d517244ed26eaf06ba623808fbce4e9",
+  "rationale": "structural: The structural obligations in `requirements.sdk.graph.agent-calls.judge` are covered by the three supplied roots.\n\n1. **Builder signature.** The clause is: \"pub fn ask<R>(&self) -> Ask<'_, 'd, D, R, ContextPhase> where R: DeserializeOwned + JsonSchema + Send\". An alternative could take `self` by value or return a different phase type. It could produce the same results at runtime and would still violate the clause. `crates/trust-but-verify/src/procedure.rs#impl[ValidationContext<'d,%20D>]#3/fn[ask]` has this exact signature. It borrows `&self` and returns `Ask` in `ContextPhase` with empty contexts, message, insertions and callbacks. It makes no agent call, which matches \"Building it does not invoke an agent\".\n\n2. **`IntoFuture` for both phases.** The clause is: \"Both states implement `std::future::IntoFuture` with `Output = Result<R, ValidationError<D::Error>>` and a `Send` future\". An alternative could expose a plain `.run()` method instead of the trait impl, so `.await` would not work. It would still violate the clause. The `await_phase` macro defines `impl IntoFuture for Ask<'a,'d,D,R,$phase>`. It sets `type Output = Result<R, ValidationError<D::Error>>` and `type IntoFuture = BoxFuture<'a, Self::Output>`. Its `into_future` boxes `self.execute()`, so awaiting runs the assembled request, including with no contexts or insertions. The macro invocations `await_phase!(ContextPhase)` (`macro@0541b668e173`) and `await_phase!(NodePhase)` (`macro@5781c4abb394`) each carry an `{impl}` of `judge`. Together they cover both states.\n\n3. **Public phase types.** `struct[ContextPhase]` and `struct[NodePhase]` are public unit structs in the same file. They are implemented or tested by the `judge.phases` and `Ask` references that I did not need to assess here.\n\nOther behavior, such as what `execute` does, is observable behavior and not a structural obligation. The macro's body is reached through the marked invocations, so it needs no separate marker.\n\nbehavioral: The reviewed tests cover each behavioral obligation in `requirements.sdk.graph.agent-calls.judge`.\n\n- **`ask` starts a ContextPhase builder.** Both `explicit_insertions_preserve_order_repetition_and_selection_snapshots` and `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` call `ctx.ask::<Answer>()`. The first then moves to node insertions (`NodePhase`).\n- **Both states implement `IntoFuture` and produce a `Send` future.**\n  - `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` calls `builder.into_future()` on a ContextPhase builder and runs `assert_send`. That builder was built from a non-Send context value.\n  - `explicit_insertions_preserve_order_repetition_and_selection_snapshots` does the same on a NodePhase builder.\n  - `shared_context_allows_independent_concurrent_agent_calls` joins two futures, one per phase.\n- **Output is `Result<R, ValidationError<D::Error>>`.**\n  - Success: `answer.n` is asserted in the explicit-insertions test and in the concurrent test.\n  - Error variants: `queued_reads_selection_and_rendering_fail_before_agent_invocation` asserts `ValidationError::Graph(\"read\")`, `Graph(\"edges\")` and `Graph(\"render\")`. `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` asserts `ValidationError::NoAgentConfigured`. These assertions also pin the error type.\n- **Awaiting executes the request, even with no contexts or insertions.** `ctx.ask::<Answer>().await` and `.context(Vec::<String>::new()).await` run in the contexts test. Their requests have empty text and no node contents, so the request was assembled and sent. The NodePhase case with no contexts is covered in the dropped-builders test, where the await reaches the agent check and returns `NoAgentConfigured`. Other awaits are asserted in the explicit-insertions and concurrent tests.\n- **Building does not invoke an agent.**\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` drops a NodePhase builder and asserts that no agent requests were made.\n  - `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` drops builders and asserts that no reads or selections happened.\n  - The contexts test builds a ContextPhase builder before awaiting it. Its later requests, `requests[1..=2]`, are the empty-text ones. A request made at build time would have shifted them, so build-time invocation is ruled out there.\n\nI found no unmet obligation. Detailed ordering, caching and rendering behavior belongs to the refining requirements, which these tests also mark.",
+  "references": "e6cee43c35f401c91781c29a81c5fa52125bdb34b84bc509158b817d20b8ce90",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.agent-calls.judge",
@@ -30,6 +30,41 @@
       ]
     },
     {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#3/fn[ask]",
+      "hash": "b8b2eae7581183984c864d30ec9f6e3d2861dc9fae437a46d1870f95f68be4c8"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "macro@0541b668e173",
+      "hash": "0541b668e17328ea03bcea26c84b8ba0d033a8e4e79a8b4983dffadf0126cffa"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "macro@5781c4abb394",
+      "hash": "5781c4abb394b89553efd9c5558d9526bebec071676accc0fa6d63b012625b42"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "macro[await_phase]",
+      "hash": "8380f0027b0bf5c0f5908e181e1f69c8f1ea3a9dc2c77556be30d47cc152b84d"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "struct[ContextPhase]",
+      "hash": "38eb48632ba183ca42f37eb48a05202c7223921264852f809778194b2fd58cc8"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "struct[NodePhase]",
+      "hash": "527ee6b89b350999503c7587571996ebcefc8e2e11f3fa726e4a07e4e3861e04"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "struct[Ask]",
+      "hash": "b38a7967586a6b57f32ac9441bea1003e46964014583c1dbc2797f9896771465"
+    },
+    {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[dropped_builders_and_missing_agents_do_not_resolve_queued_inputs]",
       "hash": "9cbe92178baf6b64f5b753b824d8484aaeaf4cef82c6372f433f35776444e34c"
@@ -53,9 +88,287 @@
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]",
       "hash": "16e5d66c127375503160b7357b3aab780341b16eb17adf36510391e372907734"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "fn[contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text]/fn[assert_send]",
+      "hash": "b819caeb10a2f7be090c2d78f029a7946df5f321bcdfe178f6c070767fad2694"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]/fn[assert_send]",
+      "hash": "b819caeb10a2f7be090c2d78f029a7946df5f321bcdfe178f6c070767fad2694"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.agent-calls.judge"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "e6cee43c35f401c91781c29a81c5fa52125bdb34b84bc509158b817d20b8ce90"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-calls.judge"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "dfd4dcc68382d1b7f2cd1a0f329a4ae0b13c765a5cd834b4b7c153f6b830b6c3"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[ValidationContext<'d,%20D>]#3/fn[ask]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "b8b2eae7581183984c864d30ec9f6e3d2861dc9fae437a46d1870f95f68be4c8"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "macro@0541b668e173"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "0541b668e17328ea03bcea26c84b8ba0d033a8e4e79a8b4983dffadf0126cffa"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "macro@5781c4abb394"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "5781c4abb394b89553efd9c5558d9526bebec071676accc0fa6d63b012625b42"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "macro[await_phase]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "8380f0027b0bf5c0f5908e181e1f69c8f1ea3a9dc2c77556be30d47cc152b84d"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "struct[ContextPhase]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "38eb48632ba183ca42f37eb48a05202c7223921264852f809778194b2fd58cc8"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "struct[NodePhase]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "527ee6b89b350999503c7587571996ebcefc8e2e11f3fa726e4a07e4e3861e04"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "struct[Ask]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "b38a7967586a6b57f32ac9441bea1003e46964014583c1dbc2797f9896771465"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The structural obligations in `requirements.sdk.graph.agent-calls.judge` are covered by the three supplied roots.\n\n1. **Builder signature.** The clause is: \"pub fn ask<R>(&self) -> Ask<'_, 'd, D, R, ContextPhase> where R: DeserializeOwned + JsonSchema + Send\". An alternative could take `self` by value or return a different phase type. It could produce the same results at runtime and would still violate the clause. `crates/trust-but-verify/src/procedure.rs#impl[ValidationContext<'d,%20D>]#3/fn[ask]` has this exact signature. It borrows `&self` and returns `Ask` in `ContextPhase` with empty contexts, message, insertions and callbacks. It makes no agent call, which matches \"Building it does not invoke an agent\".\n\n2. **`IntoFuture` for both phases.** The clause is: \"Both states implement `std::future::IntoFuture` with `Output = Result<R, ValidationError<D::Error>>` and a `Send` future\". An alternative could expose a plain `.run()` method instead of the trait impl, so `.await` would not work. It would still violate the clause. The `await_phase` macro defines `impl IntoFuture for Ask<'a,'d,D,R,$phase>`. It sets `type Output = Result<R, ValidationError<D::Error>>` and `type IntoFuture = BoxFuture<'a, Self::Output>`. Its `into_future` boxes `self.execute()`, so awaiting runs the assembled request, including with no contexts or insertions. The macro invocations `await_phase!(ContextPhase)` (`macro@0541b668e173`) and `await_phase!(NodePhase)` (`macro@5781c4abb394`) each carry an `{impl}` of `judge`. Together they cover both states.\n\n3. **Public phase types.** `struct[ContextPhase]` and `struct[NodePhase]` are public unit structs in the same file. They are implemented or tested by the `judge.phases` and `Ask` references that I did not need to assess here.\n\nOther behavior, such as what `execute` does, is observable behavior and not a structural obligation. The macro's body is reached through the marked invocations, so it needs no separate marker."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.agent-calls.judge"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "e6cee43c35f401c91781c29a81c5fa52125bdb34b84bc509158b817d20b8ce90"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-calls.judge"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "dfd4dcc68382d1b7f2cd1a0f329a4ae0b13c765a5cd834b4b7c153f6b830b6c3"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[dropped_builders_and_missing_agents_do_not_resolve_queued_inputs]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "9cbe92178baf6b64f5b753b824d8484aaeaf4cef82c6372f433f35776444e34c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "d6e99ab39b78a5458f7c497ed3f69a053fff9f8bb31ded9d41e7f9e70fa0ab90"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "eb15fcf83118155b8a9a790a7851de9cd58a337bfb384d07d8fdf0571bbbd6be"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[shared_context_allows_independent_concurrent_agent_calls]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "c1e103cff6f9bbdbf982230e4b2beac870658b9ecab472a2cac25b61da76317f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "16e5d66c127375503160b7357b3aab780341b16eb17adf36510391e372907734"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The reviewed tests cover each behavioral obligation in `requirements.sdk.graph.agent-calls.judge`.\n\n- **`ask` starts a ContextPhase builder.** Both `explicit_insertions_preserve_order_repetition_and_selection_snapshots` and `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` call `ctx.ask::<Answer>()`. The first then moves to node insertions (`NodePhase`).\n- **Both states implement `IntoFuture` and produce a `Send` future.**\n  - `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` calls `builder.into_future()` on a ContextPhase builder and runs `assert_send`. That builder was built from a non-Send context value.\n  - `explicit_insertions_preserve_order_repetition_and_selection_snapshots` does the same on a NodePhase builder.\n  - `shared_context_allows_independent_concurrent_agent_calls` joins two futures, one per phase.\n- **Output is `Result<R, ValidationError<D::Error>>`.**\n  - Success: `answer.n` is asserted in the explicit-insertions test and in the concurrent test.\n  - Error variants: `queued_reads_selection_and_rendering_fail_before_agent_invocation` asserts `ValidationError::Graph(\"read\")`, `Graph(\"edges\")` and `Graph(\"render\")`. `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` asserts `ValidationError::NoAgentConfigured`. These assertions also pin the error type.\n- **Awaiting executes the request, even with no contexts or insertions.** `ctx.ask::<Answer>().await` and `.context(Vec::<String>::new()).await` run in the contexts test. Their requests have empty text and no node contents, so the request was assembled and sent. The NodePhase case with no contexts is covered in the dropped-builders test, where the await reaches the agent check and returns `NoAgentConfigured`. Other awaits are asserted in the explicit-insertions and concurrent tests.\n- **Building does not invoke an agent.**\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` drops a NodePhase builder and asserts that no agent requests were made.\n  - `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` drops builders and asserts that no reads or selections happened.\n  - The contexts test builds a ContextPhase builder before awaiting it. Its later requests, `requests[1..=2]`, are the empty-text ones. A request made at build time would have shifted them, so build-time invocation is ruled out there.\n\nI found no unmet obligation. Detailed ordering, caching and rendering behavior belongs to the refining requirements, which these tests also mark."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -65,19 +378,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "f4a6a6911b3085a081b20fc75e6f64c38d517244ed26eaf06ba623808fbce4e9"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.agent-calls.judge"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "a89be6dfdbc7f9f1544e1ce5581cfda2db63a3f907bf06a8ce43def1512c3854"
+          "value": "e6cee43c35f401c91781c29a81c5fa52125bdb34b84bc509158b817d20b8ce90"
         }
       ]
     },
@@ -89,6 +390,125 @@
         {
           "scheme": "habeas-input-v1",
           "value": "dfd4dcc68382d1b7f2cd1a0f329a4ae0b13c765a5cd834b4b7c153f6b830b6c3"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#3/fn[ask]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b8b2eae7581183984c864d30ec9f6e3d2861dc9fae437a46d1870f95f68be4c8"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "macro@0541b668e173"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "0541b668e17328ea03bcea26c84b8ba0d033a8e4e79a8b4983dffadf0126cffa"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "macro@5781c4abb394"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "5781c4abb394b89553efd9c5558d9526bebec071676accc0fa6d63b012625b42"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "macro[await_phase]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "8380f0027b0bf5c0f5908e181e1f69c8f1ea3a9dc2c77556be30d47cc152b84d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "struct[ContextPhase]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "38eb48632ba183ca42f37eb48a05202c7223921264852f809778194b2fd58cc8"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "struct[NodePhase]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "527ee6b89b350999503c7587571996ebcefc8e2e11f3fa726e4a07e4e3861e04"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "struct[Ask]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b38a7967586a6b57f32ac9441bea1003e46964014583c1dbc2797f9896771465"
         }
       ]
     },
@@ -174,6 +594,40 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "16e5d66c127375503160b7357b3aab780341b16eb17adf36510391e372907734"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+            },
+            "selector": "fn[contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text]/fn[assert_send]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b819caeb10a2f7be090c2d78f029a7946df5f321bcdfe178f6c070767fad2694"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+            },
+            "selector": "fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]/fn[assert_send]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b819caeb10a2f7be090c2d78f029a7946df5f321bcdfe178f6c070767fad2694"
         }
       ]
     }

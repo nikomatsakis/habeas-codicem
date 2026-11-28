@@ -1,8 +1,8 @@
 {
   "requirement": "Keeps a typed output with its source, criterion, version, and observed dependencies. `output` borrows the answer and `into_output` consumes the wrapper.\n\n`verify` constructs this value from the criterion's completed answer and\nexecution trace. `load_evidence` reconstructs it from the selected saved record.\nIts dependencies use `NodeId<D>` handles from the current cache and domain-defined edge labels.\n\n```rust,ignore\npub struct Fingerprinted<D: Domain, O> { /* private fields */ }\n\nimpl<D: Domain, O> Fingerprinted<D, O> {\n    pub fn source_node_id(&self) -> &NodeId<D>;\n    pub fn criterion_path(&self) -> &CriterionPath;\n    pub fn version(&self) -> Option<&CriterionVersion>;\n    pub fn dependencies(&self) -> &[Dependency<NodeId<D>, D::EdgeLabel>];\n    pub fn output(&self) -> &O;\n    pub fn into_output(self) -> O;\n}\n```",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation of `requirements.sdk.graph.evidence.inputs`.\n\n- **Typed output, borrowed and consumed.**\n  - `tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` asserts `value.output()` equals the typed answer. That covers a struct answer, a `Vec` and `()`.\n  - The same test asserts `loaded.output()` and `loaded.into_output()` equal the answer, and calls `into_output` on the `Vec` and `()` answers.\n- **Source, criterion and version from `verify`.**\n  - The same test asserts `source_node_id()`, `criterion_path()` and `version()` (`Some` with `as_str() == \"v1\"`) on the value from `verify`.\n  - `graph/validation_tests.rs#fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]` checks the version after a `v1` to `v2` replacement.\n- **Reconstruction by `load_evidence`.**\n  - `criteria_keep_typed_answers...` asserts the loaded source, criterion path, version and dependencies equal the original's.\n  - `caller_reuses_negative_answers...` loads evidence with a version of `v1`, then `None`. It asserts the loaded version `Some(\"v1\")`, then the `None` (wildcard) case.\n  - `wildcard_revision_does_not_supply_other_criteria_or_nodes` also asserts `loaded.version() == None` and that loading is keyed by criterion and source node.\n- **Dependencies built from the execution trace.**\n  - `agent_edge_tools_record_selections_without_validating_targets` asserts `Dependency::OutgoingEdges(node, label, fingerprint)` in the `verify` result. It asserts `saved.dependencies() == result.dependencies()`. It also asserts the stored record, and that a failed or malformed selection adds no dependency.\n  - `dependency_resolution_failures_do_not_execute_or_replace_saved_answers` asserts that both `Dependency::Node` and `Dependency::OutgoingEdges` with a domain label of 7 come out of `verify`/`persist`. It asserts the same dependencies on the loaded value.\n  - `criteria_keep_typed_answers...` asserts empty dependencies for a criterion with no inputs.\n- **Read-only accessors.** The `Fingerprinted` doc comments in `graph.rs` hold `compile_fail,E0616` doctests. They check that no field can be mutated directly, which supports the accessor-only shape. `tests/public_api.rs#fn[public_exports_match_the_appendix]` checks the public export inventory.\n\nI found no requirement-violating behavior that these tests would accept, and no marking gap.",
-  "references": "294e9b4e633c9cd91bd35996fcd47b6331515626f5e067ec2ec68e1cee57e833",
+  "rationale": "structural: The structural obligations of `requirements.sdk.graph.evidence.inputs` are the prescribed type and signatures. Both roots cover them.\n\n- **Type shape.** The text gives `pub struct Fingerprinted<D: Domain, O> { /* private fields */ }`. It also says the type keeps the source, criterion, version, dependencies as `NodeId<D>` handles with `D::EdgeLabel` labels, and the typed output. `crates/trust-but-verify/src/graph.rs#struct[Fingerprinted]` declares private fields `source: NodeId<D>`, `criterion: CriterionPath`, `version: Option<CriterionVersion>`, `dependencies: Vec<Dependency<NodeId<D>, D::EdgeLabel>>` and `output: O`. A struct with public fields would break the \"private fields\" clause. Its compile_fail doctests check that the fields cannot be assigned from outside the module.\n- **Accessor signatures.** `crates/trust-but-verify/src/graph.rs#impl[Fingerprinted<D, O>]` has all six methods with the prescribed signatures:\n  - `source_node_id(&self) -> &NodeId<D>`\n  - `criterion_path(&self) -> &CriterionPath`\n  - `version(&self) -> Option<&CriterionVersion>`\n  - `dependencies(&self) -> &[Dependency<NodeId<D>, D::EdgeLabel>]`\n  - `output(&self) -> &O`\n  - `into_output(self) -> O`\n  \n  These also give the required borrow-versus-consume behavior.\n- **Construction by `verify` and `load_evidence`.** This is not a structural obligation. `Validator::execute` builds the value from the criterion's answer and trace, and `Validator::load_evidence` builds it from the saved record, both in `graph.rs`. The same observable results would follow if another helper built the struct. Which function constructs it is not visible through the API. The text states what the value contains, and `verify` and `load_evidence` have their own requirements.\n\nNo further implementation roots are needed.\n\nbehavioral: I judged the tests adequate for `requirements.sdk.graph.evidence.inputs`. I did not read the implementation source. I judged only from the supplied test bodies and the requirement text.\n\n**Obligations and the tests that cover them**\n\n- **Accessors on a value built by `verify`:** `criteria_keep_typed_answers_and_persist_only_when_requested` in `crates/trust-but-verify/tests/contracts.rs` checks every accessor.\n  - `output()` equals the typed answer.\n  - `source_node_id()` equals the interned `Node(1)`.\n  - `criterion_path()` equals `path([\"behavior\"])`.\n  - `version()` is `Some(\"v1\")`.\n  - `dependencies()` is empty.\n- **Accessors on a value rebuilt by `load_evidence`:** the same test compares the loaded value with the verified one. It checks `output`, `source_node_id`, `criterion_path`, `version` and `dependencies`.\n- **`output` borrows and `into_output` consumes:** the same test calls `into_output()` on the loaded value and on persisted values, including the unit and `Vec` outputs. Assertions cover both the borrowed `&negative` and the consumed `negative`.\n- **Version as an optional value:** `wildcard_revision_does_not_supply_other_criteria_or_nodes` loads a record whose version is `None` and asserts `loaded.version() == None`. `caller_reuses_negative_answers_and_compares_revisions_explicitly` asserts `version().unwrap().as_str()` for \"v1\" and \"v2\".\n- **Non-empty dependencies from the execution trace:** `dependency_resolution_failures_do_not_execute_or_replace_saved_answers` persists a verified value that read a node and queried outgoing edges. It asserts the exact dependency list and order: `Dependency::Node(..)` and `Dependency::OutgoingEdges(Node(1), 7, ..)`. The list is the same after `load_evidence`. This also covers domain-defined edge labels.\n- **`NodeId` handles from the current cache:** `agent_edge_tools_record_selections_without_validating_targets` in `crates/trust-but-verify/src/agent/tests.rs` runs `verify_with_agent`, then store and load. It asserts `saved.dependencies() == result.dependencies()`. It also asserts the stored record's dependency as `OutgoingEdges(1, 7, fingerprint)` built from the graph's own interned nodes.\n- **Wrapper built only from the criterion's completed answer and its trace:** `caller_reuses_negative_answers_and_compares_revisions_explicitly` asserts that the verified value's record has no dependencies and that `reads` and `selections` are empty. `agent_edge_tools_record_selections_without_validating_targets` asserts that a failed delivery leaves `ctx.dependencies()` empty and a rejected node ID adds none.\n- **Read-only access and private fields:** `crates/trust-but-verify/src/graph/validation_tests.rs` carries compile-fail doctests on `Fingerprinted`. Each one rejects writing to `source`, `criterion`, `version`, `dependencies` or `output`. The public-API test `public_exports_match_the_appendix` covers the exported surface.\n\nI found no obligation without a test that asserts its outcome. Every test is marked `{test}` for the subject, so there is no marking gap.",
+  "references": "0ad8fec2b0b7a0a03a38e6aca0bda8f6d4e9bca61caab01d9a0aed85639a9016",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.evidence.inputs",
@@ -34,19 +34,34 @@
       ]
     },
     {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "struct[Fingerprinted]",
+      "hash": "c6e18fa4a798779be3a50fb4fa254440d06777576dca8b7f55cfff442bcbad3e"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "impl[Fingerprinted<D,%20O>]",
+      "hash": "ae90476ca433956da56a7be90fff16cc3fff65d3ec2a9090e8d91e22e1c8f192"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "impl[Validator<'d,%20D>]/fn[load_evidence]",
+      "hash": "bde37aab7f8c36fe6e9fea0051d849d53a6b3fb0afe3e8e134a5c073f1896d5d"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "impl[Validator<'d,%20D>]/fn[execute]",
+      "hash": "807a5015afd77dd876f866ed3e422875eef8103383fe82adb04d64b7c839be51"
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[agent_edge_tools_record_selections_without_validating_targets]",
-      "hash": "b6a97104378322ec71f0706145d948cd08299ea50133f0316b1795f099e9aa2c"
+      "hash": "6a6bd3af3286f4b548affea9dc304e83307c85c71496bd76aaa4e955e8fb5577"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]",
       "hash": "4050d7164d344983064df2ae023af8d39fc28f0cfe0437e2e558d3f65111498c"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "struct[Fingerprinted]",
-      "hash": "c6e18fa4a798779be3a50fb4fa254440d06777576dca8b7f55cfff442bcbad3e"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
@@ -66,10 +81,288 @@
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[public_exports_match_the_appendix]",
-      "hash": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
+      "hash": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent.rs",
+      "item": "fn[verify_with_agent]",
+      "hash": "55036426331f42436bbb62e9cc5a67ca87453e6696b7f5e2a3ebc75a2e0b6013"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "impl[Fingerprinted<D,%20O>]/fn[source_node_id]",
+      "hash": "3e7ea77143d21179018bf4f9a5fcf6bc643ef5e224774d5022be6cd03cd821b9"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "impl[Validator<'d,%20D>]/fn[verify]",
+      "hash": "3a2bbdb3f06a33cbff7a1af2c5d08a4f87b3be750b183eba7c1b204ee1e50203"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.evidence.inputs"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "0ad8fec2b0b7a0a03a38e6aca0bda8f6d4e9bca61caab01d9a0aed85639a9016"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.evidence.inputs"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "52e2648fb3a1222becf10daae31e460f2159187cd3d4d2c46a35a0fb409d01a7"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph.rs"
+                },
+                "selector": "struct[Fingerprinted]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "c6e18fa4a798779be3a50fb4fa254440d06777576dca8b7f55cfff442bcbad3e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph.rs"
+                },
+                "selector": "impl[Fingerprinted<D,%20O>]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "b2426cd126f65b825c5a5b62062c216d60276306042da0def1778ce40786c47d"
+            }
+          ]
+        },
+        {
+          "OutgoingEdges": [
+            {
+              "Requirement": "requirements.sdk.graph.evidence.inputs"
+            },
+            "Implements",
+            {
+              "scheme": "node-path-set-sha256-v1",
+              "value": "11447cc1f15cc21c342f5b63b579b073054730302d21c74caefd5a0f42e1919c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph.rs"
+                },
+                "selector": "impl[Validator<'d,%20D>]/fn[load_evidence]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "bde37aab7f8c36fe6e9fea0051d849d53a6b3fb0afe3e8e134a5c073f1896d5d"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph.rs"
+                },
+                "selector": "impl[Validator<'d,%20D>]/fn[execute]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "807a5015afd77dd876f866ed3e422875eef8103383fe82adb04d64b7c839be51"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The structural obligations of `requirements.sdk.graph.evidence.inputs` are the prescribed type and signatures. Both roots cover them.\n\n- **Type shape.** The text gives `pub struct Fingerprinted<D: Domain, O> { /* private fields */ }`. It also says the type keeps the source, criterion, version, dependencies as `NodeId<D>` handles with `D::EdgeLabel` labels, and the typed output. `crates/trust-but-verify/src/graph.rs#struct[Fingerprinted]` declares private fields `source: NodeId<D>`, `criterion: CriterionPath`, `version: Option<CriterionVersion>`, `dependencies: Vec<Dependency<NodeId<D>, D::EdgeLabel>>` and `output: O`. A struct with public fields would break the \"private fields\" clause. Its compile_fail doctests check that the fields cannot be assigned from outside the module.\n- **Accessor signatures.** `crates/trust-but-verify/src/graph.rs#impl[Fingerprinted<D, O>]` has all six methods with the prescribed signatures:\n  - `source_node_id(&self) -> &NodeId<D>`\n  - `criterion_path(&self) -> &CriterionPath`\n  - `version(&self) -> Option<&CriterionVersion>`\n  - `dependencies(&self) -> &[Dependency<NodeId<D>, D::EdgeLabel>]`\n  - `output(&self) -> &O`\n  - `into_output(self) -> O`\n  \n  These also give the required borrow-versus-consume behavior.\n- **Construction by `verify` and `load_evidence`.** This is not a structural obligation. `Validator::execute` builds the value from the criterion's answer and trace, and `Validator::load_evidence` builds it from the saved record, both in `graph.rs`. The same observable results would follow if another helper built the struct. Which function constructs it is not visible through the API. The text states what the value contains, and `verify` and `load_evidence` have their own requirements.\n\nNo further implementation roots are needed."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.evidence.inputs"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "0ad8fec2b0b7a0a03a38e6aca0bda8f6d4e9bca61caab01d9a0aed85639a9016"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.evidence.inputs"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "52e2648fb3a1222becf10daae31e460f2159187cd3d4d2c46a35a0fb409d01a7"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[agent_edge_tools_record_selections_without_validating_targets]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "b1c00c1e246a9d3cad5d832802238ee07b4387536a473825251974c9a82c5923"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "4050d7164d344983064df2ae023af8d39fc28f0cfe0437e2e558d3f65111498c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph.rs"
+                },
+                "selector": "struct[Fingerprinted]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "c6e18fa4a798779be3a50fb4fa254440d06777576dca8b7f55cfff442bcbad3e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[criteria_keep_typed_answers_and_persist_only_when_requested]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f47c40151c7d8ba4e5cd3b84d1c8d19288a02beb3f6148a79bdbcf6bc857964c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[dependency_resolution_failures_do_not_execute_or_replace_saved_answers]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "7d35c2bd6a734803097aa36c74244a08f1bfb8ca2564f9ff71fe398c0fbea414"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[wildcard_revision_does_not_supply_other_criteria_or_nodes]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "0433495b024591d9502b4ea7d229eeaced87022be0a6733f43ff4e1476011405"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/public_api.rs"
+                },
+                "selector": "fn[public_exports_match_the_appendix]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "I judged the tests adequate for `requirements.sdk.graph.evidence.inputs`. I did not read the implementation source. I judged only from the supplied test bodies and the requirement text.\n\n**Obligations and the tests that cover them**\n\n- **Accessors on a value built by `verify`:** `criteria_keep_typed_answers_and_persist_only_when_requested` in `crates/trust-but-verify/tests/contracts.rs` checks every accessor.\n  - `output()` equals the typed answer.\n  - `source_node_id()` equals the interned `Node(1)`.\n  - `criterion_path()` equals `path([\"behavior\"])`.\n  - `version()` is `Some(\"v1\")`.\n  - `dependencies()` is empty.\n- **Accessors on a value rebuilt by `load_evidence`:** the same test compares the loaded value with the verified one. It checks `output`, `source_node_id`, `criterion_path`, `version` and `dependencies`.\n- **`output` borrows and `into_output` consumes:** the same test calls `into_output()` on the loaded value and on persisted values, including the unit and `Vec` outputs. Assertions cover both the borrowed `&negative` and the consumed `negative`.\n- **Version as an optional value:** `wildcard_revision_does_not_supply_other_criteria_or_nodes` loads a record whose version is `None` and asserts `loaded.version() == None`. `caller_reuses_negative_answers_and_compares_revisions_explicitly` asserts `version().unwrap().as_str()` for \"v1\" and \"v2\".\n- **Non-empty dependencies from the execution trace:** `dependency_resolution_failures_do_not_execute_or_replace_saved_answers` persists a verified value that read a node and queried outgoing edges. It asserts the exact dependency list and order: `Dependency::Node(..)` and `Dependency::OutgoingEdges(Node(1), 7, ..)`. The list is the same after `load_evidence`. This also covers domain-defined edge labels.\n- **`NodeId` handles from the current cache:** `agent_edge_tools_record_selections_without_validating_targets` in `crates/trust-but-verify/src/agent/tests.rs` runs `verify_with_agent`, then store and load. It asserts `saved.dependencies() == result.dependencies()`. It also asserts the stored record's dependency as `OutgoingEdges(1, 7, fingerprint)` built from the graph's own interned nodes.\n- **Wrapper built only from the criterion's completed answer and its trace:** `caller_reuses_negative_answers_and_compares_revisions_explicitly` asserts that the verified value's record has no dependencies and that `reads` and `selections` are empty. `agent_edge_tools_record_selections_without_validating_targets` asserts that a failed delivery leaves `ctx.dependencies()` empty and a rejected node ID adds none.\n- **Read-only access and private fields:** `crates/trust-but-verify/src/graph/validation_tests.rs` carries compile-fail doctests on `Fingerprinted`. Each one rejects writing to `source`, `criterion`, `version`, `dependencies` or `output`. The public-API test `public_exports_match_the_appendix` covers the exported surface.\n\nI found no obligation without a test that asserts its outcome. Every test is marked `{test}` for the subject, so there is no marking gap."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -79,19 +372,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "294e9b4e633c9cd91bd35996fcd47b6331515626f5e067ec2ec68e1cee57e833"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.evidence.inputs"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "bc21261b27190c8623eb38431e81d6c7966a971ba5c72eff8e48343dad1ca985"
+          "value": "0ad8fec2b0b7a0a03a38e6aca0bda8f6d4e9bca61caab01d9a0aed85639a9016"
         }
       ]
     },
@@ -112,6 +393,86 @@
           "Source": {
             "resource": {
               "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "struct[Fingerprinted]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "c6e18fa4a798779be3a50fb4fa254440d06777576dca8b7f55cfff442bcbad3e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "impl[Fingerprinted<D,%20O>]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b2426cd126f65b825c5a5b62062c216d60276306042da0def1778ce40786c47d"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.sdk.graph.evidence.inputs"
+        },
+        "Implements",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "11447cc1f15cc21c342f5b63b579b073054730302d21c74caefd5a0f42e1919c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "impl[Validator<'d,%20D>]/fn[load_evidence]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "bde37aab7f8c36fe6e9fea0051d849d53a6b3fb0afe3e8e134a5c073f1896d5d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "impl[Validator<'d,%20D>]/fn[execute]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "807a5015afd77dd876f866ed3e422875eef8103383fe82adb04d64b7c839be51"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
             "selector": "fn[agent_edge_tools_record_selections_without_validating_targets]"
@@ -119,7 +480,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "1923ba1a1e40335b0976450eaedbabe266a0cbc1c568947f37797528e5a0c0d0"
+          "value": "b1c00c1e246a9d3cad5d832802238ee07b4387536a473825251974c9a82c5923"
         }
       ]
     },
@@ -137,23 +498,6 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "4050d7164d344983064df2ae023af8d39fc28f0cfe0437e2e558d3f65111498c"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
-            },
-            "selector": "struct[Fingerprinted]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "c6e18fa4a798779be3a50fb4fa254440d06777576dca8b7f55cfff442bcbad3e"
         }
       ]
     },
@@ -221,7 +565,58 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
+          "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent.rs"
+            },
+            "selector": "fn[verify_with_agent]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "55036426331f42436bbb62e9cc5a67ca87453e6696b7f5e2a3ebc75a2e0b6013"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "impl[Fingerprinted<D,%20O>]/fn[source_node_id]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "3e7ea77143d21179018bf4f9a5fcf6bc643ef5e224774d5022be6cd03cd821b9"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "impl[Validator<'d,%20D>]/fn[verify]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "3a2bbdb3f06a33cbff7a1af2c5d08a4f87b3be750b183eba7c1b204ee1e50203"
         }
       ]
     }

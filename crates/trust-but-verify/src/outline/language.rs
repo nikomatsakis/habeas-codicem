@@ -7,7 +7,6 @@ pub type CustomName = fn(Node<'_>, &str) -> Option<(Vec<String>, std::ops::Range
 
 /// How an outline node of a mapped kind is named.
 #[derive(Clone, Copy)]
-// {impl}`requirements.references.outlines`
 pub enum NameRule {
     /// Always anonymous: the segment is `kind@<identity hash>`.
     Anonymous,
@@ -22,7 +21,6 @@ pub enum NameRule {
 
 impl NameRule {
     /// Resolve the selector name and the source range that supplies it.
-    // {impl}`requirements.sdk.outlines.name_span`
     pub(crate) fn resolve(
         self,
         node: Node<'_>,
@@ -41,7 +39,6 @@ impl NameRule {
 }
 
 /// One row of a profile's kind table.
-// {impl}`requirements.references.outlines`
 pub struct KindRule {
     /// Grammar node kind.
     pub grammar: &'static str,
@@ -79,8 +76,8 @@ pub enum AttachmentTarget {
     SiblingField(&'static str),
 }
 
-/// A language's outline profile.
 // {impl}`requirements.references.outlines`
+/// A language's outline profile.
 pub struct Profile {
     /// Character used to parse structural-search metavariables.
     pub expando_char: char,
@@ -114,7 +111,6 @@ pub struct Profile {
 }
 
 impl std::fmt::Debug for Profile {
-    // {impl}`requirements.references.outlines`
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(self.name)
     }

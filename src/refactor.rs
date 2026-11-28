@@ -26,7 +26,6 @@ use crate::sdk::{HabeasDomain, HabeasNode, RequirementId, input_fingerprint};
 use trust_but_verify::domain::Domain;
 use trust_but_verify::graph::Dependency;
 
-// {impl}`requirements.refactor.invalid_mappings`
 /// A failure of `habeas refactor`: an invalid mapping, reported as a usage
 /// error before anything changes, or an I/O failure.
 #[derive(Debug)]
@@ -54,7 +53,6 @@ impl std::fmt::Display for RefactorError {
 
 impl std::error::Error for RefactorError {}
 
-// {impl}`requirements.refactor.mappings`
 /// The suffix of `value` beneath `prefix`: empty when they are equal, and
 /// starting with `separator` when `value` lies beneath it.
 fn beneath<'a>(value: &'a str, prefix: &str, separator: char) -> Option<&'a str> {
@@ -62,7 +60,6 @@ fn beneath<'a>(value: &'a str, prefix: &str, separator: char) -> Option<&'a str>
     (rest.is_empty() || rest.starts_with(separator)).then_some(rest)
 }
 
-// {impl}`requirements.refactor.mappings`
 /// A node selector beneath `prefix`, relative to it: `None` unless `item` is
 /// `prefix` or one of its descendants. Every selector lies beneath the root's
 /// empty selector.
@@ -73,7 +70,6 @@ fn beneath_node<'a>(item: &'a str, prefix: &str) -> Option<&'a str> {
     beneath(item, prefix, '/').map(|rest| rest.trim_start_matches('/'))
 }
 
-// {impl}`requirements.refactor.mappings`
 /// `relative` beneath the selector `prefix`.
 fn join_node(prefix: &str, relative: &str) -> String {
     match (prefix.is_empty(), relative.is_empty()) {
@@ -94,7 +90,6 @@ fn address(file: &str, item: &str) -> String {
 }
 
 /// The mappings of one run, by kind.
-// {impl}`requirements.refactor.mappings`
 #[derive(Debug, Default)]
 pub(crate) struct Mappings {
     names: Vec<(String, String)>,
@@ -102,7 +97,6 @@ pub(crate) struct Mappings {
     nodes: Vec<((String, String), (String, String))>,
 }
 
-// {impl}`requirements.refactor.mappings`
 impl Mappings {
     /// Map SDK identities while preserving their node kind.
     fn sdk_node(&self, node: &HabeasNode, back: bool) -> HabeasNode {
@@ -322,8 +316,6 @@ static CODE_SPAN: LazyLock<Regex> =
 /// Rewrites references and anchors in a source's content: each reference
 /// naming a mapped definition, and in Markdown each anchor option naming a
 /// mapped file or node. Returns the new content and the number of edits.
-// {impl}`requirements.references.reference_contexts`
-// {impl}`requirements.refactor.reference_rewrite`
 fn rewrite_source(mappings: &Mappings, path: &Path, content: &str) -> (String, usize) {
     let markdown = crate::outline::is_markdown_path(path);
     let mut edits = Vec::new();
@@ -407,10 +399,6 @@ fn rewrite_source(mappings: &Mappings, path: &Path, content: &str) -> (String, u
 /// Rewrites a rationale's code spans that are exactly an old definition
 /// name, path, or node address, and lists the other spans that mention an
 /// old path.
-// {impl}`requirements.refactor.rationale.names`
-// {impl}`requirements.refactor.rationale.paths`
-// {impl}`requirements.refactor.rationale.addresses`
-// {impl}`requirements.refactor.rationale.untouched`
 fn rewrite_rationale(mappings: &Mappings, rationale: &str) -> (String, Vec<String>) {
     let old_paths = mappings.old_paths();
     let mut mentions = Vec::new();
@@ -449,7 +437,6 @@ struct States {
 
 impl States {
     /// Computes the post and mapped-back states from the current repository.
-    // {impl}`requirements.refactor.definition_inputs`
     fn compute(root: &Path, mappings: Mappings) -> io::Result<Self> {
         let definitions = crate::evidence::load_definitions(root)?;
         let mut failures = Vec::new();
@@ -581,7 +568,6 @@ impl States {
 
     /// The post state's reference-set digest of a current definition, and
     /// the mapped-back digest of its old name.
-    // {impl}`requirements.refactor.reference_digest`
     fn digests(&self, new: &str, old: &str) -> io::Result<Option<(String, String)>> {
         let (Some(post), Some(back)) = (
             self.definitions_post.get(new),
@@ -620,11 +606,13 @@ impl States {
                 entry.item = item;
             }
         }
-        Ok(Some((current, crate::evidence::digest_entries(entries))))
+        Ok(Some((
+            current,
+            crate::evidence::digest_definition_entries(back, entries),
+        )))
     }
 }
 
-// {impl}`requirements.refactor.definition_inputs`
 /// A declaration's opening fence with its short name mapped back from the
 /// current full name `new` to `old`.
 fn opening_back(opening: &str, new: &str, old: &str) -> String {
@@ -679,8 +667,6 @@ fn record_kind(path: &str) -> Option<RecordKind> {
 }
 
 /// Rewrites one input, or returns `None` when no mapping affects it.
-// {impl}`requirements.refactor.outline_inputs`
-// {impl}`requirements.refactor.definition_inputs`
 fn rewrite_input(states: &States, input: &Value) -> Option<Result<Value, String>> {
     let mappings = &states.mappings;
     let root = &states.root;
@@ -779,8 +765,6 @@ fn rewrite_input(states: &States, input: &Value) -> Option<Result<Value, String>
 
 /// Keep SDK observations in sync with the application inputs whose rewrites
 /// have been verified. Unrepresented observations cannot be refreshed safely.
-// {impl}`requirements.refactor.record_fields`
-// {impl}`requirements.refactor.whole_record`
 fn rewrite_sdk_dependencies(
     states: &States,
     record: &Value,
@@ -931,16 +915,31 @@ fn rewrite_sdk_dependencies(
     if dependencies == original {
         return Ok(false);
     }
+    // The aggregate contains the union of the independent criterion traces.
+    // Apply the same verified mapping to each criterion's own observations.
+    if let Some(criteria) = value.get_mut("criteria").and_then(Value::as_object_mut) {
+        for criterion in criteria.values_mut() {
+            let observations = criterion["dependencies"]
+                .as_array_mut()
+                .ok_or("invalid criterion dependencies")?;
+            for observation in observations {
+                let old = serde_json::from_value(observation.clone())
+                    .map_err(|error| error.to_string())?;
+                let index = original
+                    .iter()
+                    .position(|dep| *dep == old)
+                    .ok_or("criterion observation missing from aggregate dependencies")?;
+                *observation = serde_json::to_value(&dependencies[index])
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+    }
     value["dependencies"] =
         serde_json::to_value(dependencies).map_err(|error| error.to_string())?;
     Ok(true)
 }
 
 /// Decides one record under the mappings.
-// {impl}`requirements.refactor.whole_record`
-// {impl}`requirements.refactor.subject_text`
-// {impl}`requirements.refactor.record_fields`
-// {impl}`requirements.refactor.reference_digest`
 fn rewrite_record(states: &States, path: &str, record: &Value) -> io::Result<Outcome> {
     let mappings = &states.mappings;
     let Some(kind) = record_kind(path) else {
@@ -1043,12 +1042,10 @@ fn rewrite_record(states: &States, path: &str, record: &Value) -> io::Result<Out
                             }
                         }
                     }
-                    // :::{impl} requirements.refactor.equivalence
                     // A citation review validates against the citations its
                     // item currently carries, so a review whose rewritten
                     // citations differ from those would validate differently
                     // after the move; the record is left unchanged instead.
-                    // :::
                     if changed && !same_citations(states, &new_file, &new_item, &value) {
                         failures.push(format!(
                             "the citations of {} differ from the recorded ones",
@@ -1187,8 +1184,6 @@ fn same_citations(states: &States, file: &str, item: &str, value: &Value) -> boo
 }
 
 /// Parses and checks the mappings against the repository.
-// {impl}`requirements.refactor.mappings`
-// {impl}`requirements.refactor.invalid_mappings`
 fn parse_mappings(
     root: &Path,
     values: &[String],
@@ -1379,11 +1374,6 @@ fn prune(root: &Path, path: &Path) {
 
 /// Runs `habeas refactor` with `--map` values, reporting what it changed,
 /// or with `dry_run`, what it would change.
-// {impl}`requirements.refactor.command`
-// {impl}`requirements.refactor.dry_run`
-// {impl}`requirements.refactor.record_files`
-// {impl}`requirements.refactor.equivalence`
-// {impl}`requirements.refactor.rationale.untouched`
 pub fn refactor(root: &Path, values: &[String], dry_run: bool) -> Result<String, RefactorError> {
     let root = fs::canonicalize(root)?;
     let records = load_records(&root)?;

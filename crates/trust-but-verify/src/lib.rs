@@ -4,13 +4,13 @@
 //! [`sources::Sources`] inspects project files using `.gitignore` defaults. Source
 //! outlines and their bundled languages live in [`outline`].
 //!
-//! {impl}`requirements.sdk.public_api`
 
 /// Configure the SDK's supplied Bedrock, OpenAI, and Ollama agents.
 #[path = "agent/config.rs"]
 pub mod agent;
 pub mod domain;
 pub mod graph;
+// {impl}`requirements.sdk.outlines.independent`
 /// Selectable source contents and bundled language rules.
 #[path = "outline/contents.rs"]
 pub mod outline;
@@ -40,3 +40,4 @@ mod search;
 mod structural;
 
 use request as procedure;
+// {impl}`requirements.sdk.public-api.exports`

@@ -10,8 +10,8 @@ pub(crate) mod toml;
 pub(crate) mod typescript;
 pub(crate) mod yaml;
 
-/// Name of the bundled outline language selected by the filename alone.
 // {impl}`requirements.sdk.outlines.name_for_path`
+/// Name of the bundled outline language selected by the filename alone.
 pub fn name_for_path(path: &std::path::Path) -> &'static str {
     crate::outline_engine::profile::profile_for_path(path).name
 }
@@ -90,21 +90,30 @@ macro_rules! language {
     };
 }
 
+// {impl}`requirements.sdk.sources.plain-text.PlainText`
 // {impl}`requirements.sdk.sources.plain-text.language`
 language!(PlainText, super::plain::PROFILE);
+// {impl}`requirements.sdk.sources.rust.Rust`
 // {impl}`requirements.sdk.sources.rust.language`
 language!(Rust, rust::PROFILE);
+// {impl}`requirements.sdk.sources.python.Python`
 // {impl}`requirements.sdk.sources.python.language`
 language!(Python, python::PROFILE);
+// {impl}`requirements.sdk.sources.typescript.TypeScript`
 // {impl}`requirements.sdk.sources.typescript.language`
 language!(TypeScript, typescript::PROFILE);
+// {impl}`requirements.sdk.sources.typescript.Tsx`
 // {impl}`requirements.sdk.sources.typescript.language`
 language!(Tsx, typescript::TSX_PROFILE);
+// {impl}`requirements.sdk.sources.markdown.Markdown`
 // {impl}`requirements.sdk.sources.markdown.language`
 language!(Markdown, markdown::PROFILE);
+// {impl}`requirements.sdk.sources.css.Css`
 // {impl}`requirements.sdk.sources.css.language`
 language!(Css, css::PROFILE);
+// {impl}`requirements.sdk.sources.toml.Toml`
 // {impl}`requirements.sdk.sources.toml.language`
 language!(Toml, toml::PROFILE);
+// {impl}`requirements.sdk.sources.yaml.Yaml`
 // {impl}`requirements.sdk.sources.yaml.language`
 language!(Yaml, yaml::PROFILE);

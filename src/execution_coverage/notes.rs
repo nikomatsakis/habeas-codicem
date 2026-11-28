@@ -20,7 +20,6 @@ pub(super) fn path(index: &Path, file: &str) -> PathBuf {
         .join(format!("{}.md", super::digest(file.as_bytes())))
 }
 
-// {impl}`requirements.test-coverage.index.file_map.combined`
 pub(super) struct DocumentedFile {
     pub file: String,
     pub items: Vec<DocumentedItem>,
@@ -28,19 +27,12 @@ pub(super) struct DocumentedFile {
     pub chapter: Chapter,
 }
 
-// {impl}`requirements.test-coverage.index.gaps.details`
 pub(super) struct DocumentedItem {
     pub selector: String,
     pub line: usize,
     pub html: String,
 }
 
-// {impl}`requirements.test-coverage.index.file_map.notes`
-// {impl}`requirements.test-coverage.index.file_map.notes.justifications`
-// {impl}`requirements.test-coverage.index.file_map.notes.current`
-// {impl}`requirements.test-coverage.index.file_map.notes.availability`
-// {impl}`requirements.test-coverage.index.file_map.notes.reviews`
-// {impl}`requirements.test-coverage.index.file_map.notes.render_only`
 pub(super) fn pages(root: &Path, files: &BTreeSet<String>, index: &Path) -> Vec<DocumentedFile> {
     let outlines = OutlineCache::default();
     let md_root = crate::evidence::book_source_dir(root, &mut Vec::new());

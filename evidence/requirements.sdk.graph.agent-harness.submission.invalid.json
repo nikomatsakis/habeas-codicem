@@ -1,8 +1,8 @@
 {
-  "requirement": "For a response with exactly one `submit_result` call, arguments other than an\nobject containing only the `result` field end the request with\n`ValidationError::Agent`. Decoding the field's value into `R` follows\n{cite}`requirements.sdk.graph.agent-calls.judge.submission.decoding`.",
+  "requirement": "For a response with exactly one `submit_result` call, arguments other than an\nobject containing only the `result` field receive a tool error describing that\nexpected structure. The model can resubmit in the same conversation. Decoding\nthe field's value into `R` follows\n{cite}`requirements.sdk.graph.agent-calls.judge.submission.decoding`.",
   "determination": true,
-  "rationale": "Obligation: for a response with exactly one `submit_result` call, arguments other than an object containing only `result` must end the request with `ValidationError::Agent`. Decoding the result into `R` is delegated to the cited `requirements.sdk.graph.agent-calls.judge.submission.decoding`.\n\nCoverage:\n- `crates/trust-but-verify/src/agent/tools.rs#mod[submission_tests]/fn[submission_envelopes_require_one_result_field]` checks the envelope check directly. It rejects null, array, string, boolean, `{}`, `{\"other\":true}` and `{\"result\":true,\"extra\":false}`, and asserts the error message \"submit_result requires exactly result\". It also asserts that a `result` of any shape is accepted and returned unchanged.\n- `crates/trust-but-verify/src/agent/tests.rs#fn[typed_submission_references_resolve_and_invalid_results_are_agent_errors]` runs the whole path. It sends the invalid argument objects `{}`, `{\"other\":true}` and `{\"result\":true,\"extra\":true}`, plus the undecodable `{\"result\":\"wrong\"}`. Each case asserts `Err(ValidationError::Agent(_))`, and the vetting callback panics if it is reached. This covers the missing-field, wrong-field and extra-field cases end to end. It also covers the decoding-failure case that the cited requirement governs, in the subject's setting.\n\nThe non-object argument cases (null, array, string, boolean) are checked only at the unit level. This is acceptable because `converse` in `agent.rs` builds `arguments` as `Value::Object(...)` from the call's argument map, and it passes any `submitted_value` error down the same error path. The end-to-end test therefore exercises the mapping to `ValidationError::Agent`, and the unit test exercises each rejected shape.\n\nI found no gap.",
-  "references": "a741213c192037f5cf8fb9682acecd737131433d52b2ac62bc3a405905a59073",
+  "rationale": "structural: `requirements.sdk.graph.agent-harness.submission.invalid` states only observable behavior, so it has no structural obligation that needs implementation evidence.\n\n- \"For a response with exactly one `submit_result` call, arguments other than an object containing only the `result` field receive a tool error describing that expected structure.\" This is input-to-output behavior. An implementation could validate the arguments with a hand-written check, a serde `deny_unknown_fields` struct, or a JSON-schema validator. All of these give the same tool error, and the text names no library, type, signature or interface.\n- \"The model can resubmit in the same conversation.\" This is a conversation-state behavior. The text does not say how the loop is built.\n- \"Decoding the field's value into `R` follows {cite}`requirements.sdk.graph.agent-calls.judge.submission.decoding`.\" This is a citation. It refers to the decoding rules and does not delegate to a named interface. The decoding rules are a separate requirement and are judged on their own. `R` is the caller's result type, and the text does not constrain how decoding is organised.\n\nThe review roots list is empty and no implementation edges are supplied. No clause creates a structural obligation, so no missing root needs reporting. Whether the behavior holds is a matter for behavioral test evidence, not for this structural criterion.\n\nbehavioral: Obligations in `requirements.sdk.graph.agent-harness.submission.invalid`:\n1. Arguments that are not an object containing only `result` get a tool error describing the expected structure.\n2. The model can resubmit in the same conversation.\n3. Decoding the field's value follows the cited `requirements.sdk.graph.agent-calls.judge.submission.decoding`.\n\nCoverage:\n- Obligation 1, envelope shapes: `crates/trust-but-verify/src/agent/tools.rs#mod[submission_tests]/fn[submission_envelopes_require_one_result_field]` checks `submitted_value` against null, array, string, bool, `{}`, `{\"other\":true}` and `{\"result\":true,\"extra\":false}`. For each it asserts the exact error text, \"Resubmit with exactly one field named `result` containing the answer.\" It also checks that valid envelopes return the inner value unchanged, including null, array, object and false.\n- Obligation 1, through the harness: `crates/trust-but-verify/src/agent/tests.rs#fn[malformed_submissions_receive_feedback_and_can_be_corrected]` sends `{}`, `{\"other\":true}` and `{\"result\":{},\"extra\":true}` through the real agent loop. It asserts the follow-up tool result has `is_error` set and contains \"exactly one field named `result`\" and \"Resubmit\".\n- Obligation 2: the same test scripts a second, valid submission after each bad one. It asserts the final answer is `Decision::No` and that vetting ran exactly once, so the same conversation continues and vetting only sees the decoded answer.\n- Obligation 3: the same test also covers decoding failures (missing field, string-wrapped JSON, inner syntax error, unknown variant, wrong type). That test carries the `{test}` marker for the cited decoding requirement. Decoding itself is the cited requirement's own scope, so it needs no separate assessment here.\n\nThe harness-level test does not send non-object arguments such as null, an array or a string. The unit test covers them directly, and `submitted_value` is the single envelope check used by the harness, so I found no gap. Both tests carry `{test}` markers for the subject.",
+  "references": "33674ed440c58ed0dd8db0ed4248f5a6620f6c85f3d9c9d302375b440a88926f",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.agent-harness.submission.invalid",
@@ -12,8 +12,9 @@
       "text": [
         ":::{req} submission.invalid",
         "For a response with exactly one `submit_result` call, arguments other than an",
-        "object containing only the `result` field end the request with",
-        "`ValidationError::Agent`. Decoding the field's value into `R` follows",
+        "object containing only the `result` field receive a tool error describing that",
+        "expected structure. The model can resubmit in the same conversation. Decoding",
+        "the field's value into `R` follows",
         "{cite}`requirements.sdk.graph.agent-calls.judge.submission.decoding`.",
         ":::"
       ]
@@ -25,33 +26,171 @@
       ],
       "text": [
         ":::{req} judge.submission.decoding",
-        "If the submitted result cannot be deserialized into `R`, the call ends with",
-        "`ValidationError::Agent` before invoking any vetting callbacks.",
+        "Decode the submitted `result` directly as `R`. If direct decoding fails and the",
+        "value is a string containing JSON, decode that inner JSON as `R` once. A",
+        "successfully decoded answer proceeds to normal vetting. If decoding still fails,",
+        "return the decoding error and guidance on the expected `result` to the model as a",
+        "tool error. For a string that starts with a JSON object or array after leading",
+        "whitespace, report an inner syntax error with its line and column. Keep the",
+        "conversation open for a corrected submission and invoke vetting callbacks only",
+        "for successfully decoded answers.",
         ":::"
       ]
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "fn[typed_submission_references_resolve_and_invalid_results_are_agent_errors]",
-      "hash": "ddd3b03441ab9cd50df733d7f1ff28bdd5a224fa49a2ea82050a34f03a1d4f2e"
+      "item": "fn[malformed_submissions_receive_feedback_and_can_be_corrected]",
+      "hash": "f1b5fb0a21031fe3f1e440b4dd9bf4dd751ca4f09fbdd071480abb4fa6cd0a42"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tools.rs",
       "item": "mod[submission_tests]/fn[submission_envelopes_require_one_result_field]",
-      "hash": "8ee4e2c7190cef6201e52d12fb2fee780bb8a8953f57d14c9778a25363f4c5fc"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent.rs",
-      "item": "fn[converse]",
-      "hash": "e8e0fe20d0e50acb2f464efd2b1800b3d85375b389a0c26af2d3bc07089ba006"
+      "hash": "5a69d9f304e7be83be3643c45a8b10eff9e8be016882608c37928bba4744092c"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tools.rs",
       "item": "fn[submitted_value]",
-      "hash": "89a190a8d607d0073c326d93750354b9a9d856add023427d66169f4aaebd953a"
+      "hash": "971ab57111b1c0aba49a17785c46af8d111097359ccfe8f28da5c8225df2d169"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.agent-harness.submission.invalid"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "33674ed440c58ed0dd8db0ed4248f5a6620f6c85f3d9c9d302375b440a88926f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-harness.submission.invalid"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "650de6d1757be7b1a5332b5e22140a9fdaebaec1b87d2b0600341060e0e24649"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-calls.judge.submission.decoding"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "fad93bccc42cacb016251988038a4a5cb52547399141fa9b0622cef7b65929dd"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "`requirements.sdk.graph.agent-harness.submission.invalid` states only observable behavior, so it has no structural obligation that needs implementation evidence.\n\n- \"For a response with exactly one `submit_result` call, arguments other than an object containing only the `result` field receive a tool error describing that expected structure.\" This is input-to-output behavior. An implementation could validate the arguments with a hand-written check, a serde `deny_unknown_fields` struct, or a JSON-schema validator. All of these give the same tool error, and the text names no library, type, signature or interface.\n- \"The model can resubmit in the same conversation.\" This is a conversation-state behavior. The text does not say how the loop is built.\n- \"Decoding the field's value into `R` follows {cite}`requirements.sdk.graph.agent-calls.judge.submission.decoding`.\" This is a citation. It refers to the decoding rules and does not delegate to a named interface. The decoding rules are a separate requirement and are judged on their own. `R` is the caller's result type, and the text does not constrain how decoding is organised.\n\nThe review roots list is empty and no implementation edges are supplied. No clause creates a structural obligation, so no missing root needs reporting. Whether the behavior holds is a matter for behavioral test evidence, not for this structural criterion."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.agent-harness.submission.invalid"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "33674ed440c58ed0dd8db0ed4248f5a6620f6c85f3d9c9d302375b440a88926f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-harness.submission.invalid"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "650de6d1757be7b1a5332b5e22140a9fdaebaec1b87d2b0600341060e0e24649"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-calls.judge.submission.decoding"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "fad93bccc42cacb016251988038a4a5cb52547399141fa9b0622cef7b65929dd"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[malformed_submissions_receive_feedback_and_can_be_corrected]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f1b5fb0a21031fe3f1e440b4dd9bf4dd751ca4f09fbdd071480abb4fa6cd0a42"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tools.rs"
+                },
+                "selector": "mod[submission_tests]/fn[submission_envelopes_require_one_result_field]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "5a69d9f304e7be83be3643c45a8b10eff9e8be016882608c37928bba4744092c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tools.rs"
+                },
+                "selector": "fn[submitted_value]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "971ab57111b1c0aba49a17785c46af8d111097359ccfe8f28da5c8225df2d169"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "Obligations in `requirements.sdk.graph.agent-harness.submission.invalid`:\n1. Arguments that are not an object containing only `result` get a tool error describing the expected structure.\n2. The model can resubmit in the same conversation.\n3. Decoding the field's value follows the cited `requirements.sdk.graph.agent-calls.judge.submission.decoding`.\n\nCoverage:\n- Obligation 1, envelope shapes: `crates/trust-but-verify/src/agent/tools.rs#mod[submission_tests]/fn[submission_envelopes_require_one_result_field]` checks `submitted_value` against null, array, string, bool, `{}`, `{\"other\":true}` and `{\"result\":true,\"extra\":false}`. For each it asserts the exact error text, \"Resubmit with exactly one field named `result` containing the answer.\" It also checks that valid envelopes return the inner value unchanged, including null, array, object and false.\n- Obligation 1, through the harness: `crates/trust-but-verify/src/agent/tests.rs#fn[malformed_submissions_receive_feedback_and_can_be_corrected]` sends `{}`, `{\"other\":true}` and `{\"result\":{},\"extra\":true}` through the real agent loop. It asserts the follow-up tool result has `is_error` set and contains \"exactly one field named `result`\" and \"Resubmit\".\n- Obligation 2: the same test scripts a second, valid submission after each bad one. It asserts the final answer is `Decision::No` and that vetting ran exactly once, so the same conversation continues and vetting only sees the decoded answer.\n- Obligation 3: the same test also covers decoding failures (missing field, string-wrapped JSON, inner syntax error, unknown variant, wrong type). That test carries the `{test}` marker for the cited decoding requirement. Decoding itself is the cited requirement's own scope, so it needs no separate assessment here.\n\nThe harness-level test does not send non-object arguments such as null, an array or a string. The unit test covers them directly, and `submitted_value` is the single envelope check used by the harness, so I found no gap. Both tests carry `{test}` markers for the subject."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -61,19 +200,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "a741213c192037f5cf8fb9682acecd737131433d52b2ac62bc3a405905a59073"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.agent-harness.submission.invalid"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "8f5fc9cd42101d375e1420edaab27837cfba576950f7596e3c67a636013e3ec9"
+          "value": "33674ed440c58ed0dd8db0ed4248f5a6620f6c85f3d9c9d302375b440a88926f"
         }
       ]
     },
@@ -84,7 +211,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "958abb1b64a83ac404ab91ceefb83234451704c0a01cf784775c5cb75e048060"
+          "value": "650de6d1757be7b1a5332b5e22140a9fdaebaec1b87d2b0600341060e0e24649"
         }
       ]
     },
@@ -95,7 +222,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "61d443baceb347f6aadd701a110006df658cfbad3e96ec596c4bb169d016d745"
+          "value": "fad93bccc42cacb016251988038a4a5cb52547399141fa9b0622cef7b65929dd"
         }
       ]
     },
@@ -107,12 +234,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
-            "selector": "fn[typed_submission_references_resolve_and_invalid_results_are_agent_errors]"
+            "selector": "fn[malformed_submissions_receive_feedback_and_can_be_corrected]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "ddd3b03441ab9cd50df733d7f1ff28bdd5a224fa49a2ea82050a34f03a1d4f2e"
+          "value": "f1b5fb0a21031fe3f1e440b4dd9bf4dd751ca4f09fbdd071480abb4fa6cd0a42"
         }
       ]
     },
@@ -129,24 +256,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "8ee4e2c7190cef6201e52d12fb2fee780bb8a8953f57d14c9778a25363f4c5fc"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent.rs"
-            },
-            "selector": "fn[converse]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "e8e0fe20d0e50acb2f464efd2b1800b3d85375b389a0c26af2d3bc07089ba006"
+          "value": "5a69d9f304e7be83be3643c45a8b10eff9e8be016882608c37928bba4744092c"
         }
       ]
     },
@@ -163,7 +273,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "89a190a8d607d0073c326d93750354b9a9d856add023427d66169f4aaebd953a"
+          "value": "971ab57111b1c0aba49a17785c46af8d111097359ccfe8f28da5c8225df2d169"
         }
       ]
     }
