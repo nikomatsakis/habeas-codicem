@@ -1,8 +1,8 @@
 {
   "requirement": "Saving encodes the completed result using its Serde JSON representation and\npreserves the dependencies captured in `Fingerprinted`.\n`Record`, `Dependency`, and `Fingerprint` support\nSerde when their type parameters do. The graph's node\nidentities and edge labels need not implement Serde unless its storage backend\nrequires those bounds.\n\n```rust,ignore\n#[non_exhaustive]\npub struct Record<N, L = ()> {\n    pub version: Option<CriterionVersion>,\n    pub dependencies: Vec<Dependency<N, L>>,\n    pub output: Value,\n}\n\nimpl<N, L> Record<N, L> {\n    pub fn new(\n        version: Option<CriterionVersion>,\n        dependencies: Vec<Dependency<N, L>>,\n        output: Value,\n    ) -> Self;\n}\n```\n\nTrait implementations\n\n```rust,ignore\nimpl<N: Clone, L: Clone> Clone for Record<N, L>;\nimpl<N: Debug, L: Debug> Debug for Record<N, L>;\nimpl<'de, N, L> Deserialize<'de> for Record<N, L> where N: Deserialize<'de>, L: Deserialize<'de>;\nimpl<N, L> Serialize for Record<N, L> where N: Serialize, L: Serialize;\n```",
-  "determination": false,
-  "rationale": "Add `{impl}` to `crates/trust-but-verify/src/graph.rs#impl[Record<N, L>]/fn[new]` — The requirement prescribes a public constructor: `impl<N, L> Record<N, L> { pub fn new(version: Option<CriterionVersion>, dependencies: Vec<Dependency<N, L>>, output: Value) -> Self; }`. An alternative that keeps the same serialized results but drops `new`, or changes its parameter order or types, would violate this clause. `new` is a separate item in its own impl block, and nothing marked `{impl}` reaches it. `struct[Record]` is the only marked root, and it reaches only its field types, not the inherent impl. Reading `new` lets a reviewer check its signature against the prescribed one, which is not covered by the `Record` root. The struct root does cover the other structural obligations: the field names and types, `#[non_exhaustive]`, the default `L = ()`, and the derived `Clone`, `Debug`, `Serialize` and `Deserialize`. Those derives carry the right generic bounds. `Dependency` and `Fingerprint` are reached through the `Record` field types, and each derives Serde, so they need no separate marker. `Validator::store_evidence` builds a `Record` with `serde_json::to_value` and `persist_dependencies`. That is behavior, and another requirement already marks it.",
-  "references": "3a4c29072b91b37b234bb3e41fd00831527083f8757b5b1c6497d0ef2845677b",
+  "determination": true,
+  "rationale": "structural: The structural obligations in `requirements.sdk.graph.evidence.record` are the prescribed `Record<N, L = ()>` declaration, its `new` signature, the trait implementations, and Serde support for `Record`, `Dependency` and `Fingerprint`. The roots cover them.\n\n- **Declaration:** `crates/trust-but-verify/src/graph.rs#struct[Record]` is `#[non_exhaustive]`. It has the generics `<N, L = ()>` and the public fields `version: Option<CriterionVersion>`, `dependencies: Vec<Dependency<N, L>>` and `output: serde_json::Value`. Dropping `#[non_exhaustive]` or changing a field type would break the prescribed type, so this is a real structural obligation. The root carries `{impl}`.\n- **Trait implementations:** `#[derive(Clone, Debug, Serialize, Deserialize)]` on `Record` gives Clone, Debug, Serialize and Deserialize. Derive's default bounds are the required ones: `N: Clone, L: Clone` for Clone, `N: Debug, L: Debug` for Debug, and `N: Serialize, L: Serialize` for Serialize. For Deserialize they are `N: Deserialize<'de>, L: Deserialize<'de>`. A hand-written impl with extra bounds or without a trait would violate the clause.\n- **Constructor:** `crates/trust-but-verify/src/graph.rs#impl[Record<N, L>]/fn[new]` has the prescribed signature of `version`, `dependencies` and `output` returning `Self`. It stores the three arguments unchanged, and it carries `{impl}`. `#[non_exhaustive]` prevents outside crates from using a struct literal, so this signature is needed.\n- **Other types:** `Dependency` (`enum[Dependency]`) and `Fingerprint` (`struct[Fingerprint]`) both derive Serialize and Deserialize. `Dependency` is generic over `N` and `L`, so it supports Serde when its type parameters do. `Fingerprint` has only `String` fields. Each is a root for its own requirement and is marked for it, so they need no `{impl}` for this requirement.\n- **Serde-free graph types:** The text says node identities and edge labels need not implement Serde unless the storage backend requires it. Nothing in the derives adds bounds beyond the conditional ones.\n- **Saving behavior:** The text says saving encodes the completed result and preserves the dependencies captured in `Fingerprinted`. This is behavior of the store and refresh operations, which other requirements cover. It names no further type, signature or delegation to implement here, so it creates no structural obligation.\n- **Out of scope:** The `#[serde(rename = \"revision\", with = \"stored_version\")]` attribute on `version` belongs to `recorded_criterion_version`, not to this text.\n\nbehavioral: The tests adequately cover the observable obligations of `requirements.sdk.graph.evidence.record`. I judged the obligations against the requirement text, and I read the helpers `record` and `criterion` in `crates/trust-but-verify/tests/storage.rs`. I also read the declarations of `Fingerprint` and `Dependency` in `crates/trust-but-verify/src/graph.rs`.\n\n1. **Saving encodes the completed result as Serde JSON.**\n   - `crates/trust-but-verify/tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` stores typed outputs through `validator.store_evidence`. It asserts the stored `Record.output` is exactly `json!({\"satisfied\":false,\"details\":[\"missing edge case\"]})` for a struct, and `json!(null)` for `()`. A `Vec<String>` output round-trips through `persist`. It also asserts that nothing is written until an explicit save, and that a stored record loads back to the same output.\n   - `crates/trust-but-verify/tests/storage.rs#fn[records_round_trip_and_malformed_or_incompatible_data_is_an_error]` round-trips a record through `FileEvidenceStorage` as JSON. It asserts that the output, a large structured JSON value, comes back equal.\n\n2. **Dependencies captured in `Fingerprinted` are preserved.**\n   - `crates/trust-but-verify/tests/contracts.rs#fn[input_checking_and_execution_keep_separate_observations]` asserts the saved record's dependencies equal `[Dependency::Node(Node(2), Fingerprint::new(\"text-v1\", \"after\"))]`, the dependency captured at execution.\n   - The first contracts test asserts that a record saved with no dependencies has an empty dependency list.\n   - The storage test round-trips both `Dependency::Node` and `Dependency::OutgoingEdges` variants, including fingerprint scheme and value. It also uses a non-ASCII label, `tests/é`.\n   - The storage test checks that `version` is preserved.\n\n3. **`Record`, `Dependency` and `Fingerprint` support Serde when their type parameters do.** The storage test serializes and deserializes `Record<String, ()>` and `Record<String, String>`. It also asserts that loading with the incompatible parameters `u8` for the node type or `u8` for the label type yields a JSON error.\n\n4. **Node identities and edge labels need not implement Serde.** This is permissive, so it imposes no obligation to test.\n\n5. **Type shape and trait list.** `Record::new` and the public fields are exercised by the tests above. The shape and exports are checked structurally by `crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]`, which checks the exported inventory and that the Habeas consumer compiles. `Clone` and `Debug` are derive-level structural choices with no independent observable behavior.\n\nI found no requirement-violating behavior that these tests would accept.",
+  "references": "cd6087eacb1f1cdb37deca29d864de151ded4ad0675959c917ce205e3aa27147",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.evidence.record",
@@ -54,18 +54,8 @@
     },
     {
       "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "impl[Record<N,%20L>]",
-      "hash": "75d4dc7812dac2ea72b08ea637b98543abadffbc924cd5f057924462d522733f"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "impl[Validator<'d,%20D>]/fn[store_evidence]",
-      "hash": "f102d22aa4e7d1e1b656e215b1de8c72c49ac2993a5b98b251539d7116e94a1c"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "enum[Dependency]",
-      "hash": "fe5519f4fbe4dbde50c868209706c52775c0c142e88c97d75bbebf4a296ed0c0"
+      "item": "impl[Record<N,%20L>]/fn[new]",
+      "hash": "f2d753db66bf3416373611462fd7eda4d875896fc42008b0c3aa9566f0f8e741"
     },
     {
       "file": "crates/trust-but-verify/src/graph.rs",
@@ -74,8 +64,13 @@
     },
     {
       "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "impl[Record<N,%20L>]/fn[new]",
-      "hash": "f2d753db66bf3416373611462fd7eda4d875896fc42008b0c3aa9566f0f8e741"
+      "item": "enum[Dependency]",
+      "hash": "fe5519f4fbe4dbde50c868209706c52775c0c142e88c97d75bbebf4a296ed0c0"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "struct[Fingerprinted]",
+      "hash": "c6e18fa4a798779be3a50fb4fa254440d06777576dca8b7f55cfff442bcbad3e"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
@@ -99,8 +94,18 @@
     },
     {
       "file": "crates/trust-but-verify/tests/storage.rs",
+      "item": "fn[criterion]",
+      "hash": "cc7ba646f8791ffecfaa8c1dd78e656f6ace8421d1b90b9a87e1b34c29c64c3f"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/storage.rs",
       "item": "fn[record]",
       "hash": "cc02916e1be078b0792dbaa96f257c2c9ee062fb80d51ccc01ac0daf00ce9bf8"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "mod[stored_version]",
+      "hash": "524b23c8ccb9ccea044375c94110b407973a08485d6607c7f1fcffd859213038"
     }
   ],
   "criteria": {
@@ -114,7 +119,7 @@
             },
             {
               "scheme": "habeas-reference-set-v1",
-              "value": "3a4c29072b91b37b234bb3e41fd00831527083f8757b5b1c6497d0ef2845677b"
+              "value": "cd6087eacb1f1cdb37deca29d864de151ded4ad0675959c917ce205e3aa27147"
             }
           ]
         },
@@ -147,18 +152,6 @@
           ]
         },
         {
-          "OutgoingEdges": [
-            {
-              "Requirement": "requirements.sdk.graph.evidence.record"
-            },
-            "Implements",
-            {
-              "scheme": "node-path-set-sha256-v1",
-              "value": "fdef7db2a1568d0bc14111da367555493490acfca490d8228fcf9abddef676d8"
-            }
-          ]
-        },
-        {
           "Node": [
             {
               "Source": {
@@ -166,46 +159,12 @@
                   "scheme": "repo",
                   "location": "crates/trust-but-verify/src/graph.rs"
                 },
-                "selector": "impl[Record<N,%20L>]"
+                "selector": "impl[Record<N,%20L>]/fn[new]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "333733577cb5d03e6e523c79152662f36081754a9442794735449758b11a1cd2"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/graph.rs"
-                },
-                "selector": "impl[Validator<'d,%20D>]/fn[store_evidence]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "f102d22aa4e7d1e1b656e215b1de8c72c49ac2993a5b98b251539d7116e94a1c"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/graph.rs"
-                },
-                "selector": "enum[Dependency]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "fe5519f4fbe4dbde50c868209706c52775c0c142e88c97d75bbebf4a296ed0c0"
+              "value": "f2d753db66bf3416373611462fd7eda4d875896fc42008b0c3aa9566f0f8e741"
             }
           ]
         },
@@ -234,27 +193,36 @@
                   "scheme": "repo",
                   "location": "crates/trust-but-verify/src/graph.rs"
                 },
-                "selector": "impl[Record<N,%20L>]/fn[new]"
+                "selector": "enum[Dependency]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "f2d753db66bf3416373611462fd7eda4d875896fc42008b0c3aa9566f0f8e741"
+              "value": "fe5519f4fbe4dbde50c868209706c52775c0c142e88c97d75bbebf4a296ed0c0"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph.rs"
+                },
+                "selector": "struct[Fingerprinted]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "c6e18fa4a798779be3a50fb4fa254440d06777576dca8b7f55cfff442bcbad3e"
             }
           ]
         }
       ],
       "output": {
-        "status": "failed",
-        "corrections": [
-          {
-            "kind": "add_reference",
-            "role": "impl",
-            "file": "crates/trust-but-verify/src/graph.rs",
-            "selector": "impl[Record<N, L>]/fn[new]",
-            "rationale": "The requirement prescribes a public constructor: `impl<N, L> Record<N, L> { pub fn new(version: Option<CriterionVersion>, dependencies: Vec<Dependency<N, L>>, output: Value) -> Self; }`. An alternative that keeps the same serialized results but drops `new`, or changes its parameter order or types, would violate this clause. `new` is a separate item in its own impl block, and nothing marked `{impl}` reaches it. `struct[Record]` is the only marked root, and it reaches only its field types, not the inherent impl. Reading `new` lets a reviewer check its signature against the prescribed one, which is not covered by the `Record` root. The struct root does cover the other structural obligations: the field names and types, `#[non_exhaustive]`, the default `L = ()`, and the derived `Clone`, `Debug`, `Serialize` and `Deserialize`. Those derives carry the right generic bounds. `Dependency` and `Fingerprint` are reached through the `Record` field types, and each derives Serde, so they need no separate marker. `Validator::store_evidence` builds a `Record` with `serde_json::to_value` and `persist_dependencies`. That is behavior, and another requirement already marks it."
-          }
-        ]
+        "status": "success",
+        "rationale": "The structural obligations in `requirements.sdk.graph.evidence.record` are the prescribed `Record<N, L = ()>` declaration, its `new` signature, the trait implementations, and Serde support for `Record`, `Dependency` and `Fingerprint`. The roots cover them.\n\n- **Declaration:** `crates/trust-but-verify/src/graph.rs#struct[Record]` is `#[non_exhaustive]`. It has the generics `<N, L = ()>` and the public fields `version: Option<CriterionVersion>`, `dependencies: Vec<Dependency<N, L>>` and `output: serde_json::Value`. Dropping `#[non_exhaustive]` or changing a field type would break the prescribed type, so this is a real structural obligation. The root carries `{impl}`.\n- **Trait implementations:** `#[derive(Clone, Debug, Serialize, Deserialize)]` on `Record` gives Clone, Debug, Serialize and Deserialize. Derive's default bounds are the required ones: `N: Clone, L: Clone` for Clone, `N: Debug, L: Debug` for Debug, and `N: Serialize, L: Serialize` for Serialize. For Deserialize they are `N: Deserialize<'de>, L: Deserialize<'de>`. A hand-written impl with extra bounds or without a trait would violate the clause.\n- **Constructor:** `crates/trust-but-verify/src/graph.rs#impl[Record<N, L>]/fn[new]` has the prescribed signature of `version`, `dependencies` and `output` returning `Self`. It stores the three arguments unchanged, and it carries `{impl}`. `#[non_exhaustive]` prevents outside crates from using a struct literal, so this signature is needed.\n- **Other types:** `Dependency` (`enum[Dependency]`) and `Fingerprint` (`struct[Fingerprint]`) both derive Serialize and Deserialize. `Dependency` is generic over `N` and `L`, so it supports Serde when its type parameters do. `Fingerprint` has only `String` fields. Each is a root for its own requirement and is marked for it, so they need no `{impl}` for this requirement.\n- **Serde-free graph types:** The text says node identities and edge labels need not implement Serde unless the storage backend requires it. Nothing in the derives adds bounds beyond the conditional ones.\n- **Saving behavior:** The text says saving encodes the completed result and preserves the dependencies captured in `Fingerprinted`. This is behavior of the store and refresh operations, which other requirements cover. It names no further type, signature or delegation to implement here, so it creates no structural obligation.\n- **Out of scope:** The `#[serde(rename = \"revision\", with = \"stored_version\")]` attribute on `version` belongs to `recorded_criterion_version`, not to this text."
       }
     },
     "behavioral": {
@@ -267,7 +235,7 @@
             },
             {
               "scheme": "habeas-reference-set-v1",
-              "value": "3a4c29072b91b37b234bb3e41fd00831527083f8757b5b1c6497d0ef2845677b"
+              "value": "cd6087eacb1f1cdb37deca29d864de151ded4ad0675959c917ce205e3aa27147"
             }
           ]
         },
@@ -356,14 +324,14 @@
               "Source": {
                 "resource": {
                   "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/graph.rs"
+                  "location": "crates/trust-but-verify/tests/storage.rs"
                 },
-                "selector": "enum[Dependency]"
+                "selector": "fn[criterion]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "fe5519f4fbe4dbde50c868209706c52775c0c142e88c97d75bbebf4a296ed0c0"
+              "value": "cc7ba646f8791ffecfaa8c1dd78e656f6ace8421d1b90b9a87e1b34c29c64c3f"
             }
           ]
         },
@@ -383,23 +351,48 @@
               "value": "cc02916e1be078b0792dbaa96f257c2c9ee062fb80d51ccc01ac0daf00ce9bf8"
             }
           ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph.rs"
+                },
+                "selector": "struct[Fingerprint]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "8525a648cc94de4b3c90595605e8b74c889473404e79c3ae0f5fd6b81252d9bf"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph.rs"
+                },
+                "selector": "enum[Dependency]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "fe5519f4fbe4dbde50c868209706c52775c0c142e88c97d75bbebf4a296ed0c0"
+            }
+          ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "The tests cover each behavioral obligation in `requirements.sdk.graph.evidence.record`.\n\n**Saving encodes the completed result as Serde JSON**\n- `tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` saves a typed answer and inspects the stored `Record.output`.\n- It asserts the output equals `json!({\"satisfied\":false,\"details\":[\"missing edge case\"]})`.\n- It asserts a unit answer is stored as `json!(null)`.\n- It asserts that executing without saving writes nothing, and that loading returns the saved output.\n\n**Saving preserves the dependencies captured in `Fingerprinted`**\n- `tests/contracts.rs#fn[input_checking_and_execution_keep_separate_observations]` saves a criterion that reads `Node(2)`.\n- It asserts the stored record's dependencies equal `[Dependency::Node(Node(2), Fingerprint::new(\"text-v1\", \"after\"))]`.\n- The first test asserts that a criterion with no reads stores an empty dependency list.\n\n**Serde support for `Record`, `Dependency` and `Fingerprint`**\n- `tests/storage.rs#fn[records_round_trip_and_malformed_or_incompatible_data_is_an_error]` round-trips records through JSON storage.\n- The round trip covers `version`, `dependencies` and `output`.\n- It covers both `Dependency::Node` and `Dependency::OutgoingEdges`, including a non-unit label (`String`).\n- It covers `Fingerprint` contents.\n- It also checks that type-parameter mismatches and malformed JSON fail on deserialization.\n\n**Remaining text**\n- The statement that node identities and edge labels need not implement Serde is a permission, so it needs no test.\n- The struct shape, `Record::new`, and the Clone, Debug, Serialize and Deserialize impls are structural.\n- `tests/public_api.rs#fn[public_exports_match_the_appendix]` checks the public export inventory, and the other tests use `Record::new` and the public fields.\n\nI found no requirement-violating behavior that these tests would accept."
+        "rationale": "The tests adequately cover the observable obligations of `requirements.sdk.graph.evidence.record`. I judged the obligations against the requirement text, and I read the helpers `record` and `criterion` in `crates/trust-but-verify/tests/storage.rs`. I also read the declarations of `Fingerprint` and `Dependency` in `crates/trust-but-verify/src/graph.rs`.\n\n1. **Saving encodes the completed result as Serde JSON.**\n   - `crates/trust-but-verify/tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` stores typed outputs through `validator.store_evidence`. It asserts the stored `Record.output` is exactly `json!({\"satisfied\":false,\"details\":[\"missing edge case\"]})` for a struct, and `json!(null)` for `()`. A `Vec<String>` output round-trips through `persist`. It also asserts that nothing is written until an explicit save, and that a stored record loads back to the same output.\n   - `crates/trust-but-verify/tests/storage.rs#fn[records_round_trip_and_malformed_or_incompatible_data_is_an_error]` round-trips a record through `FileEvidenceStorage` as JSON. It asserts that the output, a large structured JSON value, comes back equal.\n\n2. **Dependencies captured in `Fingerprinted` are preserved.**\n   - `crates/trust-but-verify/tests/contracts.rs#fn[input_checking_and_execution_keep_separate_observations]` asserts the saved record's dependencies equal `[Dependency::Node(Node(2), Fingerprint::new(\"text-v1\", \"after\"))]`, the dependency captured at execution.\n   - The first contracts test asserts that a record saved with no dependencies has an empty dependency list.\n   - The storage test round-trips both `Dependency::Node` and `Dependency::OutgoingEdges` variants, including fingerprint scheme and value. It also uses a non-ASCII label, `tests/é`.\n   - The storage test checks that `version` is preserved.\n\n3. **`Record`, `Dependency` and `Fingerprint` support Serde when their type parameters do.** The storage test serializes and deserializes `Record<String, ()>` and `Record<String, String>`. It also asserts that loading with the incompatible parameters `u8` for the node type or `u8` for the label type yields a JSON error.\n\n4. **Node identities and edge labels need not implement Serde.** This is permissive, so it imposes no obligation to test.\n\n5. **Type shape and trait list.** `Record::new` and the public fields are exercised by the tests above. The shape and exports are checked structurally by `crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]`, which checks the exported inventory and that the Habeas consumer compiles. `Clone` and `Debug` are derive-level structural choices with no independent observable behavior.\n\nI found no requirement-violating behavior that these tests would accept."
       }
     }
   },
-  "corrections": [
-    {
-      "kind": "add_reference",
-      "role": "impl",
-      "file": "crates/trust-but-verify/src/graph.rs",
-      "selector": "impl[Record<N, L>]/fn[new]",
-      "rationale": "The requirement prescribes a public constructor: `impl<N, L> Record<N, L> { pub fn new(version: Option<CriterionVersion>, dependencies: Vec<Dependency<N, L>>, output: Value) -> Self; }`. An alternative that keeps the same serialized results but drops `new`, or changes its parameter order or types, would violate this clause. `new` is a separate item in its own impl block, and nothing marked `{impl}` reaches it. `struct[Record]` is the only marked root, and it reaches only its field types, not the inherent impl. Reading `new` lets a reviewer check its signature against the prescribed one, which is not covered by the `Record` root. The struct root does cover the other structural obligations: the field names and types, `#[non_exhaustive]`, the default `L = ()`, and the derived `Clone`, `Debug`, `Serialize` and `Deserialize`. Those derives carry the right generic bounds. `Dependency` and `Fingerprint` are reached through the `Record` field types, and each derives Serde, so they need no separate marker. `Validator::store_evidence` builds a `Record` with `serde_json::to_value` and `persist_dependencies`. That is behavior, and another requirement already marks it."
-    }
-  ],
   "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
@@ -410,7 +403,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "3a4c29072b91b37b234bb3e41fd00831527083f8757b5b1c6497d0ef2845677b"
+          "value": "cd6087eacb1f1cdb37deca29d864de151ded4ad0675959c917ce205e3aa27147"
         }
       ]
     },
@@ -443,18 +436,6 @@
       ]
     },
     {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.evidence.record"
-        },
-        "Implements",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "fdef7db2a1568d0bc14111da367555493490acfca490d8228fcf9abddef676d8"
-        }
-      ]
-    },
-    {
       "Node": [
         {
           "Source": {
@@ -462,46 +443,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/graph.rs"
             },
-            "selector": "impl[Record<N,%20L>]"
+            "selector": "impl[Record<N,%20L>]/fn[new]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "333733577cb5d03e6e523c79152662f36081754a9442794735449758b11a1cd2"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
-            },
-            "selector": "impl[Validator<'d,%20D>]/fn[store_evidence]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "f102d22aa4e7d1e1b656e215b1de8c72c49ac2993a5b98b251539d7116e94a1c"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
-            },
-            "selector": "enum[Dependency]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "fe5519f4fbe4dbde50c868209706c52775c0c142e88c97d75bbebf4a296ed0c0"
+          "value": "f2d753db66bf3416373611462fd7eda4d875896fc42008b0c3aa9566f0f8e741"
         }
       ]
     },
@@ -530,12 +477,29 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/graph.rs"
             },
-            "selector": "impl[Record<N,%20L>]/fn[new]"
+            "selector": "enum[Dependency]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "f2d753db66bf3416373611462fd7eda4d875896fc42008b0c3aa9566f0f8e741"
+          "value": "fe5519f4fbe4dbde50c868209706c52775c0c142e88c97d75bbebf4a296ed0c0"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "struct[Fingerprinted]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "c6e18fa4a798779be3a50fb4fa254440d06777576dca8b7f55cfff442bcbad3e"
         }
       ]
     },
@@ -615,12 +579,46 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/tests/storage.rs"
             },
+            "selector": "fn[criterion]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "cc7ba646f8791ffecfaa8c1dd78e656f6ace8421d1b90b9a87e1b34c29c64c3f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/storage.rs"
+            },
             "selector": "fn[record]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "cc02916e1be078b0792dbaa96f257c2c9ee062fb80d51ccc01ac0daf00ce9bf8"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "mod[stored_version]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "7bfca195306dea35e8f558d1aace7b435c282ee38a23c475de741a9fbff81972"
         }
       ]
     }

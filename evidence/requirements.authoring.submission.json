@@ -1,7 +1,7 @@
 {
   "requirement": "Each assessment MUST use the SDK’s `submit_result({\"result\": ...})` tool under {cite}`requirements.sdk.graph.agent-harness.submission.mcp`. Requirement and named example assessments MUST submit one variant of a Rust enum:\n\n- `Success { rationale }` records `true`.\n- `Failed { corrections }` records `false` and MUST include a nonempty list under {cite}`requirements.authoring.corrections`.\n- `AcknowledgedGap { entries, rationale }` records `{\"FIXME\": entries}` when every real gap is acknowledged under {cite}`requirements.ci.outcomes`.\n\nFor each non-distributed requirement, Habeas MUST evaluate separate `structural` and `behavioral` criteria in independent conversations. Each submits its own assessment result. The structural criterion may propose `{impl}` markers and the behavioral criterion may propose `{test}` markers. If a submission proposes a marker belonging to the other criterion, request a corrected verdict within scope and reject a repeated violation. Habeas MUST retain both results in `criteria` and compute the overall judgment: failure takes precedence over acknowledged gaps, and both criteria must succeed for success.\n\nEach rationale MUST be nonempty Markdown. Citation reviews submit a boolean `determination` and a rationale. Site reviews submit `determination`, `rationale`, and `applies` under {cite}`requirements.authoring.site_prompt`. The SDK handles submission under {cite}`requirements.sdk.graph.agent-harness.submission.acceptance`. Failure before acceptance MUST preserve existing evidence.",
   "determination": true,
-  "rationale": "structural: **Structural obligations in `requirements.authoring.submission`**\n\n- **Rust enum with three variants.** The text says assessments \"MUST submit one variant of a Rust enum\": `Success { rationale }`, `Failed { corrections }` and `AcknowledgedGap { entries, rationale }`. An implementation that submitted an untyped JSON object or a struct with optional fields could behave the same on valid input. It would still violate this clause. `src/authoring/corrections.rs#enum[AssessmentResult]` has exactly these variants and fields. It is internally tagged by `status`, uses `deny_unknown_fields`, and derives `JsonSchema`. `Failed.corrections` and `AcknowledgedGap.entries` carry `length(min = 1)`, which covers the nonempty-list requirement.\n- **Judgment mapping.** The text says the variants record `true`, `false` and `{\"FIXME\": entries}`. `impl[AssessmentResult]/fn[evidence]` maps `Success`, `Failed` and `AcknowledgedGap` to `Judgment::True`, `Judgment::False` and `Judgment::Fixme(entries)`. It also enforces nonempty rationales, corrections and entries. `evidence` is reached from `fn[run]` in `src/authoring/sdk.rs`.\n- **Citation and site shapes.** The text says citation reviews submit a boolean `determination` plus a rationale. Site reviews add `applies`. `src/authoring/sdk.rs#struct[ReviewAnswer]` carries `determination` and a rationale with `length(min = 1)`. Its use as `ReviewAnswer<bool>` for citations is chosen in `Review::execute`. `src/authoring/sdk.rs#struct[SiteAnswer]` carries `determination`, a nonempty `rationale` and `applies: bool`. `execute` picks `SiteAnswer`, `ReviewAnswer<bool>` or `AssessmentResult` by subject kind. It is a `Criterion` implementation reached from the marked `run` through `validator.verify`.\n- **`submit_result` tool and its schema.** The text says each assessment MUST use the SDK's `submit_result({\"result\": ...})` tool. `impl[Review<'_>]/fn[ask]` calls `cx.ask::<R>()`, where `R: JsonSchema`. The SDK harness therefore derives the `result` schema from `R` under the cited `submission.mcp` and `submission.acceptance`. The harness behavior itself belongs to those SDK requirements, not here.\n- **Separate `structural` and `behavioral` criteria.** `fn[run]` loops over `ReviewKind::Structural` and `ReviewKind::Behavioral` when `review_roots` is set. Each kind goes through its own `validator.verify(Review{..})` call, so each gets its own conversation and submission. `run` stores each result under `criteria` keyed by `kind.name()` and writes `criteria` into the output. `corrections::combine_criteria` computes the overall judgment: any `Failed` correction wins, then `AcknowledgedGap` entries, and otherwise `Success`. Both criteria must succeed for an overall success.\n- **Cross-criterion marker rule.** `ask`'s `vet_answer` closure rejects a structural submission containing a `test` correction and a behavioral submission containing an `impl` correction. It asks for a corrected verdict once through `CorrectAndTryAgain`. A repeated violation returns `Err`.\n- **Failure before acceptance preserves evidence.** In `run`, errors propagate with `?` before the output record is built and returned, so no new evidence is produced.\n\nThe remaining clauses specify observable behavior: Markdown rationales, the contents of corrections, and when `AcknowledgedGap` is chosen. They carry no further structural obligations, and the code above supports them anyway.\n\nI found no structural gap.\n\nbehavioral: The reviewed tests cover every behavioral obligation of `requirements.authoring.submission`. I did not request implementation source, because the tests' assertions were enough to judge adequacy.\n\n- **Submission through `submit_result({\"result\": ...})`.** The CLI tests in `tests/authoring_cli.rs` send every verdict through `submit_result`. `bedrock_cli_uses_selected_profile_region_and_converse_tools` asserts that the tool schema requires only `result`. `submission_reports_every_open_search_until_the_last_page_is_finished` covers submitting while searches are open. That behavior belongs to the cited acceptance requirement, so it is context here.\n- **`Success` records `true`.** The `tests/authoring_cli.rs` tests `bedrock_cli_uses_selected_profile_region_and_converse_tools` and `malformed_definition_corrections_can_be_repaired_before_writing_evidence` assert `determination == true` in the written evidence.\n- **`Failed` records `false` with a nonempty corrections list.** `stale_and_already_present_references_do_not_retry_unchanged_inputs` asserts `determination == false`. `malformed_definition_corrections_can_be_repaired_before_writing_evidence` rejects an empty list and the malformed correction shapes, and asks the model to repair them.\n- **`AcknowledgedGap` records `{\"FIXME\": entries}`.** `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` asserts the recorded determination is `{\"FIXME\":[\"example/app#125\"]}`. `missing_duplicate_and_invalid_submissions_preserve_existing_evidence` rejects empty entries, blank entries and an empty rationale.\n- **Separate structural and behavioral criteria, retained in `criteria`.** `structural_assessments_and_confirmation_use_the_same_structural_contract` checks these points:\n  - There are four conversations.\n  - Each prompt holds only its own criterion's material.\n  - No prompt contains a prior verdict, so the conversations are independent.\n  - The structural and behavioral outputs are both stored under `criteria`.\n- **Cross-criterion markers.** `each_criterion_rejects_markers_belonging_to_its_peer` covers each part of this obligation:\n  - A misplaced `test` marker in a structural result, and a misplaced `impl` marker in a behavioral result, each trigger a corrected-verdict request.\n  - A repeated violation is rejected with the expected message.\n  - The structural verdict is not leaked into the retried conversation.\n- **Overall judgment.** `combined_judgment_retains_both_criteria_and_prioritizes_failures` covers failure over an acknowledged gap, a merged gap list, a structural failure over a behavioral success, and the stored per-criterion output. The `true`+`true` success case is asserted in `each_criterion_rejects_markers_belonging_to_its_peer`. The `true`+`false` pairing is not a separate case, but the `FIXME`+`false` and `false`+`true` cases rule out a failure-precedence bug.\n- **Nonempty rationale.** The unit test `submissions_accept_exactly_a_judgment_and_a_nonempty_rationale` and the CLI invalid-submission cases reject empty and blank rationales. The Markdown requirement states no checkable obligation beyond that.\n- **Citation and site reviews.** `citation_submission_requires_a_boolean_and_nonempty_rationale` asserts the schema has a boolean `determination`, a `minLength` of 1 on `rationale`, and no `applies` field. It also rejects a `FIXME` determination for a citation. `site_submissions_require_applies_and_a_true_determination_when_it_is_false` covers `applies` being required, and `applies: false` with a non-`true` determination being invalid.\n- **Failure before acceptance preserves evidence.** `missing_duplicate_and_invalid_submissions_preserve_existing_evidence` covers no submission, duplicate submissions and invalid submissions, in both file and stdout modes. It asserts the existing evidence is unchanged and `evidence_written` is false.\n\nThe tests are all marked with `{test}` references to this requirement.",
+  "rationale": "structural: The structural obligations in `requirements.authoring.submission` are covered by the supplied roots and the code they reach.\n\n- **Rust enum with prescribed variants.** The text says assessments \"MUST submit one variant of a Rust enum\" with `Success { rationale }`, `Failed { corrections }` and `AcknowledgedGap { entries, rationale }`. A struct or free-form JSON with the same runtime results would violate this. `src/authoring/corrections.rs#enum[AssessmentResult]` declares exactly these variants. It adds a schema `length(min = 1)` on `corrections` and `entries`, and `deny_unknown_fields`.\n- **SDK `submit_result` tool.** `src/authoring/sdk.rs#impl[Review<'_>]/fn[ask]` submits through the SDK's `cx.ask::<R>()`, whose `R: JsonSchema` bound derives the tool schema. It also contains the structural/behavioral scope check. A structural answer that proposes a `test` correction, or a behavioral answer that proposes an `impl` one, gets one corrective retry and then an error.\n- **Review answer shapes.** `src/authoring/sdk.rs#struct[ReviewAnswer]` and `src/authoring/sdk.rs#struct[SiteAnswer]` fix the citation and site answer shapes. Both require `determination` and a nonempty `rationale`, and `SiteAnswer` adds the `applies` field.\n- **Separate criteria in independent conversations.** `src/authoring/sdk.rs#fn[run]` loops over `ReviewKind::Structural` and `ReviewKind::Behavioral`. Each kind gets its own `validator.verify(Review{..})` call, so each runs in its own conversation. The loop stores each result under `criteria` and sets `output[\"criteria\"]`. It then calls `corrections::combine_criteria`. That function lets failures take precedence over acknowledged gaps, and requires both criteria to succeed for an overall success.\n- **Judgment mapping and nonempty rationales.** `run` reaches `AssessmentResult::evidence` in `src/authoring/corrections.rs`. That function maps `Success` to `true`, `Failed` to `false` and `AcknowledgedGap` to `{\"FIXME\": entries}`. It also rejects empty rationales, corrections, instructions and entries. No further marker is needed there.\n\nThe remaining clauses state observable behavior. These are the SDK's acceptance handling (`requirements.sdk.graph.agent-harness.submission.acceptance`), preserving existing evidence when a submission fails before acceptance, and when `AcknowledgedGap` applies. Other implementations could meet them, so they are not structural obligations here.\n\nbehavioral: The reviewed tests cover every behavioral obligation of `requirements.authoring.submission`. I did not need implementation source.\n\n**Submission tool and enum variants**\n- `tests/authoring_cli.rs#fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]` asserts that `submit_result` is among the offered tools. It submits `acknowledged_gap` with `entries` and asserts the recorded determination is `{\"FIXME\":[\"example/app#125\"]}`.\n- `tests/authoring_cli.rs#fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]` submits `success` and asserts the evidence determination is `true`. It also asserts that the `submit_result` schema requires `result`.\n- `tests/authoring_cli.rs#fn[stale_and_already_present_references_do_not_retry_unchanged_inputs]` submits `failed` with an `add_reference` correction. It asserts the recorded determination is `false`.\n- `tests/authoring_cli.rs#fn[malformed_definition_corrections_can_be_repaired_before_writing_evidence]` rejects a `Failed` submission with an empty corrections list. It rejects several other malformed variants too, and the model is given another turn to repair them.\n- `src/authoring/mod.rs#mod[tests]/fn[submissions_accept_exactly_a_judgment_and_a_nonempty_rationale]` covers three judgments (true, false, FIXME). It rejects an empty FIXME list, blank entries, extra keys and wrong types. It also rejects empty and blank rationales.\n\n**Separate structural and behavioral criteria**\n- `structural_assessments_and_confirmation_use_the_same_structural_contract` runs four independent conversations. It asserts that each prompt holds only its own criterion's material and no earlier verdict, and that each criterion's output is recorded separately.\n- `each_criterion_rejects_markers_belonging_to_its_peer` covers a misplaced `test` or `impl` marker for each criterion. The first violation triggers a corrective prompt, and a repeated violation is rejected with an error.\n- `combined_judgment_retains_both_criteria_and_prioritizes_failures` runs nine structural and behavioral combinations. It asserts the overall determination follows the precedence rules: failure wins over a FIXME, FIXMEs from both criteria are merged, and success needs both to succeed. It also asserts that both criteria outputs are retained under `criteria`.\n\n**Rationale and review variants**\n- Empty or blank rationales are rejected in the tests above and in `tests/authoring_cli.rs#fn[missing_duplicate_and_invalid_submissions_preserve_existing_evidence]`.\n- `citation_submission_requires_a_boolean_and_nonempty_rationale` asserts the schema: boolean determination, `minLength` 1, no `applies`. It also asserts that FIXME, string and empty or blank rationale submissions error.\n- `site_submissions_require_applies_and_a_true_determination_when_it_is_false` covers the `applies` requirement and the rule that `applies` false needs a `true` determination.\n\n**Failure before acceptance preserves evidence**\n`missing_duplicate_and_invalid_submissions_preserve_existing_evidence` covers no submission, duplicate submissions, invalid submissions and empty `entries`. For each it asserts that the evidence file is unchanged and that `evidence_written` is false, for both file and stdout output.\n\nThe cited requirements (`requirements.authoring.corrections`, `requirements.ci.outcomes`, `requirements.authoring.site_prompt` and the SDK submission requirements) are context. I did not reassess their own tests.",
   "references": "cdad87193c56d566b519510785924798e3d6a60eae8455603e30ff7b88aa9818",
   "inputs": [
     {
@@ -247,18 +247,13 @@
     },
     {
       "file": "src/authoring/corrections.rs",
-      "item": "impl[AssessmentResult]/fn[evidence]",
-      "hash": "977690110392de2bce994261ff43ad50448cfd7c999ba7597506cf8bc416fd2f"
-    },
-    {
-      "file": "src/authoring/sdk.rs",
-      "item": "impl[Review<'_>/Criterion<HabeasDomain>]/fn[execute]",
-      "hash": "21dc2ac6543b2ee6e645b10655b5ea9342afb0ab9b4011b957bcdca88f7f0838"
+      "item": "fn[combine_criteria]",
+      "hash": "102bd16d19ef958c0febe1e579e28c20e2b4e957c8cd11e06e0f9f8691d84264"
     },
     {
       "file": "src/authoring/corrections.rs",
-      "item": "fn[combine_criteria]",
-      "hash": "102bd16d19ef958c0febe1e579e28c20e2b4e957c8cd11e06e0f9f8691d84264"
+      "item": "impl[AssessmentResult]/fn[evidence]",
+      "hash": "977690110392de2bce994261ff43ad50448cfd7c999ba7597506cf8bc416fd2f"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -283,7 +278,7 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "mod[tests]/fn[combined_judgment_retains_both_criteria_and_prioritizes_failures]",
-      "hash": "5bb15415459bb528806e13fde735e35e2cd1c47ca1ff9c1bd02332f16bc7afb7"
+      "hash": "8df4e66ec64b2c440828a33896963c43e43afe142a1f79640ac6217172e1522a"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -339,6 +334,16 @@
       "file": "tests/live_bedrock.rs",
       "item": "fn[live_bedrock_authoring]",
       "hash": "374e5f4185045b3e5527cf30cfad4b55a482532fe93a22f3ebd25e4355330309"
+    },
+    {
+      "file": "src/authoring/corrections.rs",
+      "item": "enum[Correction]",
+      "hash": "59a37ad9c200cb4c6eb812d7e59880ebb68ef4d871719335bb4bec0011b0e889"
+    },
+    {
+      "file": "src/authoring/sdk.rs",
+      "item": "impl[Review<'_>/Criterion<HabeasDomain>]/fn[execute]",
+      "hash": "21dc2ac6543b2ee6e645b10655b5ea9342afb0ab9b4011b957bcdca88f7f0838"
     }
   ],
   "criteria": {
@@ -515,29 +520,12 @@
                   "scheme": "repo",
                   "location": "src/authoring/corrections.rs"
                 },
-                "selector": "impl[AssessmentResult]/fn[evidence]"
+                "selector": "fn[combine_criteria]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "977690110392de2bce994261ff43ad50448cfd7c999ba7597506cf8bc416fd2f"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "src/authoring/sdk.rs"
-                },
-                "selector": "impl[Review<'_>/Criterion<HabeasDomain>]/fn[execute]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "21dc2ac6543b2ee6e645b10655b5ea9342afb0ab9b4011b957bcdca88f7f0838"
+              "value": "102bd16d19ef958c0febe1e579e28c20e2b4e957c8cd11e06e0f9f8691d84264"
             }
           ]
         },
@@ -549,19 +537,19 @@
                   "scheme": "repo",
                   "location": "src/authoring/corrections.rs"
                 },
-                "selector": "fn[combine_criteria]"
+                "selector": "impl[AssessmentResult]/fn[evidence]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "102bd16d19ef958c0febe1e579e28c20e2b4e957c8cd11e06e0f9f8691d84264"
+              "value": "977690110392de2bce994261ff43ad50448cfd7c999ba7597506cf8bc416fd2f"
             }
           ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "**Structural obligations in `requirements.authoring.submission`**\n\n- **Rust enum with three variants.** The text says assessments \"MUST submit one variant of a Rust enum\": `Success { rationale }`, `Failed { corrections }` and `AcknowledgedGap { entries, rationale }`. An implementation that submitted an untyped JSON object or a struct with optional fields could behave the same on valid input. It would still violate this clause. `src/authoring/corrections.rs#enum[AssessmentResult]` has exactly these variants and fields. It is internally tagged by `status`, uses `deny_unknown_fields`, and derives `JsonSchema`. `Failed.corrections` and `AcknowledgedGap.entries` carry `length(min = 1)`, which covers the nonempty-list requirement.\n- **Judgment mapping.** The text says the variants record `true`, `false` and `{\"FIXME\": entries}`. `impl[AssessmentResult]/fn[evidence]` maps `Success`, `Failed` and `AcknowledgedGap` to `Judgment::True`, `Judgment::False` and `Judgment::Fixme(entries)`. It also enforces nonempty rationales, corrections and entries. `evidence` is reached from `fn[run]` in `src/authoring/sdk.rs`.\n- **Citation and site shapes.** The text says citation reviews submit a boolean `determination` plus a rationale. Site reviews add `applies`. `src/authoring/sdk.rs#struct[ReviewAnswer]` carries `determination` and a rationale with `length(min = 1)`. Its use as `ReviewAnswer<bool>` for citations is chosen in `Review::execute`. `src/authoring/sdk.rs#struct[SiteAnswer]` carries `determination`, a nonempty `rationale` and `applies: bool`. `execute` picks `SiteAnswer`, `ReviewAnswer<bool>` or `AssessmentResult` by subject kind. It is a `Criterion` implementation reached from the marked `run` through `validator.verify`.\n- **`submit_result` tool and its schema.** The text says each assessment MUST use the SDK's `submit_result({\"result\": ...})` tool. `impl[Review<'_>]/fn[ask]` calls `cx.ask::<R>()`, where `R: JsonSchema`. The SDK harness therefore derives the `result` schema from `R` under the cited `submission.mcp` and `submission.acceptance`. The harness behavior itself belongs to those SDK requirements, not here.\n- **Separate `structural` and `behavioral` criteria.** `fn[run]` loops over `ReviewKind::Structural` and `ReviewKind::Behavioral` when `review_roots` is set. Each kind goes through its own `validator.verify(Review{..})` call, so each gets its own conversation and submission. `run` stores each result under `criteria` keyed by `kind.name()` and writes `criteria` into the output. `corrections::combine_criteria` computes the overall judgment: any `Failed` correction wins, then `AcknowledgedGap` entries, and otherwise `Success`. Both criteria must succeed for an overall success.\n- **Cross-criterion marker rule.** `ask`'s `vet_answer` closure rejects a structural submission containing a `test` correction and a behavioral submission containing an `impl` correction. It asks for a corrected verdict once through `CorrectAndTryAgain`. A repeated violation returns `Err`.\n- **Failure before acceptance preserves evidence.** In `run`, errors propagate with `?` before the output record is built and returned, so no new evidence is produced.\n\nThe remaining clauses specify observable behavior: Markdown rationales, the contents of corrections, and when `AcknowledgedGap` is chosen. They carry no further structural obligations, and the code above supports them anyway.\n\nI found no structural gap."
+        "rationale": "The structural obligations in `requirements.authoring.submission` are covered by the supplied roots and the code they reach.\n\n- **Rust enum with prescribed variants.** The text says assessments \"MUST submit one variant of a Rust enum\" with `Success { rationale }`, `Failed { corrections }` and `AcknowledgedGap { entries, rationale }`. A struct or free-form JSON with the same runtime results would violate this. `src/authoring/corrections.rs#enum[AssessmentResult]` declares exactly these variants. It adds a schema `length(min = 1)` on `corrections` and `entries`, and `deny_unknown_fields`.\n- **SDK `submit_result` tool.** `src/authoring/sdk.rs#impl[Review<'_>]/fn[ask]` submits through the SDK's `cx.ask::<R>()`, whose `R: JsonSchema` bound derives the tool schema. It also contains the structural/behavioral scope check. A structural answer that proposes a `test` correction, or a behavioral answer that proposes an `impl` one, gets one corrective retry and then an error.\n- **Review answer shapes.** `src/authoring/sdk.rs#struct[ReviewAnswer]` and `src/authoring/sdk.rs#struct[SiteAnswer]` fix the citation and site answer shapes. Both require `determination` and a nonempty `rationale`, and `SiteAnswer` adds the `applies` field.\n- **Separate criteria in independent conversations.** `src/authoring/sdk.rs#fn[run]` loops over `ReviewKind::Structural` and `ReviewKind::Behavioral`. Each kind gets its own `validator.verify(Review{..})` call, so each runs in its own conversation. The loop stores each result under `criteria` and sets `output[\"criteria\"]`. It then calls `corrections::combine_criteria`. That function lets failures take precedence over acknowledged gaps, and requires both criteria to succeed for an overall success.\n- **Judgment mapping and nonempty rationales.** `run` reaches `AssessmentResult::evidence` in `src/authoring/corrections.rs`. That function maps `Success` to `true`, `Failed` to `false` and `AcknowledgedGap` to `{\"FIXME\": entries}`. It also rejects empty rationales, corrections, instructions and entries. No further marker is needed there.\n\nThe remaining clauses state observable behavior. These are the SDK's acceptance handling (`requirements.sdk.graph.agent-harness.submission.acceptance`), preserving existing evidence when a submission fails before acceptance, and when `AcknowledgedGap` applies. Other implementations could meet them, so they are not structural obligations here."
       }
     },
     "behavioral": {
@@ -725,7 +713,7 @@
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "5bb15415459bb528806e13fde735e35e2cd1c47ca1ff9c1bd02332f16bc7afb7"
+              "value": "8df4e66ec64b2c440828a33896963c43e43afe142a1f79640ac6217172e1522a"
             }
           ]
         },
@@ -919,7 +907,7 @@
       ],
       "output": {
         "status": "success",
-        "rationale": "The reviewed tests cover every behavioral obligation of `requirements.authoring.submission`. I did not request implementation source, because the tests' assertions were enough to judge adequacy.\n\n- **Submission through `submit_result({\"result\": ...})`.** The CLI tests in `tests/authoring_cli.rs` send every verdict through `submit_result`. `bedrock_cli_uses_selected_profile_region_and_converse_tools` asserts that the tool schema requires only `result`. `submission_reports_every_open_search_until_the_last_page_is_finished` covers submitting while searches are open. That behavior belongs to the cited acceptance requirement, so it is context here.\n- **`Success` records `true`.** The `tests/authoring_cli.rs` tests `bedrock_cli_uses_selected_profile_region_and_converse_tools` and `malformed_definition_corrections_can_be_repaired_before_writing_evidence` assert `determination == true` in the written evidence.\n- **`Failed` records `false` with a nonempty corrections list.** `stale_and_already_present_references_do_not_retry_unchanged_inputs` asserts `determination == false`. `malformed_definition_corrections_can_be_repaired_before_writing_evidence` rejects an empty list and the malformed correction shapes, and asks the model to repair them.\n- **`AcknowledgedGap` records `{\"FIXME\": entries}`.** `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` asserts the recorded determination is `{\"FIXME\":[\"example/app#125\"]}`. `missing_duplicate_and_invalid_submissions_preserve_existing_evidence` rejects empty entries, blank entries and an empty rationale.\n- **Separate structural and behavioral criteria, retained in `criteria`.** `structural_assessments_and_confirmation_use_the_same_structural_contract` checks these points:\n  - There are four conversations.\n  - Each prompt holds only its own criterion's material.\n  - No prompt contains a prior verdict, so the conversations are independent.\n  - The structural and behavioral outputs are both stored under `criteria`.\n- **Cross-criterion markers.** `each_criterion_rejects_markers_belonging_to_its_peer` covers each part of this obligation:\n  - A misplaced `test` marker in a structural result, and a misplaced `impl` marker in a behavioral result, each trigger a corrected-verdict request.\n  - A repeated violation is rejected with the expected message.\n  - The structural verdict is not leaked into the retried conversation.\n- **Overall judgment.** `combined_judgment_retains_both_criteria_and_prioritizes_failures` covers failure over an acknowledged gap, a merged gap list, a structural failure over a behavioral success, and the stored per-criterion output. The `true`+`true` success case is asserted in `each_criterion_rejects_markers_belonging_to_its_peer`. The `true`+`false` pairing is not a separate case, but the `FIXME`+`false` and `false`+`true` cases rule out a failure-precedence bug.\n- **Nonempty rationale.** The unit test `submissions_accept_exactly_a_judgment_and_a_nonempty_rationale` and the CLI invalid-submission cases reject empty and blank rationales. The Markdown requirement states no checkable obligation beyond that.\n- **Citation and site reviews.** `citation_submission_requires_a_boolean_and_nonempty_rationale` asserts the schema has a boolean `determination`, a `minLength` of 1 on `rationale`, and no `applies` field. It also rejects a `FIXME` determination for a citation. `site_submissions_require_applies_and_a_true_determination_when_it_is_false` covers `applies` being required, and `applies: false` with a non-`true` determination being invalid.\n- **Failure before acceptance preserves evidence.** `missing_duplicate_and_invalid_submissions_preserve_existing_evidence` covers no submission, duplicate submissions and invalid submissions, in both file and stdout modes. It asserts the existing evidence is unchanged and `evidence_written` is false.\n\nThe tests are all marked with `{test}` references to this requirement."
+        "rationale": "The reviewed tests cover every behavioral obligation of `requirements.authoring.submission`. I did not need implementation source.\n\n**Submission tool and enum variants**\n- `tests/authoring_cli.rs#fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]` asserts that `submit_result` is among the offered tools. It submits `acknowledged_gap` with `entries` and asserts the recorded determination is `{\"FIXME\":[\"example/app#125\"]}`.\n- `tests/authoring_cli.rs#fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]` submits `success` and asserts the evidence determination is `true`. It also asserts that the `submit_result` schema requires `result`.\n- `tests/authoring_cli.rs#fn[stale_and_already_present_references_do_not_retry_unchanged_inputs]` submits `failed` with an `add_reference` correction. It asserts the recorded determination is `false`.\n- `tests/authoring_cli.rs#fn[malformed_definition_corrections_can_be_repaired_before_writing_evidence]` rejects a `Failed` submission with an empty corrections list. It rejects several other malformed variants too, and the model is given another turn to repair them.\n- `src/authoring/mod.rs#mod[tests]/fn[submissions_accept_exactly_a_judgment_and_a_nonempty_rationale]` covers three judgments (true, false, FIXME). It rejects an empty FIXME list, blank entries, extra keys and wrong types. It also rejects empty and blank rationales.\n\n**Separate structural and behavioral criteria**\n- `structural_assessments_and_confirmation_use_the_same_structural_contract` runs four independent conversations. It asserts that each prompt holds only its own criterion's material and no earlier verdict, and that each criterion's output is recorded separately.\n- `each_criterion_rejects_markers_belonging_to_its_peer` covers a misplaced `test` or `impl` marker for each criterion. The first violation triggers a corrective prompt, and a repeated violation is rejected with an error.\n- `combined_judgment_retains_both_criteria_and_prioritizes_failures` runs nine structural and behavioral combinations. It asserts the overall determination follows the precedence rules: failure wins over a FIXME, FIXMEs from both criteria are merged, and success needs both to succeed. It also asserts that both criteria outputs are retained under `criteria`.\n\n**Rationale and review variants**\n- Empty or blank rationales are rejected in the tests above and in `tests/authoring_cli.rs#fn[missing_duplicate_and_invalid_submissions_preserve_existing_evidence]`.\n- `citation_submission_requires_a_boolean_and_nonempty_rationale` asserts the schema: boolean determination, `minLength` 1, no `applies`. It also asserts that FIXME, string and empty or blank rationale submissions error.\n- `site_submissions_require_applies_and_a_true_determination_when_it_is_false` covers the `applies` requirement and the rule that `applies` false needs a `true` determination.\n\n**Failure before acceptance preserves evidence**\n`missing_duplicate_and_invalid_submissions_preserve_existing_evidence` covers no submission, duplicate submissions, invalid submissions and empty `entries`. For each it asserts that the evidence file is unchanged and that `evidence_written` is false, for both file and stdout output.\n\nThe cited requirements (`requirements.authoring.corrections`, `requirements.ci.outcomes`, `requirements.authoring.site_prompt` and the SDK submission requirements) are context. I did not reassess their own tests."
       }
     }
   },
@@ -1096,29 +1084,12 @@
               "scheme": "repo",
               "location": "src/authoring/corrections.rs"
             },
-            "selector": "impl[AssessmentResult]/fn[evidence]"
+            "selector": "fn[combine_criteria]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "977690110392de2bce994261ff43ad50448cfd7c999ba7597506cf8bc416fd2f"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/sdk.rs"
-            },
-            "selector": "impl[Review<'_>/Criterion<HabeasDomain>]/fn[execute]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "21dc2ac6543b2ee6e645b10655b5ea9342afb0ab9b4011b957bcdca88f7f0838"
+          "value": "102bd16d19ef958c0febe1e579e28c20e2b4e957c8cd11e06e0f9f8691d84264"
         }
       ]
     },
@@ -1130,12 +1101,12 @@
               "scheme": "repo",
               "location": "src/authoring/corrections.rs"
             },
-            "selector": "fn[combine_criteria]"
+            "selector": "impl[AssessmentResult]/fn[evidence]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "102bd16d19ef958c0febe1e579e28c20e2b4e957c8cd11e06e0f9f8691d84264"
+          "value": "977690110392de2bce994261ff43ad50448cfd7c999ba7597506cf8bc416fd2f"
         }
       ]
     },
@@ -1220,7 +1191,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "5bb15415459bb528806e13fde735e35e2cd1c47ca1ff9c1bd02332f16bc7afb7"
+          "value": "8df4e66ec64b2c440828a33896963c43e43afe142a1f79640ac6217172e1522a"
         }
       ]
     },
@@ -1408,6 +1379,40 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "374e5f4185045b3e5527cf30cfad4b55a482532fe93a22f3ebd25e4355330309"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/corrections.rs"
+            },
+            "selector": "enum[Correction]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "59a37ad9c200cb4c6eb812d7e59880ebb68ef4d871719335bb4bec0011b0e889"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/sdk.rs"
+            },
+            "selector": "impl[Review<'_>/Criterion<HabeasDomain>]/fn[execute]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "21dc2ac6543b2ee6e645b10655b5ea9342afb0ab9b4011b957bcdca88f7f0838"
         }
       ]
     }

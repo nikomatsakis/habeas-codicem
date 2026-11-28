@@ -1,7 +1,7 @@
 {
   "requirement": "Saved execution-coverage checks read the current coverage set under\n{cite}`requirements.test-coverage.storage.current` from SQLite. Each check\nuses one coherent database snapshot of test identities, states, provenance,\nand processed measurements, so a replacement or update cannot mix results\nfrom different snapshots within the same check.\n\nChecks do not search historical runs or use a separate report-selection\nmetadata cache. Current test identities, states, and provenance can be read\nwithout loading their detailed measurements.\n\nOnly current results with complete, available measurements contribute to\ncoverage under {cite}`requirements.test-coverage.index.freshness`.\nPending, running, and unavailable entries are reported under\n{cite}`requirements.test-coverage.check.measurement`. Checking does not build\nor execute tests and never restores a superseded attempt.",
   "determination": true,
-  "rationale": "structural: Structural obligations in `requirements.test-coverage.index.selection`: (1) the current set is read from SQLite; (2) one coherent database snapshot is used per check; (3) there is no historical-run search or separate report-selection metadata cache; (4) identities, states and provenance can be read without loading measurements. The remaining clauses (only complete, available results contribute; pending, running and unavailable entries are reported; no building or executing; no restoring a superseded attempt) describe observable behavior that other requirements govern.\n\nEach structural clause is implemented in the supplied roots:\n- `src/execution_coverage/store.rs#impl[Store]/fn[read]` opens `DATABASE` with rusqlite in read-only mode, which covers the SQLite obligation. It also rejects an unsupported schema version.\n- `src/execution_coverage/store.rs#impl[Store]/fn[snapshot]` does the whole read inside one `connection.transaction()`. That covers the state row, the invocations, the tests, and the measurements, so a concurrent replacement cannot mix results. A reader that reads state and tests in separate autocommit queries would break the clause, which makes this transaction a real structural choice.\n- The same function queries only the current `tests` rows and the `state.latest` invocation, so it does not search historical runs. It uses no separate selection cache.\n- Its `measurements: bool` parameter selects `NULL` instead of the `measurements` column for metadata-only reads, so metadata is readable without loading measurements.\n\nThe saved check path is `src/execution_coverage/book.rs#fn[load_saved]`. It calls `Store::read` once and `snapshot(true)` once, so each check uses a single snapshot. That caller needs no marker because the roots carry the obligations. I did not review the other clauses against any further roots.\n\nbehavioral: I judged the tests adequate for `requirements.test-coverage.index.selection`. I did not request implementation source. The reviewed tests cover each obligation, as follows.\n\n- **One coherent snapshot.** `src/execution_coverage/store.rs#mod[tests]/fn[replacement_between_snapshot_queries_cannot_mix_configurations_or_results]` commits a replacement while a reader's snapshot read is in progress. It asserts that the reader sees only the old configuration, run, test identity and measurements (value 7). It then asserts that the next snapshot sees only the new set (value 9). `src/execution_coverage/store.rs#mod[tests]/fn[metadata_queries_skip_measurements_and_snapshots_survive_subsequent_replacement]` checks that an existing snapshot survives a later replacement.\n- **Current set only, no history or metadata cache.**\n  - `src/execution_coverage/store.rs#mod[tests]/fn[latest_started_retry_replaces_success_and_cannot_be_overwritten_by_old_conversion]` and `src/execution_coverage/store.rs#mod[tests]/fn[focused_replacement_preserves_unselected_results_and_shared_artifacts]` show that the snapshot holds one current entry per test, with no accumulated attempts.\n  - `src/execution_coverage/book.rs#mod[tests]/fn[a_corrupt_optional_metadata_cache_does_not_hide_saved_measurements]` corrupts a `selection-cache.json` file. It asserts that the store stays valid and the measurements are still used.\n- **Metadata read without measurements.** The `metadata_queries_skip_measurements…` test corrupts the measurements column. `snapshot(false)` still returns identities and configuration, with `measurements` equal to `None`.\n- **Only complete, available, fresh results contribute.**\n  - `src/execution_coverage/check.rs#mod[tests]/fn[running_and_unreadable_entries_suppress_totals_even_alongside_fresh_measurements]` covers a missing profile and the pending and running states. Each is reported, the check fails, and no totals appear.\n  - `src/execution_coverage/book.rs#mod[tests]/fn[filtered_runs_union_latest_attempts_and_invalidate_with_saved_source]` covers failed and interrupted attempts that lack measurements, and stale results after a source change.\n- **Never restores a superseded attempt.**\n  - `src/execution_coverage/book.rs#mod[tests]/fn[unreadable_history_cannot_reintroduce_an_older_success]` runs four cases: invalid metadata, missing source, unsupported schema and a missing profile. In each, the newest attempt is unreadable and the older success is not restored.\n  - The retry test shows that an old conversion cannot overwrite a newer attempt, and that the replaced attempt's measurements are gone.\n- **No build or test execution.** `tests/execution_coverage.rs#fn[book_rendering_preserves_retained_coverage_and_never_launches_tests]` runs `coverage-check` with a `cargo` shim and an execution sentinel. It asserts that no test ran, that only `cargo metadata` was called, and that the stored files are unchanged.\n\nThe cited requirements `requirements.test-coverage.storage.current`, `requirements.test-coverage.index.freshness` and `requirements.test-coverage.check.measurement` are context only. I found no unmarked or missing scenarios.",
+  "rationale": "structural: Structural obligations in `requirements.test-coverage.index.selection`:\n\n1. \"read the current coverage set ... from SQLite\". A JSON-file store with the same results would break this clause, so it is structural. `src/execution_coverage/store.rs#impl[Store]/fn[read]` meets it. It opens the SQLite database `DATABASE` read-only with rusqlite and rejects an unsupported `user_version` schema.\n2. \"Each check uses one coherent database snapshot of test identities, states, provenance, and processed measurements\". Separate queries per table, with no shared transaction, would give the same results in the normal case but could mix snapshots. `src/execution_coverage/store.rs#impl[Store]/fn[snapshot]` meets it. It opens one transaction and reads the state, invocations and tests inside it. It returns them together in one `Snapshot`. The caller `src/execution_coverage/book.rs#fn[load_saved]` calls `Store::read` and then `snapshot(true)` once, so a check gets a single snapshot. That caller is reached from the marked roots and needs no marker of its own.\n3. \"Current test identities, states, and provenance can be read without loading their detailed measurements\". Always loading measurements would violate this. `fn[snapshot]` takes a `measurements: bool` flag. When the flag is false, it selects `NULL` instead of the measurements column.\n4. \"Checks do not search historical runs or use a separate report-selection metadata cache\". `fn[snapshot]` queries only the `tests`, `state` and referenced `invocations` tables. This is a behavioral restriction, and the code satisfies it.\n\nThe remaining clauses specify observable behavior: only complete, available measurements contribute to coverage, other states are reported, and checking never builds tests or restores a superseded attempt. They are delegated to `requirements.test-coverage.index.freshness` and `requirements.test-coverage.check.measurement`, so I assessed them as observable behavior only. They impose no structural obligation that needs implementation evidence here.\n\nbehavioral: The marked tests cover each observable obligation in `requirements.test-coverage.index.selection`. I judged adequacy from the supplied test text and did not read implementation source.\n\n- **Current set read from SQLite, with one coherent snapshot.**\n  - `src/execution_coverage/store.rs#mod[tests]/fn[replacement_between_snapshot_queries_cannot_mix_configurations_or_results]` commits a replacement while a reader's snapshot read is in progress. It asserts that the first snapshot is entirely configuration \"a\" with the original test id and measurement 7. A later snapshot is entirely \"b\" with measurement 9. This directly tests the \"cannot mix results from different snapshots\" clause.\n  - `metadata_queries_skip_measurements_and_snapshots_survive_subsequent_replacement` shows that an already-taken snapshot survives a later replacement.\n- **No historical runs and no separate report-selection cache.**\n  - `src/execution_coverage/book.rs#mod[tests]/fn[a_corrupt_optional_metadata_cache_does_not_hide_saved_measurements]` writes a corrupt `selection-cache.json`. It asserts that the store is still valid and that the saved measurements are still selected.\n  - `unreadable_history_cannot_reintroduce_an_older_success` makes the newest attempt unreadable in four ways: invalid metadata, missing source, unsupported schema, and missing profile. It asserts that the check fails and that no older success supplies a positive count. This covers \"never restores a superseded attempt\" and \"does not search historical runs\".\n  - `src/execution_coverage/store.rs#mod[tests]/fn[latest_started_retry_replaces_success_and_cannot_be_overwritten_by_old_conversion]` shows that a retry replaces the earlier success. It also shows that an old conversion cannot overwrite the retry.\n  - `focused_replacement_preserves_unselected_results_and_shared_artifacts` checks the current-set composition after focused replacement.\n- **Metadata read without loading measurements.** `metadata_queries_skip_measurements_and_snapshots_survive_subsequent_replacement` corrupts the stored measurements. `snapshot(false)` still returns the metadata with `measurements` set to `None`, while `snapshot(true)` returns them.\n- **Only complete, available measurements contribute; other entries are reported.**\n  - `src/execution_coverage/check.rs#mod[tests]/fn[running_and_unreadable_entries_suppress_totals_even_alongside_fresh_measurements]` covers unreadable, pending, and running entries next to a fresh one. It asserts that the check fails and that the offending entry is reported. It also asserts that no totals or per-file lines appear.\n  - `filtered_runs_union_latest_attempts_and_invalidate_with_saved_source` covers failed and interrupted attempts with missing profiles, and it covers stale source. It also covers the union of the latest attempts and the exclusion of an old configuration.\n  - Freshness and stale or unavailable classification belong to the cited `index.freshness` and `check.measurement`, which are context and are not reassessed here.\n- **Checking does not build or execute tests.** `tests/execution_coverage.rs#fn[book_rendering_preserves_retained_coverage_and_never_launches_tests]` runs `coverage-check` with a `cargo` shim that records any non-`metadata` invocation. It asserts that no test sentinel is created, no forbidden command is launched, and the retained files are unchanged.\n\nI found no obligation without a test.",
   "references": "3d3344908f710244581427465eeef83bbc4c1d83ab399bd6185518edd64c919b",
   "inputs": [
     {
@@ -119,11 +119,6 @@
       "hash": "93eedf9c5b01642403c3f7b8da72b9d99e3a9a700b840b7d00605edf815f1e34"
     },
     {
-      "file": "src/execution_coverage/runner.rs",
-      "item": "fn[finish]",
-      "hash": "54e423a8611feff26f84ae651493b82c4d0482a14b533c2aa7509d60622d8993"
-    },
-    {
       "file": "src/execution_coverage/book.rs",
       "item": "mod[tests]/fn[a_corrupt_optional_metadata_cache_does_not_hide_saved_measurements]",
       "hash": "b42a44ec320e65fb80b975fc59f70ef05d8a07d6a1b732878840bdc71e391067"
@@ -166,7 +161,12 @@
     {
       "file": "tests/execution_coverage.rs",
       "item": "fn[book_rendering_preserves_retained_coverage_and_never_launches_tests]",
-      "hash": "e2e407d46fc616051d9c46f0cb11dbb0bdcccd5f748f47edb5d52f89824bfd10"
+      "hash": "bd7df3cde5ca277e6b5806e81dad4fc27ae25722b317cfdf85e5f4b79fbd6e5f"
+    },
+    {
+      "file": "src/execution_coverage/runner.rs",
+      "item": "fn[finish]",
+      "hash": "54e423a8611feff26f84ae651493b82c4d0482a14b533c2aa7509d60622d8993"
     }
   ],
   "criteria": {
@@ -278,28 +278,11 @@
               "value": "93eedf9c5b01642403c3f7b8da72b9d99e3a9a700b840b7d00605edf815f1e34"
             }
           ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "src/execution_coverage/runner.rs"
-                },
-                "selector": "fn[finish]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "54e423a8611feff26f84ae651493b82c4d0482a14b533c2aa7509d60622d8993"
-            }
-          ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "Structural obligations in `requirements.test-coverage.index.selection`: (1) the current set is read from SQLite; (2) one coherent database snapshot is used per check; (3) there is no historical-run search or separate report-selection metadata cache; (4) identities, states and provenance can be read without loading measurements. The remaining clauses (only complete, available results contribute; pending, running and unavailable entries are reported; no building or executing; no restoring a superseded attempt) describe observable behavior that other requirements govern.\n\nEach structural clause is implemented in the supplied roots:\n- `src/execution_coverage/store.rs#impl[Store]/fn[read]` opens `DATABASE` with rusqlite in read-only mode, which covers the SQLite obligation. It also rejects an unsupported schema version.\n- `src/execution_coverage/store.rs#impl[Store]/fn[snapshot]` does the whole read inside one `connection.transaction()`. That covers the state row, the invocations, the tests, and the measurements, so a concurrent replacement cannot mix results. A reader that reads state and tests in separate autocommit queries would break the clause, which makes this transaction a real structural choice.\n- The same function queries only the current `tests` rows and the `state.latest` invocation, so it does not search historical runs. It uses no separate selection cache.\n- Its `measurements: bool` parameter selects `NULL` instead of the `measurements` column for metadata-only reads, so metadata is readable without loading measurements.\n\nThe saved check path is `src/execution_coverage/book.rs#fn[load_saved]`. It calls `Store::read` once and `snapshot(true)` once, so each check uses a single snapshot. That caller needs no marker because the roots carry the obligations. I did not review the other clauses against any further roots."
+        "rationale": "Structural obligations in `requirements.test-coverage.index.selection`:\n\n1. \"read the current coverage set ... from SQLite\". A JSON-file store with the same results would break this clause, so it is structural. `src/execution_coverage/store.rs#impl[Store]/fn[read]` meets it. It opens the SQLite database `DATABASE` read-only with rusqlite and rejects an unsupported `user_version` schema.\n2. \"Each check uses one coherent database snapshot of test identities, states, provenance, and processed measurements\". Separate queries per table, with no shared transaction, would give the same results in the normal case but could mix snapshots. `src/execution_coverage/store.rs#impl[Store]/fn[snapshot]` meets it. It opens one transaction and reads the state, invocations and tests inside it. It returns them together in one `Snapshot`. The caller `src/execution_coverage/book.rs#fn[load_saved]` calls `Store::read` and then `snapshot(true)` once, so a check gets a single snapshot. That caller is reached from the marked roots and needs no marker of its own.\n3. \"Current test identities, states, and provenance can be read without loading their detailed measurements\". Always loading measurements would violate this. `fn[snapshot]` takes a `measurements: bool` flag. When the flag is false, it selects `NULL` instead of the measurements column.\n4. \"Checks do not search historical runs or use a separate report-selection metadata cache\". `fn[snapshot]` queries only the `tests`, `state` and referenced `invocations` tables. This is a behavioral restriction, and the code satisfies it.\n\nThe remaining clauses specify observable behavior: only complete, available measurements contribute to coverage, other states are reported, and checking never builds tests or restores a superseded attempt. They are delegated to `requirements.test-coverage.index.freshness` and `requirements.test-coverage.check.measurement`, so I assessed them as observable behavior only. They impose no structural obligation that needs implementation evidence here."
       }
     },
     "behavioral": {
@@ -509,14 +492,14 @@
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "e7ddd857c65a61ee1350cb4cccedf045aad88f7c16dc7700c6eb5e01a45d7582"
+              "value": "92b44681a7ab7acb9b3b4e00216bdcfab3c32efb4bc0ea0a133dae5ef4e8451b"
             }
           ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "I judged the tests adequate for `requirements.test-coverage.index.selection`. I did not request implementation source. The reviewed tests cover each obligation, as follows.\n\n- **One coherent snapshot.** `src/execution_coverage/store.rs#mod[tests]/fn[replacement_between_snapshot_queries_cannot_mix_configurations_or_results]` commits a replacement while a reader's snapshot read is in progress. It asserts that the reader sees only the old configuration, run, test identity and measurements (value 7). It then asserts that the next snapshot sees only the new set (value 9). `src/execution_coverage/store.rs#mod[tests]/fn[metadata_queries_skip_measurements_and_snapshots_survive_subsequent_replacement]` checks that an existing snapshot survives a later replacement.\n- **Current set only, no history or metadata cache.**\n  - `src/execution_coverage/store.rs#mod[tests]/fn[latest_started_retry_replaces_success_and_cannot_be_overwritten_by_old_conversion]` and `src/execution_coverage/store.rs#mod[tests]/fn[focused_replacement_preserves_unselected_results_and_shared_artifacts]` show that the snapshot holds one current entry per test, with no accumulated attempts.\n  - `src/execution_coverage/book.rs#mod[tests]/fn[a_corrupt_optional_metadata_cache_does_not_hide_saved_measurements]` corrupts a `selection-cache.json` file. It asserts that the store stays valid and the measurements are still used.\n- **Metadata read without measurements.** The `metadata_queries_skip_measurements…` test corrupts the measurements column. `snapshot(false)` still returns identities and configuration, with `measurements` equal to `None`.\n- **Only complete, available, fresh results contribute.**\n  - `src/execution_coverage/check.rs#mod[tests]/fn[running_and_unreadable_entries_suppress_totals_even_alongside_fresh_measurements]` covers a missing profile and the pending and running states. Each is reported, the check fails, and no totals appear.\n  - `src/execution_coverage/book.rs#mod[tests]/fn[filtered_runs_union_latest_attempts_and_invalidate_with_saved_source]` covers failed and interrupted attempts that lack measurements, and stale results after a source change.\n- **Never restores a superseded attempt.**\n  - `src/execution_coverage/book.rs#mod[tests]/fn[unreadable_history_cannot_reintroduce_an_older_success]` runs four cases: invalid metadata, missing source, unsupported schema and a missing profile. In each, the newest attempt is unreadable and the older success is not restored.\n  - The retry test shows that an old conversion cannot overwrite a newer attempt, and that the replaced attempt's measurements are gone.\n- **No build or test execution.** `tests/execution_coverage.rs#fn[book_rendering_preserves_retained_coverage_and_never_launches_tests]` runs `coverage-check` with a `cargo` shim and an execution sentinel. It asserts that no test ran, that only `cargo metadata` was called, and that the stored files are unchanged.\n\nThe cited requirements `requirements.test-coverage.storage.current`, `requirements.test-coverage.index.freshness` and `requirements.test-coverage.check.measurement` are context only. I found no unmarked or missing scenarios."
+        "rationale": "The marked tests cover each observable obligation in `requirements.test-coverage.index.selection`. I judged adequacy from the supplied test text and did not read implementation source.\n\n- **Current set read from SQLite, with one coherent snapshot.**\n  - `src/execution_coverage/store.rs#mod[tests]/fn[replacement_between_snapshot_queries_cannot_mix_configurations_or_results]` commits a replacement while a reader's snapshot read is in progress. It asserts that the first snapshot is entirely configuration \"a\" with the original test id and measurement 7. A later snapshot is entirely \"b\" with measurement 9. This directly tests the \"cannot mix results from different snapshots\" clause.\n  - `metadata_queries_skip_measurements_and_snapshots_survive_subsequent_replacement` shows that an already-taken snapshot survives a later replacement.\n- **No historical runs and no separate report-selection cache.**\n  - `src/execution_coverage/book.rs#mod[tests]/fn[a_corrupt_optional_metadata_cache_does_not_hide_saved_measurements]` writes a corrupt `selection-cache.json`. It asserts that the store is still valid and that the saved measurements are still selected.\n  - `unreadable_history_cannot_reintroduce_an_older_success` makes the newest attempt unreadable in four ways: invalid metadata, missing source, unsupported schema, and missing profile. It asserts that the check fails and that no older success supplies a positive count. This covers \"never restores a superseded attempt\" and \"does not search historical runs\".\n  - `src/execution_coverage/store.rs#mod[tests]/fn[latest_started_retry_replaces_success_and_cannot_be_overwritten_by_old_conversion]` shows that a retry replaces the earlier success. It also shows that an old conversion cannot overwrite the retry.\n  - `focused_replacement_preserves_unselected_results_and_shared_artifacts` checks the current-set composition after focused replacement.\n- **Metadata read without loading measurements.** `metadata_queries_skip_measurements_and_snapshots_survive_subsequent_replacement` corrupts the stored measurements. `snapshot(false)` still returns the metadata with `measurements` set to `None`, while `snapshot(true)` returns them.\n- **Only complete, available measurements contribute; other entries are reported.**\n  - `src/execution_coverage/check.rs#mod[tests]/fn[running_and_unreadable_entries_suppress_totals_even_alongside_fresh_measurements]` covers unreadable, pending, and running entries next to a fresh one. It asserts that the check fails and that the offending entry is reported. It also asserts that no totals or per-file lines appear.\n  - `filtered_runs_union_latest_attempts_and_invalidate_with_saved_source` covers failed and interrupted attempts with missing profiles, and it covers stale source. It also covers the union of the latest attempts and the exclusion of an old configuration.\n  - Freshness and stale or unavailable classification belong to the cited `index.freshness` and `check.measurement`, which are context and are not reassessed here.\n- **Checking does not build or execute tests.** `tests/execution_coverage.rs#fn[book_rendering_preserves_retained_coverage_and_never_launches_tests]` runs `coverage-check` with a `cargo` shim that records any non-`metadata` invocation. It asserts that no test sentinel is created, no forbidden command is launched, and the retained files are unchanged.\n\nI found no obligation without a test."
       }
     }
   },
@@ -626,23 +609,6 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "93eedf9c5b01642403c3f7b8da72b9d99e3a9a700b840b7d00605edf815f1e34"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/execution_coverage/runner.rs"
-            },
-            "selector": "fn[finish]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "54e423a8611feff26f84ae651493b82c4d0482a14b533c2aa7509d60622d8993"
         }
       ]
     },
@@ -795,7 +761,24 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "e7ddd857c65a61ee1350cb4cccedf045aad88f7c16dc7700c6eb5e01a45d7582"
+          "value": "92b44681a7ab7acb9b3b4e00216bdcfab3c32efb4bc0ea0a133dae5ef4e8451b"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/runner.rs"
+            },
+            "selector": "fn[finish]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "54e423a8611feff26f84ae651493b82c4d0482a14b533c2aa7509d60622d8993"
         }
       ]
     }

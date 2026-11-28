@@ -1,8 +1,8 @@
 {
   "requirement": "During one call to `verify`, direct reads by the criterion and\nreads served by the SDK's agent tools record inputs in the same\n`ValidationContext`. For example, if criterion code reads a test and the agent\nthen reads its helper, both node fingerprints accompany the returned answer.\nA subsequent verification starts with an empty dependency list.",
   "determination": true,
-  "rationale": "structural: `requirements.sdk.graph.validation-context.shared_context` has no implementation roots and no `Implements` edges. It does have `Tests` edges, including `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[verify_returns_direct_and_tool_reads_in_one_trace]`. I found no structural obligation that needs implementation evidence.\n\nI considered each clause:\n- \"During one call to `verify`, direct reads by the criterion and reads served by the SDK's agent tools record inputs in the same `ValidationContext`.\" This is the only clause that could be structural, because it names a type. It also states its observable outcome: \"both node fingerprints accompany the returned answer\". Suppose tools recorded into a per-tool sink that was merged into the returned dependency list. The returned answer would carry the same fingerprints from direct and tool reads. So the clause specifies observable aggregation. It does not prescribe a type, signature or delegation.\n- \"A subsequent verification starts with an empty dependency list.\" This describes behavior, namely the initial state of each verification.\n\nThe text names no library, algorithm, signature or field layout. Code that passes `&ValidationContext` to `Tool::execute` or `converse` is one way to meet the behavior, and the requirement does not prescribe it. Test adequacy is out of scope for this assessment.\n\nbehavioral: The requirement has two behavioral obligations, and the reviewed tests cover both.\n\n1. **Shared context within one `verify` call.** Direct reads by the criterion and reads served by the agent tools must land in the same `ValidationContext`. Both node fingerprints must accompany the returned answer.\n   - `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[verify_returns_direct_and_tool_reads_in_one_trace]` runs a `ReadThenAsk` criterion. The criterion reads node 42 directly. The scripted backend then issues a `read_node` tool call, and I take that call to resolve to node 7. The test asserts that `answer.dependencies()` is exactly `[Node(42), Node(7)]`, so one trace holds the direct read and the tool read in order. It also asserts that the backend received two requests.\n   - `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` shows the same thing end to end with the configured agent. The returned dependencies combine the opening node, `read_node` reads and search-excerpt reads in one list.\n   - `crates/trust-but-verify/src/agent/tests.rs#fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]` shows that the reads of two concurrent agent calls are recorded in the single shared context. The test checks `ctx.dependencies()` and `ctx.finish`.\n\n2. **A subsequent verification starts with an empty dependency list.**\n   - `crates/trust-but-verify/src/graph/validation_tests.rs#fn[a_second_verification_starts_with_an_empty_trace]` reuses one `Validator`. The first verify records node 1. The second verify reads node 2 and asserts that its dependencies are exactly `[Node(2)]`. Node 1 would appear there if the trace leaked between calls, so the assertion enforces the requirement.\n   - The configured-agent test above runs two executions against the same domain and asserts the full dependency list each time. That is additional evidence.\n\nI found no uncovered obligation, boundary or failure case that the text names. The tests are also marked `{test}` for this requirement.",
-  "references": "7610e35a4f48cd809c521575395f925cd794a502e6bfd904eade6a9bd4c70d11",
+  "rationale": "structural: The only structural clause is \"direct reads by the criterion and reads served by the SDK's agent tools record inputs in the same `ValidationContext`\". An implementation that gave the agent tools their own context and merged the dependency lists afterwards would look the same from outside but would break \"the same\". So this clause constrains the implementation. The rest is behavioral: \"both node fingerprints accompany the returned answer\", and \"a subsequent verification starts with an empty dependency list\".\n\nThe supplied roots cover it:\n- `crates/trust-but-verify/src/graph.rs#impl[Validator<'d, D>]/fn[execute]` builds one `ValidationContext::configured` for each call. It passes `&mut ctx` to `criterion.execute`, so the criterion's direct reads record into it. It then returns `ctx.dependencies()` in the `Fingerprinted` result. Each `verify` call goes through `verify` → `execute`, so every call creates a fresh context. That gives the empty starting dependency list.\n- `crates/trust-but-verify/src/procedure.rs#impl[Ask<'a, 'd, D, R, P>]#2/fn[execute]` reads nodes through `self.ctx.prepare_read` and `self.ctx.prepare_edges`. It then calls `agent.run(request, self.ctx)` with that same context.\n- The agent implementations take that context as `inspection: &ValidationContext`. `crates/trust-but-verify/src/agent/configured.rs#impl[ConfiguredAgent/Agent<D>]/fn[run]` and `crates/trust-but-verify/src/agent/tools.rs#impl[ToolAgent<P, T>/Agent<D>]/fn[run]` pass it on to `run_with_domain_tools`. `crates/trust-but-verify/src/agent/tools.rs#impl[SessionTools<'a, D>]/fn[read_node]` reads through `inspection.prepare_read`. Tool reads therefore land in the same context the criterion used.\n\nNo further root is needed. The agent run path is reached from the marked `Ask::execute`, and the context is created in the marked `Validator::execute`.\n\nbehavioral: The tests cover both obligations in `requirements.sdk.graph.validation-context.shared_context`. I did not read the `ReadThenAsk` or `Memory` fixtures. The verdict rests on the test bodies and their assertions.\n\n**1. One shared `ValidationContext` during a single `verify` call.**\n- `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[verify_returns_direct_and_tool_reads_in_one_trace]` runs the requirement's own example. The criterion (`ReadThenAsk`) reads a node directly, then the agent calls `read_node` on node handle 0, which is the pre-interned `TestNode{id:7}`. The test asserts that `answer.dependencies()` is exactly two `Dependency::Node` entries, for node 42 and node 7, each with its fingerprint. A context that recorded only direct reads, or only tool reads, would fail this assertion.\n- `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` runs a configured agent against a local server. The opening node is read by the criterion, and the agent reads other nodes and search excerpts through its tools. The test asserts the full ordered dependency list of five entries, mixing the direct read and the tool reads. It runs the verification twice, and the same exact list is asserted in each run.\n- `crates/trust-but-verify/src/agent/tests.rs#fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]` checks that two concurrent agent calls on one context accumulate their reads into one shared dependency set. It asserts that `ctx.dependencies()` contains the node and edge dependencies from both calls, and that `finish` returns the same set.\n\n**2. A subsequent verification starts with an empty dependency list.**\n- `crates/trust-but-verify/src/graph/validation_tests.rs#fn[a_second_verification_starts_with_an_empty_trace]` calls `verify` twice on the same `Validator`. The first answer's dependencies are exactly the subject node. The second answer's dependencies are exactly `[Dependency::Node(other, fp(\"other\"))]`. Nothing from the first call carries over, so a context or trace reused between calls would fail.\n- The `configured.rs` test repeats the same assertion on a reused domain. It asserts the identical five-entry dependency list on both iterations.\n\nI found no untested obligation and no missing marker.",
+  "references": "4097a7bf39a224b267c1b5d7f7ea4f0180658f088dd7ac08c8dd2a67cc73993b",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.validation-context.shared_context",
@@ -18,6 +18,31 @@
         "A subsequent verification starts with an empty dependency list.",
         ":::"
       ]
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "impl[Validator<'d,%20D>]/fn[execute]",
+      "hash": "807a5015afd77dd876f866ed3e422875eef8103383fe82adb04d64b7c839be51"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]",
+      "hash": "13819c4675914551da6e0dde0cc498d09495c2f2124f3f03e353ca0cdfef866a"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "impl[Validator<'d,%20D>]/fn[verify]",
+      "hash": "3a2bbdb3f06a33cbff7a1af2c5d08a4f87b3be750b183eba7c1b204ee1e50203"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tools.rs",
+      "item": "impl[ToolAgent<P,%20T>/Agent<D>]/fn[run]",
+      "hash": "11c648ce954553d3af7976142c39ab6e107827a43020170853329daea98d87fe"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "impl[ConfiguredAgent/Agent<D>]/fn[run]",
+      "hash": "f909ba44142455488cfee442b537f570268b6f8e757a6b8202323e54009fbf7b"
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
@@ -37,7 +62,17 @@
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[a_second_verification_starts_with_an_empty_trace]",
-      "hash": "cc0b8dd425036cff99840cee35ec73ce9eedc9e16f462d8e16c4e7116ea6ca80"
+      "hash": "3807d36d75a29722008bd527d0ec846ec896838a25a6d8e251f22d319f7ec680"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tools.rs",
+      "item": "impl[SessionTools<'a,%20D>]/fn[read_node]",
+      "hash": "b999a065ceea7b75779e70f0347809fab9efa09b0276baa458269181e26f94cb"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tools.rs",
+      "item": "impl[ToolAgent<P,%20T>]#2/fn[run_with_domain_tools]",
+      "hash": "cd6aad6d404e03666cd233feca81d302ccb7bce0dc053f4fe66ea3fc5f7ef79f"
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
@@ -81,7 +116,7 @@
             },
             {
               "scheme": "habeas-reference-set-v1",
-              "value": "7610e35a4f48cd809c521575395f925cd794a502e6bfd904eade6a9bd4c70d11"
+              "value": "4097a7bf39a224b267c1b5d7f7ea4f0180658f088dd7ac08c8dd2a67cc73993b"
             }
           ]
         },
@@ -97,33 +132,94 @@
           ]
         },
         {
-          "OutgoingEdges": [
+          "Node": [
             {
-              "Requirement": "requirements.sdk.graph.validation-context.shared_context"
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph.rs"
+                },
+                "selector": "impl[Validator<'d,%20D>]/fn[execute]"
+              }
             },
-            "Implements",
             {
-              "scheme": "node-path-set-sha256-v1",
-              "value": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "807a5015afd77dd876f866ed3e422875eef8103383fe82adb04d64b7c839be51"
             }
           ]
         },
         {
-          "OutgoingEdges": [
+          "Node": [
             {
-              "Requirement": "requirements.sdk.graph.validation-context.shared_context"
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]"
+              }
             },
-            "Tests",
             {
-              "scheme": "node-path-set-sha256-v1",
-              "value": "3b0ab68ca04211fbbaa8744cdfcfebd2e876d054dac0d5fe1a6703ffca71af5e"
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "13819c4675914551da6e0dde0cc498d09495c2f2124f3f03e353ca0cdfef866a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph.rs"
+                },
+                "selector": "impl[Validator<'d,%20D>]/fn[verify]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "3a2bbdb3f06a33cbff7a1af2c5d08a4f87b3be750b183eba7c1b204ee1e50203"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tools.rs"
+                },
+                "selector": "impl[ToolAgent<P,%20T>/Agent<D>]/fn[run]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "11c648ce954553d3af7976142c39ab6e107827a43020170853329daea98d87fe"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/configured.rs"
+                },
+                "selector": "impl[ConfiguredAgent/Agent<D>]/fn[run]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f909ba44142455488cfee442b537f570268b6f8e757a6b8202323e54009fbf7b"
             }
           ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "`requirements.sdk.graph.validation-context.shared_context` has no implementation roots and no `Implements` edges. It does have `Tests` edges, including `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[verify_returns_direct_and_tool_reads_in_one_trace]`. I found no structural obligation that needs implementation evidence.\n\nI considered each clause:\n- \"During one call to `verify`, direct reads by the criterion and reads served by the SDK's agent tools record inputs in the same `ValidationContext`.\" This is the only clause that could be structural, because it names a type. It also states its observable outcome: \"both node fingerprints accompany the returned answer\". Suppose tools recorded into a per-tool sink that was merged into the returned dependency list. The returned answer would carry the same fingerprints from direct and tool reads. So the clause specifies observable aggregation. It does not prescribe a type, signature or delegation.\n- \"A subsequent verification starts with an empty dependency list.\" This describes behavior, namely the initial state of each verification.\n\nThe text names no library, algorithm, signature or field layout. Code that passes `&ValidationContext` to `Tool::execute` or `converse` is one way to meet the behavior, and the requirement does not prescribe it. Test adequacy is out of scope for this assessment."
+        "rationale": "The only structural clause is \"direct reads by the criterion and reads served by the SDK's agent tools record inputs in the same `ValidationContext`\". An implementation that gave the agent tools their own context and merged the dependency lists afterwards would look the same from outside but would break \"the same\". So this clause constrains the implementation. The rest is behavioral: \"both node fingerprints accompany the returned answer\", and \"a subsequent verification starts with an empty dependency list\".\n\nThe supplied roots cover it:\n- `crates/trust-but-verify/src/graph.rs#impl[Validator<'d, D>]/fn[execute]` builds one `ValidationContext::configured` for each call. It passes `&mut ctx` to `criterion.execute`, so the criterion's direct reads record into it. It then returns `ctx.dependencies()` in the `Fingerprinted` result. Each `verify` call goes through `verify` → `execute`, so every call creates a fresh context. That gives the empty starting dependency list.\n- `crates/trust-but-verify/src/procedure.rs#impl[Ask<'a, 'd, D, R, P>]#2/fn[execute]` reads nodes through `self.ctx.prepare_read` and `self.ctx.prepare_edges`. It then calls `agent.run(request, self.ctx)` with that same context.\n- The agent implementations take that context as `inspection: &ValidationContext`. `crates/trust-but-verify/src/agent/configured.rs#impl[ConfiguredAgent/Agent<D>]/fn[run]` and `crates/trust-but-verify/src/agent/tools.rs#impl[ToolAgent<P, T>/Agent<D>]/fn[run]` pass it on to `run_with_domain_tools`. `crates/trust-but-verify/src/agent/tools.rs#impl[SessionTools<'a, D>]/fn[read_node]` reads through `inspection.prepare_read`. Tool reads therefore land in the same context the criterion used.\n\nNo further root is needed. The agent run path is reached from the marked `Ask::execute`, and the context is created in the marked `Validator::execute`."
       }
     },
     "behavioral": {
@@ -136,7 +232,7 @@
             },
             {
               "scheme": "habeas-reference-set-v1",
-              "value": "7610e35a4f48cd809c521575395f925cd794a502e6bfd904eade6a9bd4c70d11"
+              "value": "4097a7bf39a224b267c1b5d7f7ea4f0180658f088dd7ac08c8dd2a67cc73993b"
             }
           ]
         },
@@ -215,14 +311,14 @@
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "cc0b8dd425036cff99840cee35ec73ce9eedc9e16f462d8e16c4e7116ea6ca80"
+              "value": "3807d36d75a29722008bd527d0ec846ec896838a25a6d8e251f22d319f7ec680"
             }
           ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "The requirement has two behavioral obligations, and the reviewed tests cover both.\n\n1. **Shared context within one `verify` call.** Direct reads by the criterion and reads served by the agent tools must land in the same `ValidationContext`. Both node fingerprints must accompany the returned answer.\n   - `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[verify_returns_direct_and_tool_reads_in_one_trace]` runs a `ReadThenAsk` criterion. The criterion reads node 42 directly. The scripted backend then issues a `read_node` tool call, and I take that call to resolve to node 7. The test asserts that `answer.dependencies()` is exactly `[Node(42), Node(7)]`, so one trace holds the direct read and the tool read in order. It also asserts that the backend received two requests.\n   - `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` shows the same thing end to end with the configured agent. The returned dependencies combine the opening node, `read_node` reads and search-excerpt reads in one list.\n   - `crates/trust-but-verify/src/agent/tests.rs#fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]` shows that the reads of two concurrent agent calls are recorded in the single shared context. The test checks `ctx.dependencies()` and `ctx.finish`.\n\n2. **A subsequent verification starts with an empty dependency list.**\n   - `crates/trust-but-verify/src/graph/validation_tests.rs#fn[a_second_verification_starts_with_an_empty_trace]` reuses one `Validator`. The first verify records node 1. The second verify reads node 2 and asserts that its dependencies are exactly `[Node(2)]`. Node 1 would appear there if the trace leaked between calls, so the assertion enforces the requirement.\n   - The configured-agent test above runs two executions against the same domain and asserts the full dependency list each time. That is additional evidence.\n\nI found no uncovered obligation, boundary or failure case that the text names. The tests are also marked `{test}` for this requirement."
+        "rationale": "The tests cover both obligations in `requirements.sdk.graph.validation-context.shared_context`. I did not read the `ReadThenAsk` or `Memory` fixtures. The verdict rests on the test bodies and their assertions.\n\n**1. One shared `ValidationContext` during a single `verify` call.**\n- `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[verify_returns_direct_and_tool_reads_in_one_trace]` runs the requirement's own example. The criterion (`ReadThenAsk`) reads a node directly, then the agent calls `read_node` on node handle 0, which is the pre-interned `TestNode{id:7}`. The test asserts that `answer.dependencies()` is exactly two `Dependency::Node` entries, for node 42 and node 7, each with its fingerprint. A context that recorded only direct reads, or only tool reads, would fail this assertion.\n- `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` runs a configured agent against a local server. The opening node is read by the criterion, and the agent reads other nodes and search excerpts through its tools. The test asserts the full ordered dependency list of five entries, mixing the direct read and the tool reads. It runs the verification twice, and the same exact list is asserted in each run.\n- `crates/trust-but-verify/src/agent/tests.rs#fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]` checks that two concurrent agent calls on one context accumulate their reads into one shared dependency set. It asserts that `ctx.dependencies()` contains the node and edge dependencies from both calls, and that `finish` returns the same set.\n\n**2. A subsequent verification starts with an empty dependency list.**\n- `crates/trust-but-verify/src/graph/validation_tests.rs#fn[a_second_verification_starts_with_an_empty_trace]` calls `verify` twice on the same `Validator`. The first answer's dependencies are exactly the subject node. The second answer's dependencies are exactly `[Dependency::Node(other, fp(\"other\"))]`. Nothing from the first call carries over, so a context or trace reused between calls would fail.\n- The `configured.rs` test repeats the same assertion on a reused domain. It asserts the identical five-entry dependency list on both iterations.\n\nI found no untested obligation and no missing marker."
       }
     }
   },
@@ -236,7 +332,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "7610e35a4f48cd809c521575395f925cd794a502e6bfd904eade6a9bd4c70d11"
+          "value": "4097a7bf39a224b267c1b5d7f7ea4f0180658f088dd7ac08c8dd2a67cc73993b"
         }
       ]
     },
@@ -252,26 +348,87 @@
       ]
     },
     {
-      "OutgoingEdges": [
+      "Node": [
         {
-          "Requirement": "requirements.sdk.graph.validation-context.shared_context"
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "impl[Validator<'d,%20D>]/fn[execute]"
+          }
         },
-        "Implements",
         {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "807a5015afd77dd876f866ed3e422875eef8103383fe82adb04d64b7c839be51"
         }
       ]
     },
     {
-      "OutgoingEdges": [
+      "Node": [
         {
-          "Requirement": "requirements.sdk.graph.validation-context.shared_context"
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]"
+          }
         },
-        "Tests",
         {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "3b0ab68ca04211fbbaa8744cdfcfebd2e876d054dac0d5fe1a6703ffca71af5e"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "13819c4675914551da6e0dde0cc498d09495c2f2124f3f03e353ca0cdfef866a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "impl[Validator<'d,%20D>]/fn[verify]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "3a2bbdb3f06a33cbff7a1af2c5d08a4f87b3be750b183eba7c1b204ee1e50203"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tools.rs"
+            },
+            "selector": "impl[ToolAgent<P,%20T>/Agent<D>]/fn[run]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "11c648ce954553d3af7976142c39ab6e107827a43020170853329daea98d87fe"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
+            },
+            "selector": "impl[ConfiguredAgent/Agent<D>]/fn[run]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "f909ba44142455488cfee442b537f570268b6f8e757a6b8202323e54009fbf7b"
         }
       ]
     },
@@ -339,7 +496,41 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "cc0b8dd425036cff99840cee35ec73ce9eedc9e16f462d8e16c4e7116ea6ca80"
+          "value": "3807d36d75a29722008bd527d0ec846ec896838a25a6d8e251f22d319f7ec680"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tools.rs"
+            },
+            "selector": "impl[SessionTools<'a,%20D>]/fn[read_node]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b999a065ceea7b75779e70f0347809fab9efa09b0276baa458269181e26f94cb"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tools.rs"
+            },
+            "selector": "impl[ToolAgent<P,%20T>]#2/fn[run_with_domain_tools]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "cd6aad6d404e03666cd233feca81d302ccb7bce0dc053f4fe66ea3fc5f7ef79f"
         }
       ]
     },

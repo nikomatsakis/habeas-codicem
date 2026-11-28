@@ -1,7 +1,7 @@
 {
   "requirement": "The harness represents a `NodeId<D>` as an unsigned integer. Each built-in tool that accepts a node accepts the same top-level address fields, alongside its own arguments (such as an edge `label`). `NodeAddress` in tool signatures denotes these alternatives:\n\n| Address fields | Resolution |\n| --- | --- |\n| `node` | Look up the assigned ID in the domain's cache. |\n| `path`, optional `location` | Resolve the project-relative file within the domain's visible sources. `location` is its outline selector and defaults to the empty selector for the file root. Resolve the item, map its `OutlineData` through `Domain::source_node`, and intern the resulting identity. |\n| `data` | Deserialize the JSON value as `D::NodeData` and intern it in the domain's cache. |\n\nFor domains using the agent harness, the tool schema describes `data` using the domain’s JSON schema for `D::NodeData`. The harness uses the same JSON representation when returning and accepting an identity.\n\nResolving an address is discovery. The requested operation determines which observations enter evidence. Invalid addresses, unavailable files, and unknown selectors produce tool errors before the requested operation runs.",
   "determination": true,
-  "rationale": "structural: Structural obligations and their mapping to the roots:\n\n1. \"The harness represents a `NodeId<D>` as an unsigned integer.\" A `NodeId` that serialized as a string or an object would give the same runtime lookups but break this clause. `crates/trust-but-verify/src/domain.rs#struct[NodeId]` covers it. The struct holds `index: usize` and is `#[serde(transparent)]`, with the schemars transparent attribute. The `PhantomData` marker is `serde(skip)`. The same JSON form therefore serves both returning and accepting an identity.\n\n2. The address fields `node`, `path`, optional `location` and `data`, and their resolutions. `crates/trust-but-verify/src/agent/tools.rs#fn[node_argument]` implements them:\n   - `node` is looked up in `domain.cache().node_data`.\n   - `path` with `location` defaulting to \"\" goes through `OutlineData::new` and `project.resolve_outline`. `project.intern_source` then calls `Domain::source_node` and interns the result in the cache. I read `intern_source` in `src/sources/hits.rs`.\n   - `data` is deserialized as `D::NodeData` and interned with `cache().intern_node`.\n   Invalid addresses, an unconfigured project, unknown selectors and unavailable files all return `io::Error` before the caller runs the operation. Delegation to `Domain::source_node` is named in the text, and `intern_source` reached from `node_argument` performs it. Routing through `source_node` is a real structural obligation: a hand-built identity would violate it. No other root is needed, because `resolve_outline` and `intern_source` are reached from the marked `node_argument`.\n\n3. \"The tool schema describes `data` using the domain's JSON schema for `D::NodeData`\", with the same top-level address fields on every node-taking tool. `crates/trust-but-verify/src/agent/tools.rs#fn[node_parameters]` builds the schema from `generator.subschema_for::<Data>()` and `subschema_for::<N>()`, and adds `path` and `location`. Callers pass `NodeId<D>` and `D::NodeData`. The callers are `GraphSession::tools` for `read_node` and `outgoing_edges`, and `ProjectSources::definitions` for `outline_source`. All the dispatchers call `node_argument`: `read_node`, the `outgoing_edges` branch of `GraphSession::dispatch`, and `ProjectSources::dispatch` for `OUTLINE_SOURCE`. That gives every built-in node tool the same address handling.\n\nThe remaining clauses specify observable behavior only. These are \"Resolving an address is discovery. The requested operation determines which observations enter evidence\" and the error-before-operation behavior. The tests cover them, and tests are judged by the behavioral criterion.\n\nThe three roots cover all the structural obligations, and I found no missing root.\n\nbehavioral: The reviewed tests cover each observable obligation of `requirements.sdk.graph.validation-context.node_reference`.\n\nI read `node_argument` in `crates/trust-but-verify/src/agent/tools.rs` only to see whether the tools share one resolver. It is a single resolver, so each address form needs no per-tool re-test. I took the expected behavior from the requirement text, not from this code.\n\n**Address fields accepted by every node-taking tool**\n- `node`, `path` with `location`, and `data` are accepted by `read_node`, `outgoing_edges` and `outline_source`.\n- `configured.rs#mod[tests]/fn[edge_and_outline_tools_accept_source_addresses_and_domain_data]` calls `outline_source` and `outgoing_edges` with `path` plus an empty `location`, and with `data`. It asserts the returned node and items, and the empty `targets`.\n- `tests.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` calls `outgoing_edges` by `node`.\n- `project_sources.rs#mod[tests]/fn[agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads]` calls `read_node` by `data`, by `path` plus `location`, by `path` alone (location defaults to the file root), and by `node`. It asserts the results are identical across those forms.\n\n**`node` lookup**\n- `tests.rs#fn[read_node_accepts_a_domain_id_first_supplied_by_the_agent]` asserts that an unassigned ID (999) gives the error \"unassigned node ID\" and does no read.\n- The same test asserts that a valid assigned ID is read and recorded.\n\n**`path`/`location` resolution**\n- The project_sources test above resolves a nested selector, `impl[Parser]/fn[parse]`. It maps the item through `source_node` and interns it. It asserts the same node ID as the one returned in children and listings.\n- `project_sources.rs#mod[tests]/fn[outline_tool_rejects_excluded_and_unreadable_sources_without_domain_reads]` asserts tool errors for ignored, `../`, `.git/config`, missing and non-string paths.\n- The project_sources test also asserts errors for unknown selector `fn[absent]` and for `absent.rs`.\n\n**`data` deserialization and round trip**\n- Data is deserialized and interned, and the same JSON is returned and accepted. The project_sources test passes list entries and returned children back as addresses.\n- The configured test returns `{\"node\":source,...}` from `data:{\"id\":8}`.\n\n**Schema and integer representation**\n- The configured tests assert that the `node` schema type is `integer` for the three tools.\n- `configured.rs#mod[tests]/fn[edge_and_outline_tools_accept_source_addresses_and_domain_data]` also asserts that the `data` schema is a `$ref` whose `id` property has type integer. This matches the domain's `NodeData` schema.\n- The project_sources test rejects `node:-1`, and the `tests.rs` edge test rejects the string `\"unknown\"`.\n\n**Invalid addresses**\n- The project_sources test rejects the following address forms:\n  - an empty object\n  - `node` and `data` that disagree\n  - `path` combined with `data` or `node`\n  - `location` without `path`\n  - non-deserializable `data`\n- The `tests.rs` edge test asserts that a malformed `node` produces no graph lookup and no dependency.\n\n**Resolution is discovery only**\n- The `outline_source` test asserts empty dependencies after resolving addresses. `list_sources` also has empty dependencies.\n- The configured test asserts that, after the four calls above, the only dependency is the single `OutgoingEdges(source, \"related\")` entry.\n- The project_sources test asserts that no domain reads happen on rejection.\n\nI found no unassigned obligation or untested requirement-relevant input class. The resolver is shared by all tools, so repeating the unknown-selector and unavailable-file cases per tool is not required.",
+  "rationale": "structural: **Structural obligations.**\n- \"The harness represents a `NodeId<D>` as an unsigned integer.\" An alternative that makes `NodeId` a string handle would break this, so it is structural. `crates/trust-but-verify/src/domain.rs#struct[NodeId]` has `index: usize`. `#[serde(transparent)]` and `#[schemars(transparent, inline)]` make the JSON and schema form a bare unsigned integer. The marker is `PhantomData` and is skipped by serde.\n- \"`NodeAddress` denotes these alternatives\" (`node`, `path` with optional `location`, `data`), plus \"alongside its own arguments (such as an edge `label`)\". The tool schema also has to describe `data` \"using the domain's JSON schema for `D::NodeData`\". `crates/trust-but-verify/src/agent/tools.rs#fn[node_parameters]` builds the shared parameter schema. It has `node` (schema of `N`, the `NodeId`), `data` (`generator.subschema_for::<Data>()`), `path` and `location`. It adds an optional required `label` and moves definitions into `$defs`. Its `if`/`then`/`else` rules say a path excludes node and data, and that otherwise node or data is required and location is not allowed.\n- Resolution rules:\n  - `node` means \"look up the assigned ID in the domain's cache\".\n  - `path` and `location` mean resolve the file, map its `OutlineData` through `Domain::source_node`, then intern the identity.\n  - `data` means deserialize it as `D::NodeData` and intern it in the cache.\n  - Invalid addresses, unavailable files and unknown selectors must produce tool errors before the operation runs.\n- All of these rules are met by `crates/trust-but-verify/src/agent/tools.rs#fn[node_argument]`.\n  - Node IDs go through `domain.cache().node_data(id)`. An unassigned ID is an error.\n  - `data` is deserialized with `serde_json::from_value::<D::NodeData>` and interned with `domain.cache().intern_node`.\n  - A path builds an `OutlineData` (default location `\"\"`) and calls `project.resolve_outline`. That goes through the provider's `visible_path` and `OutlineContent::select`, and errors are returned.\n  - The path case then calls `SourceProject::intern_source` in `sources/hits.rs`. That calls `self.domain.source_node(address)` and then `cache().intern_source`, which interns the identity. This is the required `Domain::source_node` mapping.\n  - Every failure returns `io::Error` before any read or other operation runs.\n\n**Shared use.** The built-in tools that accept a node all use these two roots. `read_node` and `outgoing_edges` call `node_argument`. `outline_source` in `agent/project_sources.rs` calls it too. Their definitions call `node_parameters`. The callers reach the marked roots and need no marker of their own. The text does not require delegation to a particular helper.\n\n**Same JSON in both directions.** The same serde representation of `NodeId` (transparent `usize`) and of `D::NodeData` is used for returned and accepted identities.\n\n**Observation-only clauses.** \"Resolving an address is discovery. The requested operation determines which observations enter evidence.\" is behavioral and has no structural obligation. Nothing in the subject text is left without a root.\n\nI found no gap.\n\nbehavioral: The reviewed tests cover each observable obligation of `requirements.sdk.graph.validation-context.node_reference`.\n\n**Node IDs and the `node` address**\n- `NodeId` is an unsigned integer. `agent_edge_tools_record_selections_without_validating_targets` sends `node:\"unknown\"` to `outgoing_edges`. It asserts the error \"invalid node ID…\", no graph lookup and no dependencies. `agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads` rejects `node:-1`. `configured_agent_uses_domain_source_tools_in_independent_executions` also rejects a string node, and checks the schema type is `integer` for `read_node`, `outline_source` and `outgoing_edges`.\n- The `node` cache lookup is tested in `read_node_accepts_a_domain_id_first_supplied_by_the_agent`. An unassigned ID 999 gives the tool error \"unassigned node ID\" with no read. A valid ID 2 is read and recorded.\n- `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` and `agent_edge_tools_record_selections_without_validating_targets` use `node` IDs with `outgoing_edges` and `read_node`.\n\n**The `path` and `location` address**\n- `agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads` resolves a nested selector, `impl[Parser]/fn[parse]`. It resolves `path` alone, with `location` defaulting to the file root. It asserts that this gives the same interned node, text and dependencies as `node` and `data`.\n- `edge_and_outline_tools_accept_source_addresses_and_domain_data` covers `path` with an empty `location` for `outline_source` and `outgoing_edges`. It asserts the results.\n- `outline_tool_rejects_excluded_and_unreadable_sources_without_domain_reads` covers `path` with `location` for `read_node`.\n\n**The `data` address**\n- `edge_and_outline_tools_accept_source_addresses_and_domain_data` sends `data` to `outline_source` and `outgoing_edges`. The response is the node interned from `{id:8}`.\n- It also asserts that the tool schemas describe `data` through a `$ref` to the domain's `NodeData` schema, with `id` typed as integer.\n- Round-tripping the same JSON form, returned from `list_sources` and accepted back, is covered in `agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads`.\n\n**Discovery is not evidence**\n- Resolving an address records no observation.\n  - `outline_source` results have empty dependencies. `agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads` asserts the same for `list_sources`.\n  - `read_node` by `path` records only the node's fingerprint.\n  - `outgoing_edges` by `path` or `data` records only the `OutgoingEdges` dependency.\n\n**Errors before the operation runs**\n- Invalid addresses are rejected in `agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads`: `{}`, `data:false`, `location` without `path`, and `path` mixed with `node` or `data`. It asserts the domain read count is unchanged.\n- An unknown selector (`fn[absent]`) and an unavailable file (`absent.rs`) are rejected in the same test.\n- `outline_tool_rejects_excluded_and_unreadable_sources_without_domain_reads` rejects ignored, `../`, `.git`, missing and non-string paths for `outline_source`, with `reads == 0`.\n\nAddress parsing is one shared function, `node_argument` in `agent/tools.rs`. The tests exercise it through all three tools, so I did not require every error case to be repeated per tool.\n\nThe tests carry `{test}` markers for this requirement, and I found no gaps.",
   "references": "b8b20e750a1eb524b17c3c79f26c99f0e40fcdc8ffac26a732e1d826bec95a94",
   "inputs": [
     {
@@ -41,21 +41,6 @@
       "hash": "8d04b901c7278519c7d9bd5af6b244bc7dfef8cf674eb1edf0a998c0405fc6a5"
     },
     {
-      "file": "crates/trust-but-verify/src/domain.rs",
-      "item": "impl[ValidationCache<D>]/fn[intern_source]",
-      "hash": "9d4c19223216a4598c5fb534d60e10da08d4c47d5500af608244e7b014a53c9f"
-    },
-    {
-      "file": "crates/trust-but-verify/src/domain.rs",
-      "item": "trait[Domain]/fn[source_node]",
-      "hash": "031f3f125568c5a7d2071ed6c1cc478759e21d01d4c85e80588c27d04004f2ed"
-    },
-    {
-      "file": "crates/trust-but-verify/src/sources/hits.rs",
-      "item": "impl[SourceProject<D>]/fn[intern_source]",
-      "hash": "434c505656482827b10f77a64af8bde740ba49c7136faaa2d906d5a54bfd4867"
-    },
-    {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "impl[Session<'_,%20D>/ToolSession<D>]/fn[definitions]",
       "hash": "9131a7099adbb55c0318dee4345dc21311d7e174b75ac07a32feb297a610d35c"
@@ -81,6 +66,21 @@
       "hash": "6d43b82a764c61f1316015f0fbc1b93fe17bcb02f4c46747de7f5748c4b4f8df"
     },
     {
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "impl[ValidationCache<D>]/fn[intern_source]",
+      "hash": "9d4c19223216a4598c5fb534d60e10da08d4c47d5500af608244e7b014a53c9f"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/hits.rs",
+      "item": "impl[SourceProject<D>]/fn[intern_source]",
+      "hash": "434c505656482827b10f77a64af8bde740ba49c7136faaa2d906d5a54bfd4867"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/hits.rs",
+      "item": "impl[SourceProject<D>]/fn[resolve_outline]",
+      "hash": "0127a4d81a90eede633b5c772fdbf7df59475fa9226c2ffebed0f3b928bd5f98"
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[edge_and_outline_tools_accept_source_addresses_and_domain_data]",
       "hash": "9643956f2bd859adc317d6a725b882b8a0727e6d3699f6b1e41a8be50e4b5fef"
@@ -103,7 +103,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[outline_tool_rejects_excluded_and_unreadable_sources_without_domain_reads]",
-      "hash": "4ed73da776bc3ffc3096613a02fa6e38cc30faf48f41c00a2fba1b5e72c9eb45"
+      "hash": "628373959f32c6ba11302d6e1620a29a1903177e4b6a8d6e4c1b88016b2f8c92"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -124,11 +124,6 @@
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]",
       "hash": "c7885e4745b0ff03722c7fce69141d3f4f47d1b948da6955f161cac7606bae4d"
-    },
-    {
-      "file": "crates/trust-but-verify/src/sources/hits.rs",
-      "item": "impl[SourceProject<D>]/fn[resolve_outline]",
-      "hash": "0127a4d81a90eede633b5c772fdbf7df59475fa9226c2ffebed0f3b928bd5f98"
     }
   ],
   "criteria": {
@@ -205,57 +200,6 @@
             {
               "scheme": "rust-structural-v1:own-v1",
               "value": "8d04b901c7278519c7d9bd5af6b244bc7dfef8cf674eb1edf0a998c0405fc6a5"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/domain.rs"
-                },
-                "selector": "impl[ValidationCache<D>]/fn[intern_source]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "9d4c19223216a4598c5fb534d60e10da08d4c47d5500af608244e7b014a53c9f"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/domain.rs"
-                },
-                "selector": "trait[Domain]/fn[source_node]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "031f3f125568c5a7d2071ed6c1cc478759e21d01d4c85e80588c27d04004f2ed"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/sources/hits.rs"
-                },
-                "selector": "impl[SourceProject<D>]/fn[intern_source]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "434c505656482827b10f77a64af8bde740ba49c7136faaa2d906d5a54bfd4867"
             }
           ]
         },
@@ -343,11 +287,62 @@
               "value": "6d43b82a764c61f1316015f0fbc1b93fe17bcb02f4c46747de7f5748c4b4f8df"
             }
           ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/domain.rs"
+                },
+                "selector": "impl[ValidationCache<D>]/fn[intern_source]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "9d4c19223216a4598c5fb534d60e10da08d4c47d5500af608244e7b014a53c9f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/sources/hits.rs"
+                },
+                "selector": "impl[SourceProject<D>]/fn[intern_source]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "434c505656482827b10f77a64af8bde740ba49c7136faaa2d906d5a54bfd4867"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/sources/hits.rs"
+                },
+                "selector": "impl[SourceProject<D>]/fn[resolve_outline]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "0127a4d81a90eede633b5c772fdbf7df59475fa9226c2ffebed0f3b928bd5f98"
+            }
+          ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "Structural obligations and their mapping to the roots:\n\n1. \"The harness represents a `NodeId<D>` as an unsigned integer.\" A `NodeId` that serialized as a string or an object would give the same runtime lookups but break this clause. `crates/trust-but-verify/src/domain.rs#struct[NodeId]` covers it. The struct holds `index: usize` and is `#[serde(transparent)]`, with the schemars transparent attribute. The `PhantomData` marker is `serde(skip)`. The same JSON form therefore serves both returning and accepting an identity.\n\n2. The address fields `node`, `path`, optional `location` and `data`, and their resolutions. `crates/trust-but-verify/src/agent/tools.rs#fn[node_argument]` implements them:\n   - `node` is looked up in `domain.cache().node_data`.\n   - `path` with `location` defaulting to \"\" goes through `OutlineData::new` and `project.resolve_outline`. `project.intern_source` then calls `Domain::source_node` and interns the result in the cache. I read `intern_source` in `src/sources/hits.rs`.\n   - `data` is deserialized as `D::NodeData` and interned with `cache().intern_node`.\n   Invalid addresses, an unconfigured project, unknown selectors and unavailable files all return `io::Error` before the caller runs the operation. Delegation to `Domain::source_node` is named in the text, and `intern_source` reached from `node_argument` performs it. Routing through `source_node` is a real structural obligation: a hand-built identity would violate it. No other root is needed, because `resolve_outline` and `intern_source` are reached from the marked `node_argument`.\n\n3. \"The tool schema describes `data` using the domain's JSON schema for `D::NodeData`\", with the same top-level address fields on every node-taking tool. `crates/trust-but-verify/src/agent/tools.rs#fn[node_parameters]` builds the schema from `generator.subschema_for::<Data>()` and `subschema_for::<N>()`, and adds `path` and `location`. Callers pass `NodeId<D>` and `D::NodeData`. The callers are `GraphSession::tools` for `read_node` and `outgoing_edges`, and `ProjectSources::definitions` for `outline_source`. All the dispatchers call `node_argument`: `read_node`, the `outgoing_edges` branch of `GraphSession::dispatch`, and `ProjectSources::dispatch` for `OUTLINE_SOURCE`. That gives every built-in node tool the same address handling.\n\nThe remaining clauses specify observable behavior only. These are \"Resolving an address is discovery. The requested operation determines which observations enter evidence\" and the error-before-operation behavior. The tests cover them, and tests are judged by the behavioral criterion.\n\nThe three roots cover all the structural obligations, and I found no missing root."
+        "rationale": "**Structural obligations.**\n- \"The harness represents a `NodeId<D>` as an unsigned integer.\" An alternative that makes `NodeId` a string handle would break this, so it is structural. `crates/trust-but-verify/src/domain.rs#struct[NodeId]` has `index: usize`. `#[serde(transparent)]` and `#[schemars(transparent, inline)]` make the JSON and schema form a bare unsigned integer. The marker is `PhantomData` and is skipped by serde.\n- \"`NodeAddress` denotes these alternatives\" (`node`, `path` with optional `location`, `data`), plus \"alongside its own arguments (such as an edge `label`)\". The tool schema also has to describe `data` \"using the domain's JSON schema for `D::NodeData`\". `crates/trust-but-verify/src/agent/tools.rs#fn[node_parameters]` builds the shared parameter schema. It has `node` (schema of `N`, the `NodeId`), `data` (`generator.subschema_for::<Data>()`), `path` and `location`. It adds an optional required `label` and moves definitions into `$defs`. Its `if`/`then`/`else` rules say a path excludes node and data, and that otherwise node or data is required and location is not allowed.\n- Resolution rules:\n  - `node` means \"look up the assigned ID in the domain's cache\".\n  - `path` and `location` mean resolve the file, map its `OutlineData` through `Domain::source_node`, then intern the identity.\n  - `data` means deserialize it as `D::NodeData` and intern it in the cache.\n  - Invalid addresses, unavailable files and unknown selectors must produce tool errors before the operation runs.\n- All of these rules are met by `crates/trust-but-verify/src/agent/tools.rs#fn[node_argument]`.\n  - Node IDs go through `domain.cache().node_data(id)`. An unassigned ID is an error.\n  - `data` is deserialized with `serde_json::from_value::<D::NodeData>` and interned with `domain.cache().intern_node`.\n  - A path builds an `OutlineData` (default location `\"\"`) and calls `project.resolve_outline`. That goes through the provider's `visible_path` and `OutlineContent::select`, and errors are returned.\n  - The path case then calls `SourceProject::intern_source` in `sources/hits.rs`. That calls `self.domain.source_node(address)` and then `cache().intern_source`, which interns the identity. This is the required `Domain::source_node` mapping.\n  - Every failure returns `io::Error` before any read or other operation runs.\n\n**Shared use.** The built-in tools that accept a node all use these two roots. `read_node` and `outgoing_edges` call `node_argument`. `outline_source` in `agent/project_sources.rs` calls it too. Their definitions call `node_parameters`. The callers reach the marked roots and need no marker of their own. The text does not require delegation to a particular helper.\n\n**Same JSON in both directions.** The same serde representation of `NodeId` (transparent `usize`) and of `D::NodeData` is used for returned and accepted identities.\n\n**Observation-only clauses.** \"Resolving an address is discovery. The requested operation determines which observations enter evidence.\" is behavioral and has no structural obligation. Nothing in the subject text is left without a root.\n\nI found no gap."
       }
     },
     "behavioral": {
@@ -456,7 +451,7 @@
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "4ed73da776bc3ffc3096613a02fa6e38cc30faf48f41c00a2fba1b5e72c9eb45"
+              "value": "628373959f32c6ba11302d6e1620a29a1903177e4b6a8d6e4c1b88016b2f8c92"
             }
           ]
         },
@@ -548,7 +543,7 @@
       ],
       "output": {
         "status": "success",
-        "rationale": "The reviewed tests cover each observable obligation of `requirements.sdk.graph.validation-context.node_reference`.\n\nI read `node_argument` in `crates/trust-but-verify/src/agent/tools.rs` only to see whether the tools share one resolver. It is a single resolver, so each address form needs no per-tool re-test. I took the expected behavior from the requirement text, not from this code.\n\n**Address fields accepted by every node-taking tool**\n- `node`, `path` with `location`, and `data` are accepted by `read_node`, `outgoing_edges` and `outline_source`.\n- `configured.rs#mod[tests]/fn[edge_and_outline_tools_accept_source_addresses_and_domain_data]` calls `outline_source` and `outgoing_edges` with `path` plus an empty `location`, and with `data`. It asserts the returned node and items, and the empty `targets`.\n- `tests.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` calls `outgoing_edges` by `node`.\n- `project_sources.rs#mod[tests]/fn[agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads]` calls `read_node` by `data`, by `path` plus `location`, by `path` alone (location defaults to the file root), and by `node`. It asserts the results are identical across those forms.\n\n**`node` lookup**\n- `tests.rs#fn[read_node_accepts_a_domain_id_first_supplied_by_the_agent]` asserts that an unassigned ID (999) gives the error \"unassigned node ID\" and does no read.\n- The same test asserts that a valid assigned ID is read and recorded.\n\n**`path`/`location` resolution**\n- The project_sources test above resolves a nested selector, `impl[Parser]/fn[parse]`. It maps the item through `source_node` and interns it. It asserts the same node ID as the one returned in children and listings.\n- `project_sources.rs#mod[tests]/fn[outline_tool_rejects_excluded_and_unreadable_sources_without_domain_reads]` asserts tool errors for ignored, `../`, `.git/config`, missing and non-string paths.\n- The project_sources test also asserts errors for unknown selector `fn[absent]` and for `absent.rs`.\n\n**`data` deserialization and round trip**\n- Data is deserialized and interned, and the same JSON is returned and accepted. The project_sources test passes list entries and returned children back as addresses.\n- The configured test returns `{\"node\":source,...}` from `data:{\"id\":8}`.\n\n**Schema and integer representation**\n- The configured tests assert that the `node` schema type is `integer` for the three tools.\n- `configured.rs#mod[tests]/fn[edge_and_outline_tools_accept_source_addresses_and_domain_data]` also asserts that the `data` schema is a `$ref` whose `id` property has type integer. This matches the domain's `NodeData` schema.\n- The project_sources test rejects `node:-1`, and the `tests.rs` edge test rejects the string `\"unknown\"`.\n\n**Invalid addresses**\n- The project_sources test rejects the following address forms:\n  - an empty object\n  - `node` and `data` that disagree\n  - `path` combined with `data` or `node`\n  - `location` without `path`\n  - non-deserializable `data`\n- The `tests.rs` edge test asserts that a malformed `node` produces no graph lookup and no dependency.\n\n**Resolution is discovery only**\n- The `outline_source` test asserts empty dependencies after resolving addresses. `list_sources` also has empty dependencies.\n- The configured test asserts that, after the four calls above, the only dependency is the single `OutgoingEdges(source, \"related\")` entry.\n- The project_sources test asserts that no domain reads happen on rejection.\n\nI found no unassigned obligation or untested requirement-relevant input class. The resolver is shared by all tools, so repeating the unknown-selector and unavailable-file cases per tool is not required."
+        "rationale": "The reviewed tests cover each observable obligation of `requirements.sdk.graph.validation-context.node_reference`.\n\n**Node IDs and the `node` address**\n- `NodeId` is an unsigned integer. `agent_edge_tools_record_selections_without_validating_targets` sends `node:\"unknown\"` to `outgoing_edges`. It asserts the error \"invalid node ID…\", no graph lookup and no dependencies. `agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads` rejects `node:-1`. `configured_agent_uses_domain_source_tools_in_independent_executions` also rejects a string node, and checks the schema type is `integer` for `read_node`, `outline_source` and `outgoing_edges`.\n- The `node` cache lookup is tested in `read_node_accepts_a_domain_id_first_supplied_by_the_agent`. An unassigned ID 999 gives the tool error \"unassigned node ID\" with no read. A valid ID 2 is read and recorded.\n- `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` and `agent_edge_tools_record_selections_without_validating_targets` use `node` IDs with `outgoing_edges` and `read_node`.\n\n**The `path` and `location` address**\n- `agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads` resolves a nested selector, `impl[Parser]/fn[parse]`. It resolves `path` alone, with `location` defaulting to the file root. It asserts that this gives the same interned node, text and dependencies as `node` and `data`.\n- `edge_and_outline_tools_accept_source_addresses_and_domain_data` covers `path` with an empty `location` for `outline_source` and `outgoing_edges`. It asserts the results.\n- `outline_tool_rejects_excluded_and_unreadable_sources_without_domain_reads` covers `path` with `location` for `read_node`.\n\n**The `data` address**\n- `edge_and_outline_tools_accept_source_addresses_and_domain_data` sends `data` to `outline_source` and `outgoing_edges`. The response is the node interned from `{id:8}`.\n- It also asserts that the tool schemas describe `data` through a `$ref` to the domain's `NodeData` schema, with `id` typed as integer.\n- Round-tripping the same JSON form, returned from `list_sources` and accepted back, is covered in `agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads`.\n\n**Discovery is not evidence**\n- Resolving an address records no observation.\n  - `outline_source` results have empty dependencies. `agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads` asserts the same for `list_sources`.\n  - `read_node` by `path` records only the node's fingerprint.\n  - `outgoing_edges` by `path` or `data` records only the `OutgoingEdges` dependency.\n\n**Errors before the operation runs**\n- Invalid addresses are rejected in `agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads`: `{}`, `data:false`, `location` without `path`, and `path` mixed with `node` or `data`. It asserts the domain read count is unchanged.\n- An unknown selector (`fn[absent]`) and an unavailable file (`absent.rs`) are rejected in the same test.\n- `outline_tool_rejects_excluded_and_unreadable_sources_without_domain_reads` rejects ignored, `../`, `.git`, missing and non-string paths for `outline_source`, with `reads == 0`.\n\nAddress parsing is one shared function, `node_argument` in `agent/tools.rs`. The tests exercise it through all three tools, so I did not require every error case to be repeated per tool.\n\nThe tests carry `{test}` markers for this requirement, and I found no gaps."
       }
     }
   },
@@ -625,57 +620,6 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "8d04b901c7278519c7d9bd5af6b244bc7dfef8cf674eb1edf0a998c0405fc6a5"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/domain.rs"
-            },
-            "selector": "impl[ValidationCache<D>]/fn[intern_source]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "9d4c19223216a4598c5fb534d60e10da08d4c47d5500af608244e7b014a53c9f"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/domain.rs"
-            },
-            "selector": "trait[Domain]/fn[source_node]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "031f3f125568c5a7d2071ed6c1cc478759e21d01d4c85e80588c27d04004f2ed"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/sources/hits.rs"
-            },
-            "selector": "impl[SourceProject<D>]/fn[intern_source]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "434c505656482827b10f77a64af8bde740ba49c7136faaa2d906d5a54bfd4867"
         }
       ]
     },
@@ -770,6 +714,57 @@
           "Source": {
             "resource": {
               "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "impl[ValidationCache<D>]/fn[intern_source]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "9d4c19223216a4598c5fb534d60e10da08d4c47d5500af608244e7b014a53c9f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/hits.rs"
+            },
+            "selector": "impl[SourceProject<D>]/fn[intern_source]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "434c505656482827b10f77a64af8bde740ba49c7136faaa2d906d5a54bfd4867"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/hits.rs"
+            },
+            "selector": "impl[SourceProject<D>]/fn[resolve_outline]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "0127a4d81a90eede633b5c772fdbf7df59475fa9226c2ffebed0f3b928bd5f98"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/configured.rs"
             },
             "selector": "mod[tests]/fn[edge_and_outline_tools_accept_source_addresses_and_domain_data]"
@@ -845,7 +840,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "4ed73da776bc3ffc3096613a02fa6e38cc30faf48f41c00a2fba1b5e72c9eb45"
+          "value": "628373959f32c6ba11302d6e1620a29a1903177e4b6a8d6e4c1b88016b2f8c92"
         }
       ]
     },
@@ -918,19 +913,14 @@
       ]
     },
     {
-      "Node": [
+      "OutgoingEdges": [
         {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/sources/hits.rs"
-            },
-            "selector": "impl[SourceProject<D>]/fn[resolve_outline]"
-          }
+          "Requirement": "requirements.sdk.graph.validation-context.node_reference"
         },
+        "Implements",
         {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "0127a4d81a90eede633b5c772fdbf7df59475fa9226c2ffebed0f3b928bd5f98"
+          "scheme": "node-path-set-sha256-v1",
+          "value": "8e1acb0d518b7476bc8637587b21bb6841031dd4788fcd26b4cdc9b28aab3f01"
         }
       ]
     }

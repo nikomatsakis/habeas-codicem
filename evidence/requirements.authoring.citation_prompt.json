@@ -1,7 +1,7 @@
 {
   "requirement": "A citation review under {cite}`requirements.references.citation_review` MUST use\nthe SDK’s graph and project source tools for exploration under {cite}`requirements.sdk.graph.validation-context.read_node.behavior` and {cite}`requirements.sdk.graph.search.finish_search.behavior`, and the SDK’s `submit_result({result})` protocol under {cite}`requirements.sdk.graph.agent-harness.submission`. The result contains a boolean determination and a nonempty rationale. Citation assessments vet the rationale under\n{cite}`requirements.authoring.line_numbers.citation`. A citation assessment uses this\nprompt, replacing `{{item_file}}`, `{{item_selector}}` (with `<root>` for the\nroot node), `{{review_kind}}` (`source_item` for ordinary source citations or\n`book_commentary` for a reviewed book passage), `{{citations}}` (the item's\n`{cite}` references as JSON with role, name, and commentary), `{{habeas_background}}` and `{{reference_roles}}` under\n{cite}`requirements.authoring.habeas_background`, `{{judgment_rules}}` under\n{cite}`requirements.authoring.judgment_rules`, and `{{mandatory_inputs}}`, the\nfirst block as its system prompt and the second as its subject message under\n{cite}`requirements.authoring.prompt_parts`:\n\n```text\n# Task\n\nReview one source item's citations. Your determination should be the one any\ncareful reviewer would reach from the same text and sources.\n\n# Background: Habeas terms\n\n{{habeas_background}}\n\n{{reference_roles}}\n\n# Your task\n\nThe mandatory inputs at the end contain the source item and the declarations\nor fixed built-in text of its citations.\n\nAssess each listed citation using the rules below. For citations of project\nrequirements and examples outside book commentary, decide whether the item\nimplements part of a cited requirement, not whether it does so correctly. Do not\nlook for requirements or examples the item does not cite, except as needed to\nassess a built-in's stated citation criteria.\n\n1. For `book_commentary` citing project requirements or examples, check whether\n   the passage's claims agree with and are supported by the cited declarations.\n   Contradicting or unsupported claims are gaps. Explanatory prose\n   uses {cite}; it does not need {impl} or {test} merely because it describes\n   behavior. For other citations of project requirements and examples, apply\n   the reference procedure in order: if the item is a\n   test designed to verify the cited requirement or example, it calls for\n   {test}; otherwise, if it is a root of the cited definition's\n   implementation that needs an edge under the reference roles, it calls for {impl};\n   otherwise the citation is right if a change to the cited text could\n   require changing the item, as when the item relies on behavior the text\n   specifies or must agree with a form or value it defines; read the item's\n   callers only when the item's own code does not settle this. A citation for\n   which this calls for a different role, or for no reference at all, is a gap.\n2. A citation of a requirement or example the item also references with {impl}\n   or {test} is redundant and is a gap.\n3. Treat commentary as context. For a built-in citation, check its permitted\n   reference roles and forms and assess any citation-review criteria stated in\n   its fixed text using the source and commentary.\n   Read other sources when a stated reason relies on them.\n   Record a gap when the stated criteria are not met.\n\n# How to judge\n\n{{judgment_rules}}\n\n# Submitting\n\nChoose true when your task finds no gap, and false otherwise. A citation review\nMUST NOT submit a FIXME determination. Call submit_result with determination and rationale inside result.\nA rejected submission does not complete the assessment. A judgment written in your\nreply text is not accepted.\n```\n\n```text\n# Subject\n\nItem under review: {{item_file}} {{item_selector}}\nReview kind: {{review_kind}}\nCitations to check: {{citations}}\nJudge against: the declarations or fixed built-in text it cites.\n\n# Mandatory inputs\n\n{{mandatory_inputs}}\n```",
   "determination": true,
-  "rationale": "structural: ## Structural obligations\n\nThe clauses that constrain how the implementation is built, and where each is met:\n\n1. **\"MUST use the SDK's graph and project source tools for exploration\"**. An alternative would use a private search or read loop outside the SDK. It could produce the same exploration results but would violate the clause.\n   - `src/authoring/sdk.rs#fn[run]` builds the SDK graph. It calls `domain_tools::configure` and runs `Validator::verify` on a `Review` criterion.\n   - `src/authoring/sdk.rs#impl[Review<'_>/Criterion<HabeasDomain>]/fn[execute]` runs the conversation through `cx.ask`, with `contents_of_node` supplying node contents.\n   - `run` and `execute` both carry `{impl}` for `requirements.authoring.citation_prompt`.\n\n2. **\"the SDK's `submit_result({result})` protocol\"**. An alternative would parse free text or use a custom tool.\n   - `execute` dispatches citation subjects to `self.ask::<ReviewAnswer<bool>>` with the `submission` validator.\n   - `src/authoring/sdk.rs#impl[Review<'_>]/fn[ask]` uses `cx.ask::<R>()...vet_answer`, the SDK's typed answer and vetting path.\n\n3. **\"The result contains a boolean determination and a nonempty rationale\"**. An alternative would use a string or enum determination, or allow an empty rationale.\n   - `ReviewAnswer<bool>` is the answer type selected in `execute`.\n   - `src/authoring/sdk.rs#struct[ReviewAnswer]` has `determination: T` and a `rationale: String` with `#[schemars(length(min = 1))]`.\n   - `src/authoring/mod.rs#fn[submission]` also requires exactly those two keys and a nonempty rationale.\n\n4. **Vetting the rationale under `line_numbers.citation`**. This is a cited requirement, and the `ask` vet callback implements it. `ask` is reached from `execute`, and it carries its own markers.\n   - It accepts a rationale with no line number.\n   - It returns `CorrectAndTryAgain` the first time a line number is cited.\n   - It returns an error if a later submission still cites one.\n\n5. **The prompt text, placeholder substitution and the two-message layout**. An alternative would use a different template or put subject values in the system prompt.\n   - `src/authoring/mod.rs#fn[initial_prompt_with_inputs]` fills `citation_prompt` for `AssessmentKind::Citation`.\n   - It supplies `review_kind`, `item_file`, `item_selector`, `citations` and `mandatory_inputs`, plus the shared background, roles and rules blocks.\n   - The result is a `Prompt` with `system` and `subject` parts. `ask` sends the system part with `.context(prompt.system)` and the subject part with `.message(prompt.subject)`.\n   - `execute` calls this function. It is reached from a marked item, so it needs no separate marker.\n   - The cited requirements `habeas_background`, `judgment_rules` and `prompt_parts` define the shared blocks and the message layout.\n\nThe items that carry out these obligations are all either marked or reached from `execute` or `run`: `ask`, `ReviewAnswer`, `submission`, `initial_prompt_with_inputs` and `model_citations_value`. I found no unmarked implementation root.\n\n## Not structural\n\nThe prompt wording, the \"MUST NOT submit a FIXME determination\" instruction and the redaction details describe observable behavior. They need no further implementation evidence.\n\nI found no gap.\n\nbehavioral: The reviewed tests adequately cover the observable obligations of `requirements.authoring.citation_prompt`. I did not read the `assert_opening` helper, so I did not confirm how strictly the template opening is checked.\n\n- **Tools and submission protocol.** `src/authoring/mod.rs#mod[tests]/fn[citation_reviews_use_their_prompt_and_record_the_item_and_citations]` sorts the offered tool names and asserts the full set. The set includes the graph and source tools (`read_node`, `finish_search`, `search_text` and others) and `submit_result`.\n- **Result shape.** `fn[citation_submission_requires_a_boolean_and_nonempty_rationale]` submits four invalid results and asserts each is rejected. The invalid results are a FIXME determination, a string `\"true\"`, an empty rationale and a whitespace-only rationale. It also asserts the `submit_result` schema has a boolean `determination` and a rationale with `minLength` 1. The same test and `fn[coverage_explanations_use_standard_citation_authoring_and_freshness]` cover the prompt's \"MUST NOT submit a FIXME\" wording.\n- **Line-number vetting.** `fn[citation_reviews_are_confirmed_with_fresh_targeted_conversations]` submits a rationale that cites a line number. It asserts the correction message quotes the offending text and asks for the file and outline selector. It then asserts the accepted rationale is the later one. The later error path belongs to the cited `requirements.authoring.line_numbers.citation` and is not reassessed here.\n- **Placeholder substitution.** `fn[citation_reviews_use_their_prompt_and_record_the_item_and_citations]` checks these placeholders:\n  - `{{item_file}}` and `{{item_selector}}`: the prompt contains the item file and selector, and the root node shows as `<root>`.\n  - `{{review_kind}}`: \"Review kind: source_item\" is asserted. `fn[book_commentary_reviews_supply_the_whole_passage_and_check_concordance]` asserts \"Review kind: book_commentary\" and the book-commentary criterion text.\n  - `{{citations}}`: the \"Citations to check:\" line is parsed as JSON and compared with the exact role, name and commentary array.\n  - `{{habeas_background}}`, `{{reference_roles}}` and `{{judgment_rules}}`: the approved texts are asserted in the prompt.\n  - `{{mandatory_inputs}}`: the source item, the requirement text and the built-in text appear after the task section.\n  - All placeholders: the prompt contains no leftover `{{`.\n- **System prompt and subject message.** The first test asserts that the user message starts with \"# Subject\" and that the mandatory inputs fall after the \"Citations to check\" line. `fn[subjects_of_one_kind_share_a_byte_identical_system_prompt]` asserts that two citation subjects get byte-identical system prompts, different subject messages, and no subject name in the system prompt.\n- **Built-in citation criteria.** `fn[coverage_explanations_use_standard_citation_authoring_and_freshness]` asserts the prompt contains the built-in-citation wording.\n\nI found no unacknowledged gap.",
+  "rationale": "structural: ## Structural obligations\n\n1. **Citation reviews run through the SDK's tools.** The clause is \"MUST use the SDK's graph and project source tools for exploration\". An alternative would run the model outside `cx.ask` with a hand-rolled file reader. That would keep the output but break this clause. `src/authoring/sdk.rs#fn[run]` builds the SDK graph and calls `domain_tools::configure`. It then verifies a `Review` criterion. `src/authoring/sdk.rs#impl[Review<'_>/Criterion<HabeasDomain>]/fn[execute]` picks the citation branch. It calls `self.ask::<ReviewAnswer<bool>>`, which calls `src/authoring/sdk.rs#impl[Review<'_>]/fn[ask]`. That function uses `cx.ask::<R>()` with `contents_of_current_node` and `contents_of_node` for the mandatory inputs.\n\n2. **The SDK `submit_result` protocol, and the result shape.** The clauses are \"the SDK's `submit_result({result})` protocol\" and \"The result contains a boolean determination and a nonempty rationale\". An alternative would accept free text or a numeric determination. That would break these clauses. Two pieces of code enforce them.\n   - `src/authoring/sdk.rs#struct[ReviewAnswer]` carries a `determination: T` and a `rationale: String` with `length(min = 1)`. It also uses `deny_unknown_fields`.\n   - `execute` instantiates it as `ReviewAnswer<bool>` for `AssessmentKind::Citation`. It adds a `submission` validator, `src/authoring/mod.rs#fn[submission]`, which rejects an empty rationale. The SDK request supplies the `submit_result` protocol.\n\n3. **Rationale vetting under `line_numbers.citation`.** The clause is \"Citation assessments vet the rationale\". An alternative would accept any rationale without a callback. That would break this clause. `ask` installs `.vet_answer`. For citation reviews the callback runs `line_numbers::cited` on the rationale. It returns `VetResult::CorrectAndTryAgain` on the first line-number citation and a domain error on a second. Otherwise it returns `Accept`. `ask` is reached from `execute`.\n\n4. **The prompt's template, placeholders and split into system and subject.** The clause is \"A citation assessment uses this prompt, replacing … the first block as its system prompt and the second as its subject message\". An alternative would put the subject values in the system prompt, or use a different template. That would break this clause. `execute` calls `src/authoring/mod.rs#fn[initial_prompt_with_inputs]`. For `AssessmentKind::Citation` that function fills `review_kind`, `item_file`, `item_selector`, `citations`, `mandatory_inputs` and the shared blocks. It does so through `Prompt::filled(\"citation_prompt\", …)`, which fills block 0 as `system` and block 1 as `subject`. `ask` sends them as `.context(prompt.system)` and `.message(prompt.subject)`.\n\nThe remaining text states behavior only. That covers the role and name content of `{{citations}}`, the `<root>` convention, and the two `review_kind` values.\n\n## Roots\n\n`src/authoring/sdk.rs#impl[Review<'_>/Criterion<HabeasDomain>]/fn[execute]` and `src/authoring/sdk.rs#fn[run]` both carry `{impl}` for `requirements.authoring.citation_prompt`. `execute` reaches all four obligations through its callees: `initial_prompt_with_inputs`, `ask`, `ReviewAnswer`, `submission` and the line-number callback. `run` constructs the SDK graph and tool configuration and runs the `Review`. Nothing in the reached code needs a further marker, and no acknowledgments apply.\n\nbehavioral: The reviewed tests in `src/authoring/mod.rs` check each observable obligation of `requirements.authoring.citation_prompt`.\n\n- **SDK tools and `submit_result`.** `mod[tests]/fn[citation_reviews_use_their_prompt_and_record_the_item_and_citations]` asserts the exact tool set offered to a citation review. The set includes `read_node`, `finish_search`, the search tools, `outline_source`, `outgoing_edges` and `submit_result`.\n- **Result shape.** `mod[tests]/fn[citation_submission_requires_a_boolean_and_nonempty_rationale]` submits four invalid results: a FIXME determination, a string `\"true\"`, an empty rationale and a whitespace rationale. It asserts that each is rejected. It also asserts that the schema declares `determination` as boolean and `rationale` with `minLength` 1. This covers the boolean determination, the nonempty rationale and the ban on a FIXME determination.\n- **Line-number vetting.** `mod[tests]/fn[citation_reviews_are_confirmed_with_fresh_targeted_conversations]` submits a rationale that cites a line number. It asserts that the correction message quotes the offending text and asks for the file and outline selector, and that the corrected rationale is accepted. The detailed vetting is owned by the cited `requirements.authoring.line_numbers.citation`, so it is not reassessed here.\n- **Placeholder substitution.** `citation_reviews_use_their_prompt_and_record_the_item_and_citations` asserts these points:\n  - `{{item_file}}` and `{{item_selector}}` render as the item's file followed by its selector.\n  - The root node renders as `<root>`.\n  - `Review kind: source_item` appears for an ordinary source item.\n  - The `Citations to check:` payload parses as JSON equal to the expected role, name and commentary array.\n  - The `habeas_background`, `reference_roles` and `judgment_rules` texts appear in the prompt.\n  - The mandatory inputs appear after the task line in the subject message.\n  - No `{{` placeholder is left unreplaced.\n- **Book commentary.** `book_commentary_reviews_supply_the_whole_passage_and_check_concordance` asserts `Review kind: book_commentary`. It also asserts that the prompt carries the rule \"Contradicting or unsupported claims are gaps\" and has no unreplaced `{{review_kind}}`.\n- **Built-in citation text.** `coverage_explanations_use_standard_citation_authoring_and_freshness` asserts that the prompt contains \"For a built-in citation\" and \"MUST NOT submit a FIXME\".\n- **System and subject split.** `mod[tests]/fn[subjects_of_one_kind_share_a_byte_identical_system_prompt]` covers the `citation_prompt` template with two different subjects. It asserts that the system prompts are byte-identical and the subject messages differ. It also asserts that the subject message starts with `# Subject`, that the system prompt does not contain the subject name, and that the opening text matches the template.\n\nThe distinct modes (`source_item` and `book_commentary`), the root-selector case and the failure cases are all exercised with assertions. I found no unaddressed behavioral obligation.",
   "references": "258e003296696be9e1bc731bf8809beea8299f98d3b33573841a57f00964c078",
   "inputs": [
     {
@@ -390,11 +390,6 @@
       "hash": "32507915bbdf34cceed6158eed7a7c886345541c1bd82e7c4ffba9f4019ab471"
     },
     {
-      "file": "src/authoring/sdk.rs",
-      "item": "struct[ReviewAnswer]",
-      "hash": "76c0c7aeba19de5279cb428f504634064d0e09ac7ef14abba29293dcb0b9c7e8"
-    },
-    {
       "file": "src/authoring/mod.rs",
       "item": "fn[initial_prompt_with_inputs]",
       "hash": "3ecb0d6e8db6cf141178bb26e39437434a5168a17c06c6f0aab641396f45db66"
@@ -403,6 +398,16 @@
       "file": "src/authoring/mod.rs",
       "item": "fn[submission]",
       "hash": "82e67641e4cbd0e0847f64411366d12436ed1788ebc2a09cb3190cf0804ba0fa"
+    },
+    {
+      "file": "src/authoring/sdk.rs",
+      "item": "struct[ReviewAnswer]",
+      "hash": "76c0c7aeba19de5279cb428f504634064d0e09ac7ef14abba29293dcb0b9c7e8"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "impl[Prompt]/fn[filled]",
+      "hash": "206fa7fa4e239307c5c77808717c22494e936dd2bdef12e8a2a8479a1a852c56"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -427,32 +432,12 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "mod[tests]/fn[citation_reviews_use_their_prompt_and_record_the_item_and_citations]",
-      "hash": "87f64311f1d3eb3e25363ee95a162e091e0c73c0ea8789f36d00ba6a2da1a3ac"
+      "hash": "ee76cccce6e2402df6d704c9572f3956016c36dbe6387a3fc5c99724f6310d33"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "mod[tests]/fn[subjects_of_one_kind_share_a_byte_identical_system_prompt]",
       "hash": "58f27e9e18c3d2e07c3fbc2856b468eb9b3f38cfc163a742c5b7b80182042e1c"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[shared_blocks]",
-      "hash": "71fcecf8a1071b6ac8af350021b205b64e3e45137a67a3547c3f89f7fcde9644"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "impl[Prompt]/fn[filled]",
-      "hash": "206fa7fa4e239307c5c77808717c22494e936dd2bdef12e8a2a8479a1a852c56"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[approved_text]",
-      "hash": "57c939d94f090c967d2a5cb9aa31642d8674934bfff8e5e42d544c8740478806"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[subjects_of_one_kind_share_a_byte_identical_system_prompt]/fn[assert_opening]",
-      "hash": "e7b933e7079f26768eff59b9e33c51ab039110f392175cf1e26bb12d35d784d6"
     }
   ],
   "criteria": {
@@ -604,6 +589,18 @@
           ]
         },
         {
+          "OutgoingEdges": [
+            {
+              "Requirement": "requirements.authoring.citation_prompt"
+            },
+            "Implements",
+            {
+              "scheme": "node-path-set-sha256-v1",
+              "value": "359387bb155724acd0474240ca790015ff49210d04ddb869873796c2fc7982d0"
+            }
+          ]
+        },
+        {
           "Node": [
             {
               "Source": {
@@ -617,23 +614,6 @@
             {
               "scheme": "rust-structural-v1:own-v1",
               "value": "32507915bbdf34cceed6158eed7a7c886345541c1bd82e7c4ffba9f4019ab471"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "src/authoring/sdk.rs"
-                },
-                "selector": "struct[ReviewAnswer]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "76c0c7aeba19de5279cb428f504634064d0e09ac7ef14abba29293dcb0b9c7e8"
             }
           ]
         },
@@ -670,11 +650,45 @@
               "value": "82e67641e4cbd0e0847f64411366d12436ed1788ebc2a09cb3190cf0804ba0fa"
             }
           ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/authoring/sdk.rs"
+                },
+                "selector": "struct[ReviewAnswer]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "76c0c7aeba19de5279cb428f504634064d0e09ac7ef14abba29293dcb0b9c7e8"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/authoring/mod.rs"
+                },
+                "selector": "impl[Prompt]/fn[filled]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "206fa7fa4e239307c5c77808717c22494e936dd2bdef12e8a2a8479a1a852c56"
+            }
+          ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "## Structural obligations\n\nThe clauses that constrain how the implementation is built, and where each is met:\n\n1. **\"MUST use the SDK's graph and project source tools for exploration\"**. An alternative would use a private search or read loop outside the SDK. It could produce the same exploration results but would violate the clause.\n   - `src/authoring/sdk.rs#fn[run]` builds the SDK graph. It calls `domain_tools::configure` and runs `Validator::verify` on a `Review` criterion.\n   - `src/authoring/sdk.rs#impl[Review<'_>/Criterion<HabeasDomain>]/fn[execute]` runs the conversation through `cx.ask`, with `contents_of_node` supplying node contents.\n   - `run` and `execute` both carry `{impl}` for `requirements.authoring.citation_prompt`.\n\n2. **\"the SDK's `submit_result({result})` protocol\"**. An alternative would parse free text or use a custom tool.\n   - `execute` dispatches citation subjects to `self.ask::<ReviewAnswer<bool>>` with the `submission` validator.\n   - `src/authoring/sdk.rs#impl[Review<'_>]/fn[ask]` uses `cx.ask::<R>()...vet_answer`, the SDK's typed answer and vetting path.\n\n3. **\"The result contains a boolean determination and a nonempty rationale\"**. An alternative would use a string or enum determination, or allow an empty rationale.\n   - `ReviewAnswer<bool>` is the answer type selected in `execute`.\n   - `src/authoring/sdk.rs#struct[ReviewAnswer]` has `determination: T` and a `rationale: String` with `#[schemars(length(min = 1))]`.\n   - `src/authoring/mod.rs#fn[submission]` also requires exactly those two keys and a nonempty rationale.\n\n4. **Vetting the rationale under `line_numbers.citation`**. This is a cited requirement, and the `ask` vet callback implements it. `ask` is reached from `execute`, and it carries its own markers.\n   - It accepts a rationale with no line number.\n   - It returns `CorrectAndTryAgain` the first time a line number is cited.\n   - It returns an error if a later submission still cites one.\n\n5. **The prompt text, placeholder substitution and the two-message layout**. An alternative would use a different template or put subject values in the system prompt.\n   - `src/authoring/mod.rs#fn[initial_prompt_with_inputs]` fills `citation_prompt` for `AssessmentKind::Citation`.\n   - It supplies `review_kind`, `item_file`, `item_selector`, `citations` and `mandatory_inputs`, plus the shared background, roles and rules blocks.\n   - The result is a `Prompt` with `system` and `subject` parts. `ask` sends the system part with `.context(prompt.system)` and the subject part with `.message(prompt.subject)`.\n   - `execute` calls this function. It is reached from a marked item, so it needs no separate marker.\n   - The cited requirements `habeas_background`, `judgment_rules` and `prompt_parts` define the shared blocks and the message layout.\n\nThe items that carry out these obligations are all either marked or reached from `execute` or `run`: `ask`, `ReviewAnswer`, `submission`, `initial_prompt_with_inputs` and `model_citations_value`. I found no unmarked implementation root.\n\n## Not structural\n\nThe prompt wording, the \"MUST NOT submit a FIXME determination\" instruction and the redaction details describe observable behavior. They need no further implementation evidence.\n\nI found no gap."
+        "rationale": "## Structural obligations\n\n1. **Citation reviews run through the SDK's tools.** The clause is \"MUST use the SDK's graph and project source tools for exploration\". An alternative would run the model outside `cx.ask` with a hand-rolled file reader. That would keep the output but break this clause. `src/authoring/sdk.rs#fn[run]` builds the SDK graph and calls `domain_tools::configure`. It then verifies a `Review` criterion. `src/authoring/sdk.rs#impl[Review<'_>/Criterion<HabeasDomain>]/fn[execute]` picks the citation branch. It calls `self.ask::<ReviewAnswer<bool>>`, which calls `src/authoring/sdk.rs#impl[Review<'_>]/fn[ask]`. That function uses `cx.ask::<R>()` with `contents_of_current_node` and `contents_of_node` for the mandatory inputs.\n\n2. **The SDK `submit_result` protocol, and the result shape.** The clauses are \"the SDK's `submit_result({result})` protocol\" and \"The result contains a boolean determination and a nonempty rationale\". An alternative would accept free text or a numeric determination. That would break these clauses. Two pieces of code enforce them.\n   - `src/authoring/sdk.rs#struct[ReviewAnswer]` carries a `determination: T` and a `rationale: String` with `length(min = 1)`. It also uses `deny_unknown_fields`.\n   - `execute` instantiates it as `ReviewAnswer<bool>` for `AssessmentKind::Citation`. It adds a `submission` validator, `src/authoring/mod.rs#fn[submission]`, which rejects an empty rationale. The SDK request supplies the `submit_result` protocol.\n\n3. **Rationale vetting under `line_numbers.citation`.** The clause is \"Citation assessments vet the rationale\". An alternative would accept any rationale without a callback. That would break this clause. `ask` installs `.vet_answer`. For citation reviews the callback runs `line_numbers::cited` on the rationale. It returns `VetResult::CorrectAndTryAgain` on the first line-number citation and a domain error on a second. Otherwise it returns `Accept`. `ask` is reached from `execute`.\n\n4. **The prompt's template, placeholders and split into system and subject.** The clause is \"A citation assessment uses this prompt, replacing … the first block as its system prompt and the second as its subject message\". An alternative would put the subject values in the system prompt, or use a different template. That would break this clause. `execute` calls `src/authoring/mod.rs#fn[initial_prompt_with_inputs]`. For `AssessmentKind::Citation` that function fills `review_kind`, `item_file`, `item_selector`, `citations`, `mandatory_inputs` and the shared blocks. It does so through `Prompt::filled(\"citation_prompt\", …)`, which fills block 0 as `system` and block 1 as `subject`. `ask` sends them as `.context(prompt.system)` and `.message(prompt.subject)`.\n\nThe remaining text states behavior only. That covers the role and name content of `{{citations}}`, the `<root>` convention, and the two `review_kind` values.\n\n## Roots\n\n`src/authoring/sdk.rs#impl[Review<'_>/Criterion<HabeasDomain>]/fn[execute]` and `src/authoring/sdk.rs#fn[run]` both carry `{impl}` for `requirements.authoring.citation_prompt`. `execute` reaches all four obligations through its callees: `initial_prompt_with_inputs`, `ask`, `ReviewAnswer`, `submission` and the line-number callback. `run` constructs the SDK graph and tool configuration and runs the `Review`. Nothing in the reached code needs a further marker, and no acknowledgments apply."
       }
     },
     "behavioral": {
@@ -871,7 +885,7 @@
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "87f64311f1d3eb3e25363ee95a162e091e0c73c0ea8789f36d00ba6a2da1a3ac"
+              "value": "ee76cccce6e2402df6d704c9572f3956016c36dbe6387a3fc5c99724f6310d33"
             }
           ]
         },
@@ -895,7 +909,7 @@
       ],
       "output": {
         "status": "success",
-        "rationale": "The reviewed tests adequately cover the observable obligations of `requirements.authoring.citation_prompt`. I did not read the `assert_opening` helper, so I did not confirm how strictly the template opening is checked.\n\n- **Tools and submission protocol.** `src/authoring/mod.rs#mod[tests]/fn[citation_reviews_use_their_prompt_and_record_the_item_and_citations]` sorts the offered tool names and asserts the full set. The set includes the graph and source tools (`read_node`, `finish_search`, `search_text` and others) and `submit_result`.\n- **Result shape.** `fn[citation_submission_requires_a_boolean_and_nonempty_rationale]` submits four invalid results and asserts each is rejected. The invalid results are a FIXME determination, a string `\"true\"`, an empty rationale and a whitespace-only rationale. It also asserts the `submit_result` schema has a boolean `determination` and a rationale with `minLength` 1. The same test and `fn[coverage_explanations_use_standard_citation_authoring_and_freshness]` cover the prompt's \"MUST NOT submit a FIXME\" wording.\n- **Line-number vetting.** `fn[citation_reviews_are_confirmed_with_fresh_targeted_conversations]` submits a rationale that cites a line number. It asserts the correction message quotes the offending text and asks for the file and outline selector. It then asserts the accepted rationale is the later one. The later error path belongs to the cited `requirements.authoring.line_numbers.citation` and is not reassessed here.\n- **Placeholder substitution.** `fn[citation_reviews_use_their_prompt_and_record_the_item_and_citations]` checks these placeholders:\n  - `{{item_file}}` and `{{item_selector}}`: the prompt contains the item file and selector, and the root node shows as `<root>`.\n  - `{{review_kind}}`: \"Review kind: source_item\" is asserted. `fn[book_commentary_reviews_supply_the_whole_passage_and_check_concordance]` asserts \"Review kind: book_commentary\" and the book-commentary criterion text.\n  - `{{citations}}`: the \"Citations to check:\" line is parsed as JSON and compared with the exact role, name and commentary array.\n  - `{{habeas_background}}`, `{{reference_roles}}` and `{{judgment_rules}}`: the approved texts are asserted in the prompt.\n  - `{{mandatory_inputs}}`: the source item, the requirement text and the built-in text appear after the task section.\n  - All placeholders: the prompt contains no leftover `{{`.\n- **System prompt and subject message.** The first test asserts that the user message starts with \"# Subject\" and that the mandatory inputs fall after the \"Citations to check\" line. `fn[subjects_of_one_kind_share_a_byte_identical_system_prompt]` asserts that two citation subjects get byte-identical system prompts, different subject messages, and no subject name in the system prompt.\n- **Built-in citation criteria.** `fn[coverage_explanations_use_standard_citation_authoring_and_freshness]` asserts the prompt contains the built-in-citation wording.\n\nI found no unacknowledged gap."
+        "rationale": "The reviewed tests in `src/authoring/mod.rs` check each observable obligation of `requirements.authoring.citation_prompt`.\n\n- **SDK tools and `submit_result`.** `mod[tests]/fn[citation_reviews_use_their_prompt_and_record_the_item_and_citations]` asserts the exact tool set offered to a citation review. The set includes `read_node`, `finish_search`, the search tools, `outline_source`, `outgoing_edges` and `submit_result`.\n- **Result shape.** `mod[tests]/fn[citation_submission_requires_a_boolean_and_nonempty_rationale]` submits four invalid results: a FIXME determination, a string `\"true\"`, an empty rationale and a whitespace rationale. It asserts that each is rejected. It also asserts that the schema declares `determination` as boolean and `rationale` with `minLength` 1. This covers the boolean determination, the nonempty rationale and the ban on a FIXME determination.\n- **Line-number vetting.** `mod[tests]/fn[citation_reviews_are_confirmed_with_fresh_targeted_conversations]` submits a rationale that cites a line number. It asserts that the correction message quotes the offending text and asks for the file and outline selector, and that the corrected rationale is accepted. The detailed vetting is owned by the cited `requirements.authoring.line_numbers.citation`, so it is not reassessed here.\n- **Placeholder substitution.** `citation_reviews_use_their_prompt_and_record_the_item_and_citations` asserts these points:\n  - `{{item_file}}` and `{{item_selector}}` render as the item's file followed by its selector.\n  - The root node renders as `<root>`.\n  - `Review kind: source_item` appears for an ordinary source item.\n  - The `Citations to check:` payload parses as JSON equal to the expected role, name and commentary array.\n  - The `habeas_background`, `reference_roles` and `judgment_rules` texts appear in the prompt.\n  - The mandatory inputs appear after the task line in the subject message.\n  - No `{{` placeholder is left unreplaced.\n- **Book commentary.** `book_commentary_reviews_supply_the_whole_passage_and_check_concordance` asserts `Review kind: book_commentary`. It also asserts that the prompt carries the rule \"Contradicting or unsupported claims are gaps\" and has no unreplaced `{{review_kind}}`.\n- **Built-in citation text.** `coverage_explanations_use_standard_citation_authoring_and_freshness` asserts that the prompt contains \"For a built-in citation\" and \"MUST NOT submit a FIXME\".\n- **System and subject split.** `mod[tests]/fn[subjects_of_one_kind_share_a_byte_identical_system_prompt]` covers the `citation_prompt` template with two different subjects. It asserts that the system prompts are byte-identical and the subject messages differ. It also asserts that the subject message starts with `# Subject`, that the system prompt does not contain the subject name, and that the opening text matches the template.\n\nThe distinct modes (`source_item` and `book_commentary`), the root-selector case and the failure cases are all exercised with assertions. I found no unaddressed behavioral obligation."
       }
     }
   },
@@ -1047,6 +1061,18 @@
       ]
     },
     {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.authoring.citation_prompt"
+        },
+        "Implements",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "359387bb155724acd0474240ca790015ff49210d04ddb869873796c2fc7982d0"
+        }
+      ]
+    },
+    {
       "Node": [
         {
           "Source": {
@@ -1060,23 +1086,6 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "32507915bbdf34cceed6158eed7a7c886345541c1bd82e7c4ffba9f4019ab471"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/sdk.rs"
-            },
-            "selector": "struct[ReviewAnswer]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "76c0c7aeba19de5279cb428f504634064d0e09ac7ef14abba29293dcb0b9c7e8"
         }
       ]
     },
@@ -1111,6 +1120,40 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "82e67641e4cbd0e0847f64411366d12436ed1788ebc2a09cb3190cf0804ba0fa"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/sdk.rs"
+            },
+            "selector": "struct[ReviewAnswer]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "76c0c7aeba19de5279cb428f504634064d0e09ac7ef14abba29293dcb0b9c7e8"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/mod.rs"
+            },
+            "selector": "impl[Prompt]/fn[filled]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "206fa7fa4e239307c5c77808717c22494e936dd2bdef12e8a2a8479a1a852c56"
         }
       ]
     },
@@ -1195,7 +1238,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "87f64311f1d3eb3e25363ee95a162e091e0c73c0ea8789f36d00ba6a2da1a3ac"
+          "value": "ee76cccce6e2402df6d704c9572f3956016c36dbe6387a3fc5c99724f6310d33"
         }
       ]
     },
@@ -1213,74 +1256,6 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "0887725d2e64cf0cb4ded64ac7d6509d8e5d2523df7105ff1d95f629b9b37731"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/mod.rs"
-            },
-            "selector": "fn[shared_blocks]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "71fcecf8a1071b6ac8af350021b205b64e3e45137a67a3547c3f89f7fcde9644"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/mod.rs"
-            },
-            "selector": "impl[Prompt]/fn[filled]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "206fa7fa4e239307c5c77808717c22494e936dd2bdef12e8a2a8479a1a852c56"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/mod.rs"
-            },
-            "selector": "fn[approved_text]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "57c939d94f090c967d2a5cb9aa31642d8674934bfff8e5e42d544c8740478806"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/mod.rs"
-            },
-            "selector": "mod[tests]/fn[subjects_of_one_kind_share_a_byte_identical_system_prompt]/fn[assert_opening]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "e7b933e7079f26768eff59b9e33c51ab039110f392175cf1e26bb12d35d784d6"
         }
       ]
     }

@@ -1,8 +1,8 @@
 {
   "requirement": "For node reads, the SDK constructs a `Snapshot` from\nthe contents returned by `Domain::node_content` and their\n`NodeContents::fingerprint` under\n{cite}`requirements.sdk.graph.node_content.fingerprint`, without another read.\n\n```rust,ignore\n#[non_exhaustive]\npub struct Snapshot<T> {\n    pub content: T,\n    pub fingerprint: Fingerprint,\n}\n\nimpl<T> Snapshot<T> {\n    pub fn new(content: T, fingerprint: Fingerprint) -> Self;\n}\n```\n\nTrait implementations\n\n```rust,ignore\nimpl<T: Clone> Clone for Snapshot<T>;\nimpl<T: Debug> Debug for Snapshot<T>;\n```",
-  "determination": false,
-  "rationale": "Add `{impl}` to `crates/trust-but-verify/src/graph.rs#impl[Snapshot<T>]/fn[new]` — The text prescribes the signature `pub fn new(content: T, fingerprint: Fingerprint) -> Self` on `impl<T> Snapshot<T>`. An alternative that keeps `Snapshot`'s fields and derives but drops `new`, or makes it `pub(crate)`, would break this clause. Code that builds `Snapshot` through the struct literal inside the SDK would behave the same, so the constructor is a distinct structural obligation. The marked root `struct[Snapshot]` covers the fields, `#[non_exhaustive]` and the `Clone`/`Debug` derives. It does not call or reach `new`, so the constructor is a separate unreached root. A reviewer can verify the signature, generics and body from `impl[Snapshot<T>]/fn[new]`, which has no marker. No other root covers it.\n\nAdd `{impl}` to `crates/trust-but-verify/src/procedure.rs#impl[ValidationContext<'d, D>]#2/fn[prepare_read]` — The text says: \"For node reads, the SDK constructs a `Snapshot` from the contents returned by `Domain::node_content` and their `NodeContents::fingerprint` ... without another read.\" This prescribes delegation to named interfaces. An alternative that still returns equivalent results would compute the fingerprint by hashing the content itself or re-reading the node, and that would violate the clause. `prepare_read` is where this happens. It calls `self.graph.node_content(node)`, takes `content.fingerprint()`, and builds `Snapshot { content, fingerprint }` with no second read. `read_snapshot` only calls `prepare_read` and records the read. It is marked for a different requirement, and nothing marked for `requirements.sdk.graph.snapshot` reaches `prepare_read`. It is therefore an unmarked root for that requirement. A reviewer can verify the construction and the lack of a second read from this item.",
-  "references": "6e73148fe13cf631dbf2046426f194a3d8fc63c6291f1e5e3777d2c0c8ed2648",
+  "determination": true,
+  "rationale": "structural: The structural obligations in `requirements.sdk.graph.snapshot` are the `Snapshot<T>` declaration, `Snapshot::new`, the Clone and Debug impls, and the way node reads build the snapshot. All of them are covered by the supplied roots.\n\n- **Type shape.** The text prescribes `#[non_exhaustive] pub struct Snapshot<T> { pub content: T, pub fingerprint: Fingerprint }`. `crates/trust-but-verify/src/graph.rs#struct[Snapshot]` matches it exactly. It is `#[non_exhaustive]` and has public `content: T` and `fingerprint: Fingerprint` fields. A struct with other field names, private fields, or no `non_exhaustive` would break the declared public type, so this clause is a real structural obligation.\n- **Constructor.** The text prescribes `pub fn new(content: T, fingerprint: Fingerprint) -> Self`. `crates/trust-but-verify/src/graph.rs#impl[Snapshot<T>]/fn[new]` has that signature and stores both arguments.\n- **Trait impls.** The text prescribes `impl<T: Clone> Clone` and `impl<T: Debug> Debug`. `#[derive(Clone, Debug)]` on `struct[Snapshot]` generates exactly those bounds.\n- **Construction on node reads.** The text says the SDK builds the snapshot \"from the contents returned by `Domain::node_content` and their `NodeContents::fingerprint`... without another read\". `crates/trust-but-verify/src/procedure.rs#impl[ValidationContext<'d, D>]#2/fn[prepare_read]` calls `self.graph.node_content(node)` once. It then calls `content.fingerprint()` on those retained contents and wraps both in a `Snapshot`. It makes no second read.\n\nA search for `Snapshot` constructions and `node_content(` calls found no other node-read construction path. `prepare_edges` builds a `Snapshot` for edge reads, which this requirement does not cover. The `fingerprint` contract is cited, not implemented here, so it is context and not an obligation of this requirement.\n\nbehavioral: **Obligations**\n- The struct pairs `content` with `fingerprint`, and `Snapshot::new` builds one.\n- For node reads, the SDK builds the `Snapshot` from the contents `Domain::node_content` returns. The fingerprint is the contents' own `NodeContents::fingerprint`. No additional read happens.\n- The `Clone`/`Debug` impls, `#[non_exhaustive]` and the public field shapes are structural. They have no independent observable behaviour here.\n- `requirements.sdk.graph.node_content.fingerprint` is cited context. I did not reassess it.\n\n**Coverage**\n- **Constructor and fields:** `tests/contracts.rs#fn[callers_can_pair_content_with_its_fingerprint]` calls `Snapshot::new(vec![1,2], fp)` from an external test crate. It asserts both public fields. That also shows the type can be built from outside the crate despite `non_exhaustive`.\n- **Fingerprint comes from the contents:** `tests/contracts.rs#fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]` reads a snapshot through `read_snapshot`. It asserts `snapshot.content.fingerprint() == snapshot.fingerprint` and `fingerprint.value == \"before\"`. After the underlying data changes, the content and fingerprint still describe \"before\". It also asserts the domain's `reads == [1]`, so there is exactly one read.\n- **Exact reads, no extra read:** `src/graph/validation_tests.rs#fn[snapshots_record_exact_reads_and_retain_distinct_versions]` checks `read_snapshot(...).fingerprint == fp(\"before\")`. It checks that later reads give distinct \"after\" snapshots. It also checks that the recorded read sequence is `[1,1,1,2]`, one domain read per SDK call, including the failing read of node 2.\n- **Empty and large Unicode contents:** `src/graph/validation_tests.rs#fn[direct_reads_return_complete_unicode_contents_and_snapshots]` covers empty and multi-byte large contents. It asserts the snapshot's content and fingerprint, with `reads == [1,1]` for two reads. A failed read records no dependency.\n- **Agent-driven reads and Habeas domain:**\n  - `src/graph/validation_tests.rs#fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]` and `src/agent/tests.rs#fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]` assert the recorded node fingerprints. They check the number of reads and the fingerprint content.\n  - `src/sdk.rs#mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]` compares the retained contents' fingerprint with `node_content(...).fingerprint()` on the real Habeas domain.\n- **Structural obligations:** `Clone`, `Debug` and `non_exhaustive` are derive-level or compile-time. `crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]` checks the export inventory. They need no separate behavioural test.",
+  "references": "7290db95d15a52ae13670066a583d7a4ca63a120b6edb8d7acf9e507dcd96fe7",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.snapshot",
@@ -74,6 +74,16 @@
       "hash": "e9d6631a26d4e1c45d47715b2e5ec32b86afcc492f9d438ef6ed9bcced605789"
     },
     {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "impl[Snapshot<T>]/fn[new]",
+      "hash": "d857562647702d31867389337df4883697bb7c4c3c367651566c8945d6b718a1"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#2/fn[prepare_read]",
+      "hash": "fbcf18f9d49e19cd802b06c9e7f7c44e95e1a92cbfe433f6f876632ce008b54a"
+    },
+    {
       "definition": "requirements.sdk.graph.observation_fingerprint",
       "text": [
         ":::{definition} observation_fingerprint",
@@ -90,18 +100,8 @@
     },
     {
       "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "impl[Snapshot<T>]",
-      "hash": "f005de92aa3d66c7efa5b63abe5ae8bfe58d2bdcd115dd820d8b62d0d49174a8"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[ValidationContext<'d,%20D>]#2/fn[prepare_read]",
-      "hash": "fbcf18f9d49e19cd802b06c9e7f7c44e95e1a92cbfe433f6f876632ce008b54a"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[ValidationContext<'d,%20D>]#2/fn[read_snapshot]",
-      "hash": "5e3efe54a48c8f95e29eb184caacad03019678d83ccf4910bcd1f67c52801b00"
+      "item": "fn[dependencies_are_current]",
+      "hash": "4c26499b686c87c01a0d27a9ea401cdf5cdcf3bd0c3d52cb2d13d7772c69d0b1"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -147,6 +147,21 @@
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[public_exports_match_the_appendix]",
       "hash": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#2/fn[read_snapshot]",
+      "hash": "5e3efe54a48c8f95e29eb184caacad03019678d83ccf4910bcd1f67c52801b00"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#2/fn[prepare_edges]",
+      "hash": "917017f2c36bc75e21c8a5e20623856ae658a3d2fc0bb20fa3c424a66ff37dc7"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]",
+      "hash": "13819c4675914551da6e0dde0cc498d09495c2f2124f3f03e353ca0cdfef866a"
     }
   ],
   "criteria": {
@@ -160,7 +175,7 @@
             },
             {
               "scheme": "habeas-reference-set-v1",
-              "value": "6e73148fe13cf631dbf2046426f194a3d8fc63c6291f1e5e3777d2c0c8ed2648"
+              "value": "7290db95d15a52ae13670066a583d7a4ca63a120b6edb8d7acf9e507dcd96fe7"
             }
           ]
         },
@@ -206,40 +221,17 @@
         {
           "Node": [
             {
-              "Definition": "requirements.sdk.graph.observation_fingerprint"
-            },
-            {
-              "scheme": "habeas-input-v1",
-              "value": "9fcff1854eb767707b8efdb4a3a1edb436b8e6992cf8da3f4ccfc486672a1cdd"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
               "Source": {
                 "resource": {
                   "scheme": "repo",
                   "location": "crates/trust-but-verify/src/graph.rs"
                 },
-                "selector": "impl[Snapshot<T>]"
+                "selector": "impl[Snapshot<T>]/fn[new]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "b2c440ccb85b681b462a9518b81a17e2bb272dabadcc47894def6b047362200b"
-            }
-          ]
-        },
-        {
-          "OutgoingEdges": [
-            {
-              "Requirement": "requirements.sdk.graph.snapshot"
-            },
-            "Implements",
-            {
-              "scheme": "node-path-set-sha256-v1",
-              "value": "9c735c2e6344ae462f0af985ee15fc51ad42d0382a19408cdb7a1d5253d5678f"
+              "value": "d857562647702d31867389337df4883697bb7c4c3c367651566c8945d6b718a1"
             }
           ]
         },
@@ -263,39 +255,35 @@
         {
           "Node": [
             {
+              "Definition": "requirements.sdk.graph.observation_fingerprint"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "9fcff1854eb767707b8efdb4a3a1edb436b8e6992cf8da3f4ccfc486672a1cdd"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
               "Source": {
                 "resource": {
                   "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/procedure.rs"
+                  "location": "crates/trust-but-verify/src/graph.rs"
                 },
-                "selector": "impl[ValidationContext<'d,%20D>]#2/fn[read_snapshot]"
+                "selector": "fn[dependencies_are_current]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "5e3efe54a48c8f95e29eb184caacad03019678d83ccf4910bcd1f67c52801b00"
+              "value": "4c26499b686c87c01a0d27a9ea401cdf5cdcf3bd0c3d52cb2d13d7772c69d0b1"
             }
           ]
         }
       ],
       "output": {
-        "status": "failed",
-        "corrections": [
-          {
-            "kind": "add_reference",
-            "role": "impl",
-            "file": "crates/trust-but-verify/src/graph.rs",
-            "selector": "impl[Snapshot<T>]/fn[new]",
-            "rationale": "The text prescribes the signature `pub fn new(content: T, fingerprint: Fingerprint) -> Self` on `impl<T> Snapshot<T>`. An alternative that keeps `Snapshot`'s fields and derives but drops `new`, or makes it `pub(crate)`, would break this clause. Code that builds `Snapshot` through the struct literal inside the SDK would behave the same, so the constructor is a distinct structural obligation. The marked root `struct[Snapshot]` covers the fields, `#[non_exhaustive]` and the `Clone`/`Debug` derives. It does not call or reach `new`, so the constructor is a separate unreached root. A reviewer can verify the signature, generics and body from `impl[Snapshot<T>]/fn[new]`, which has no marker. No other root covers it."
-          },
-          {
-            "kind": "add_reference",
-            "role": "impl",
-            "file": "crates/trust-but-verify/src/procedure.rs",
-            "selector": "impl[ValidationContext<'d, D>]#2/fn[prepare_read]",
-            "rationale": "The text says: \"For node reads, the SDK constructs a `Snapshot` from the contents returned by `Domain::node_content` and their `NodeContents::fingerprint` ... without another read.\" This prescribes delegation to named interfaces. An alternative that still returns equivalent results would compute the fingerprint by hashing the content itself or re-reading the node, and that would violate the clause. `prepare_read` is where this happens. It calls `self.graph.node_content(node)`, takes `content.fingerprint()`, and builds `Snapshot { content, fingerprint }` with no second read. `read_snapshot` only calls `prepare_read` and records the read. It is marked for a different requirement, and nothing marked for `requirements.sdk.graph.snapshot` reaches `prepare_read`. It is therefore an unmarked root for that requirement. A reviewer can verify the construction and the lack of a second read from this item."
-          }
-        ]
+        "status": "success",
+        "rationale": "The structural obligations in `requirements.sdk.graph.snapshot` are the `Snapshot<T>` declaration, `Snapshot::new`, the Clone and Debug impls, and the way node reads build the snapshot. All of them are covered by the supplied roots.\n\n- **Type shape.** The text prescribes `#[non_exhaustive] pub struct Snapshot<T> { pub content: T, pub fingerprint: Fingerprint }`. `crates/trust-but-verify/src/graph.rs#struct[Snapshot]` matches it exactly. It is `#[non_exhaustive]` and has public `content: T` and `fingerprint: Fingerprint` fields. A struct with other field names, private fields, or no `non_exhaustive` would break the declared public type, so this clause is a real structural obligation.\n- **Constructor.** The text prescribes `pub fn new(content: T, fingerprint: Fingerprint) -> Self`. `crates/trust-but-verify/src/graph.rs#impl[Snapshot<T>]/fn[new]` has that signature and stores both arguments.\n- **Trait impls.** The text prescribes `impl<T: Clone> Clone` and `impl<T: Debug> Debug`. `#[derive(Clone, Debug)]` on `struct[Snapshot]` generates exactly those bounds.\n- **Construction on node reads.** The text says the SDK builds the snapshot \"from the contents returned by `Domain::node_content` and their `NodeContents::fingerprint`... without another read\". `crates/trust-but-verify/src/procedure.rs#impl[ValidationContext<'d, D>]#2/fn[prepare_read]` calls `self.graph.node_content(node)` once. It then calls `content.fingerprint()` on those retained contents and wraps both in a `Snapshot`. It makes no second read.\n\nA search for `Snapshot` constructions and `node_content(` calls found no other node-read construction path. `prepare_edges` builds a `Snapshot` for edge reads, which this requirement does not cover. The `fingerprint` contract is cited, not implemented here, so it is context and not an obligation of this requirement."
       }
     },
     "behavioral": {
@@ -308,7 +296,7 @@
             },
             {
               "scheme": "habeas-reference-set-v1",
-              "value": "6e73148fe13cf631dbf2046426f194a3d8fc63c6291f1e5e3777d2c0c8ed2648"
+              "value": "7290db95d15a52ae13670066a583d7a4ca63a120b6edb8d7acf9e507dcd96fe7"
             }
           ]
         },
@@ -504,40 +492,24 @@
               "Source": {
                 "resource": {
                   "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/graph.rs"
+                  "location": "crates/trust-but-verify/src/procedure.rs"
                 },
-                "selector": "struct[Snapshot]"
+                "selector": "impl[ValidationContext<'d,%20D>]#2/fn[read_snapshot]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "e9d6631a26d4e1c45d47715b2e5ec32b86afcc492f9d438ef6ed9bcced605789"
+              "value": "5e3efe54a48c8f95e29eb184caacad03019678d83ccf4910bcd1f67c52801b00"
             }
           ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "**Obligations.** (1) A node read builds a `Snapshot` from the contents `Domain::node_content` returned, plus those contents' `NodeContents::fingerprint`. (2) It does this without another read. (3) `Snapshot` has public `content` and `fingerprint` fields, `Snapshot::new(content, fingerprint)`, and `Clone` and `Debug` impls bounded on `T`. The `#[non_exhaustive]` attribute and the derived trait impls are structural. The `{cite}` of `requirements.sdk.graph.node_content.fingerprint` is context, so its own behavior is not reassessed here.\n\n**Coverage.**\n- **Content and fingerprint pairing on reads.**\n  - `crates/trust-but-verify/src/graph/validation_tests.rs#fn[snapshots_record_exact_reads_and_retain_distinct_versions]` calls `read_snapshot` and asserts `.fingerprint == fp(\"before\")`. It then changes the underlying content and asserts that the recorded dependencies keep the \"before\" and \"after\" versions distinct.\n  - `#fn[direct_reads_return_complete_unicode_contents_and_snapshots]` covers an empty string and a large multi-byte Unicode string. It asserts `snapshot.content.format() == original` and `snapshot.fingerprint == fp(original)`. After the source is replaced, the snapshot still holds the original content.\n- **Fingerprint comes from the same retained contents, with no extra read.**\n  - `crates/trust-but-verify/tests/contracts.rs#fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]` reads a snapshot and then changes the backing content. It asserts `snapshot.content.fingerprint() == snapshot.fingerprint`, that the content still formats as \"before\", and that the backing read log is exactly `[1]`. A re-read would break these assertions.\n  - `src/sdk.rs#mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]` checks that retained contents keep their fingerprint after the source changes.\n- **Constructor and public fields.**\n  - `contracts.rs#fn[callers_can_pair_content_with_its_fingerprint]` is an external-crate test. It calls `Snapshot::new` and asserts both public fields. Using the constructor rather than a struct literal is consistent with `#[non_exhaustive]`.\n- **Use in agent paths.**\n  - `agent/tests.rs#fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]` and `#fn[agent_edge_tools_record_selections_without_validating_targets]` check the recorded node dependencies and fingerprints. Examples are `Dependency::Node(.., fingerprint.value == \"x\".repeat(18_000))`.\n- **Structure.**\n  - `public_api.rs#fn[public_exports_match_the_appendix]` checks the exported inventory.\n  - `src/graph.rs#struct[Snapshot]` uses `#[derive(Clone, Debug)]`. Those impls have no conditional logic and no transformation of their own, so they need no separate behavioral test.\n\nI found no requirement-violating behavior that these tests would accept. The tests cover the pairing of content with its fingerprint, the single read, and the constructor and fields. They have no ambiguity or marking gaps for this requirement."
+        "rationale": "**Obligations**\n- The struct pairs `content` with `fingerprint`, and `Snapshot::new` builds one.\n- For node reads, the SDK builds the `Snapshot` from the contents `Domain::node_content` returns. The fingerprint is the contents' own `NodeContents::fingerprint`. No additional read happens.\n- The `Clone`/`Debug` impls, `#[non_exhaustive]` and the public field shapes are structural. They have no independent observable behaviour here.\n- `requirements.sdk.graph.node_content.fingerprint` is cited context. I did not reassess it.\n\n**Coverage**\n- **Constructor and fields:** `tests/contracts.rs#fn[callers_can_pair_content_with_its_fingerprint]` calls `Snapshot::new(vec![1,2], fp)` from an external test crate. It asserts both public fields. That also shows the type can be built from outside the crate despite `non_exhaustive`.\n- **Fingerprint comes from the contents:** `tests/contracts.rs#fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]` reads a snapshot through `read_snapshot`. It asserts `snapshot.content.fingerprint() == snapshot.fingerprint` and `fingerprint.value == \"before\"`. After the underlying data changes, the content and fingerprint still describe \"before\". It also asserts the domain's `reads == [1]`, so there is exactly one read.\n- **Exact reads, no extra read:** `src/graph/validation_tests.rs#fn[snapshots_record_exact_reads_and_retain_distinct_versions]` checks `read_snapshot(...).fingerprint == fp(\"before\")`. It checks that later reads give distinct \"after\" snapshots. It also checks that the recorded read sequence is `[1,1,1,2]`, one domain read per SDK call, including the failing read of node 2.\n- **Empty and large Unicode contents:** `src/graph/validation_tests.rs#fn[direct_reads_return_complete_unicode_contents_and_snapshots]` covers empty and multi-byte large contents. It asserts the snapshot's content and fingerprint, with `reads == [1,1]` for two reads. A failed read records no dependency.\n- **Agent-driven reads and Habeas domain:**\n  - `src/graph/validation_tests.rs#fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]` and `src/agent/tests.rs#fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]` assert the recorded node fingerprints. They check the number of reads and the fingerprint content.\n  - `src/sdk.rs#mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]` compares the retained contents' fingerprint with `node_content(...).fingerprint()` on the real Habeas domain.\n- **Structural obligations:** `Clone`, `Debug` and `non_exhaustive` are derive-level or compile-time. `crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]` checks the export inventory. They need no separate behavioural test."
       }
     }
   },
-  "corrections": [
-    {
-      "kind": "add_reference",
-      "role": "impl",
-      "file": "crates/trust-but-verify/src/graph.rs",
-      "selector": "impl[Snapshot<T>]/fn[new]",
-      "rationale": "The text prescribes the signature `pub fn new(content: T, fingerprint: Fingerprint) -> Self` on `impl<T> Snapshot<T>`. An alternative that keeps `Snapshot`'s fields and derives but drops `new`, or makes it `pub(crate)`, would break this clause. Code that builds `Snapshot` through the struct literal inside the SDK would behave the same, so the constructor is a distinct structural obligation. The marked root `struct[Snapshot]` covers the fields, `#[non_exhaustive]` and the `Clone`/`Debug` derives. It does not call or reach `new`, so the constructor is a separate unreached root. A reviewer can verify the signature, generics and body from `impl[Snapshot<T>]/fn[new]`, which has no marker. No other root covers it."
-    },
-    {
-      "kind": "add_reference",
-      "role": "impl",
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "selector": "impl[ValidationContext<'d, D>]#2/fn[prepare_read]",
-      "rationale": "The text says: \"For node reads, the SDK constructs a `Snapshot` from the contents returned by `Domain::node_content` and their `NodeContents::fingerprint` ... without another read.\" This prescribes delegation to named interfaces. An alternative that still returns equivalent results would compute the fingerprint by hashing the content itself or re-reading the node, and that would violate the clause. `prepare_read` is where this happens. It calls `self.graph.node_content(node)`, takes `content.fingerprint()`, and builds `Snapshot { content, fingerprint }` with no second read. `read_snapshot` only calls `prepare_read` and records the read. It is marked for a different requirement, and nothing marked for `requirements.sdk.graph.snapshot` reaches `prepare_read`. It is therefore an unmarked root for that requirement. A reviewer can verify the construction and the lack of a second read from this item."
-    }
-  ],
   "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
@@ -548,7 +520,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "6e73148fe13cf631dbf2046426f194a3d8fc63c6291f1e5e3777d2c0c8ed2648"
+          "value": "7290db95d15a52ae13670066a583d7a4ca63a120b6edb8d7acf9e507dcd96fe7"
         }
       ]
     },
@@ -594,40 +566,17 @@
     {
       "Node": [
         {
-          "Definition": "requirements.sdk.graph.observation_fingerprint"
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "9fcff1854eb767707b8efdb4a3a1edb436b8e6992cf8da3f4ccfc486672a1cdd"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
           "Source": {
             "resource": {
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/graph.rs"
             },
-            "selector": "impl[Snapshot<T>]"
+            "selector": "impl[Snapshot<T>]/fn[new]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "b2c440ccb85b681b462a9518b81a17e2bb272dabadcc47894def6b047362200b"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.snapshot"
-        },
-        "Implements",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "9c735c2e6344ae462f0af985ee15fc51ad42d0382a19408cdb7a1d5253d5678f"
+          "value": "d857562647702d31867389337df4883697bb7c4c3c367651566c8945d6b718a1"
         }
       ]
     },
@@ -651,17 +600,28 @@
     {
       "Node": [
         {
+          "Definition": "requirements.sdk.graph.observation_fingerprint"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "9fcff1854eb767707b8efdb4a3a1edb436b8e6992cf8da3f4ccfc486672a1cdd"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
+              "location": "crates/trust-but-verify/src/graph.rs"
             },
-            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[read_snapshot]"
+            "selector": "fn[dependencies_are_current]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "5e3efe54a48c8f95e29eb184caacad03019678d83ccf4910bcd1f67c52801b00"
+          "value": "4c26499b686c87c01a0d27a9ea401cdf5cdcf3bd0c3d52cb2d13d7772c69d0b1"
         }
       ]
     },
@@ -815,6 +775,57 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[read_snapshot]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "5e3efe54a48c8f95e29eb184caacad03019678d83ccf4910bcd1f67c52801b00"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[prepare_edges]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "917017f2c36bc75e21c8a5e20623856ae658a3d2fc0bb20fa3c424a66ff37dc7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "13819c4675914551da6e0dde0cc498d09495c2f2124f3f03e353ca0cdfef866a"
         }
       ]
     }

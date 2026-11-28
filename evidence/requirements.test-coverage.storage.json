@@ -1,7 +1,7 @@
 {
   "requirement": "Execution coverage is stored as disposable build artifacts under\n`habeas/coverage/` in the project's Cargo target directory\n(`target/habeas/coverage/` with default Cargo settings). A SQLite database is\nthe primary store for current test results, processed measurements, and the\nmetadata identifying their collection invocation. Raw LLVM profiles and\ncaptured source may remain separate files referenced by those results.\n\nThe invocation metadata identifies the invocation, capture time, command,\nselected tests, and, when available, the source revision and whether the source\nhad uncommitted changes.",
   "determination": true,
-  "rationale": "structural: Structural obligations in `requirements.test-coverage.storage`: (1) storage lives under `habeas/coverage/` in the Cargo target directory. An implementation that wrote elsewhere, such as the source tree, would violate this. `src/execution_coverage/runner.rs#fn[run]` implements it: it resolves the target directory (metadata or `--target-dir`), joins `habeas/coverage`, and passes that path to `Store::open`. (2) A SQLite database is the primary store for current results, processed measurements and invocation metadata. A JSON-file store would have the same behavior but violate this. `src/execution_coverage/store.rs#impl[Store]/fn[open]` implements it: it opens a rusqlite `Connection` on the database file and creates the `invocations`, `state` and `tests` tables. `Store::replace`, `record_empty`, `update_run` and the attempt methods write through that connection. They are reached from `run`, which is marked, so they need no marker. (3) The invocation metadata identifies the invocation, capture time, command, selected tests, and, when available, the revision and dirty flag. `src/execution_coverage.rs#struct[Run]` implements it with the fields `id`, `started`, `command`, `selection`, `revision: Option<String>` and `dirty: Option<bool>`. `run` fills these fields: `revision` comes from `git rev-parse HEAD` and `dirty` from `git status --porcelain`, and both stay `None` when git is unavailable. The `Run` struct is serialized into `invocations.data`. The permission for raw profiles and captured source to stay as separate files is a MAY, so it imposes nothing to check. The three supplied roots cover every structural obligation, and no additional root is needed.\n\nbehavioral: The reviewed tests cover each obligation in `requirements.test-coverage.storage`.\n\n**Location.**\n- `tests/execution_coverage.rs#fn[runs]` reads `target/habeas/coverage`, the default Cargo location. Every default-settings test goes through it.\n- `no_arguments_selects_all_workspace_members_with_configured_parallelism_and_git_metadata` sets `build.target-dir = 'custom-target'`. It asserts that `target/habeas/coverage` does not exist and that the results are under `custom-target/habeas/coverage`. This checks the \"project's Cargo target directory\" wording.\n\n**SQLite as primary store.**\n- The helpers `runs_in` and `attempts` open `current.sqlite` read-only. They read the `invocations` table (id and data) and the `tests` table (metadata and measurements).\n- All assertions on results, measurements and invocation metadata therefore go through the database.\n- `real_parallel_processes_retries_child_profiles_and_filtered_reruns` also asserts that no `run.json` or `attempt.json` files exist. It asserts that `maps.json` exists as a file.\n\n**Raw profiles and captured source as separate referenced files.**\n- `real_parallel_processes_retries_child_profiles_and_filtered_reruns` uses `assert_profiles_present`. That helper checks that every profile named in the database exists on disk as a non-empty `.profraw` file. The test also checks that each profile name starts with its process's pid.\n- The same test asserts that captured source (`sources[\"src/lib.rs\"]`) is present.\n\n**Invocation metadata.**\n- Identity: `id` equals the run directory name.\n- Capture time: `started > 0`.\n- Command: `command[0] == \"cargo nextest run\"` and it contains `--workspace`.\n- Selected tests: the exact `selection` list of five binary/test identities. Other tests assert `selection` for package, binary, ignored and partition runs, and for the configured-filter run.\n- Revision and dirty state when available: `no_arguments_selects_all_workspace_members_with_configured_parallelism_and_git_metadata` uses a real git repository. It asserts that `revision` equals the commit id. It asserts that `dirty` is true with modified source and false after restoring the source.\n- Revision and dirty state when unavailable: `real_parallel_processes_retries_child_profiles_and_filtered_reruns` has no git repository. It asserts that `revision` and `dirty` are null.\n\nThe tests are marked with `{test}` for this requirement, and I found no unmarked relevant test. Behaviours governed by the refining requirements (replace, selection, cleanup and others) belong to those requirements.",
+  "rationale": "structural: Structural obligations and their roots:\n- Location: \"stored ... under `habeas/coverage/` in the project's Cargo target directory\". An implementation could put the store in another directory and behave the same, so this is a structural clause. `src/execution_coverage/runner.rs#fn[run]` resolves the target directory from `--target-dir` or `cargo metadata`'s `target_directory`. It then joins `habeas/coverage` and passes that path to `Store::open`. Per-run raw artifacts (profraw, maps, binaries.json) go under that same directory.\n- SQLite as the primary store: \"A SQLite database is the primary store for current test results, processed measurements, and the metadata\". `src/execution_coverage/store.rs#impl[Store]/fn[open]` opens a rusqlite `Connection` on the database file in the storage directory. It creates the `invocations`, `state` and `tests` tables. The `tests` table has `metadata` and `measurements` columns. `Store::replace` and `Store::record_empty` write the serialized `Run` into `invocations` (seen in search results). Separate raw profiles are allowed (\"may remain separate files\"), which matches the per-run directory.\n- Invocation metadata fields: \"identifies the invocation, capture time, command, selected tests, and, when available, the source revision and whether the source had uncommitted changes\". `src/execution_coverage.rs#struct[Run]` has `id`, `started`, `command` and `selection`. It has `revision: Option<String>` and `dirty: Option<bool>` for the optional fields. `fn[run]` fills these from `git rev-parse HEAD` and `git status --porcelain`, and each becomes `None` when git fails. The struct derives Serialize, so it is the form persisted into the `invocations` table.\n\nI found no unmapped structural obligation among the supplied roots. How the `tests` table rows are written, and the cleanup of disposable artifacts, are behavioral and outside this structural check.\n\nbehavioral: The four marked tests, together with their helpers, check every observable obligation in `requirements.test-coverage.storage`.\n\n**Location**\n- `tests/execution_coverage.rs#fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]` reads results through `runs`. That helper opens `target/habeas/coverage/current.sqlite`, the default-settings location.\n- `no_arguments_selects_all_workspace_members_with_configured_parallelism_and_git_metadata` sets a custom Cargo `target-dir`. It asserts the results land in `custom-target/habeas/coverage` and that `target/habeas/coverage` does not exist.\n- Another assertion in the first test checks that a `build.build-dir` override does not create a separate directory.\n\n**SQLite as the primary store**\n- The `runs_in` helper reads the `invocations` table of `current.sqlite`. The `attempts` helper reads the `tests` table, which holds per-test metadata and processed measurements.\n- Every assertion on stored runs and attempts goes through these queries, so the tests verify that results and metadata live in SQLite.\n- The first test asserts that no `run.json` exists.\n\n**Separate files**\n- `assert_profiles_present` and the profile loop check that raw `.profraw` files exist, are non-empty and are referenced from the SQLite measurements.\n- The first test also asserts that `maps.json` exists and that the captured sources are stored (`sources[\"src/lib.rs\"]`).\n\n**Invocation metadata**\n- The first test asserts the invocation id (it matches the directory name), the capture time (`started > 0`), the command (`cargo nextest run` plus `--workspace`), and the exact `selection` list.\n- Revision and dirty state are tested where available. In the git fixture, `revision` equals the commit id, `dirty` is true with modified source, and `dirty` is false after the source is restored.\n- Revision and dirty state are tested where unavailable, in a fixture with no git repository: both are null.\n\n**Other marked tests**\n- The remaining marked tests (`configured_retries_filters_profiles_and_libtest_arguments_are_preserved` and `package_binary_partition_and_ignored_selection_replace_only_their_actual_test_identities`) also read results from SQLite. They check that the stored selection and measurements match the tests actually run.\n\n**\"Disposable\"**\nThe word \"disposable\" has no independent observable obligation. The tests do show that the stored results are rebuilt and dropped on a configuration change.",
   "references": "23574e219aba382038cf97cea675fd321eb3beea17ff5317ce8561040689419d",
   "inputs": [
     {
@@ -50,11 +50,6 @@
       "hash": "5ea43b2f3fd31965fc2d34edb1adf80ead4462cbd17876619d7c0d5eeb888619"
     },
     {
-      "file": "src/execution_coverage/store.rs",
-      "item": "impl[Store]/fn[update_run]",
-      "hash": "6357de2c7df3f03e2ed361661d8740e57574d458be1d97529d21a2d79f3f860a"
-    },
-    {
       "file": "tests/execution_coverage.rs",
       "item": "fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]",
       "hash": "19e2b1e61d5027ab192843ceed1beb865e8669c2d0aed71d8b68d8c31680c076"
@@ -67,17 +62,12 @@
     {
       "file": "tests/execution_coverage.rs",
       "item": "fn[package_binary_partition_and_ignored_selection_replace_only_their_actual_test_identities]",
-      "hash": "7f57ef552fb8c54136c7f67f354c218be78aaa3f4709ae037415d5e5b8f48cec"
+      "hash": "b8cb2c1186f7c5f47e5931d3374efe75325a4424913ce3a2231286f8cea0afaa"
     },
     {
       "file": "tests/execution_coverage.rs",
       "item": "fn[no_arguments_selects_all_workspace_members_with_configured_parallelism_and_git_metadata]",
       "hash": "8a94cbb74d1ed64b7c5bfe1242a055eaf285756ee484565f3005a4a2f7f4370e"
-    },
-    {
-      "file": "tests/execution_coverage.rs",
-      "item": "fn[fixture]",
-      "hash": "7dbf98dba6a8063e2c5377bda40073716abbac163a14eaca3b5bdf8cc33ef278"
     },
     {
       "file": "tests/execution_coverage.rs",
@@ -210,28 +200,11 @@
               "value": "5ea43b2f3fd31965fc2d34edb1adf80ead4462cbd17876619d7c0d5eeb888619"
             }
           ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "src/execution_coverage/store.rs"
-                },
-                "selector": "impl[Store]/fn[update_run]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "6357de2c7df3f03e2ed361661d8740e57574d458be1d97529d21a2d79f3f860a"
-            }
-          ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "Structural obligations in `requirements.test-coverage.storage`: (1) storage lives under `habeas/coverage/` in the Cargo target directory. An implementation that wrote elsewhere, such as the source tree, would violate this. `src/execution_coverage/runner.rs#fn[run]` implements it: it resolves the target directory (metadata or `--target-dir`), joins `habeas/coverage`, and passes that path to `Store::open`. (2) A SQLite database is the primary store for current results, processed measurements and invocation metadata. A JSON-file store would have the same behavior but violate this. `src/execution_coverage/store.rs#impl[Store]/fn[open]` implements it: it opens a rusqlite `Connection` on the database file and creates the `invocations`, `state` and `tests` tables. `Store::replace`, `record_empty`, `update_run` and the attempt methods write through that connection. They are reached from `run`, which is marked, so they need no marker. (3) The invocation metadata identifies the invocation, capture time, command, selected tests, and, when available, the revision and dirty flag. `src/execution_coverage.rs#struct[Run]` implements it with the fields `id`, `started`, `command`, `selection`, `revision: Option<String>` and `dirty: Option<bool>`. `run` fills these fields: `revision` comes from `git rev-parse HEAD` and `dirty` from `git status --porcelain`, and both stay `None` when git is unavailable. The `Run` struct is serialized into `invocations.data`. The permission for raw profiles and captured source to stay as separate files is a MAY, so it imposes nothing to check. The three supplied roots cover every structural obligation, and no additional root is needed."
+        "rationale": "Structural obligations and their roots:\n- Location: \"stored ... under `habeas/coverage/` in the project's Cargo target directory\". An implementation could put the store in another directory and behave the same, so this is a structural clause. `src/execution_coverage/runner.rs#fn[run]` resolves the target directory from `--target-dir` or `cargo metadata`'s `target_directory`. It then joins `habeas/coverage` and passes that path to `Store::open`. Per-run raw artifacts (profraw, maps, binaries.json) go under that same directory.\n- SQLite as the primary store: \"A SQLite database is the primary store for current test results, processed measurements, and the metadata\". `src/execution_coverage/store.rs#impl[Store]/fn[open]` opens a rusqlite `Connection` on the database file in the storage directory. It creates the `invocations`, `state` and `tests` tables. The `tests` table has `metadata` and `measurements` columns. `Store::replace` and `Store::record_empty` write the serialized `Run` into `invocations` (seen in search results). Separate raw profiles are allowed (\"may remain separate files\"), which matches the per-run directory.\n- Invocation metadata fields: \"identifies the invocation, capture time, command, selected tests, and, when available, the source revision and whether the source had uncommitted changes\". `src/execution_coverage.rs#struct[Run]` has `id`, `started`, `command` and `selection`. It has `revision: Option<String>` and `dirty: Option<bool>` for the optional fields. `fn[run]` fills these from `git rev-parse HEAD` and `git status --porcelain`, and each becomes `None` when git fails. The struct derives Serialize, so it is the form persisted into the `invocations` table.\n\nI found no unmapped structural obligation among the supplied roots. How the `tests` table rows are written, and the cleanup of disposable artifacts, are behavioral and outside this structural check."
       }
     },
     "behavioral": {
@@ -306,7 +279,7 @@
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "7f57ef552fb8c54136c7f67f354c218be78aaa3f4709ae037415d5e5b8f48cec"
+              "value": "b8cb2c1186f7c5f47e5931d3374efe75325a4424913ce3a2231286f8cea0afaa"
             }
           ]
         },
@@ -324,23 +297,6 @@
             {
               "scheme": "rust-structural-v1:own-v1",
               "value": "8a94cbb74d1ed64b7c5bfe1242a055eaf285756ee484565f3005a4a2f7f4370e"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "tests/execution_coverage.rs"
-                },
-                "selector": "fn[fixture]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "7dbf98dba6a8063e2c5377bda40073716abbac163a14eaca3b5bdf8cc33ef278"
             }
           ]
         },
@@ -415,7 +371,7 @@
       ],
       "output": {
         "status": "success",
-        "rationale": "The reviewed tests cover each obligation in `requirements.test-coverage.storage`.\n\n**Location.**\n- `tests/execution_coverage.rs#fn[runs]` reads `target/habeas/coverage`, the default Cargo location. Every default-settings test goes through it.\n- `no_arguments_selects_all_workspace_members_with_configured_parallelism_and_git_metadata` sets `build.target-dir = 'custom-target'`. It asserts that `target/habeas/coverage` does not exist and that the results are under `custom-target/habeas/coverage`. This checks the \"project's Cargo target directory\" wording.\n\n**SQLite as primary store.**\n- The helpers `runs_in` and `attempts` open `current.sqlite` read-only. They read the `invocations` table (id and data) and the `tests` table (metadata and measurements).\n- All assertions on results, measurements and invocation metadata therefore go through the database.\n- `real_parallel_processes_retries_child_profiles_and_filtered_reruns` also asserts that no `run.json` or `attempt.json` files exist. It asserts that `maps.json` exists as a file.\n\n**Raw profiles and captured source as separate referenced files.**\n- `real_parallel_processes_retries_child_profiles_and_filtered_reruns` uses `assert_profiles_present`. That helper checks that every profile named in the database exists on disk as a non-empty `.profraw` file. The test also checks that each profile name starts with its process's pid.\n- The same test asserts that captured source (`sources[\"src/lib.rs\"]`) is present.\n\n**Invocation metadata.**\n- Identity: `id` equals the run directory name.\n- Capture time: `started > 0`.\n- Command: `command[0] == \"cargo nextest run\"` and it contains `--workspace`.\n- Selected tests: the exact `selection` list of five binary/test identities. Other tests assert `selection` for package, binary, ignored and partition runs, and for the configured-filter run.\n- Revision and dirty state when available: `no_arguments_selects_all_workspace_members_with_configured_parallelism_and_git_metadata` uses a real git repository. It asserts that `revision` equals the commit id. It asserts that `dirty` is true with modified source and false after restoring the source.\n- Revision and dirty state when unavailable: `real_parallel_processes_retries_child_profiles_and_filtered_reruns` has no git repository. It asserts that `revision` and `dirty` are null.\n\nThe tests are marked with `{test}` for this requirement, and I found no unmarked relevant test. Behaviours governed by the refining requirements (replace, selection, cleanup and others) belong to those requirements."
+        "rationale": "The four marked tests, together with their helpers, check every observable obligation in `requirements.test-coverage.storage`.\n\n**Location**\n- `tests/execution_coverage.rs#fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]` reads results through `runs`. That helper opens `target/habeas/coverage/current.sqlite`, the default-settings location.\n- `no_arguments_selects_all_workspace_members_with_configured_parallelism_and_git_metadata` sets a custom Cargo `target-dir`. It asserts the results land in `custom-target/habeas/coverage` and that `target/habeas/coverage` does not exist.\n- Another assertion in the first test checks that a `build.build-dir` override does not create a separate directory.\n\n**SQLite as the primary store**\n- The `runs_in` helper reads the `invocations` table of `current.sqlite`. The `attempts` helper reads the `tests` table, which holds per-test metadata and processed measurements.\n- Every assertion on stored runs and attempts goes through these queries, so the tests verify that results and metadata live in SQLite.\n- The first test asserts that no `run.json` exists.\n\n**Separate files**\n- `assert_profiles_present` and the profile loop check that raw `.profraw` files exist, are non-empty and are referenced from the SQLite measurements.\n- The first test also asserts that `maps.json` exists and that the captured sources are stored (`sources[\"src/lib.rs\"]`).\n\n**Invocation metadata**\n- The first test asserts the invocation id (it matches the directory name), the capture time (`started > 0`), the command (`cargo nextest run` plus `--workspace`), and the exact `selection` list.\n- Revision and dirty state are tested where available. In the git fixture, `revision` equals the commit id, `dirty` is true with modified source, and `dirty` is false after the source is restored.\n- Revision and dirty state are tested where unavailable, in a fixture with no git repository: both are null.\n\n**Other marked tests**\n- The remaining marked tests (`configured_retries_filters_profiles_and_libtest_arguments_are_preserved` and `package_binary_partition_and_ignored_selection_replace_only_their_actual_test_identities`) also read results from SQLite. They check that the stored selection and measurements match the tests actually run.\n\n**\"Disposable\"**\nThe word \"disposable\" has no independent observable obligation. The tests do show that the stored results are rebuilt and dropped on a configuration change."
       }
     }
   },
@@ -535,23 +491,6 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "src/execution_coverage/store.rs"
-            },
-            "selector": "impl[Store]/fn[update_run]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "6357de2c7df3f03e2ed361661d8740e57574d458be1d97529d21a2d79f3f860a"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
               "location": "tests/execution_coverage.rs"
             },
             "selector": "fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]"
@@ -593,7 +532,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "7f57ef552fb8c54136c7f67f354c218be78aaa3f4709ae037415d5e5b8f48cec"
+          "value": "b8cb2c1186f7c5f47e5931d3374efe75325a4424913ce3a2231286f8cea0afaa"
         }
       ]
     },
@@ -611,23 +550,6 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "8a94cbb74d1ed64b7c5bfe1242a055eaf285756ee484565f3005a4a2f7f4370e"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "tests/execution_coverage.rs"
-            },
-            "selector": "fn[fixture]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "7dbf98dba6a8063e2c5377bda40073716abbac163a14eaca3b5bdf8cc33ef278"
         }
       ]
     },
@@ -696,18 +618,6 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "5463f294bdc8d6b57492767dc404663361d9b0aadf90f5e4eaea4af9e5361abf"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.test-coverage.storage"
-        },
-        "Implements",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "a0385fff5956a62a4ad163e1eba541cd7eabf4ac9073661579ca3e65f7825bad"
         }
       ]
     }

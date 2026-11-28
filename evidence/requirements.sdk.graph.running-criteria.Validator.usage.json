@@ -1,8 +1,8 @@
 {
   "requirement": "`usage()` returns the validator’s cumulative usage. Every agent call contributes its usage to the execution that invoked it, including calls that return an error. The validator adds that usage before `verify` or `refresh_evidence` returns, including on `Err`. Reusing current evidence adds no usage. Loading, checking, and storing evidence also leave the counters unchanged.\n\nFor totals across validators that share a domain cache, see {cite}`requirements.sdk.validation-cache.usage`.\n\n```rust,ignore\nimpl<'d, D: Domain> Validator<'d, D> {\n    pub fn usage(&self) -> &UsageStats;\n}\n```",
   "determination": true,
-  "rationale": "structural: The only structural obligation in `requirements.sdk.graph.running-criteria.Validator.usage` is the prescribed signature `impl<'d, D: Domain> Validator<'d, D> { pub fn usage(&self) -> &UsageStats; }`. It says `usage()` returns the validator's cumulative usage as a borrowed `&UsageStats`.\n\nAn alternative that returned an owned `UsageStats` would show the same counters but would not match the declared signature, so the borrowed return type is binding. `crates/trust-but-verify/src/graph.rs#impl[Validator<'d, D>]/fn[usage]` declares `pub fn usage(&self) -> &UsageStats { &self.usage }` inside `impl<'d, D: Domain> Validator<'d, D>`. It carries the `{impl}` marker for this requirement, and the review root `impl[Validator<'d, D>]` contains it.\n\nThe other clauses describe observable behavior:\n- Every agent call adds its usage, including calls that return an error.\n- That usage is added before `verify` or `refresh_evidence` returns.\n- Reusing current evidence adds no usage.\n- Loading, checking and storing evidence leave the counters unchanged.\n\nNo library, algorithm or delegation is prescribed for these clauses. They are judged by the behavioral criterion. The citation to `requirements.sdk.validation-cache.usage` is context only. It concerns `ValidationCache::usage()`, which is outside this root.\n\nbehavioral: The reviewed tests cover each behavioral obligation of `requirements.sdk.graph.running-criteria.Validator.usage`.\n\n- **Cumulative usage, including errors and retries.**\n  - `crates/trust-but-verify/src/agent/tests.rs#fn[validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse]` runs a throttled attempt, then a successful one, then a terminal I/O error.\n  - It asserts on `validator.usage()` after the final `verify_with_agent` returns `Err`: attempts 3, retries 1, failed attempts 2, reported and missing token counts, and prepared and delivered inputs (2, 1). This shows usage is added before return on `Err`.\n  - `fn[dropping_an_inflight_request_preserves_its_attempt]` asserts that a dropped in-flight call still counts one attempt in `validator.usage()`.\n  - `fn[cancelling_during_backoff_leaves_prepared_inputs_undelivered]` asserts usage after a cancelled backoff.\n- **Every agent call contributes to the execution that invoked it.**\n  - `fn[agent_executions_isolate_conversations_and_dependency_traces]` runs two validators concurrently. Each validator's usage and per-tool counts are asserted separately and then compared with the cache totals.\n  - `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[refreshing_missing_evidence_accounts_for_accepted_and_corrected_answers]` checks that usage accumulates across a corrected invalid answer and a second refresh. It asserts attempts (1, then 3), prepared and delivered inputs, and reported input tokens.\n- **Reusing current evidence adds no usage.** In `fn[validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse]`, `refresh_evidence` runs on stored, current evidence. The usage snapshot still shows attempts 2 and inputs (1, 1), the same as the verify and retry alone.\n- **Loading, checking and storing evidence leave counters unchanged.** The same test calls `store_evidence`, then `refresh_evidence`, which loads and checks the evidence. The totals are unchanged by them, and the later totals include only the failed call.\n- **A fresh validator starts at zero.** The same test asserts zero counts on `Validator::new`.\n\nThe `{cite}` of `requirements.sdk.validation-cache.usage` is context only and needs no test here. `tests/public_api.rs#fn[public_exports_match_the_appendix]` covers the signature export and is not a behavior test.",
-  "references": "5525d0141304e9b17fd9a02223142c43ca1904e4ceb14b11d96163acbb967345",
+  "rationale": "structural: The only structural obligation in the text is the prescribed signature `pub fn usage(&self) -> &UsageStats;` on `impl<'d, D: Domain> Validator<'d, D>`. Returning an owned `UsageStats` would break the clause, which says the method borrows and returns a reference. The root `crates/trust-but-verify/src/graph.rs#impl[Validator<'d, D>]/fn[usage]` declares exactly that signature and returns `&self.usage`. `crates/trust-but-verify/src/graph.rs#struct[Validator]` holds the `usage: UsageStats` field that the method returns, and `fn[new]` initialises it to `UsageStats::default()`.\n\nThe other clauses are observable behavior, so they are not structural obligations. These are: every agent call adds usage, including calls that return an error; usage is added before `verify` or `refresh_evidence` returns; and reusing current evidence or loading, checking and storing evidence adds nothing. Any implementation that accumulates the counters correctly satisfies them. The last clause only cites `requirements.sdk.validation-cache.usage` for context, and that requirement is not judged here.\n\nbehavioral: The tests cover every behavioral obligation in `requirements.sdk.graph.running-criteria.Validator.usage`.\n\n- **Cumulative usage:** `usage()` is checked after several calls. In `agent/tests.rs#fn[validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse]`, the validator's usage matches the cache's, with attempts 3, retries 1, failed attempts 2, reported and missing token counts, and prepared and delivered inputs 2 and 1. `agent/configured.rs#mod[tests]/fn[refreshing_missing_evidence_accounts_for_accepted_and_corrected_answers]` asserts the running totals after each `refresh_evidence` call, (1,1,1,10) and then (3,2,2,30).\n- **Every agent call counts, including failed calls and errors:** The same test starts with a throttled attempt that is retried, then a success, then a terminal error. The retried attempt and the failed verify both appear in the validator's totals. The accepted-then-corrected answer in the `configured.rs` test is counted as 3 attempts.\n- **Usage is added before `verify` or `refresh_evidence` returns, including on `Err`:** The totals are read immediately after the terminal-error `verify_with_agent` returns `Err`. `agent/tests.rs#fn[dropping_an_inflight_request_preserves_its_attempt]` checks that a dropped in-flight request still leaves its attempt (1, 0, 1) in `validator.usage()`. `refresh_evidence` in `graph.rs` propagates errors from `self.verify`, so the verify error test covers its `Err` path. I read that function to confirm.\n- **Reusing current evidence adds no usage:** After `store_evidence`, `refresh_evidence` reuses the saved evidence. The cache then shows attempts 2 and prepared and delivered inputs (1,1), and the final validator totals include no extra attempt for that refresh.\n- **Loading, checking and storing leave the counters unchanged:** The reuse refresh loads and checks, and `store_evidence` runs directly. The counters are asserted to be exact afterwards, and the `configured.rs` test shows exact totals around a refresh that stores.\n- **Fresh validator starts at zero:** `Validator::new` is asserted to have empty tools and zero for every counter.\n\nThe citation of `requirements.sdk.validation-cache.usage` is context only, and the tests also compare cache totals with the validator's. `public_api.rs#fn[public_exports_match_the_appendix]` checks the exported signatures. It needs no behavioral test here.",
+  "references": "510386ab2780f73c7ec8d04fb6247ff6ca05796607aa26fac7c4b4c4ec624a49",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.running-criteria.Validator.usage",
@@ -49,33 +49,18 @@
     },
     {
       "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "impl[Validator<'d,%20D>]",
-      "hash": "b0f656a02b20c0657301df49f956c66c6ba1bf7151c140c950a769fc202dfdf3"
+      "item": "impl[Validator<'d,%20D>]/fn[usage]",
+      "hash": "7a17b4f210316b9881a095d948aa987882257b06cc1b3cfd6e121a789d6f8d45"
     },
     {
       "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "impl[Validator<'d,%20D>]/fn[usage]",
-      "hash": "7a17b4f210316b9881a095d948aa987882257b06cc1b3cfd6e121a789d6f8d45"
+      "item": "struct[Validator]",
+      "hash": "d90727e1b0872aad81bb82e69b079f8a1c110387ba7e0fd7b3f7e9057d44543e"
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[refreshing_missing_evidence_accounts_for_accepted_and_corrected_answers]",
       "hash": "a5dbd87fb66aea9d23a2dc1fc69f6cf89567f1ca868086b2f3107604293ab49f"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "impl[Scenario/CompletionProvider]/fn[output_limit]",
-      "hash": "54556946b13824a4efe5da8717932446281717d5090ba6754a58de0268d531ea"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "fn[cancelling_during_backoff_leaves_prepared_inputs_undelivered]",
-      "hash": "0e3ea14ee770915b27bcac5e41cc83f15c619b0b6c51d504a6640704873ce0e2"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/public_api.rs",
-      "item": "fn[public_exports_match_the_appendix]",
-      "hash": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -88,14 +73,9 @@
       "hash": "ef6fa84ab2321053ec43ba5562ecbe2d7ce7da0691c2e75f2b515b403967786b"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "fn[agent_executions_isolate_conversations_and_dependency_traces]",
-      "hash": "056d0e24c13d4598d0ca252b07b88f5943e47267f99859790a84f3575cf78f38"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "impl[Validator<'d,%20D>]/fn[execute]",
-      "hash": "807a5015afd77dd876f866ed3e422875eef8103383fe82adb04d64b7c839be51"
+      "file": "crates/trust-but-verify/tests/public_api.rs",
+      "item": "fn[public_exports_match_the_appendix]",
+      "hash": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
     },
     {
       "file": "crates/trust-but-verify/src/graph.rs",
@@ -114,7 +94,7 @@
             },
             {
               "scheme": "habeas-reference-set-v1",
-              "value": "5525d0141304e9b17fd9a02223142c43ca1904e4ceb14b11d96163acbb967345"
+              "value": "510386ab2780f73c7ec8d04fb6247ff6ca05796607aa26fac7c4b4c4ec624a49"
             }
           ]
         },
@@ -148,24 +128,12 @@
                   "scheme": "repo",
                   "location": "crates/trust-but-verify/src/graph.rs"
                 },
-                "selector": "impl[Validator<'d,%20D>]"
+                "selector": "impl[Validator<'d,%20D>]/fn[usage]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "dfda110d94e47afdb5faab0bfe6c49244f855edd74bb2fcbe3d5d6a4cb536c23"
-            }
-          ]
-        },
-        {
-          "OutgoingEdges": [
-            {
-              "Requirement": "requirements.sdk.graph.running-criteria.Validator.usage"
-            },
-            "Implements",
-            {
-              "scheme": "node-path-set-sha256-v1",
-              "value": "e9374eb501cd6e183212dbc3a22832d8b86d13f10e4120deba8f12838712c003"
+              "value": "7a17b4f210316b9881a095d948aa987882257b06cc1b3cfd6e121a789d6f8d45"
             }
           ]
         },
@@ -177,19 +145,19 @@
                   "scheme": "repo",
                   "location": "crates/trust-but-verify/src/graph.rs"
                 },
-                "selector": "impl[Validator<'d,%20D>]/fn[usage]"
+                "selector": "struct[Validator]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "7a17b4f210316b9881a095d948aa987882257b06cc1b3cfd6e121a789d6f8d45"
+              "value": "d90727e1b0872aad81bb82e69b079f8a1c110387ba7e0fd7b3f7e9057d44543e"
             }
           ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "The only structural obligation in `requirements.sdk.graph.running-criteria.Validator.usage` is the prescribed signature `impl<'d, D: Domain> Validator<'d, D> { pub fn usage(&self) -> &UsageStats; }`. It says `usage()` returns the validator's cumulative usage as a borrowed `&UsageStats`.\n\nAn alternative that returned an owned `UsageStats` would show the same counters but would not match the declared signature, so the borrowed return type is binding. `crates/trust-but-verify/src/graph.rs#impl[Validator<'d, D>]/fn[usage]` declares `pub fn usage(&self) -> &UsageStats { &self.usage }` inside `impl<'d, D: Domain> Validator<'d, D>`. It carries the `{impl}` marker for this requirement, and the review root `impl[Validator<'d, D>]` contains it.\n\nThe other clauses describe observable behavior:\n- Every agent call adds its usage, including calls that return an error.\n- That usage is added before `verify` or `refresh_evidence` returns.\n- Reusing current evidence adds no usage.\n- Loading, checking and storing evidence leave the counters unchanged.\n\nNo library, algorithm or delegation is prescribed for these clauses. They are judged by the behavioral criterion. The citation to `requirements.sdk.validation-cache.usage` is context only. It concerns `ValidationCache::usage()`, which is outside this root."
+        "rationale": "The only structural obligation in the text is the prescribed signature `pub fn usage(&self) -> &UsageStats;` on `impl<'d, D: Domain> Validator<'d, D>`. Returning an owned `UsageStats` would break the clause, which says the method borrows and returns a reference. The root `crates/trust-but-verify/src/graph.rs#impl[Validator<'d, D>]/fn[usage]` declares exactly that signature and returns `&self.usage`. `crates/trust-but-verify/src/graph.rs#struct[Validator]` holds the `usage: UsageStats` field that the method returns, and `fn[new]` initialises it to `UsageStats::default()`.\n\nThe other clauses are observable behavior, so they are not structural obligations. These are: every agent call adds usage, including calls that return an error; usage is added before `verify` or `refresh_evidence` returns; and reusing current evidence or loading, checking and storing evidence adds nothing. Any implementation that accumulates the counters correctly satisfies them. The last clause only cites `requirements.sdk.validation-cache.usage` for context, and that requirement is not judged here."
       }
     },
     "behavioral": {
@@ -202,7 +170,7 @@
             },
             {
               "scheme": "habeas-reference-set-v1",
-              "value": "5525d0141304e9b17fd9a02223142c43ca1904e4ceb14b11d96163acbb967345"
+              "value": "510386ab2780f73c7ec8d04fb6247ff6ca05796607aa26fac7c4b4c4ec624a49"
             }
           ]
         },
@@ -253,69 +221,6 @@
                   "scheme": "repo",
                   "location": "crates/trust-but-verify/src/agent/tests.rs"
                 },
-                "selector": "impl[Scenario/CompletionProvider]/fn[output_limit]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "54556946b13824a4efe5da8717932446281717d5090ba6754a58de0268d531ea"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/agent/tests.rs"
-                },
-                "selector": "fn[cancelling_during_backoff_leaves_prepared_inputs_undelivered]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "0e3ea14ee770915b27bcac5e41cc83f15c619b0b6c51d504a6640704873ce0e2"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/tests/public_api.rs"
-                },
-                "selector": "fn[public_exports_match_the_appendix]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
-            }
-          ]
-        },
-        {
-          "OutgoingEdges": [
-            {
-              "Requirement": "requirements.sdk.graph.running-criteria.Validator.usage"
-            },
-            "Tests",
-            {
-              "scheme": "node-path-set-sha256-v1",
-              "value": "6a3452f9631bc96beb8cafa028b6c5d272f39c9b2d090db433d7613eaa206c2b"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/agent/tests.rs"
-                },
                 "selector": "fn[validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse]"
               }
             },
@@ -348,21 +253,38 @@
               "Source": {
                 "resource": {
                   "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                  "location": "crates/trust-but-verify/tests/public_api.rs"
                 },
-                "selector": "fn[agent_executions_isolate_conversations_and_dependency_traces]"
+                "selector": "fn[public_exports_match_the_appendix]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "056d0e24c13d4598d0ca252b07b88f5943e47267f99859790a84f3575cf78f38"
+              "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph.rs"
+                },
+                "selector": "impl[Validator<'d,%20D>]/fn[refresh_evidence]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "976affca6ada1924cc3d61f461cc801038c946007ba55abe17e7ede184c66f47"
             }
           ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "The reviewed tests cover each behavioral obligation of `requirements.sdk.graph.running-criteria.Validator.usage`.\n\n- **Cumulative usage, including errors and retries.**\n  - `crates/trust-but-verify/src/agent/tests.rs#fn[validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse]` runs a throttled attempt, then a successful one, then a terminal I/O error.\n  - It asserts on `validator.usage()` after the final `verify_with_agent` returns `Err`: attempts 3, retries 1, failed attempts 2, reported and missing token counts, and prepared and delivered inputs (2, 1). This shows usage is added before return on `Err`.\n  - `fn[dropping_an_inflight_request_preserves_its_attempt]` asserts that a dropped in-flight call still counts one attempt in `validator.usage()`.\n  - `fn[cancelling_during_backoff_leaves_prepared_inputs_undelivered]` asserts usage after a cancelled backoff.\n- **Every agent call contributes to the execution that invoked it.**\n  - `fn[agent_executions_isolate_conversations_and_dependency_traces]` runs two validators concurrently. Each validator's usage and per-tool counts are asserted separately and then compared with the cache totals.\n  - `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[refreshing_missing_evidence_accounts_for_accepted_and_corrected_answers]` checks that usage accumulates across a corrected invalid answer and a second refresh. It asserts attempts (1, then 3), prepared and delivered inputs, and reported input tokens.\n- **Reusing current evidence adds no usage.** In `fn[validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse]`, `refresh_evidence` runs on stored, current evidence. The usage snapshot still shows attempts 2 and inputs (1, 1), the same as the verify and retry alone.\n- **Loading, checking and storing evidence leave counters unchanged.** The same test calls `store_evidence`, then `refresh_evidence`, which loads and checks the evidence. The totals are unchanged by them, and the later totals include only the failed call.\n- **A fresh validator starts at zero.** The same test asserts zero counts on `Validator::new`.\n\nThe `{cite}` of `requirements.sdk.validation-cache.usage` is context only and needs no test here. `tests/public_api.rs#fn[public_exports_match_the_appendix]` covers the signature export and is not a behavior test."
+        "rationale": "The tests cover every behavioral obligation in `requirements.sdk.graph.running-criteria.Validator.usage`.\n\n- **Cumulative usage:** `usage()` is checked after several calls. In `agent/tests.rs#fn[validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse]`, the validator's usage matches the cache's, with attempts 3, retries 1, failed attempts 2, reported and missing token counts, and prepared and delivered inputs 2 and 1. `agent/configured.rs#mod[tests]/fn[refreshing_missing_evidence_accounts_for_accepted_and_corrected_answers]` asserts the running totals after each `refresh_evidence` call, (1,1,1,10) and then (3,2,2,30).\n- **Every agent call counts, including failed calls and errors:** The same test starts with a throttled attempt that is retried, then a success, then a terminal error. The retried attempt and the failed verify both appear in the validator's totals. The accepted-then-corrected answer in the `configured.rs` test is counted as 3 attempts.\n- **Usage is added before `verify` or `refresh_evidence` returns, including on `Err`:** The totals are read immediately after the terminal-error `verify_with_agent` returns `Err`. `agent/tests.rs#fn[dropping_an_inflight_request_preserves_its_attempt]` checks that a dropped in-flight request still leaves its attempt (1, 0, 1) in `validator.usage()`. `refresh_evidence` in `graph.rs` propagates errors from `self.verify`, so the verify error test covers its `Err` path. I read that function to confirm.\n- **Reusing current evidence adds no usage:** After `store_evidence`, `refresh_evidence` reuses the saved evidence. The cache then shows attempts 2 and prepared and delivered inputs (1,1), and the final validator totals include no extra attempt for that refresh.\n- **Loading, checking and storing leave the counters unchanged:** The reuse refresh loads and checks, and `store_evidence` runs directly. The counters are asserted to be exact afterwards, and the `configured.rs` test shows exact totals around a refresh that stores.\n- **Fresh validator starts at zero:** `Validator::new` is asserted to have empty tools and zero for every counter.\n\nThe citation of `requirements.sdk.validation-cache.usage` is context only, and the tests also compare cache totals with the validator's. `public_api.rs#fn[public_exports_match_the_appendix]` checks the exported signatures. It needs no behavioral test here."
       }
     }
   },
@@ -376,7 +298,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "5525d0141304e9b17fd9a02223142c43ca1904e4ceb14b11d96163acbb967345"
+          "value": "510386ab2780f73c7ec8d04fb6247ff6ca05796607aa26fac7c4b4c4ec624a49"
         }
       ]
     },
@@ -410,24 +332,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/graph.rs"
             },
-            "selector": "impl[Validator<'d,%20D>]"
+            "selector": "impl[Validator<'d,%20D>]/fn[usage]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "dfda110d94e47afdb5faab0bfe6c49244f855edd74bb2fcbe3d5d6a4cb536c23"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.running-criteria.Validator.usage"
-        },
-        "Implements",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "e9374eb501cd6e183212dbc3a22832d8b86d13f10e4120deba8f12838712c003"
+          "value": "7a17b4f210316b9881a095d948aa987882257b06cc1b3cfd6e121a789d6f8d45"
         }
       ]
     },
@@ -439,12 +349,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/graph.rs"
             },
-            "selector": "impl[Validator<'d,%20D>]/fn[usage]"
+            "selector": "struct[Validator]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "7a17b4f210316b9881a095d948aa987882257b06cc1b3cfd6e121a789d6f8d45"
+          "value": "d90727e1b0872aad81bb82e69b079f8a1c110387ba7e0fd7b3f7e9057d44543e"
         }
       ]
     },
@@ -462,69 +372,6 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "a5dbd87fb66aea9d23a2dc1fc69f6cf89567f1ca868086b2f3107604293ab49f"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "impl[Scenario/CompletionProvider]/fn[output_limit]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "54556946b13824a4efe5da8717932446281717d5090ba6754a58de0268d531ea"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "fn[cancelling_during_backoff_leaves_prepared_inputs_undelivered]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "0e3ea14ee770915b27bcac5e41cc83f15c619b0b6c51d504a6640704873ce0e2"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/public_api.rs"
-            },
-            "selector": "fn[public_exports_match_the_appendix]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.running-criteria.Validator.usage"
-        },
-        "Tests",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "6a3452f9631bc96beb8cafa028b6c5d272f39c9b2d090db433d7613eaa206c2b"
         }
       ]
     },
@@ -568,31 +415,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
+              "location": "crates/trust-but-verify/tests/public_api.rs"
             },
-            "selector": "fn[agent_executions_isolate_conversations_and_dependency_traces]"
+            "selector": "fn[public_exports_match_the_appendix]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "056d0e24c13d4598d0ca252b07b88f5943e47267f99859790a84f3575cf78f38"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
-            },
-            "selector": "impl[Validator<'d,%20D>]/fn[execute]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "807a5015afd77dd876f866ed3e422875eef8103383fe82adb04d64b7c839be51"
+          "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
         }
       ]
     },

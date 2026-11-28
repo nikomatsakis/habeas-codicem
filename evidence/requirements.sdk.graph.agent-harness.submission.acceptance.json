@@ -1,8 +1,8 @@
 {
   "requirement": "The harness checks the submission count in a complete model response before\nchecking submission arguments. An otherwise valid submission while any search\npage is open returns a tool error listing every outstanding `search_id` and\ninstructing the agent to call `finish_search` before resubmitting. The request\nstays open and retains its submission reminder. Once all delivered searches\nare accounted for under {cite}`requirements.sdk.graph.search.finish_search.behavior`,\nexactly one `submit_result` call whose arguments are an object containing only\nthe `result` field supplies that field's value for decoding and vetting under\n{cite}`requirements.sdk.graph.agent-calls.vet_answer`. Acceptance ends the\nconversation. Other tool calls in a response containing a submission are skipped.\nAssistant prose remains conversation text.",
-  "determination": false,
-  "rationale": "Add a test (for example next to `count_is_checked_before_arguments_and_one_reminder_allows_recovery` in `crates/trust-but-verify/src/agent/tests.rs`) in which one model response contains exactly one valid `submit_result` with `{\"result\":...}`, with no search open, plus another tool call such as `read_node`. Assert that the answer is accepted and the conversation ends, with no further provider request. Also assert that the other call was not executed: no graph read, no recorded dependency, and no `read_node` entry in the tool usage. Mark the test with `requirements.sdk.graph.agent-harness.submission.acceptance`. — The text says that other tool calls in a response containing a submission are skipped. That covers an accepted submission, not only a rejected one. The marked tests only show skipping in rejection cases. In `count_is_checked_before_arguments_and_one_reminder_allows_recovery`, a duplicate-count response skips `read_node`. In `outstanding_search_preserves_the_prior_missing_submission_reminder`, a submission with an open search skips `read_node`. In `configured_agent_uses_domain_source_tools_in_independent_executions` and `supplied_openai_backend_runs_independent_calls_against_a_local_transport`, every accepted `submit_result` is the only call in its response. An implementation that skips sibling calls only when it rejects, but runs them when it accepts, would pass all of these tests. That behavior breaks the clause, because it would record reads and dependencies, and could run tools, after the answer is accepted.",
-  "references": "a87f5f2062779bce167888837db388a8168c2bfc77b95e2b53ddea631cd5124e",
+  "determination": true,
+  "rationale": "structural: I found no structural obligation in `requirements.sdk.graph.agent-harness.submission.acceptance`, so no implementation root is needed. Every clause states observable harness behavior, and a different internal design could produce the same behavior.\n\n- \"The harness checks the submission count in a complete model response before checking submission arguments.\" This is an ordering of observable outcomes. An alternative could use a different internal pipeline, such as validating everything first and then choosing which error to report. It would give the same results, so the design is discretionary.\n- \"An otherwise valid submission while any search page is open returns a tool error listing every outstanding `search_id`... The request stays open and retains its submission reminder.\" These are the tool's outputs and the request's state. They name no required type, field, signature or library.\n- \"exactly one `submit_result` call whose arguments are an object containing only the `result` field supplies that field's value for decoding and vetting.\" This describes the accepted input and its effect. The wording does not require a specific decoder type or interface.\n- \"Acceptance ends the conversation. Other tool calls in a response containing a submission are skipped. Assistant prose remains conversation text.\" These are also observable behaviors.\n- The two `{cite}` references, to `requirements.sdk.graph.search.finish_search.behavior` and `requirements.sdk.graph.agent-calls.vet_answer`, are context only. The `Ask::vet_answer` callback signature belongs to `requirements.sdk.graph.agent-calls.vet_answer`. That requirement is a separate declaration, and it is outside this subject.\n\nNo implementation roots were supplied, and none are required.\n\nbehavioral: Each obligation in `requirements.sdk.graph.agent-harness.submission.acceptance` maps to a test with assertions. I did not read implementation source.\n\n- **Count is checked before arguments.** `crates/trust-but-verify/src/agent/tests.rs#fn[count_is_checked_before_arguments_and_one_reminder_allows_recovery]` sends two `submit_result` calls with invalid arguments (`{}` and `{\"other\":true}`) plus a `read_node`. It asserts that every call gets a \"not run: invoke submit_result exactly once\" tool error, which shows the count check came first. `fn[zero_and_multiple_submissions_share_one_reminder_and_a_second_violation_ends]` covers zero and multiple submissions.\n- **Submission blocked while a search page is open.** `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` opens two empty search pages and then submits a valid `{\"result\":true}`. It asserts the tool output contains \"Call finish_search for every open search_id\" and includes both distinct IDs, so every outstanding ID is listed with the instruction to call `finish_search`.\n- **Request stays open and keeps its reminder state.**\n  - In the configured test, a prose-only reply follows the blocked submission. The reminder then appears in the next request, so the blocked submission neither ended the conversation nor used up the reminder.\n  - `tests/authoring_cli.rs#fn[outstanding_search_preserves_the_prior_missing_submission_reminder]` does the reverse. A reminder is already issued, a submission is then blocked by an open search, and a later empty response fails the run after exactly 4 requests. The blocked turn therefore retained the earlier reminder. The test also asserts the tool message mentions `finish_search` and that the extra `read_node` was never executed.\n- **Submission accepted once searches are accounted for.**\n  - The configured test closes the searches through `finish_search`, including partial and invalid `used` calls, and then submits successfully. This is the `requirements.sdk.graph.search.finish_search.behavior` context, and it needs no separate assessment here.\n  - `fn[typed_submission_references_resolve]` checks that exactly one `submit_result` with only `result` is decoded into the typed answer. It also asserts the schema allows only that field.\n  - `fn[malformed_submissions_receive_feedback_and_can_be_corrected]` covers missing, other and extra fields, and bad types. Each case gets an error and can be corrected, and the vet callback runs once after the corrected submission.\n- **Acceptance ends the conversation.** `fn[one_submission_accepts_only_its_value_and_skips_other_calls_and_prose]` asserts a single provider request, and the other `fn[...]` tests assert the request counts.\n- **Other calls skipped and prose stays prose.** In `fn[one_submission_accepts_only_its_value_and_skips_other_calls_and_prose]`, a response has prose (\"The answer is true.\"), a `read_node` and `submit_result {result:false}`. The result is `false`, so the prose was not taken as the answer. No read happened, no dependency was recorded, and no `read_node` usage was recorded.\n- **Vetting.** Vetting itself belongs to `requirements.sdk.graph.agent-calls.vet_answer`, which is cited context. The tests only need to show that an accepted submission reaches vetting, and the malformed-submission test does (`vetted == 1`).\n\nI found no untested obligation or missing marker.",
+  "references": "bd2020b8e87d97508f8970594f3c69d3df05bba0ca862bd06c9cf9a3a4ebae0e",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.agent-harness.submission.acceptance",
@@ -79,13 +79,18 @@
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "fn[agent_edge_tools_record_selections_without_validating_targets]",
-      "hash": "6a6bd3af3286f4b548affea9dc304e83307c85c71496bd76aaa4e955e8fb5577"
+      "item": "fn[typed_submission_references_resolve]",
+      "hash": "2501d371312db654f4a05c0e72215b65a09b9a9dcec2cca0c04fcecfd7a883ae"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "fn[assistant_text_and_provider_failure_cannot_become_typed_results]",
-      "hash": "f5c6a0c3475877f33dd18c619484607796273cee05a1e5da8181f702843d78de"
+      "item": "fn[malformed_submissions_receive_feedback_and_can_be_corrected]",
+      "hash": "3496b410e2347c03b97e0e047ab6debb692dbd6ce9f2d0bf113baf77b55dc363"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "fn[one_submission_accepts_only_its_value_and_skips_other_calls_and_prose]",
+      "hash": "8eb5d04375212813740acae9037dfb0b4700b94671820394de1cc2a7d90490d5"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -93,14 +98,14 @@
       "hash": "58f842ffd045ae2420a5cbff80f1e1dea330845a021232a90ad418de7e5bca25"
     },
     {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "fn[zero_and_multiple_submissions_share_one_reminder_and_a_second_violation_ends]",
+      "hash": "3d12ba46395d5801f20a9f347c205ad9b212bac51af2bd48d552877744b54b6c"
+    },
+    {
       "file": "tests/authoring_cli.rs",
       "item": "fn[outstanding_search_preserves_the_prior_missing_submission_reminder]",
       "hash": "ed4d48659377b7a0b68981f35c6969ca26f0766c97ea503c7ed9499bf77cd18c"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "fn[malformed_submissions_receive_feedback_and_can_be_corrected]",
-      "hash": "3496b410e2347c03b97e0e047ab6debb692dbd6ce9f2d0bf113baf77b55dc363"
     }
   ],
   "criteria": {
@@ -114,7 +119,7 @@
             },
             {
               "scheme": "habeas-reference-set-v1",
-              "value": "a87f5f2062779bce167888837db388a8168c2bfc77b95e2b53ddea631cd5124e"
+              "value": "bd2020b8e87d97508f8970594f3c69d3df05bba0ca862bd06c9cf9a3a4ebae0e"
             }
           ]
         },
@@ -154,7 +159,7 @@
       ],
       "output": {
         "status": "success",
-        "rationale": "`requirements.sdk.graph.agent-harness.submission.acceptance` states only observable harness behavior. It names no library, algorithm, signature, type, field or delegation interface that the implementation must use.\n\n- **Ordering of checks:** the submission count is checked before the arguments. A harness that validated differently internally would still behave the same way, as long as the visible outcome is the same.\n- **Open search pages:** an otherwise valid submission while any page is open returns a tool error that lists every outstanding `search_id` and tells the agent to call `finish_search`. The request stays open and keeps its reminder. All of this is visible in the tool result and the conversation state.\n- **Accepted submission:** exactly one `submit_result` call, with an object containing only `result`, supplies the value that is decoded and vetted. Acceptance ends the conversation. Other tool calls in the same response are skipped, and assistant prose stays conversation text. These are all outcomes of the protocol.\n- **Cited requirements:** `requirements.sdk.graph.search.finish_search.behavior` and `requirements.sdk.graph.agent-calls.vet_answer` are only cited. They provide context, and any structural obligations they carry belong to their own assessments.\n\nEvery clause could be met by a different internal design with identical observable results. No implementation roots are needed, and none were supplied."
+        "rationale": "I found no structural obligation in `requirements.sdk.graph.agent-harness.submission.acceptance`, so no implementation root is needed. Every clause states observable harness behavior, and a different internal design could produce the same behavior.\n\n- \"The harness checks the submission count in a complete model response before checking submission arguments.\" This is an ordering of observable outcomes. An alternative could use a different internal pipeline, such as validating everything first and then choosing which error to report. It would give the same results, so the design is discretionary.\n- \"An otherwise valid submission while any search page is open returns a tool error listing every outstanding `search_id`... The request stays open and retains its submission reminder.\" These are the tool's outputs and the request's state. They name no required type, field, signature or library.\n- \"exactly one `submit_result` call whose arguments are an object containing only the `result` field supplies that field's value for decoding and vetting.\" This describes the accepted input and its effect. The wording does not require a specific decoder type or interface.\n- \"Acceptance ends the conversation. Other tool calls in a response containing a submission are skipped. Assistant prose remains conversation text.\" These are also observable behaviors.\n- The two `{cite}` references, to `requirements.sdk.graph.search.finish_search.behavior` and `requirements.sdk.graph.agent-calls.vet_answer`, are context only. The `Ask::vet_answer` callback signature belongs to `requirements.sdk.graph.agent-calls.vet_answer`. That requirement is a separate declaration, and it is outside this subject.\n\nNo implementation roots were supplied, and none are required."
       }
     },
     "behavioral": {
@@ -167,7 +172,7 @@
             },
             {
               "scheme": "habeas-reference-set-v1",
-              "value": "a87f5f2062779bce167888837db388a8168c2bfc77b95e2b53ddea631cd5124e"
+              "value": "bd2020b8e87d97508f8970594f3c69d3df05bba0ca862bd06c9cf9a3a4ebae0e"
             }
           ]
         },
@@ -246,12 +251,12 @@
                   "scheme": "repo",
                   "location": "crates/trust-but-verify/src/agent/tests.rs"
                 },
-                "selector": "fn[agent_edge_tools_record_selections_without_validating_targets]"
+                "selector": "fn[typed_submission_references_resolve]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "b1c00c1e246a9d3cad5d832802238ee07b4387536a473825251974c9a82c5923"
+              "value": "2501d371312db654f4a05c0e72215b65a09b9a9dcec2cca0c04fcecfd7a883ae"
             }
           ]
         },
@@ -263,12 +268,29 @@
                   "scheme": "repo",
                   "location": "crates/trust-but-verify/src/agent/tests.rs"
                 },
-                "selector": "fn[assistant_text_and_provider_failure_cannot_become_typed_results]"
+                "selector": "fn[malformed_submissions_receive_feedback_and_can_be_corrected]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "f5c6a0c3475877f33dd18c619484607796273cee05a1e5da8181f702843d78de"
+              "value": "3496b410e2347c03b97e0e047ab6debb692dbd6ce9f2d0bf113baf77b55dc363"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[one_submission_accepts_only_its_value_and_skips_other_calls_and_prose]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "8eb5d04375212813740acae9037dfb0b4700b94671820394de1cc2a7d90490d5"
             }
           ]
         },
@@ -295,6 +317,23 @@
               "Source": {
                 "resource": {
                   "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[zero_and_multiple_submissions_share_one_reminder_and_a_second_violation_ends]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "3d12ba46395d5801f20a9f347c205ad9b212bac51af2bd48d552877744b54b6c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
                   "location": "tests/authoring_cli.rs"
                 },
                 "selector": "fn[outstanding_search_preserves_the_prior_missing_submission_reminder]"
@@ -305,44 +344,14 @@
               "value": "ed4d48659377b7a0b68981f35c6969ca26f0766c97ea503c7ed9499bf77cd18c"
             }
           ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/agent/tests.rs"
-                },
-                "selector": "fn[malformed_submissions_receive_feedback_and_can_be_corrected]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "3496b410e2347c03b97e0e047ab6debb692dbd6ce9f2d0bf113baf77b55dc363"
-            }
-          ]
         }
       ],
       "output": {
-        "status": "failed",
-        "corrections": [
-          {
-            "kind": "manual",
-            "instruction": "Add a test (for example next to `count_is_checked_before_arguments_and_one_reminder_allows_recovery` in `crates/trust-but-verify/src/agent/tests.rs`) in which one model response contains exactly one valid `submit_result` with `{\"result\":...}`, with no search open, plus another tool call such as `read_node`. Assert that the answer is accepted and the conversation ends, with no further provider request. Also assert that the other call was not executed: no graph read, no recorded dependency, and no `read_node` entry in the tool usage. Mark the test with `requirements.sdk.graph.agent-harness.submission.acceptance`.",
-            "rationale": "The text says that other tool calls in a response containing a submission are skipped. That covers an accepted submission, not only a rejected one. The marked tests only show skipping in rejection cases. In `count_is_checked_before_arguments_and_one_reminder_allows_recovery`, a duplicate-count response skips `read_node`. In `outstanding_search_preserves_the_prior_missing_submission_reminder`, a submission with an open search skips `read_node`. In `configured_agent_uses_domain_source_tools_in_independent_executions` and `supplied_openai_backend_runs_independent_calls_against_a_local_transport`, every accepted `submit_result` is the only call in its response. An implementation that skips sibling calls only when it rejects, but runs them when it accepts, would pass all of these tests. That behavior breaks the clause, because it would record reads and dependencies, and could run tools, after the answer is accepted."
-          }
-        ]
+        "status": "success",
+        "rationale": "Each obligation in `requirements.sdk.graph.agent-harness.submission.acceptance` maps to a test with assertions. I did not read implementation source.\n\n- **Count is checked before arguments.** `crates/trust-but-verify/src/agent/tests.rs#fn[count_is_checked_before_arguments_and_one_reminder_allows_recovery]` sends two `submit_result` calls with invalid arguments (`{}` and `{\"other\":true}`) plus a `read_node`. It asserts that every call gets a \"not run: invoke submit_result exactly once\" tool error, which shows the count check came first. `fn[zero_and_multiple_submissions_share_one_reminder_and_a_second_violation_ends]` covers zero and multiple submissions.\n- **Submission blocked while a search page is open.** `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` opens two empty search pages and then submits a valid `{\"result\":true}`. It asserts the tool output contains \"Call finish_search for every open search_id\" and includes both distinct IDs, so every outstanding ID is listed with the instruction to call `finish_search`.\n- **Request stays open and keeps its reminder state.**\n  - In the configured test, a prose-only reply follows the blocked submission. The reminder then appears in the next request, so the blocked submission neither ended the conversation nor used up the reminder.\n  - `tests/authoring_cli.rs#fn[outstanding_search_preserves_the_prior_missing_submission_reminder]` does the reverse. A reminder is already issued, a submission is then blocked by an open search, and a later empty response fails the run after exactly 4 requests. The blocked turn therefore retained the earlier reminder. The test also asserts the tool message mentions `finish_search` and that the extra `read_node` was never executed.\n- **Submission accepted once searches are accounted for.**\n  - The configured test closes the searches through `finish_search`, including partial and invalid `used` calls, and then submits successfully. This is the `requirements.sdk.graph.search.finish_search.behavior` context, and it needs no separate assessment here.\n  - `fn[typed_submission_references_resolve]` checks that exactly one `submit_result` with only `result` is decoded into the typed answer. It also asserts the schema allows only that field.\n  - `fn[malformed_submissions_receive_feedback_and_can_be_corrected]` covers missing, other and extra fields, and bad types. Each case gets an error and can be corrected, and the vet callback runs once after the corrected submission.\n- **Acceptance ends the conversation.** `fn[one_submission_accepts_only_its_value_and_skips_other_calls_and_prose]` asserts a single provider request, and the other `fn[...]` tests assert the request counts.\n- **Other calls skipped and prose stays prose.** In `fn[one_submission_accepts_only_its_value_and_skips_other_calls_and_prose]`, a response has prose (\"The answer is true.\"), a `read_node` and `submit_result {result:false}`. The result is `false`, so the prose was not taken as the answer. No read happened, no dependency was recorded, and no `read_node` usage was recorded.\n- **Vetting.** Vetting itself belongs to `requirements.sdk.graph.agent-calls.vet_answer`, which is cited context. The tests only need to show that an accepted submission reaches vetting, and the malformed-submission test does (`vetted == 1`).\n\nI found no untested obligation or missing marker."
       }
     }
   },
-  "corrections": [
-    {
-      "kind": "manual",
-      "instruction": "Add a test (for example next to `count_is_checked_before_arguments_and_one_reminder_allows_recovery` in `crates/trust-but-verify/src/agent/tests.rs`) in which one model response contains exactly one valid `submit_result` with `{\"result\":...}`, with no search open, plus another tool call such as `read_node`. Assert that the answer is accepted and the conversation ends, with no further provider request. Also assert that the other call was not executed: no graph read, no recorded dependency, and no `read_node` entry in the tool usage. Mark the test with `requirements.sdk.graph.agent-harness.submission.acceptance`.",
-      "rationale": "The text says that other tool calls in a response containing a submission are skipped. That covers an accepted submission, not only a rejected one. The marked tests only show skipping in rejection cases. In `count_is_checked_before_arguments_and_one_reminder_allows_recovery`, a duplicate-count response skips `read_node`. In `outstanding_search_preserves_the_prior_missing_submission_reminder`, a submission with an open search skips `read_node`. In `configured_agent_uses_domain_source_tools_in_independent_executions` and `supplied_openai_backend_runs_independent_calls_against_a_local_transport`, every accepted `submit_result` is the only call in its response. An implementation that skips sibling calls only when it rejects, but runs them when it accepts, would pass all of these tests. That behavior breaks the clause, because it would record reads and dependencies, and could run tools, after the answer is accepted."
-    }
-  ],
   "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
@@ -353,7 +362,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "a87f5f2062779bce167888837db388a8168c2bfc77b95e2b53ddea631cd5124e"
+          "value": "bd2020b8e87d97508f8970594f3c69d3df05bba0ca862bd06c9cf9a3a4ebae0e"
         }
       ]
     },
@@ -432,12 +441,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
-            "selector": "fn[agent_edge_tools_record_selections_without_validating_targets]"
+            "selector": "fn[typed_submission_references_resolve]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "b1c00c1e246a9d3cad5d832802238ee07b4387536a473825251974c9a82c5923"
+          "value": "2501d371312db654f4a05c0e72215b65a09b9a9dcec2cca0c04fcecfd7a883ae"
         }
       ]
     },
@@ -449,12 +458,29 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
-            "selector": "fn[assistant_text_and_provider_failure_cannot_become_typed_results]"
+            "selector": "fn[malformed_submissions_receive_feedback_and_can_be_corrected]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "f5c6a0c3475877f33dd18c619484607796273cee05a1e5da8181f702843d78de"
+          "value": "3496b410e2347c03b97e0e047ab6debb692dbd6ce9f2d0bf113baf77b55dc363"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
+            },
+            "selector": "fn[one_submission_accepts_only_its_value_and_skips_other_calls_and_prose]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "8eb5d04375212813740acae9037dfb0b4700b94671820394de1cc2a7d90490d5"
         }
       ]
     },
@@ -481,14 +507,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "tests/authoring_cli.rs"
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
-            "selector": "fn[outstanding_search_preserves_the_prior_missing_submission_reminder]"
+            "selector": "fn[zero_and_multiple_submissions_share_one_reminder_and_a_second_violation_ends]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "ed4d48659377b7a0b68981f35c6969ca26f0766c97ea503c7ed9499bf77cd18c"
+          "value": "3d12ba46395d5801f20a9f347c205ad9b212bac51af2bd48d552877744b54b6c"
         }
       ]
     },
@@ -498,14 +524,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
+              "location": "tests/authoring_cli.rs"
             },
-            "selector": "fn[malformed_submissions_receive_feedback_and_can_be_corrected]"
+            "selector": "fn[outstanding_search_preserves_the_prior_missing_submission_reminder]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "3496b410e2347c03b97e0e047ab6debb692dbd6ce9f2d0bf113baf77b55dc363"
+          "value": "ed4d48659377b7a0b68981f35c6969ca26f0766c97ea503c7ed9499bf77cd18c"
         }
       ]
     }

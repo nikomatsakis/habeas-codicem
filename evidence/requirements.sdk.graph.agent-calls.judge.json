@@ -1,7 +1,7 @@
 {
   "requirement": "`trust_but_verify` exposes `Ask` and its public `ContextPhase` and\n`NodePhase` state types. The validation context starts a builder:\n\n```rust,ignore\n/// Create an independent request borrowing this context through a shared reference.\npub fn ask<R>(&self) -> Ask<'_, 'd, D, R, ContextPhase>\nwhere\n    R: serde::de::DeserializeOwned + schemars::JsonSchema + Send;\n```\n\nBoth states implement `std::future::IntoFuture` with\n`Output = Result<R, ValidationError<D::Error>>` and a `Send` future for\n`R: serde::de::DeserializeOwned + schemars::JsonSchema + Send`.\nAwaiting executes the assembled request, even with no contexts or node\ninsertions. Building it does not invoke an agent.",
   "determination": true,
-  "rationale": "structural: The structural obligations in `requirements.sdk.graph.agent-calls.judge` are covered by the three supplied roots.\n\n1. **Builder signature.** The clause is: \"pub fn ask<R>(&self) -> Ask<'_, 'd, D, R, ContextPhase> where R: DeserializeOwned + JsonSchema + Send\". An alternative could take `self` by value or return a different phase type. It could produce the same results at runtime and would still violate the clause. `crates/trust-but-verify/src/procedure.rs#impl[ValidationContext<'d,%20D>]#3/fn[ask]` has this exact signature. It borrows `&self` and returns `Ask` in `ContextPhase` with empty contexts, message, insertions and callbacks. It makes no agent call, which matches \"Building it does not invoke an agent\".\n\n2. **`IntoFuture` for both phases.** The clause is: \"Both states implement `std::future::IntoFuture` with `Output = Result<R, ValidationError<D::Error>>` and a `Send` future\". An alternative could expose a plain `.run()` method instead of the trait impl, so `.await` would not work. It would still violate the clause. The `await_phase` macro defines `impl IntoFuture for Ask<'a,'d,D,R,$phase>`. It sets `type Output = Result<R, ValidationError<D::Error>>` and `type IntoFuture = BoxFuture<'a, Self::Output>`. Its `into_future` boxes `self.execute()`, so awaiting runs the assembled request, including with no contexts or insertions. The macro invocations `await_phase!(ContextPhase)` (`macro@0541b668e173`) and `await_phase!(NodePhase)` (`macro@5781c4abb394`) each carry an `{impl}` of `judge`. Together they cover both states.\n\n3. **Public phase types.** `struct[ContextPhase]` and `struct[NodePhase]` are public unit structs in the same file. They are implemented or tested by the `judge.phases` and `Ask` references that I did not need to assess here.\n\nOther behavior, such as what `execute` does, is observable behavior and not a structural obligation. The macro's body is reached through the marked invocations, so it needs no separate marker.\n\nbehavioral: The reviewed tests cover each behavioral obligation in `requirements.sdk.graph.agent-calls.judge`.\n\n- **`ask` starts a ContextPhase builder.** Both `explicit_insertions_preserve_order_repetition_and_selection_snapshots` and `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` call `ctx.ask::<Answer>()`. The first then moves to node insertions (`NodePhase`).\n- **Both states implement `IntoFuture` and produce a `Send` future.**\n  - `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` calls `builder.into_future()` on a ContextPhase builder and runs `assert_send`. That builder was built from a non-Send context value.\n  - `explicit_insertions_preserve_order_repetition_and_selection_snapshots` does the same on a NodePhase builder.\n  - `shared_context_allows_independent_concurrent_agent_calls` joins two futures, one per phase.\n- **Output is `Result<R, ValidationError<D::Error>>`.**\n  - Success: `answer.n` is asserted in the explicit-insertions test and in the concurrent test.\n  - Error variants: `queued_reads_selection_and_rendering_fail_before_agent_invocation` asserts `ValidationError::Graph(\"read\")`, `Graph(\"edges\")` and `Graph(\"render\")`. `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` asserts `ValidationError::NoAgentConfigured`. These assertions also pin the error type.\n- **Awaiting executes the request, even with no contexts or insertions.** `ctx.ask::<Answer>().await` and `.context(Vec::<String>::new()).await` run in the contexts test. Their requests have empty text and no node contents, so the request was assembled and sent. The NodePhase case with no contexts is covered in the dropped-builders test, where the await reaches the agent check and returns `NoAgentConfigured`. Other awaits are asserted in the explicit-insertions and concurrent tests.\n- **Building does not invoke an agent.**\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` drops a NodePhase builder and asserts that no agent requests were made.\n  - `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` drops builders and asserts that no reads or selections happened.\n  - The contexts test builds a ContextPhase builder before awaiting it. Its later requests, `requests[1..=2]`, are the empty-text ones. A request made at build time would have shifted them, so build-time invocation is ruled out there.\n\nI found no unmet obligation. Detailed ordering, caching and rendering behavior belongs to the refining requirements, which these tests also mark.",
+  "rationale": "structural: The structural obligations in `requirements.sdk.graph.agent-calls.judge` are covered by the supplied roots.\n\n1. **`ask` signature.** The text requires `pub fn ask<R>(&self) -> Ask<'_, 'd, D, R, ContextPhase>` with `R: DeserializeOwned + JsonSchema + Send`. An `ask` that took `&mut self`, or returned a different state type, would run the same but break this clause. `impl[ValidationContext<'d, D>]#3/fn[ask]` in `crates/trust-but-verify/src/procedure.rs` declares exactly this signature. It borrows `self` through `ctx: self` and returns an empty builder that has not called any agent.\n\n2. **`IntoFuture` for both states.** The text requires both phases to implement `std::future::IntoFuture` with `Output = Result<R, ValidationError<D::Error>>` and a `Send` future. The `await_phase!` macro in `procedure.rs` provides this impl. It sets `type Output = Result<R, ValidationError<D::Error>>` and `type IntoFuture = BoxFuture<'a, Self::Output>`. `futures::BoxFuture` is a `Send` boxed future. `into_future` calls `Box::pin(self.execute())`, so awaiting runs the request even with no contexts or insertions. The two roots `macro@0541b668e173` (`await_phase!(ContextPhase)`) and `macro@5781c4abb394` (`await_phase!(NodePhase)`) instantiate the impl for both phases.\n\n3. **Public types.** `Ask`, `ContextPhase` and `NodePhase` are public items in `procedure.rs`. `Ask` and `ContextPhase` carry their own `{impl}` references, and `NodePhase` is a `pub struct`. Their detailed obligations belong to refining declarations, so I did not judge them here.\n\n4. **Building does not invoke an agent.** `ask` only constructs the struct. Agent use happens in `execute`, which only the `IntoFuture` impl reaches.\n\nThe `where` clauses on the `await_phase!` impl also require `D::Error: Display` and `D::EdgeLabel: DeserializeOwned + JsonSchema + PartialEq`. I did not check them against the text, and I did not treat them as a gap. The remaining behavior, such as rendering and decoding, belongs to other requirements.\n\nbehavioral: The subject has these observable obligations. Each maps to a marked test.\n\n- **`ask` starts a builder, and both phases await to `Result<R, ValidationError<_>>`.**\n  - `explicit_insertions_preserve_order_repetition_and_selection_snapshots` awaits a node-phase builder and unwraps `Answer`. It asserts `answer.n == 7`, the request contents and the dependencies.\n  - `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` awaits a context-phase builder.\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` matches `Err(ValidationError::Graph(..))` on awaited node-phase builders.\n  - `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` matches `Err(ValidationError::NoAgentConfigured)`.\n  - Together these cover the Ok and Err output types for both phases.\n- **The future is `Send`.** `assert_send(&future)` is applied to the node-phase future (`explicit_insertions_...`) and the context-phase future (`contexts_render_once_...`). `shared_context_allows_independent_concurrent_agent_calls` also runs the futures concurrently.\n- **Awaiting executes the assembled request, even with no contexts or node insertions.** In `contexts_render_once_...`, `ctx.ask::<Answer>().await` and `.context(Vec::<String>::new()).await` both reach the agent. The test asserts an empty prompt, the empty-text fingerprint and no contents. Requests are also asserted in the other tests. The concurrency test asserts two agent requests.\n- **Building does not invoke an agent.**\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` builds and drops a builder, then asserts the agent's requests are empty. It also asserts the agent call count is unchanged after the failure cases.\n  - `dropped_builders_and_missing_agents_...` builds and drops a builder, then asserts there are no dependencies, reads or selections.\n\nI found no obligation without a test, and no assertion that contradicts the requirement. The sub-requirements (rendering, submission, caching, phases) are covered by their own requirements and need no test here.",
   "references": "e6cee43c35f401c91781c29a81c5fa52125bdb34b84bc509158b817d20b8ce90",
   "inputs": [
     {
@@ -51,6 +51,11 @@
     },
     {
       "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "struct[Ask]",
+      "hash": "b38a7967586a6b57f32ac9441bea1003e46964014583c1dbc2797f9896771465"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
       "item": "struct[ContextPhase]",
       "hash": "38eb48632ba183ca42f37eb48a05202c7223921264852f809778194b2fd58cc8"
     },
@@ -58,11 +63,6 @@
       "file": "crates/trust-but-verify/src/procedure.rs",
       "item": "struct[NodePhase]",
       "hash": "527ee6b89b350999503c7587571996ebcefc8e2e11f3fa726e4a07e4e3861e04"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "struct[Ask]",
-      "hash": "b38a7967586a6b57f32ac9441bea1003e46964014583c1dbc2797f9896771465"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
@@ -87,17 +87,7 @@
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]",
-      "hash": "16e5d66c127375503160b7357b3aab780341b16eb17adf36510391e372907734"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
-      "item": "fn[contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text]/fn[assert_send]",
-      "hash": "b819caeb10a2f7be090c2d78f029a7946df5f321bcdfe178f6c070767fad2694"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
-      "item": "fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]/fn[assert_send]",
-      "hash": "b819caeb10a2f7be090c2d78f029a7946df5f321bcdfe178f6c070767fad2694"
+      "hash": "c619fbf659ef4402ae73ba7b22f1801483210fabdeda3a6ef8decf65e6c303ae"
     }
   ],
   "criteria": {
@@ -202,6 +192,23 @@
                   "scheme": "repo",
                   "location": "crates/trust-but-verify/src/procedure.rs"
                 },
+                "selector": "struct[Ask]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "b38a7967586a6b57f32ac9441bea1003e46964014583c1dbc2797f9896771465"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
                 "selector": "struct[ContextPhase]"
               }
             },
@@ -227,28 +234,11 @@
               "value": "527ee6b89b350999503c7587571996ebcefc8e2e11f3fa726e4a07e4e3861e04"
             }
           ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/procedure.rs"
-                },
-                "selector": "struct[Ask]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "b38a7967586a6b57f32ac9441bea1003e46964014583c1dbc2797f9896771465"
-            }
-          ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "The structural obligations in `requirements.sdk.graph.agent-calls.judge` are covered by the three supplied roots.\n\n1. **Builder signature.** The clause is: \"pub fn ask<R>(&self) -> Ask<'_, 'd, D, R, ContextPhase> where R: DeserializeOwned + JsonSchema + Send\". An alternative could take `self` by value or return a different phase type. It could produce the same results at runtime and would still violate the clause. `crates/trust-but-verify/src/procedure.rs#impl[ValidationContext<'d,%20D>]#3/fn[ask]` has this exact signature. It borrows `&self` and returns `Ask` in `ContextPhase` with empty contexts, message, insertions and callbacks. It makes no agent call, which matches \"Building it does not invoke an agent\".\n\n2. **`IntoFuture` for both phases.** The clause is: \"Both states implement `std::future::IntoFuture` with `Output = Result<R, ValidationError<D::Error>>` and a `Send` future\". An alternative could expose a plain `.run()` method instead of the trait impl, so `.await` would not work. It would still violate the clause. The `await_phase` macro defines `impl IntoFuture for Ask<'a,'d,D,R,$phase>`. It sets `type Output = Result<R, ValidationError<D::Error>>` and `type IntoFuture = BoxFuture<'a, Self::Output>`. Its `into_future` boxes `self.execute()`, so awaiting runs the assembled request, including with no contexts or insertions. The macro invocations `await_phase!(ContextPhase)` (`macro@0541b668e173`) and `await_phase!(NodePhase)` (`macro@5781c4abb394`) each carry an `{impl}` of `judge`. Together they cover both states.\n\n3. **Public phase types.** `struct[ContextPhase]` and `struct[NodePhase]` are public unit structs in the same file. They are implemented or tested by the `judge.phases` and `Ask` references that I did not need to assess here.\n\nOther behavior, such as what `execute` does, is observable behavior and not a structural obligation. The macro's body is reached through the marked invocations, so it needs no separate marker."
+        "rationale": "The structural obligations in `requirements.sdk.graph.agent-calls.judge` are covered by the supplied roots.\n\n1. **`ask` signature.** The text requires `pub fn ask<R>(&self) -> Ask<'_, 'd, D, R, ContextPhase>` with `R: DeserializeOwned + JsonSchema + Send`. An `ask` that took `&mut self`, or returned a different state type, would run the same but break this clause. `impl[ValidationContext<'d, D>]#3/fn[ask]` in `crates/trust-but-verify/src/procedure.rs` declares exactly this signature. It borrows `self` through `ctx: self` and returns an empty builder that has not called any agent.\n\n2. **`IntoFuture` for both states.** The text requires both phases to implement `std::future::IntoFuture` with `Output = Result<R, ValidationError<D::Error>>` and a `Send` future. The `await_phase!` macro in `procedure.rs` provides this impl. It sets `type Output = Result<R, ValidationError<D::Error>>` and `type IntoFuture = BoxFuture<'a, Self::Output>`. `futures::BoxFuture` is a `Send` boxed future. `into_future` calls `Box::pin(self.execute())`, so awaiting runs the request even with no contexts or insertions. The two roots `macro@0541b668e173` (`await_phase!(ContextPhase)`) and `macro@5781c4abb394` (`await_phase!(NodePhase)`) instantiate the impl for both phases.\n\n3. **Public types.** `Ask`, `ContextPhase` and `NodePhase` are public items in `procedure.rs`. `Ask` and `ContextPhase` carry their own `{impl}` references, and `NodePhase` is a `pub struct`. Their detailed obligations belong to refining declarations, so I did not judge them here.\n\n4. **Building does not invoke an agent.** `ask` only constructs the struct. Agent use happens in `execute`, which only the `IntoFuture` impl reaches.\n\nThe `where` clauses on the `await_phase!` impl also require `D::Error: Display` and `D::EdgeLabel: DeserializeOwned + JsonSchema + PartialEq`. I did not check them against the text, and I did not treat them as a gap. The remaining behavior, such as rendering and decoding, belongs to other requirements."
       }
     },
     "behavioral": {
@@ -357,14 +347,14 @@
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "16e5d66c127375503160b7357b3aab780341b16eb17adf36510391e372907734"
+              "value": "c619fbf659ef4402ae73ba7b22f1801483210fabdeda3a6ef8decf65e6c303ae"
             }
           ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "The reviewed tests cover each behavioral obligation in `requirements.sdk.graph.agent-calls.judge`.\n\n- **`ask` starts a ContextPhase builder.** Both `explicit_insertions_preserve_order_repetition_and_selection_snapshots` and `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` call `ctx.ask::<Answer>()`. The first then moves to node insertions (`NodePhase`).\n- **Both states implement `IntoFuture` and produce a `Send` future.**\n  - `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` calls `builder.into_future()` on a ContextPhase builder and runs `assert_send`. That builder was built from a non-Send context value.\n  - `explicit_insertions_preserve_order_repetition_and_selection_snapshots` does the same on a NodePhase builder.\n  - `shared_context_allows_independent_concurrent_agent_calls` joins two futures, one per phase.\n- **Output is `Result<R, ValidationError<D::Error>>`.**\n  - Success: `answer.n` is asserted in the explicit-insertions test and in the concurrent test.\n  - Error variants: `queued_reads_selection_and_rendering_fail_before_agent_invocation` asserts `ValidationError::Graph(\"read\")`, `Graph(\"edges\")` and `Graph(\"render\")`. `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` asserts `ValidationError::NoAgentConfigured`. These assertions also pin the error type.\n- **Awaiting executes the request, even with no contexts or insertions.** `ctx.ask::<Answer>().await` and `.context(Vec::<String>::new()).await` run in the contexts test. Their requests have empty text and no node contents, so the request was assembled and sent. The NodePhase case with no contexts is covered in the dropped-builders test, where the await reaches the agent check and returns `NoAgentConfigured`. Other awaits are asserted in the explicit-insertions and concurrent tests.\n- **Building does not invoke an agent.**\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` drops a NodePhase builder and asserts that no agent requests were made.\n  - `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` drops builders and asserts that no reads or selections happened.\n  - The contexts test builds a ContextPhase builder before awaiting it. Its later requests, `requests[1..=2]`, are the empty-text ones. A request made at build time would have shifted them, so build-time invocation is ruled out there.\n\nI found no unmet obligation. Detailed ordering, caching and rendering behavior belongs to the refining requirements, which these tests also mark."
+        "rationale": "The subject has these observable obligations. Each maps to a marked test.\n\n- **`ask` starts a builder, and both phases await to `Result<R, ValidationError<_>>`.**\n  - `explicit_insertions_preserve_order_repetition_and_selection_snapshots` awaits a node-phase builder and unwraps `Answer`. It asserts `answer.n == 7`, the request contents and the dependencies.\n  - `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` awaits a context-phase builder.\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` matches `Err(ValidationError::Graph(..))` on awaited node-phase builders.\n  - `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` matches `Err(ValidationError::NoAgentConfigured)`.\n  - Together these cover the Ok and Err output types for both phases.\n- **The future is `Send`.** `assert_send(&future)` is applied to the node-phase future (`explicit_insertions_...`) and the context-phase future (`contexts_render_once_...`). `shared_context_allows_independent_concurrent_agent_calls` also runs the futures concurrently.\n- **Awaiting executes the assembled request, even with no contexts or node insertions.** In `contexts_render_once_...`, `ctx.ask::<Answer>().await` and `.context(Vec::<String>::new()).await` both reach the agent. The test asserts an empty prompt, the empty-text fingerprint and no contents. Requests are also asserted in the other tests. The concurrency test asserts two agent requests.\n- **Building does not invoke an agent.**\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` builds and drops a builder, then asserts the agent's requests are empty. It also asserts the agent call count is unchanged after the failure cases.\n  - `dropped_builders_and_missing_agents_...` builds and drops a builder, then asserts there are no dependencies, reads or selections.\n\nI found no obligation without a test, and no assertion that contradicts the requirement. The sub-requirements (rendering, submission, caching, phases) are covered by their own requirements and need no test here."
       }
     }
   },
@@ -469,6 +459,23 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/procedure.rs"
             },
+            "selector": "struct[Ask]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b38a7967586a6b57f32ac9441bea1003e46964014583c1dbc2797f9896771465"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
             "selector": "struct[ContextPhase]"
           }
         },
@@ -492,23 +499,6 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "527ee6b89b350999503c7587571996ebcefc8e2e11f3fa726e4a07e4e3861e04"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "struct[Ask]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "b38a7967586a6b57f32ac9441bea1003e46964014583c1dbc2797f9896771465"
         }
       ]
     },
@@ -593,41 +583,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "16e5d66c127375503160b7357b3aab780341b16eb17adf36510391e372907734"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
-            },
-            "selector": "fn[contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text]/fn[assert_send]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "b819caeb10a2f7be090c2d78f029a7946df5f321bcdfe178f6c070767fad2694"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
-            },
-            "selector": "fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]/fn[assert_send]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "b819caeb10a2f7be090c2d78f029a7946df5f321bcdfe178f6c070767fad2694"
+          "value": "c619fbf659ef4402ae73ba7b22f1801483210fabdeda3a6ef8decf65e6c303ae"
         }
       ]
     }

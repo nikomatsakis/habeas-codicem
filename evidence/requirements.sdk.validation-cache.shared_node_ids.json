@@ -1,8 +1,8 @@
 {
   "requirement": "Interning through any clone makes the handle and its data available through every clone. A fresh cache has its own assignments.",
   "determination": true,
-  "rationale": "structural: `requirements.sdk.validation-cache.shared_node_ids` has two sentences, and both describe behavior you can observe:\n\n- \"Interning through any clone makes the handle and its data available through every clone.\"\n- \"A fresh cache has its own assignments.\"\n\nThe text names no library, type, field, signature or interface that the implementation must use. The `Arc`-style shared state is therefore not prescribed. Any design that gives these observable results satisfies the text, for example:\n\n- shared state behind a different pointer or lock type;\n- a central registry keyed by cache identity;\n- clones that synchronize through some other mechanism.\n\nSince each of these keeps the same observable results, how clones share state is a discretionary choice.\n\nThe structural obligations around the cache type belong to sibling requirements. `requirements.sdk.validation-cache.ValidationCache` declares the type, the `Clone` and `Default` implementations, and that cloning shares state in constant time. `requirements.sdk.validation-cache.intern_node` declares the `intern_node` signature. Those are judged against their own text, not this one.\n\nNo implementation roots were supplied and none are needed. Verifying this requirement is a test-adequacy question, which is outside this assessment.\n\nbehavioral: **Obligations**\n1. Interning through any clone makes the handle available through every clone.\n2. Interning through any clone makes the data available through every clone.\n3. A fresh cache has its own assignments.\n\n**Coverage**\n- Obligations 1 and 2 are covered by `crates/trust-but-verify/tests/contracts.rs#fn[clones_interning_the_same_data_concurrently_get_one_handle]`.\n  - Four clones intern `Node(42)` at the same time.\n  - The test asserts that all four get one identical handle.\n  - The original cache, which never interned that data itself, then returns `Node(42)` from `node_data`. A per-clone data store would fail this assertion.\n  - Interning `Node(43)` gives a different handle, so the shared assignments stay distinct.\n- `crates/trust-but-verify/tests/contracts.rs#fn[saved_node_and_edge_inputs_survive_a_different_handle_allocation_order]` covers the opposite direction. The subject is interned through the original `first` cache. A clone, `first.clone().cache()`, interning `Node(1)` returns that same handle, which shows the handle is shared. Interning through the original also makes the handle usable later in the persisted dependencies.\n- Obligation 3 is covered by the same second test.\n  - A fresh `ValidationCache::new()` returns `None` from `node_data(subject)`, so it does not have the original's assignments.\n  - After interning `Node(2)` in the fresh cache, the test asserts the new handle differs from the original's (`assert_ne!(fresh_target, target)`).\n  - Loaded dependencies use the fresh handle.\n\n**Residual note**\nNo test reads data through a second clone after interning through the original. Handle sharing in that direction is asserted, and data sharing is asserted from the clones to the original. The shared state is a single store, so this does not leave a plausible violation uncaught.\n\nThe tests are adequate and carry {test} markers for the subject.",
-  "references": "ec1bb3c54d8cee3c2dc39e0bdb0dfb91af04710276997c588e543b8524e580ac",
+  "rationale": "structural: The structural obligation is that interning through any clone makes the handle and its data visible through every clone, and that a fresh cache has its own assignments. An alternative that deep-copies the node table in `clone` would keep single-handle behavior but break the sharing clause. An alternative whose `default` returned a global or shared table would break the fresh-cache clause. Both clauses are therefore structural.\n\nThe supplied roots cover them:\n- `crates/trust-but-verify/src/domain.rs#struct[ValidationCache]` stores the node table as `Arc<Mutex<IndexSet<Arc<D::NodeData>>>>`, and the handle-to-data mapping lives in that same table. `source_addresses` is also an `Arc<Mutex<..>>`.\n- `impl[ValidationCache<D>/Clone]/fn[clone]` clones the `Arc`s for `nodes` and `source_addresses`. Every clone therefore shares one table.\n- `impl[ValidationCache<D>/Default]/fn[default]` builds a new `nodes` and `source_addresses` with `Default::default()`. A fresh cache therefore gets its own assignments.\n\n`intern_node` and `node_data` both operate through `self.nodes`. They are reached from the shared state and need no separate marker.\n\nbehavioral: Both marked tests cover the two obligations in `requirements.sdk.validation-cache.shared_node_ids`.\n\n1. **Interning through any clone makes the handle and its data available through every clone.**\n   - `crates/trust-but-verify/tests/contracts.rs#fn[clones_interning_the_same_data_concurrently_get_one_handle]` interns `Node(42)` through four clones in separate threads. It asserts that all four get the same handle.\n   - It then asserts that the original cache's `node_data` returns `Node(42)` for that handle. The data was interned only through clones, so this checks that data interned through a clone is visible through the original.\n   - It also interns `Node(43)` and checks that its handle differs and that both nodes' data still resolves. A handle that is unknown to the cache returns `None`.\n   - `crates/trust-but-verify/tests/contracts.rs#fn[saved_node_and_edge_inputs_survive_a_different_handle_allocation_order]` covers the other direction. It interns `review.source` through the original, then interns `Node(1)` through `first.clone().cache()` and asserts the same handle comes back. That shows the handle assignment is shared.\n\n2. **A fresh cache has its own assignments.**\n   - The second test builds `fresh` with `ValidationCache::new()`. It asserts that `fresh.cache().node_data(subject)` is `None`, so the first cache's handle is unknown there.\n   - It then interns `Node(2)` in the fresh cache and asserts `fresh_target != target`. The two caches allocate handles independently.\n   - Loaded evidence is checked against the fresh handle (`fresh_target`).\n\nThe tests assert these outcomes directly, so a cache that did not share state across clones, or that shared state with a fresh cache, would fail them. I found no uncovered obligation.",
+  "references": "e385040d608715f2f4fc0e772faba83d49f2ffdf82602d7fdae1fcfdbb28a85c",
   "inputs": [
     {
       "requirements": "requirements.sdk.validation-cache.shared_node_ids",
@@ -16,50 +16,34 @@
       ]
     },
     {
-      "requirements": "requirements.sdk.validation-cache.ValidationCache",
-      "matches": [
-        "requirements.sdk.validation-cache.ValidationCache"
-      ],
-      "text": [
-        ":::{req} ValidationCache",
-        "",
-        "`trust_but_verify::domain::ValidationCache` is a concrete, cloneable type.",
-        "Cloning it shares its state and takes constant time in the number of interned nodes and cached outlines.",
-        "",
-        "```rust,ignore",
-        "pub struct ValidationCache<D: Domain> { /* private fields */ }",
-        "```",
-        "",
-        "Trait implementations",
-        "",
-        "```rust,ignore",
-        "impl<D: Domain> Clone for ValidationCache<D>;",
-        "impl<D: Domain> Default for ValidationCache<D>;",
-        "```",
-        ":::"
-      ]
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "struct[ValidationCache]",
+      "hash": "59a1685bcb72103a9b5f6dd2487d6a9ae1fc23b25867b10188cb310a34c24128"
     },
     {
-      "requirements": "requirements.sdk.validation-cache.intern_node",
-      "matches": [
-        "requirements.sdk.validation-cache.intern_node"
-      ],
-      "text": [
-        ":::{req} intern_node",
-        "`intern_node` returns a handle for the supplied node data. Equal data always yields the same handle in this cache, including concurrent calls. Distinct data yields distinct handles.",
-        "",
-        "```rust,ignore",
-        "impl<D: Domain> ValidationCache<D> {",
-        "    pub fn intern_node(&self, data: D::NodeData) -> NodeId<D>;",
-        "}",
-        "```",
-        ":::"
-      ]
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "impl[ValidationCache<D>/Clone]/fn[clone]",
+      "hash": "2a234fd49297f9c1bb1ca3deecbd848da49383a0d8eda254c3b80febdbbb56d6"
+    },
+    {
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "impl[ValidationCache<D>/Default]/fn[default]",
+      "hash": "deec6f4eb70d26d6ad9a664e758474efa29fb5fcb5a79769d07c9e6378d52ead"
+    },
+    {
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "impl[ValidationCache<D>]/fn[intern_node]",
+      "hash": "ecdd24946022e15b14f62bfacdd1aed92ee52c57124325370dae4927532dfa7f"
+    },
+    {
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "impl[ValidationCache<D>]/fn[node_data]",
+      "hash": "b725a307bc950bfd41b741bf6ec0d009440682dcbdca849030d4c7f324e2d24d"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[clones_interning_the_same_data_concurrently_get_one_handle]",
-      "hash": "af70883e072934496676ba4654ee8959ac98216b72e6c9f5912d3e8459f22951"
+      "hash": "2117480869be083528e8600649142bfe570d40f5cb9db2ed99fbf12a0951ac4a"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
@@ -78,7 +62,7 @@
             },
             {
               "scheme": "habeas-reference-set-v1",
-              "value": "ec1bb3c54d8cee3c2dc39e0bdb0dfb91af04710276997c588e543b8524e580ac"
+              "value": "e385040d608715f2f4fc0e772faba83d49f2ffdf82602d7fdae1fcfdbb28a85c"
             }
           ]
         },
@@ -94,43 +78,94 @@
           ]
         },
         {
-          "OutgoingEdges": [
+          "Node": [
             {
-              "Requirement": "requirements.sdk.validation-cache.shared_node_ids"
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/domain.rs"
+                },
+                "selector": "struct[ValidationCache]"
+              }
             },
-            "Implements",
             {
-              "scheme": "node-path-set-sha256-v1",
-              "value": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "59a1685bcb72103a9b5f6dd2487d6a9ae1fc23b25867b10188cb310a34c24128"
             }
           ]
         },
         {
           "Node": [
             {
-              "Requirement": "requirements.sdk.validation-cache.ValidationCache"
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/domain.rs"
+                },
+                "selector": "impl[ValidationCache<D>/Clone]/fn[clone]"
+              }
             },
             {
-              "scheme": "habeas-input-v1",
-              "value": "0a89f17cb0f071e47d27c8d9c2eabe6d0b9d73423dc332226d0003794af2d693"
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "2a234fd49297f9c1bb1ca3deecbd848da49383a0d8eda254c3b80febdbbb56d6"
             }
           ]
         },
         {
           "Node": [
             {
-              "Requirement": "requirements.sdk.validation-cache.intern_node"
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/domain.rs"
+                },
+                "selector": "impl[ValidationCache<D>/Default]/fn[default]"
+              }
             },
             {
-              "scheme": "habeas-input-v1",
-              "value": "543ac9025f7597de527fba5bad725250b1cc1ee3dc242fe4d28b82f6063fb7d4"
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "deec6f4eb70d26d6ad9a664e758474efa29fb5fcb5a79769d07c9e6378d52ead"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/domain.rs"
+                },
+                "selector": "impl[ValidationCache<D>]/fn[intern_node]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "ecdd24946022e15b14f62bfacdd1aed92ee52c57124325370dae4927532dfa7f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/domain.rs"
+                },
+                "selector": "impl[ValidationCache<D>]/fn[node_data]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "b725a307bc950bfd41b741bf6ec0d009440682dcbdca849030d4c7f324e2d24d"
             }
           ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "`requirements.sdk.validation-cache.shared_node_ids` has two sentences, and both describe behavior you can observe:\n\n- \"Interning through any clone makes the handle and its data available through every clone.\"\n- \"A fresh cache has its own assignments.\"\n\nThe text names no library, type, field, signature or interface that the implementation must use. The `Arc`-style shared state is therefore not prescribed. Any design that gives these observable results satisfies the text, for example:\n\n- shared state behind a different pointer or lock type;\n- a central registry keyed by cache identity;\n- clones that synchronize through some other mechanism.\n\nSince each of these keeps the same observable results, how clones share state is a discretionary choice.\n\nThe structural obligations around the cache type belong to sibling requirements. `requirements.sdk.validation-cache.ValidationCache` declares the type, the `Clone` and `Default` implementations, and that cloning shares state in constant time. `requirements.sdk.validation-cache.intern_node` declares the `intern_node` signature. Those are judged against their own text, not this one.\n\nNo implementation roots were supplied and none are needed. Verifying this requirement is a test-adequacy question, which is outside this assessment."
+        "rationale": "The structural obligation is that interning through any clone makes the handle and its data visible through every clone, and that a fresh cache has its own assignments. An alternative that deep-copies the node table in `clone` would keep single-handle behavior but break the sharing clause. An alternative whose `default` returned a global or shared table would break the fresh-cache clause. Both clauses are therefore structural.\n\nThe supplied roots cover them:\n- `crates/trust-but-verify/src/domain.rs#struct[ValidationCache]` stores the node table as `Arc<Mutex<IndexSet<Arc<D::NodeData>>>>`, and the handle-to-data mapping lives in that same table. `source_addresses` is also an `Arc<Mutex<..>>`.\n- `impl[ValidationCache<D>/Clone]/fn[clone]` clones the `Arc`s for `nodes` and `source_addresses`. Every clone therefore shares one table.\n- `impl[ValidationCache<D>/Default]/fn[default]` builds a new `nodes` and `source_addresses` with `Default::default()`. A fresh cache therefore gets its own assignments.\n\n`intern_node` and `node_data` both operate through `self.nodes`. They are reached from the shared state and need no separate marker."
       }
     },
     "behavioral": {
@@ -143,7 +178,7 @@
             },
             {
               "scheme": "habeas-reference-set-v1",
-              "value": "ec1bb3c54d8cee3c2dc39e0bdb0dfb91af04710276997c588e543b8524e580ac"
+              "value": "e385040d608715f2f4fc0e772faba83d49f2ffdf82602d7fdae1fcfdbb28a85c"
             }
           ]
         },
@@ -171,7 +206,7 @@
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "af70883e072934496676ba4654ee8959ac98216b72e6c9f5912d3e8459f22951"
+              "value": "2117480869be083528e8600649142bfe570d40f5cb9db2ed99fbf12a0951ac4a"
             }
           ]
         },
@@ -195,7 +230,7 @@
       ],
       "output": {
         "status": "success",
-        "rationale": "**Obligations**\n1. Interning through any clone makes the handle available through every clone.\n2. Interning through any clone makes the data available through every clone.\n3. A fresh cache has its own assignments.\n\n**Coverage**\n- Obligations 1 and 2 are covered by `crates/trust-but-verify/tests/contracts.rs#fn[clones_interning_the_same_data_concurrently_get_one_handle]`.\n  - Four clones intern `Node(42)` at the same time.\n  - The test asserts that all four get one identical handle.\n  - The original cache, which never interned that data itself, then returns `Node(42)` from `node_data`. A per-clone data store would fail this assertion.\n  - Interning `Node(43)` gives a different handle, so the shared assignments stay distinct.\n- `crates/trust-but-verify/tests/contracts.rs#fn[saved_node_and_edge_inputs_survive_a_different_handle_allocation_order]` covers the opposite direction. The subject is interned through the original `first` cache. A clone, `first.clone().cache()`, interning `Node(1)` returns that same handle, which shows the handle is shared. Interning through the original also makes the handle usable later in the persisted dependencies.\n- Obligation 3 is covered by the same second test.\n  - A fresh `ValidationCache::new()` returns `None` from `node_data(subject)`, so it does not have the original's assignments.\n  - After interning `Node(2)` in the fresh cache, the test asserts the new handle differs from the original's (`assert_ne!(fresh_target, target)`).\n  - Loaded dependencies use the fresh handle.\n\n**Residual note**\nNo test reads data through a second clone after interning through the original. Handle sharing in that direction is asserted, and data sharing is asserted from the clones to the original. The shared state is a single store, so this does not leave a plausible violation uncaught.\n\nThe tests are adequate and carry {test} markers for the subject."
+        "rationale": "Both marked tests cover the two obligations in `requirements.sdk.validation-cache.shared_node_ids`.\n\n1. **Interning through any clone makes the handle and its data available through every clone.**\n   - `crates/trust-but-verify/tests/contracts.rs#fn[clones_interning_the_same_data_concurrently_get_one_handle]` interns `Node(42)` through four clones in separate threads. It asserts that all four get the same handle.\n   - It then asserts that the original cache's `node_data` returns `Node(42)` for that handle. The data was interned only through clones, so this checks that data interned through a clone is visible through the original.\n   - It also interns `Node(43)` and checks that its handle differs and that both nodes' data still resolves. A handle that is unknown to the cache returns `None`.\n   - `crates/trust-but-verify/tests/contracts.rs#fn[saved_node_and_edge_inputs_survive_a_different_handle_allocation_order]` covers the other direction. It interns `review.source` through the original, then interns `Node(1)` through `first.clone().cache()` and asserts the same handle comes back. That shows the handle assignment is shared.\n\n2. **A fresh cache has its own assignments.**\n   - The second test builds `fresh` with `ValidationCache::new()`. It asserts that `fresh.cache().node_data(subject)` is `None`, so the first cache's handle is unknown there.\n   - It then interns `Node(2)` in the fresh cache and asserts `fresh_target != target`. The two caches allocate handles independently.\n   - Loaded evidence is checked against the fresh handle (`fresh_target`).\n\nThe tests assert these outcomes directly, so a cache that did not share state across clones, or that shared state with a fresh cache, would fail them. I found no uncovered obligation."
       }
     }
   },
@@ -209,7 +244,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "ec1bb3c54d8cee3c2dc39e0bdb0dfb91af04710276997c588e543b8524e580ac"
+          "value": "e385040d608715f2f4fc0e772faba83d49f2ffdf82602d7fdae1fcfdbb28a85c"
         }
       ]
     },
@@ -225,36 +260,87 @@
       ]
     },
     {
-      "OutgoingEdges": [
+      "Node": [
         {
-          "Requirement": "requirements.sdk.validation-cache.shared_node_ids"
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "struct[ValidationCache]"
+          }
         },
-        "Implements",
         {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "59a1685bcb72103a9b5f6dd2487d6a9ae1fc23b25867b10188cb310a34c24128"
         }
       ]
     },
     {
       "Node": [
         {
-          "Requirement": "requirements.sdk.validation-cache.ValidationCache"
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "impl[ValidationCache<D>/Clone]/fn[clone]"
+          }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "0a89f17cb0f071e47d27c8d9c2eabe6d0b9d73423dc332226d0003794af2d693"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "2a234fd49297f9c1bb1ca3deecbd848da49383a0d8eda254c3b80febdbbb56d6"
         }
       ]
     },
     {
       "Node": [
         {
-          "Requirement": "requirements.sdk.validation-cache.intern_node"
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "impl[ValidationCache<D>/Default]/fn[default]"
+          }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "543ac9025f7597de527fba5bad725250b1cc1ee3dc242fe4d28b82f6063fb7d4"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "deec6f4eb70d26d6ad9a664e758474efa29fb5fcb5a79769d07c9e6378d52ead"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "impl[ValidationCache<D>]/fn[intern_node]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "ecdd24946022e15b14f62bfacdd1aed92ee52c57124325370dae4927532dfa7f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "impl[ValidationCache<D>]/fn[node_data]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b725a307bc950bfd41b741bf6ec0d009440682dcbdca849030d4c7f324e2d24d"
         }
       ]
     },
@@ -271,7 +357,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "af70883e072934496676ba4654ee8959ac98216b72e6c9f5912d3e8459f22951"
+          "value": "2117480869be083528e8600649142bfe570d40f5cb9db2ed99fbf12a0951ac4a"
         }
       ]
     },

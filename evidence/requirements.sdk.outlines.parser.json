@@ -1,7 +1,7 @@
 {
   "requirement": "`OutlineContent::from_path` returns the root contents for a file using the\nsupplied [validation cache](validation-cache.md). `from_id` uses the same\ncached file and selects the addressed item. Both infer\nthe language from the filename under\n{cite}`requirements.sdk.outlines.defaults`.\n\n```rust,ignore\npub struct OutlineContent { /* private fields */ }\n\nimpl OutlineContent {\n    pub fn from_path(\n        cache: &ValidationCache<impl Domain>,\n        path: impl AsRef<Path>,\n    ) -> Result<Self, OutlineError>;\n    pub fn from_id(\n        cache: &ValidationCache<impl Domain>,\n        id: &OutlineData,\n    ) -> Result<Self, OutlineError>;\n    pub fn from_source(\n        cache: &ValidationCache<impl Domain>,\n        filename: impl AsRef<Path>,\n        source: Arc<str>,\n    ) -> Result<Self, OutlineError>;\n    pub fn from_path_with<L: OutlineLang>(\n        cache: &ValidationCache<impl Domain>,\n        language: &L,\n        path: impl AsRef<Path>,\n    ) -> Result<Self, OutlineError>;\n    pub fn from_source_with<L: OutlineLang>(\n        cache: &ValidationCache<impl Domain>,\n        language: &L,\n        filename: impl AsRef<Path>,\n        source: Arc<str>,\n    ) -> Result<Self, OutlineError>;\n    pub fn select(&self, selector: &str) -> Result<Self, OutlineError>;\n    pub fn id(&self) -> &OutlineData;\n    pub fn text(&self) -> &str;\n    pub fn source_span(&self, span: Span) -> Option<&str>;\n    pub fn source_span_redacted(&self, span: Span) -> Option<Cow<'_, str>>;\n    pub fn outline(&self) -> &Outline;\n    pub fn language(&self) -> &str;\n    pub fn structural_hash(&self) -> &str;\n    pub fn fingerprint_scheme(&self) -> &str;\n}\n```\n\nTrait implementations\n\n```rust,ignore\nimpl Clone for OutlineContent;\nimpl Debug for OutlineContent;\nimpl NodeContents for OutlineContent;\n```",
   "determination": true,
-  "rationale": "structural: **Structural obligations in `requirements.sdk.outlines.parser`**\n\n1. **Public API signatures.** The rust block prescribes `OutlineContent` with private fields and the signatures of `from_path`, `from_id`, `from_source`, `from_path_with`, `from_source_with`, `select`, `id`, `text`, `source_span`, `source_span_redacted`, `outline`, `language`, `structural_hash` and `fingerprint_scheme`.\n   - Alternative that violates it: a constructor that takes no `&ValidationCache<impl Domain>`, or that returns `Option` instead of `Result<Self, OutlineError>`. It could produce the same results in the common case but would not match the prescribed API.\n   - Evidence: the `impl[OutlineContent]` root declares every one of these functions with the stated signatures, including `from_path`, `from_id`, `from_source`, `from_path_with`, `from_source_with` and `select`. The struct root `struct[OutlineContent]` has only private fields (`id`, `snapshot`, `selected`).\n\n2. **Trait implementations.** The text lists `Clone`, `Debug` and `NodeContents` for `OutlineContent`.\n   - Alternative that violates it: removing one of these impls and exposing the data through inherent methods instead.\n   - Evidence: `struct[OutlineContent]` has `#[derive(Clone)]`. `impl[OutlineContent/std::fmt::Debug]` supplies `Debug`. `impl[OutlineContent/NodeContents]` supplies `NodeContents`, with `fingerprint` and `format`.\n\n3. **Use of the supplied validation cache, and `from_id` reusing the cached file.** The text says \"returns the root contents for a file using the supplied validation cache\" and \"`from_id` uses the same cached file and selects the addressed item\".\n   - Alternative that violates it: `from_id` re-reading the file from disk, or keeping a private cache.\n   - Evidence: `from_path` locks `cache.outlines`, returns a cached outline if one exists, reuses the cached source when it has one, and inserts the result back into the cache. `from_id` is `Self::from_path(cache, &id.path)?.select(&id.selector)`, so it delegates to `from_path` and then selects.\n\n**Not structural.** Language inference from the filename is covered by `requirements.sdk.outlines.defaults`, which the text only cites. Its default-language mapping and plain-text fallback are behavior.\n\n**Coverage.** All four supplied roots carry the `parser` marker and map to these obligations. The helpers `parse_source`, `parse_with` and `prepare` are reached from the marked `impl[OutlineContent]`, so they need no marker of their own. I found no missing structural evidence.\n\nbehavioral: The reviewed tests cover the behavioral obligations of `requirements.sdk.outlines.parser`.\n\n**Obligations I derived**\n1. `from_path` returns the root contents of a file and uses the supplied validation cache.\n2. `from_id` uses the same cached file and selects the addressed item.\n3. Both infer the language from the filename under `requirements.sdk.outlines.defaults`. That requirement is only cited, so I did not reassess it. I checked that the tests apply inference in this subject's case.\n4. The listed signatures and trait implementations are structural.\n\n**Coverage**\n- **`from_path` root contents and cache use.**\n  - `crates/trust-but-verify/tests/contracts.rs#fn[domain_clones_share_the_first_successful_outline_for_each_path]` first shows `from_path` failing for a missing file.\n  - It then creates the file and asserts that `from_path` returns root contents with an empty selector and the original text.\n  - After the file is edited, a `from_path` call through the same cache still returns the original snapshot. The test checks this with `ptr::eq` on `outline()` and with equal fingerprints.\n  - A call through a different cache (`Application::default().cache()`) sees the new content. This shows the supplied cache is the one used.\n  - Even after both files are removed, the cloned domain's cache still returns the cached `other.rs` text.\n- **`from_id` uses the same cached file.** The same test removes the file from disk. `from_id(peer.cache(), id)` for `fn[first]` still returns `fn first() {}`, which can only come from the cached snapshot. `crates/trust-but-verify/tests/outline_content.rs#fn[file_constructors_infer_the_language_and_return_addressed_contents]` checks that `from_id` returns the addressed item. It checks the item's id, text and fingerprint against `select` on the root and on the `from_source` result.\n- **`from_id` selection.** `crates/trust-but-verify/tests/outline_content.rs#fn[selected_contents_outlive_handles_and_later_file_edits]` selects a plain-text line by id and asserts the id and text. It also checks that a later `from_id` with a fresh cache fails once the file has changed.\n- **Language inference.**\n  - `fn[file_constructors_infer_the_language_and_return_addressed_contents]` uses `AUTH.RS`. This exercises case-insensitive Rust inference. It asserts the `rust-structural-v1` scheme and the Rust item selectors `\"\"` and `fn[check_token]`.\n  - `fn[selected_contents_outlive_handles_and_later_file_edits]` uses `notes.unknown`. This exercises the plain-text fallback, and the test asserts a file root plus one item per line.\n- **Signatures and trait implementations.** `crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]` compiles the Habeas consumer against the SDK and compares the rustdoc export inventory with the specification. The `Debug` and `Clone` implementations are exercised in the tests above, through `format!(\"{selected:?}\")` and `cached.clone()`.\n\nThe other listed methods (`from_source`, `from_path_with`, `from_source_with`, `source_span` and `source_span_redacted`) carry no behavioral obligation in this text beyond their signatures. Those signatures fall under the structural public-API check.\n\nNo gaps found.",
+  "rationale": "structural: The structural obligations in `requirements.sdk.outlines.parser` are covered by the supplied roots in `crates/trust-but-verify/src/outline/contents.rs`. I read the root items and the constructors they reach. I did not read the bodies of `select`, `id`, `text`, `source_span`, `source_span_redacted`, `outline`, `language`, `structural_hash`, `fingerprint_scheme`, `fingerprint` or `format`. For those I relied on the signature headers in the outline listings.\n\nObligations and where they are met:\n- **Public type with private fields.** The text declares `pub struct OutlineContent { /* private fields */ }`. `struct[OutlineContent]` is `pub` and has only private fields: `id`, `snapshot` and `selected`. A public-field version would break the stated shape.\n- **Public API signatures.** The text lists `from_path`, `from_id`, `from_source`, `from_path_with`, `from_source_with`, `select`, `id`, `text`, `source_span`, `source_span_redacted`, `outline`, `language`, `structural_hash` and `fingerprint_scheme`. `impl[OutlineContent]` declares each with the prescribed signature:\n  - Each constructor takes `&ValidationCache<impl Domain>`.\n  - The `_with` forms use `<L: OutlineLang>`.\n  - The accessors return `&OutlineData`, `&str`, `Option<&str>`, `Option<Cow<'_, str>>` and `&Outline`, as listed.\n- **`from_id` delegation.** The text says `from_id` \"uses the same cached file and selects the addressed item\". `from_id` is `Self::from_path(cache, &id.path)?.select(&id.selector)`. An implementation that re-read the file would still return the same item but would not use the cached file, so the delegation is a real obligation, and it is met.\n- **`from_path` uses the supplied cache.** `from_path` reads and writes `cache.outlines` and returns the cached outline when one exists.\n- **Language inference from the filename.** `from_path` and `from_source` go through `parse_source`. That function looks up the language with `languages::registry().for_path(filename)` and falls back to `languages::PlainText`. This follows the cited `requirements.sdk.outlines.defaults`. I treated that requirement as context only. Which languages and extensions it names is a behavioral matter.\n- **Trait implementations.** The text lists `Clone`, `Debug` and `NodeContents`. `OutlineContent` has `#[derive(Clone)]`, `impl std::fmt::Debug for OutlineContent` and `impl NodeContents for OutlineContent`. The last one defines `fingerprint` and `format`.\n\nThe four supplied roots are `struct[OutlineContent]`, `impl[OutlineContent]`, `impl[OutlineContent/std::fmt::Debug]` and `impl[OutlineContent/NodeContents]`. Together they carry all of these obligations. The helpers `parse_source`, `parse_with`, `prepare` and `at_offset` are reached from the marked `impl[OutlineContent]`, so they need no markers of their own.\n\nbehavioral: The marked tests cover the observable obligations of `requirements.sdk.outlines.parser`.\n\n**`from_path` returns root contents for a file.**\n- `outline_content.rs#fn[file_constructors_infer_the_language_and_return_addressed_contents]` asserts that `from_path` gives an empty root selector, the full source text, and the item selectors `[\"\", \"fn[check_token]\"]`.\n- `outline_content.rs#fn[selected_contents_outlive_handles_and_later_file_edits]` makes the same root assertions for a plain-text file. It also checks `select(\"\")`, which returns the root with the full text.\n\n**`from_path` uses the supplied validation cache.** `contracts.rs#fn[domain_clones_share_the_first_successful_outline_for_each_path]` covers this in four ways:\n- A failed first read is not cached.\n- The first successful read is cached. After the file is edited, `from_path` on the same cache returns the same outline (`std::ptr::eq`), the original text and the original fingerprint.\n- A different cache sees the new content.\n- Another path's first read is cached, so it is still readable after the file is deleted.\n\n**`from_id` uses the same cached file and selects the addressed item.**\n- In the contracts test, `from_id(peer.cache(), ...)` for `fn[first]` returns `fn first() {}` after the file was edited and then deleted. That shows it reuses the cache populated by `from_path`.\n- `from_id` returns the requested item in the outline_content tests. They assert `id()`, `text()` and fingerprint equality with `select` on the root, and with `select` on `from_source` contents.\n\n**Language inference, applying the cited `requirements.sdk.outlines.defaults`.**\n- Case-insensitive extension matching: a file named `AUTH.RS` is parsed as Rust through both `from_path` and `from_id`. The test asserts the `rust-structural-v1` scheme and the `fn[check_token]` item.\n- Plain-text fallback: `notes.unknown` yields a root plus one item per nonblank line. The test asserts `items.len()==3` and the text `second`, through both `from_path` and `from_id`.\n- The other listed languages are covered by the defaults requirement's own tests. They are not reassessed here.\n\n**Trait implementations.**\n- `Clone` is exercised by `cached.clone()`, and the clone is still usable after the originals are dropped.\n- `Debug` is asserted with `format!(\"{selected:?}\")`.\n- `NodeContents` is exercised through `format()` and `fingerprint()`.\n\n**Remaining signatures.** `from_source`, `id`, `text`, `outline`, `structural_hash` and `fingerprint_scheme` are used and asserted in these tests. `public_api.rs#fn[public_exports_match_the_appendix]` checks the exported inventory and that the consumer crate compiles against it. The requirement text gives no further behavior for `from_path_with`, `from_source_with`, `source_span`, `source_span_redacted` and `language`. Their signatures are covered by the public-API test, and there is no independent behavioral obligation here.\n\nI found no behavioral gaps or marking gaps.",
   "references": "d904b4ba0726f15aa3d2346853861a13ef5d297b2d5b196808447e2a4bc992a1",
   "inputs": [
     {
@@ -107,11 +107,6 @@
     },
     {
       "file": "crates/trust-but-verify/src/outline/contents.rs",
-      "item": "",
-      "hash": "25e0e2dbc62301cef341e55828d2a87eefa1488d340b1781b256a6a384922d32"
-    },
-    {
-      "file": "crates/trust-but-verify/src/outline/contents.rs",
       "item": "impl[OutlineContent]/fn[from_path]",
       "hash": "e4cc09032539d0b207e66f9da071a2563f7d438566d5055b78bebef6f75c5dc6"
     },
@@ -127,11 +122,6 @@
     },
     {
       "file": "crates/trust-but-verify/src/outline/contents.rs",
-      "item": "impl[OutlineContent]/fn[parse_source]",
-      "hash": "f05ed9867319bc27d806ab1c82cab6098dd58edb36d4712bacaf8be2a496dc03"
-    },
-    {
-      "file": "crates/trust-but-verify/src/outline/contents.rs",
       "item": "impl[OutlineContent]/fn[from_path_with]",
       "hash": "8e946d850d1c555a32768446f702e58c1f3a155300b006954eea3861403077ef"
     },
@@ -142,8 +132,8 @@
     },
     {
       "file": "crates/trust-but-verify/src/outline/contents.rs",
-      "item": "impl[OutlineContent]/fn[select]",
-      "hash": "33d1beebc0df0d646a2f26046abb75fab11069b321345e7638c8c647823e1afc"
+      "item": "impl[OutlineContent]/fn[parse_source]",
+      "hash": "f05ed9867319bc27d806ab1c82cab6098dd58edb36d4712bacaf8be2a496dc03"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
@@ -279,23 +269,6 @@
                   "scheme": "repo",
                   "location": "crates/trust-but-verify/src/outline/contents.rs"
                 },
-                "selector": ""
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "93c94dcd53345db188979e72f436552e0aa093a876a5b9c89097cf2b5cde423f"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/outline/contents.rs"
-                },
                 "selector": "impl[OutlineContent]/fn[from_path]"
               }
             },
@@ -347,23 +320,6 @@
                   "scheme": "repo",
                   "location": "crates/trust-but-verify/src/outline/contents.rs"
                 },
-                "selector": "impl[OutlineContent]/fn[parse_source]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "f05ed9867319bc27d806ab1c82cab6098dd58edb36d4712bacaf8be2a496dc03"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/outline/contents.rs"
-                },
                 "selector": "impl[OutlineContent]/fn[from_path_with]"
               }
             },
@@ -398,19 +354,19 @@
                   "scheme": "repo",
                   "location": "crates/trust-but-verify/src/outline/contents.rs"
                 },
-                "selector": "impl[OutlineContent]/fn[select]"
+                "selector": "impl[OutlineContent]/fn[parse_source]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "33d1beebc0df0d646a2f26046abb75fab11069b321345e7638c8c647823e1afc"
+              "value": "f05ed9867319bc27d806ab1c82cab6098dd58edb36d4712bacaf8be2a496dc03"
             }
           ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "**Structural obligations in `requirements.sdk.outlines.parser`**\n\n1. **Public API signatures.** The rust block prescribes `OutlineContent` with private fields and the signatures of `from_path`, `from_id`, `from_source`, `from_path_with`, `from_source_with`, `select`, `id`, `text`, `source_span`, `source_span_redacted`, `outline`, `language`, `structural_hash` and `fingerprint_scheme`.\n   - Alternative that violates it: a constructor that takes no `&ValidationCache<impl Domain>`, or that returns `Option` instead of `Result<Self, OutlineError>`. It could produce the same results in the common case but would not match the prescribed API.\n   - Evidence: the `impl[OutlineContent]` root declares every one of these functions with the stated signatures, including `from_path`, `from_id`, `from_source`, `from_path_with`, `from_source_with` and `select`. The struct root `struct[OutlineContent]` has only private fields (`id`, `snapshot`, `selected`).\n\n2. **Trait implementations.** The text lists `Clone`, `Debug` and `NodeContents` for `OutlineContent`.\n   - Alternative that violates it: removing one of these impls and exposing the data through inherent methods instead.\n   - Evidence: `struct[OutlineContent]` has `#[derive(Clone)]`. `impl[OutlineContent/std::fmt::Debug]` supplies `Debug`. `impl[OutlineContent/NodeContents]` supplies `NodeContents`, with `fingerprint` and `format`.\n\n3. **Use of the supplied validation cache, and `from_id` reusing the cached file.** The text says \"returns the root contents for a file using the supplied validation cache\" and \"`from_id` uses the same cached file and selects the addressed item\".\n   - Alternative that violates it: `from_id` re-reading the file from disk, or keeping a private cache.\n   - Evidence: `from_path` locks `cache.outlines`, returns a cached outline if one exists, reuses the cached source when it has one, and inserts the result back into the cache. `from_id` is `Self::from_path(cache, &id.path)?.select(&id.selector)`, so it delegates to `from_path` and then selects.\n\n**Not structural.** Language inference from the filename is covered by `requirements.sdk.outlines.defaults`, which the text only cites. Its default-language mapping and plain-text fallback are behavior.\n\n**Coverage.** All four supplied roots carry the `parser` marker and map to these obligations. The helpers `parse_source`, `parse_with` and `prepare` are reached from the marked `impl[OutlineContent]`, so they need no marker of their own. I found no missing structural evidence."
+        "rationale": "The structural obligations in `requirements.sdk.outlines.parser` are covered by the supplied roots in `crates/trust-but-verify/src/outline/contents.rs`. I read the root items and the constructors they reach. I did not read the bodies of `select`, `id`, `text`, `source_span`, `source_span_redacted`, `outline`, `language`, `structural_hash`, `fingerprint_scheme`, `fingerprint` or `format`. For those I relied on the signature headers in the outline listings.\n\nObligations and where they are met:\n- **Public type with private fields.** The text declares `pub struct OutlineContent { /* private fields */ }`. `struct[OutlineContent]` is `pub` and has only private fields: `id`, `snapshot` and `selected`. A public-field version would break the stated shape.\n- **Public API signatures.** The text lists `from_path`, `from_id`, `from_source`, `from_path_with`, `from_source_with`, `select`, `id`, `text`, `source_span`, `source_span_redacted`, `outline`, `language`, `structural_hash` and `fingerprint_scheme`. `impl[OutlineContent]` declares each with the prescribed signature:\n  - Each constructor takes `&ValidationCache<impl Domain>`.\n  - The `_with` forms use `<L: OutlineLang>`.\n  - The accessors return `&OutlineData`, `&str`, `Option<&str>`, `Option<Cow<'_, str>>` and `&Outline`, as listed.\n- **`from_id` delegation.** The text says `from_id` \"uses the same cached file and selects the addressed item\". `from_id` is `Self::from_path(cache, &id.path)?.select(&id.selector)`. An implementation that re-read the file would still return the same item but would not use the cached file, so the delegation is a real obligation, and it is met.\n- **`from_path` uses the supplied cache.** `from_path` reads and writes `cache.outlines` and returns the cached outline when one exists.\n- **Language inference from the filename.** `from_path` and `from_source` go through `parse_source`. That function looks up the language with `languages::registry().for_path(filename)` and falls back to `languages::PlainText`. This follows the cited `requirements.sdk.outlines.defaults`. I treated that requirement as context only. Which languages and extensions it names is a behavioral matter.\n- **Trait implementations.** The text lists `Clone`, `Debug` and `NodeContents`. `OutlineContent` has `#[derive(Clone)]`, `impl std::fmt::Debug for OutlineContent` and `impl NodeContents for OutlineContent`. The last one defines `fingerprint` and `format`.\n\nThe four supplied roots are `struct[OutlineContent]`, `impl[OutlineContent]`, `impl[OutlineContent/std::fmt::Debug]` and `impl[OutlineContent/NodeContents]`. Together they carry all of these obligations. The helpers `parse_source`, `parse_with`, `prepare` and `at_offset` are reached from the marked `impl[OutlineContent]`, so they need no markers of their own."
       }
     },
     "behavioral": {
@@ -520,7 +476,7 @@
       ],
       "output": {
         "status": "success",
-        "rationale": "The reviewed tests cover the behavioral obligations of `requirements.sdk.outlines.parser`.\n\n**Obligations I derived**\n1. `from_path` returns the root contents of a file and uses the supplied validation cache.\n2. `from_id` uses the same cached file and selects the addressed item.\n3. Both infer the language from the filename under `requirements.sdk.outlines.defaults`. That requirement is only cited, so I did not reassess it. I checked that the tests apply inference in this subject's case.\n4. The listed signatures and trait implementations are structural.\n\n**Coverage**\n- **`from_path` root contents and cache use.**\n  - `crates/trust-but-verify/tests/contracts.rs#fn[domain_clones_share_the_first_successful_outline_for_each_path]` first shows `from_path` failing for a missing file.\n  - It then creates the file and asserts that `from_path` returns root contents with an empty selector and the original text.\n  - After the file is edited, a `from_path` call through the same cache still returns the original snapshot. The test checks this with `ptr::eq` on `outline()` and with equal fingerprints.\n  - A call through a different cache (`Application::default().cache()`) sees the new content. This shows the supplied cache is the one used.\n  - Even after both files are removed, the cloned domain's cache still returns the cached `other.rs` text.\n- **`from_id` uses the same cached file.** The same test removes the file from disk. `from_id(peer.cache(), id)` for `fn[first]` still returns `fn first() {}`, which can only come from the cached snapshot. `crates/trust-but-verify/tests/outline_content.rs#fn[file_constructors_infer_the_language_and_return_addressed_contents]` checks that `from_id` returns the addressed item. It checks the item's id, text and fingerprint against `select` on the root and on the `from_source` result.\n- **`from_id` selection.** `crates/trust-but-verify/tests/outline_content.rs#fn[selected_contents_outlive_handles_and_later_file_edits]` selects a plain-text line by id and asserts the id and text. It also checks that a later `from_id` with a fresh cache fails once the file has changed.\n- **Language inference.**\n  - `fn[file_constructors_infer_the_language_and_return_addressed_contents]` uses `AUTH.RS`. This exercises case-insensitive Rust inference. It asserts the `rust-structural-v1` scheme and the Rust item selectors `\"\"` and `fn[check_token]`.\n  - `fn[selected_contents_outlive_handles_and_later_file_edits]` uses `notes.unknown`. This exercises the plain-text fallback, and the test asserts a file root plus one item per line.\n- **Signatures and trait implementations.** `crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]` compiles the Habeas consumer against the SDK and compares the rustdoc export inventory with the specification. The `Debug` and `Clone` implementations are exercised in the tests above, through `format!(\"{selected:?}\")` and `cached.clone()`.\n\nThe other listed methods (`from_source`, `from_path_with`, `from_source_with`, `source_span` and `source_span_redacted`) carry no behavioral obligation in this text beyond their signatures. Those signatures fall under the structural public-API check.\n\nNo gaps found."
+        "rationale": "The marked tests cover the observable obligations of `requirements.sdk.outlines.parser`.\n\n**`from_path` returns root contents for a file.**\n- `outline_content.rs#fn[file_constructors_infer_the_language_and_return_addressed_contents]` asserts that `from_path` gives an empty root selector, the full source text, and the item selectors `[\"\", \"fn[check_token]\"]`.\n- `outline_content.rs#fn[selected_contents_outlive_handles_and_later_file_edits]` makes the same root assertions for a plain-text file. It also checks `select(\"\")`, which returns the root with the full text.\n\n**`from_path` uses the supplied validation cache.** `contracts.rs#fn[domain_clones_share_the_first_successful_outline_for_each_path]` covers this in four ways:\n- A failed first read is not cached.\n- The first successful read is cached. After the file is edited, `from_path` on the same cache returns the same outline (`std::ptr::eq`), the original text and the original fingerprint.\n- A different cache sees the new content.\n- Another path's first read is cached, so it is still readable after the file is deleted.\n\n**`from_id` uses the same cached file and selects the addressed item.**\n- In the contracts test, `from_id(peer.cache(), ...)` for `fn[first]` returns `fn first() {}` after the file was edited and then deleted. That shows it reuses the cache populated by `from_path`.\n- `from_id` returns the requested item in the outline_content tests. They assert `id()`, `text()` and fingerprint equality with `select` on the root, and with `select` on `from_source` contents.\n\n**Language inference, applying the cited `requirements.sdk.outlines.defaults`.**\n- Case-insensitive extension matching: a file named `AUTH.RS` is parsed as Rust through both `from_path` and `from_id`. The test asserts the `rust-structural-v1` scheme and the `fn[check_token]` item.\n- Plain-text fallback: `notes.unknown` yields a root plus one item per nonblank line. The test asserts `items.len()==3` and the text `second`, through both `from_path` and `from_id`.\n- The other listed languages are covered by the defaults requirement's own tests. They are not reassessed here.\n\n**Trait implementations.**\n- `Clone` is exercised by `cached.clone()`, and the clone is still usable after the originals are dropped.\n- `Debug` is asserted with `format!(\"{selected:?}\")`.\n- `NodeContents` is exercised through `format()` and `fingerprint()`.\n\n**Remaining signatures.** `from_source`, `id`, `text`, `outline`, `structural_hash` and `fingerprint_scheme` are used and asserted in these tests. `public_api.rs#fn[public_exports_match_the_appendix]` checks the exported inventory and that the consumer crate compiles against it. The requirement text gives no further behavior for `from_path_with`, `from_source_with`, `source_span`, `source_span_redacted` and `language`. Their signatures are covered by the public-API test, and there is no independent behavioral obligation here.\n\nI found no behavioral gaps or marking gaps."
       }
     }
   },
@@ -636,23 +592,6 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/outline/contents.rs"
             },
-            "selector": ""
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "93c94dcd53345db188979e72f436552e0aa093a876a5b9c89097cf2b5cde423f"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/outline/contents.rs"
-            },
             "selector": "impl[OutlineContent]/fn[from_path]"
           }
         },
@@ -704,23 +643,6 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/outline/contents.rs"
             },
-            "selector": "impl[OutlineContent]/fn[parse_source]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "f05ed9867319bc27d806ab1c82cab6098dd58edb36d4712bacaf8be2a496dc03"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/outline/contents.rs"
-            },
             "selector": "impl[OutlineContent]/fn[from_path_with]"
           }
         },
@@ -755,12 +677,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/outline/contents.rs"
             },
-            "selector": "impl[OutlineContent]/fn[select]"
+            "selector": "impl[OutlineContent]/fn[parse_source]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "33d1beebc0df0d646a2f26046abb75fab11069b321345e7638c8c647823e1afc"
+          "value": "f05ed9867319bc27d806ab1c82cab6098dd58edb36d4712bacaf8be2a496dc03"
         }
       ]
     },

@@ -1,8 +1,8 @@
 {
   "requirement": "`FileEvidenceStorage::new` retains the root directory without touching the filesystem.\nThe store implements `Send` and `Sync`. Its `load` and `store` futures are `Send`.\n\n`Record`, `Dependency`, and `Fingerprint` support Serde when their type\nparameters do. `Criterion::Ok` is always serializable; its JSON value is\nalready in the record. The SDK supplies `Record<D::NodeData, D::EdgeLabel>` under {cite}`requirements.sdk.graph.evidence.persisted_dependencies`. Serialization bounds on durable node data and edge labels\napply when using this helper.",
-  "determination": false,
-  "rationale": "Add `{impl}` to `crates/trust-but-verify/src/procedure.rs#impl[ValidationContext<'d, D>]#2/fn[finish]` — Clause: \"The SDK supplies `Record<D::NodeData, D::EdgeLabel>` under {cite}`requirements.sdk.graph.evidence.persisted_dependencies`\". This prescribes the type of the record helper. `ValidationContext::finish` is that helper: it returns `Result<Record<D::NodeData, D::EdgeLabel>, serde_json::Error>`. A behavior-preserving alternative, such as a helper returning `Record<NodeId<D>, D::EdgeLabel>` or a private wrapper type that is serialized the same way, would break the clause. None of the supplied roots covers this signature. `Record`, `Dependency`, `Fingerprint`, `Criterion::Ok` and `FileEvidenceStorage` cover the other clauses: the Serde derives, the `Ok` bound, and the `Send`/`Sync` store and futures. `finish` is not reached from any of those roots, and it has no {impl} for the interface requirement.",
-  "references": "4cd5943e89abb8b7d4e7c2f68ee5f45a0b41e178ca5843630ce81d2aeb2fa760",
+  "determination": true,
+  "rationale": "structural: The structural obligations in `requirements.sdk.filesystem-storage.interface` each map to a supplied root. The text also contains behavioral clauses, and those need no implementation evidence.\n\n- **Constructor, \"`FileEvidenceStorage::new` retains the root directory without touching the filesystem\".** `crates/trust-but-verify/src/storage.rs#impl[FileEvidenceStorage]/fn[new]` only stores `root.into()` in the `root: PathBuf` field of `crates/trust-but-verify/src/storage.rs#struct[FileEvidenceStorage]`. It does no filesystem I/O. The struct is a plain `PathBuf` holder. An alternative that canonicalizes or creates the directory would break the clause, and this root rules that out.\n- **Thread safety, \"The store implements `Send` and `Sync`. Its `load` and `store` futures are `Send`\".** `struct[FileEvidenceStorage]` holds only a `PathBuf`, so the store is automatically `Send + Sync`. `impl[FileEvidenceStorage]/fn[load]` bounds `N` and `L` by `DeserializeOwned + Send`. `impl[FileEvidenceStorage]/fn[store]` bounds `N` and `L` by `Serialize + Sync` and borrows the record. Those bounds make the generic values held across the async body `Send`. Neither body awaits anything, so no non-`Send` state is held across an await. A store holding an `Rc` or a `RefCell`, or `load`/`store` without these bounds, would violate the clause. These are the places that decide it.\n- **Serde support, \"`Record`, `Dependency`, and `Fingerprint` support Serde when their type parameters do\".** `crates/trust-but-verify/src/graph.rs#struct[Fingerprint]`, `crates/trust-but-verify/src/graph.rs#enum[Dependency]` and `crates/trust-but-verify/src/graph.rs#struct[Record]` all derive `Serialize` and `Deserialize`. The derives on the generic types add the conditional parameter bounds. `Record` also carries the `stored_version` serde adapter. Hand-written serialization that required fixed parameter types would violate the clause.\n- **Serializable answer, \"`Criterion::Ok` is always serializable\".** `crates/trust-but-verify/src/graph.rs#trait[Criterion]/type[Ok]` is bounded by `Serialize + DeserializeOwned + Send`. Without that bound, an `Ok` type might not be serializable.\n- **SDK-supplied record, \"The SDK supplies `Record<D::NodeData, D::EdgeLabel>`\".** `crates/trust-but-verify/src/procedure.rs#impl[ValidationContext<'d,%20D>]#2/fn[finish]` returns `Result<Record<D::NodeData, D::EdgeLabel>, serde_json::Error>`. The cited `requirements.sdk.graph.evidence.persisted_dependencies` is context only. `finish` calls `persist_dependencies`, which is reached from that marked item and needs no marker of its own.\n- **Serialization bounds on durable node data and edge labels.** These come from the `Serialize` and `Deserialize` bounds above and from the `N`/`L` bounds on `load` and `store`.\n\n`fn[load]` and `fn[store]` also reach the private helpers `record_path` and `write_and_replace`. They are reached from marked roots, so they need no markers. I found no unmapped structural obligation and no missing root.\n\nbehavioral: Each behavioral obligation in `requirements.sdk.filesystem-storage.interface` has a marked test with assertions.\n\n1. **`FileEvidenceStorage::new` retains the root and doesn't touch the filesystem.**\n   - `paths_are_injective_and_loading_missing_records_has_no_side_effects` builds the store on a missing root. It checks that `record_path` is `root.join(...)` for each case. It loads missing records and asserts `!root.exists()` afterwards.\n   - `send_futures_create_missing_roots_and_nested_paths_without_shortening_keys` asserts `!root.exists()` right after `new`.\n\n2. **The store is `Send` and `Sync`.** `concurrent_readers_only_observe_complete_records_from_competing_writes` shares an `Arc<FileEvidenceStorage>` across scoped threads. That compiles only if the store is `Send + Sync`.\n\n3. **The `load` and `store` futures are `Send`.** `send_futures_create_missing_roots_and_nested_paths_without_shortening_keys` wraps both futures in `send<T: Send>`, which enforces the bound at compile time.\n\n4. **`Record`, `Dependency` and `Fingerprint` support Serde when their parameters do.**\n   - `records_round_trip_and_malformed_or_incompatible_data_is_an_error` round-trips records with `String` node data and `()` labels.\n   - The same test also round-trips `String` labels. It uses both `Dependency` variants, `Node` and `OutgoingEdges`, and the `Fingerprint`. It asserts that version, dependencies and output are preserved.\n   - Loading with a mismatched parameter (`u8`) returns a JSON error. This shows the parameters determine deserialization.\n   - `consumer_delegates_evidence_storage_using_only_the_requested_nodes_path` covers the SDK-supplied `Record<D::NodeData, D::EdgeLabel>` helper. It stores, loads and compares dependencies and output through a domain graph.\n\n5. **`Criterion::Ok` is always serializable, and its JSON value is already in the record.** This is a type-level bound. The round-trip tests assert that the record's JSON `output` value is preserved, which is the runtime-observable part. No independent behavioral gap remains.\n\nThe bounds on node data and labels are compile-time properties. The serialization-failure test `failed_serialization_preserves_records_and_failed_replacement_cleans_up` also exists in the same file.\n\nI found no acknowledged gaps (`{fixme}` references) and no unmarked relevant tests.",
+  "references": "4a13a133de96a24f9a6053e2f40e030765ca4c75b922e9de183dc6f3f82b16fa",
   "inputs": [
     {
       "requirements": "requirements.sdk.filesystem-storage.interface",
@@ -53,9 +53,19 @@
       "hash": "c005c9f0fc610830fb5e7c1d7af7491b7f8e4bdb5121675ad4c755b1e54a68c5"
     },
     {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#2/fn[finish]",
+      "hash": "bb1e89859793973260df4e241255b3339cb28c758af46e1e77060790dd699541"
+    },
+    {
       "file": "crates/trust-but-verify/src/storage.rs",
       "item": "struct[FileEvidenceStorage]",
       "hash": "d096685ec94558a746d6241d96cd243551fbfba0be01a776feb0a667c76d25bd"
+    },
+    {
+      "file": "crates/trust-but-verify/src/storage.rs",
+      "item": "impl[FileEvidenceStorage]/fn[new]",
+      "hash": "395bb192d0c77df2c7ed6b4309c086536c9bc113482d501a564656b4aec72347"
     },
     {
       "file": "crates/trust-but-verify/src/storage.rs",
@@ -66,16 +76,6 @@
       "file": "crates/trust-but-verify/src/storage.rs",
       "item": "impl[FileEvidenceStorage]/fn[store]",
       "hash": "c5df6fe773df0ffc833ad054f8fd11736fe259d63a4b79066e2f64b90c26a9af"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[ValidationContext<'d,%20D>]#2/fn[finish]",
-      "hash": "bb1e89859793973260df4e241255b3339cb28c758af46e1e77060790dd699541"
-    },
-    {
-      "file": "crates/trust-but-verify/src/storage.rs",
-      "item": "impl[FileEvidenceStorage]/fn[new]",
-      "hash": "395bb192d0c77df2c7ed6b4309c086536c9bc113482d501a564656b4aec72347"
     },
     {
       "file": "crates/trust-but-verify/tests/storage.rs",
@@ -103,14 +103,9 @@
       "hash": "a933cf0b6bdc18abf82f30ed8e593c342b43aa40f8a89702192d9b6955013de3"
     },
     {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[send]",
-      "hash": "8584e807e9abc79dc59d3352ed10789b3f88c34eaf2710718740786192bf2708"
-    },
-    {
       "file": "crates/trust-but-verify/tests/storage.rs",
-      "item": "fn[criterion]",
-      "hash": "cc7ba646f8791ffecfaa8c1dd78e656f6ace8421d1b90b9a87e1b34c29c64c3f"
+      "item": "fn[send_futures_create_missing_roots_and_nested_paths_without_shortening_keys]/fn[send]",
+      "hash": "8584e807e9abc79dc59d3352ed10789b3f88c34eaf2710718740786192bf2708"
     },
     {
       "file": "crates/trust-but-verify/tests/storage.rs",
@@ -119,8 +114,8 @@
     },
     {
       "file": "crates/trust-but-verify/tests/storage.rs",
-      "item": "fn[send_futures_create_missing_roots_and_nested_paths_without_shortening_keys]/fn[send]",
-      "hash": "8584e807e9abc79dc59d3352ed10789b3f88c34eaf2710718740786192bf2708"
+      "item": "fn[criterion]",
+      "hash": "cc7ba646f8791ffecfaa8c1dd78e656f6ace8421d1b90b9a87e1b34c29c64c3f"
     }
   ],
   "criteria": {
@@ -134,7 +129,7 @@
             },
             {
               "scheme": "habeas-reference-set-v1",
-              "value": "4cd5943e89abb8b7d4e7c2f68ee5f45a0b41e178ca5843630ce81d2aeb2fa760"
+              "value": "4a13a133de96a24f9a6053e2f40e030765ca4c75b922e9de183dc6f3f82b16fa"
             }
           ]
         },
@@ -234,6 +229,23 @@
               "Source": {
                 "resource": {
                   "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[ValidationContext<'d,%20D>]#2/fn[finish]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "bb1e89859793973260df4e241255b3339cb28c758af46e1e77060790dd699541"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
                   "location": "crates/trust-but-verify/src/storage.rs"
                 },
                 "selector": "struct[FileEvidenceStorage]"
@@ -242,6 +254,23 @@
             {
               "scheme": "rust-structural-v1:own-v1",
               "value": "d096685ec94558a746d6241d96cd243551fbfba0be01a776feb0a667c76d25bd"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/storage.rs"
+                },
+                "selector": "impl[FileEvidenceStorage]/fn[new]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "395bb192d0c77df2c7ed6b4309c086536c9bc113482d501a564656b4aec72347"
             }
           ]
         },
@@ -278,65 +307,11 @@
               "value": "c5df6fe773df0ffc833ad054f8fd11736fe259d63a4b79066e2f64b90c26a9af"
             }
           ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/procedure.rs"
-                },
-                "selector": "impl[ValidationContext<'d,%20D>]#2/fn[finish]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "bb1e89859793973260df4e241255b3339cb28c758af46e1e77060790dd699541"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/storage.rs"
-                },
-                "selector": "impl[FileEvidenceStorage]/fn[new]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "395bb192d0c77df2c7ed6b4309c086536c9bc113482d501a564656b4aec72347"
-            }
-          ]
-        },
-        {
-          "OutgoingEdges": [
-            {
-              "Requirement": "requirements.sdk.filesystem-storage.interface"
-            },
-            "Implements",
-            {
-              "scheme": "node-path-set-sha256-v1",
-              "value": "b7461758a5e4498950456590efbb845a472ebf81798216a1d9617c4c222ff22b"
-            }
-          ]
         }
       ],
       "output": {
-        "status": "failed",
-        "corrections": [
-          {
-            "kind": "add_reference",
-            "role": "impl",
-            "file": "crates/trust-but-verify/src/procedure.rs",
-            "selector": "impl[ValidationContext<'d, D>]#2/fn[finish]",
-            "rationale": "Clause: \"The SDK supplies `Record<D::NodeData, D::EdgeLabel>` under {cite}`requirements.sdk.graph.evidence.persisted_dependencies`\". This prescribes the type of the record helper. `ValidationContext::finish` is that helper: it returns `Result<Record<D::NodeData, D::EdgeLabel>, serde_json::Error>`. A behavior-preserving alternative, such as a helper returning `Record<NodeId<D>, D::EdgeLabel>` or a private wrapper type that is serialized the same way, would break the clause. None of the supplied roots covers this signature. `Record`, `Dependency`, `Fingerprint`, `Criterion::Ok` and `FileEvidenceStorage` cover the other clauses: the Serde derives, the `Ok` bound, and the `Send`/`Sync` store and futures. `finish` is not reached from any of those roots, and it has no {impl} for the interface requirement."
-          }
-        ]
+        "status": "success",
+        "rationale": "The structural obligations in `requirements.sdk.filesystem-storage.interface` each map to a supplied root. The text also contains behavioral clauses, and those need no implementation evidence.\n\n- **Constructor, \"`FileEvidenceStorage::new` retains the root directory without touching the filesystem\".** `crates/trust-but-verify/src/storage.rs#impl[FileEvidenceStorage]/fn[new]` only stores `root.into()` in the `root: PathBuf` field of `crates/trust-but-verify/src/storage.rs#struct[FileEvidenceStorage]`. It does no filesystem I/O. The struct is a plain `PathBuf` holder. An alternative that canonicalizes or creates the directory would break the clause, and this root rules that out.\n- **Thread safety, \"The store implements `Send` and `Sync`. Its `load` and `store` futures are `Send`\".** `struct[FileEvidenceStorage]` holds only a `PathBuf`, so the store is automatically `Send + Sync`. `impl[FileEvidenceStorage]/fn[load]` bounds `N` and `L` by `DeserializeOwned + Send`. `impl[FileEvidenceStorage]/fn[store]` bounds `N` and `L` by `Serialize + Sync` and borrows the record. Those bounds make the generic values held across the async body `Send`. Neither body awaits anything, so no non-`Send` state is held across an await. A store holding an `Rc` or a `RefCell`, or `load`/`store` without these bounds, would violate the clause. These are the places that decide it.\n- **Serde support, \"`Record`, `Dependency`, and `Fingerprint` support Serde when their type parameters do\".** `crates/trust-but-verify/src/graph.rs#struct[Fingerprint]`, `crates/trust-but-verify/src/graph.rs#enum[Dependency]` and `crates/trust-but-verify/src/graph.rs#struct[Record]` all derive `Serialize` and `Deserialize`. The derives on the generic types add the conditional parameter bounds. `Record` also carries the `stored_version` serde adapter. Hand-written serialization that required fixed parameter types would violate the clause.\n- **Serializable answer, \"`Criterion::Ok` is always serializable\".** `crates/trust-but-verify/src/graph.rs#trait[Criterion]/type[Ok]` is bounded by `Serialize + DeserializeOwned + Send`. Without that bound, an `Ok` type might not be serializable.\n- **SDK-supplied record, \"The SDK supplies `Record<D::NodeData, D::EdgeLabel>`\".** `crates/trust-but-verify/src/procedure.rs#impl[ValidationContext<'d,%20D>]#2/fn[finish]` returns `Result<Record<D::NodeData, D::EdgeLabel>, serde_json::Error>`. The cited `requirements.sdk.graph.evidence.persisted_dependencies` is context only. `finish` calls `persist_dependencies`, which is reached from that marked item and needs no marker of its own.\n- **Serialization bounds on durable node data and edge labels.** These come from the `Serialize` and `Deserialize` bounds above and from the `N`/`L` bounds on `load` and `store`.\n\n`fn[load]` and `fn[store]` also reach the private helpers `record_path` and `write_and_replace`. They are reached from marked roots, so they need no markers. I found no unmapped structural obligation and no missing root."
       }
     },
     "behavioral": {
@@ -349,7 +324,7 @@
             },
             {
               "scheme": "habeas-reference-set-v1",
-              "value": "4cd5943e89abb8b7d4e7c2f68ee5f45a0b41e178ca5843630ce81d2aeb2fa760"
+              "value": "4a13a133de96a24f9a6053e2f40e030765ca4c75b922e9de183dc6f3f82b16fa"
             }
           ]
         },
@@ -466,48 +441,14 @@
               "Source": {
                 "resource": {
                   "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/graph.rs"
+                  "location": "crates/trust-but-verify/tests/storage.rs"
                 },
-                "selector": "enum[Dependency]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "fe5519f4fbe4dbde50c868209706c52775c0c142e88c97d75bbebf4a296ed0c0"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/tests/contracts.rs"
-                },
-                "selector": "fn[send]"
+                "selector": "fn[send_futures_create_missing_roots_and_nested_paths_without_shortening_keys]/fn[send]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
               "value": "8584e807e9abc79dc59d3352ed10789b3f88c34eaf2710718740786192bf2708"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/tests/storage.rs"
-                },
-                "selector": "fn[criterion]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "cc7ba646f8791ffecfaa8c1dd78e656f6ace8421d1b90b9a87e1b34c29c64c3f"
             }
           ]
         },
@@ -534,33 +475,92 @@
               "Source": {
                 "resource": {
                   "scheme": "repo",
-                  "location": "crates/trust-but-verify/tests/storage.rs"
+                  "location": "crates/trust-but-verify/src/graph.rs"
                 },
-                "selector": "fn[send_futures_create_missing_roots_and_nested_paths_without_shortening_keys]/fn[send]"
+                "selector": "enum[Dependency]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "8584e807e9abc79dc59d3352ed10789b3f88c34eaf2710718740786192bf2708"
+              "value": "fe5519f4fbe4dbde50c868209706c52775c0c142e88c97d75bbebf4a296ed0c0"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph.rs"
+                },
+                "selector": "struct[Fingerprint]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "8525a648cc94de4b3c90595605e8b74c889473404e79c3ae0f5fd6b81252d9bf"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph.rs"
+                },
+                "selector": "struct[Record]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "08724af1a8b82cd548a99c54665d6edd5e9a071a918d811ab24dc4f18c80012e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph.rs"
+                },
+                "selector": "trait[Criterion]/type[Ok]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "c005c9f0fc610830fb5e7c1d7af7491b7f8e4bdb5121675ad4c755b1e54a68c5"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[ValidationContext<'d,%20D>]#2/fn[finish]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "bb1e89859793973260df4e241255b3339cb28c758af46e1e77060790dd699541"
             }
           ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "Each behavioral obligation in `requirements.sdk.filesystem-storage.interface` is covered by a marked test in `crates/trust-but-verify/tests/storage.rs`.\n\n1. **`new` retains the root and does not touch the filesystem.**\n   - `fn[paths_are_injective_and_loading_missing_records_has_no_side_effects]` builds the store over a missing root. It asserts that `record_path` equals `root.join(expected)` for every case. It asserts `!root.exists()` after the missing-record loads.\n   - `fn[send_futures_create_missing_roots_and_nested_paths_without_shortening_keys]` asserts `!root.exists()` right after `new`.\n\n2. **The store is `Send` and `Sync`.**\n   - `fn[concurrent_readers_only_observe_complete_records_from_competing_writes]` shares an `Arc<FileEvidenceStorage>` across scoped threads. That compiles only if the store is `Send` and `Sync`.\n\n3. **The `load` and `store` futures are `Send`.**\n   - `fn[send_futures_create_missing_roots_and_nested_paths_without_shortening_keys]` passes both futures through `fn send<T: Send>(value: T) -> T`. This is a compile-time check, which suits the obligation.\n\n4. **`Record`, `Dependency` and `Fingerprint` support Serde when their type parameters do.**\n   - `fn[records_round_trip_and_malformed_or_incompatible_data_is_an_error]` round-trips `Record<String, ()>` and `Record<String, String>`. It covers both `Dependency` variants, `Node` and `OutgoingEdges`, including a non-trivial label and the fingerprint. It asserts equality of version, dependencies and output after loading.\n   - The same test loads with incompatible parameters (`u8` for node data, `u8` for label) and expects `FileStorageError::Json`. That shows the bounds on the type parameters are really applied.\n\n5. **`Criterion::Ok` is always serializable, and its JSON value is already in the record.**\n   - The record's `output` is arbitrary JSON, including nested metadata. It round-trips equal in the round-trip test, the nested-path test and the concurrent test.\n\n6. **The SDK supplies `Record<D::NodeData, D::EdgeLabel>`, with serialization bounds applying to this helper.**\n   - `fn[consumer_delegates_evidence_storage_using_only_the_requested_nodes_path]` stores and loads through a graph, so the helper's record type is exercised with real node data.\n   - Bad JSON on load returns a `Json` error.\n   - The cited `requirements.sdk.graph.evidence.persisted_dependencies` is context, and its own tests are not reassessed here.\n\nI found no unexercised obligation or missing marker."
+        "rationale": "Each behavioral obligation in `requirements.sdk.filesystem-storage.interface` has a marked test with assertions.\n\n1. **`FileEvidenceStorage::new` retains the root and doesn't touch the filesystem.**\n   - `paths_are_injective_and_loading_missing_records_has_no_side_effects` builds the store on a missing root. It checks that `record_path` is `root.join(...)` for each case. It loads missing records and asserts `!root.exists()` afterwards.\n   - `send_futures_create_missing_roots_and_nested_paths_without_shortening_keys` asserts `!root.exists()` right after `new`.\n\n2. **The store is `Send` and `Sync`.** `concurrent_readers_only_observe_complete_records_from_competing_writes` shares an `Arc<FileEvidenceStorage>` across scoped threads. That compiles only if the store is `Send + Sync`.\n\n3. **The `load` and `store` futures are `Send`.** `send_futures_create_missing_roots_and_nested_paths_without_shortening_keys` wraps both futures in `send<T: Send>`, which enforces the bound at compile time.\n\n4. **`Record`, `Dependency` and `Fingerprint` support Serde when their parameters do.**\n   - `records_round_trip_and_malformed_or_incompatible_data_is_an_error` round-trips records with `String` node data and `()` labels.\n   - The same test also round-trips `String` labels. It uses both `Dependency` variants, `Node` and `OutgoingEdges`, and the `Fingerprint`. It asserts that version, dependencies and output are preserved.\n   - Loading with a mismatched parameter (`u8`) returns a JSON error. This shows the parameters determine deserialization.\n   - `consumer_delegates_evidence_storage_using_only_the_requested_nodes_path` covers the SDK-supplied `Record<D::NodeData, D::EdgeLabel>` helper. It stores, loads and compares dependencies and output through a domain graph.\n\n5. **`Criterion::Ok` is always serializable, and its JSON value is already in the record.** This is a type-level bound. The round-trip tests assert that the record's JSON `output` value is preserved, which is the runtime-observable part. No independent behavioral gap remains.\n\nThe bounds on node data and labels are compile-time properties. The serialization-failure test `failed_serialization_preserves_records_and_failed_replacement_cleans_up` also exists in the same file.\n\nI found no acknowledged gaps (`{fixme}` references) and no unmarked relevant tests."
       }
     }
   },
-  "corrections": [
-    {
-      "kind": "add_reference",
-      "role": "impl",
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "selector": "impl[ValidationContext<'d, D>]#2/fn[finish]",
-      "rationale": "Clause: \"The SDK supplies `Record<D::NodeData, D::EdgeLabel>` under {cite}`requirements.sdk.graph.evidence.persisted_dependencies`\". This prescribes the type of the record helper. `ValidationContext::finish` is that helper: it returns `Result<Record<D::NodeData, D::EdgeLabel>, serde_json::Error>`. A behavior-preserving alternative, such as a helper returning `Record<NodeId<D>, D::EdgeLabel>` or a private wrapper type that is serialized the same way, would break the clause. None of the supplied roots covers this signature. `Record`, `Dependency`, `Fingerprint`, `Criterion::Ok` and `FileEvidenceStorage` cover the other clauses: the Serde derives, the `Ok` bound, and the `Send`/`Sync` store and futures. `finish` is not reached from any of those roots, and it has no {impl} for the interface requirement."
-    }
-  ],
   "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
@@ -571,7 +571,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "4cd5943e89abb8b7d4e7c2f68ee5f45a0b41e178ca5843630ce81d2aeb2fa760"
+          "value": "4a13a133de96a24f9a6053e2f40e030765ca4c75b922e9de183dc6f3f82b16fa"
         }
       ]
     },
@@ -671,6 +671,23 @@
           "Source": {
             "resource": {
               "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[finish]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "bb1e89859793973260df4e241255b3339cb28c758af46e1e77060790dd699541"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
               "location": "crates/trust-but-verify/src/storage.rs"
             },
             "selector": "struct[FileEvidenceStorage]"
@@ -679,6 +696,23 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "d096685ec94558a746d6241d96cd243551fbfba0be01a776feb0a667c76d25bd"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/storage.rs"
+            },
+            "selector": "impl[FileEvidenceStorage]/fn[new]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "395bb192d0c77df2c7ed6b4309c086536c9bc113482d501a564656b4aec72347"
         }
       ]
     },
@@ -713,52 +747,6 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "c5df6fe773df0ffc833ad054f8fd11736fe259d63a4b79066e2f64b90c26a9af"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[finish]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "bb1e89859793973260df4e241255b3339cb28c758af46e1e77060790dd699541"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/storage.rs"
-            },
-            "selector": "impl[FileEvidenceStorage]/fn[new]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "395bb192d0c77df2c7ed6b4309c086536c9bc113482d501a564656b4aec72347"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.filesystem-storage.interface"
-        },
-        "Implements",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "b7461758a5e4498950456590efbb845a472ebf81798216a1d9617c4c222ff22b"
         }
       ]
     },
@@ -853,31 +841,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
+              "location": "crates/trust-but-verify/tests/storage.rs"
             },
-            "selector": "fn[send]"
+            "selector": "fn[send_futures_create_missing_roots_and_nested_paths_without_shortening_keys]/fn[send]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "8584e807e9abc79dc59d3352ed10789b3f88c34eaf2710718740786192bf2708"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/storage.rs"
-            },
-            "selector": "fn[criterion]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "cc7ba646f8791ffecfaa8c1dd78e656f6ace8421d1b90b9a87e1b34c29c64c3f"
         }
       ]
     },
@@ -906,12 +877,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/tests/storage.rs"
             },
-            "selector": "fn[send_futures_create_missing_roots_and_nested_paths_without_shortening_keys]/fn[send]"
+            "selector": "fn[criterion]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "8584e807e9abc79dc59d3352ed10789b3f88c34eaf2710718740786192bf2708"
+          "value": "cc7ba646f8791ffecfaa8c1dd78e656f6ace8421d1b90b9a87e1b34c29c64c3f"
         }
       ]
     }
