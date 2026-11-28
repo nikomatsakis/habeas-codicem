@@ -544,6 +544,8 @@ impl<'d, D: Domain> Validator<'d, D> {
     }
 
     // {impl}`requirements.sdk.graph.running-criteria.Validator`
+    // {impl}`requirements.sdk.graph.running-criteria.validate_node`
+    // {impl}`requirements.sdk.graph.validation-context.shared_context`
     pub(crate) async fn execute<V: Criterion<D>>(
         &mut self,
         criterion: V,

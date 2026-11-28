@@ -480,6 +480,7 @@ where
     // {impl}`requirements.sdk.graph.agent-harness.with_agent`
     // {impl}`requirements.sdk.graph.agent-calls.judge.submission.decoding`
     // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
+    // {impl}`requirements.sdk.graph.validation-context.shared_context`
     async fn execute(self) -> Result<R, ValidationError<D::Error>> {
         let agent = self
             .ctx

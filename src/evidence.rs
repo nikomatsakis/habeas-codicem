@@ -2332,6 +2332,36 @@ pub(crate) mod tests {
         temp
     }
 
+    // {test}`requirements.integration.report_api`
+    #[test]
+    fn validation_counts_declarations_and_evidence_files_even_when_reviews_are_invalid() {
+        let temp = fixture();
+        let root = temp.path();
+        fs::write(
+            root.join("md/rules.md"),
+            ":::{req} one\nRequired.\n:::\n:::{example} case\nExample of {cite}`rules.one`.\n:::\n",
+        )
+        .unwrap();
+        fs::write(root.join("evidence/rules.one.json"), "{").unwrap();
+        fs::write(root.join("evidence/ghost.json"), "{}").unwrap();
+        let report = validate_repository(root).unwrap();
+        assert_eq!(
+            (report.requirements, report.examples, report.evidence_files),
+            (1, 1, 2)
+        );
+        for expected in [
+            "invalid JSON",
+            "no matching requirement",
+            "missing for example",
+        ] {
+            assert!(
+                report.errors.iter().any(|error| error.contains(expected)),
+                "{expected}: {:?}",
+                report.errors
+            );
+        }
+    }
+
     // {test}`requirements.authoring.credentials`
     #[test]
     fn committed_workspace_credentials_are_reported_but_untracked_ones_are_not() {

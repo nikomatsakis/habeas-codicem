@@ -256,6 +256,47 @@ async fn gitignore_is_shared_by_all_operations_with_or_without_a_git_repository(
     }
 }
 
+// {test}`requirements.sdk.sources.local_provider`
+#[tokio::test]
+async fn a_nested_ignore_file_scopes_all_operations_to_its_own_directory() {
+    for repository in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        if repository {
+            git(root.path(), &["init", "--quiet"]);
+        }
+        fs::create_dir(root.path().join("sub")).unwrap();
+        fs::write(root.path().join("sub/.gitignore"), "local.rs\n").unwrap();
+        let sources = Sources::new(root.path());
+        for path in ["local.rs", "sub/local.rs"] {
+            fs::write(root.path().join(path), "fn needle() {}\n").unwrap();
+        }
+        let listed = sources.list(&SourceScope::all()).await.unwrap();
+        for (path, visible) in [("local.rs", true), ("sub/local.rs", false)] {
+            assert_eq!(listed.iter().any(|p| p == Path::new(path)), visible);
+            assert_eq!(sources.read(&file(path)).await.is_ok(), visible);
+            assert_eq!(sources.parse(&file(path)).await.is_ok(), visible);
+            let scope = SourceScope::under(path);
+            let text = TextQuery::new("needle".into()).scope(scope.clone());
+            let rule = serde_json::json!({"rule":{"kind":"function_item"}});
+            let structure =
+                StructuralQuery::new("rust".into(), rule.as_object().unwrap().clone()).scope(scope);
+            assert_eq!(
+                sources.search_text(&text).await.unwrap().matches.len(),
+                usize::from(visible)
+            );
+            assert_eq!(
+                sources
+                    .search_structure(&structure)
+                    .await
+                    .unwrap()
+                    .matches
+                    .len(),
+                usize::from(visible)
+            );
+        }
+    }
+}
+
 // {test}`requirements.sdk.sources.provider.errors`
 // {test}`requirements.sdk.sources.provider_results.parse_snapshot`
 // {test}`requirements.sdk.sources.provider_results.search_completeness`

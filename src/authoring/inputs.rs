@@ -833,6 +833,26 @@ pub(crate) mod tests {
         root
     }
 
+    // {test}`requirements.authoring.structural_inputs`
+    #[test]
+    fn plain_implementation_reference_supplies_the_entire_file_as_the_only_root() {
+        let root = project();
+        let reference = role("impl", "requirements.ready");
+        let lines = ["Before the reference", &reference, "After the reference"];
+        fs::write(root.path().join("notes.txt"), lines.join("\n")).unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        assert!(sources.review_roots.is_some());
+        let files: Vec<_> = sources
+            .mandatory_inputs()
+            .iter()
+            .filter(|input| input.get("file").is_some())
+            .collect();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0]["file"], "notes.txt");
+        assert_eq!(files[0]["item"], "");
+        assert_eq!(files[0]["text"], serde_json::json!(lines));
+    }
+
     // {test}`requirements.authoring.fixme_inputs`
     // {test}`requirements.definitions.dependencies`
     // {test}`requirements.ci.reference_set`
