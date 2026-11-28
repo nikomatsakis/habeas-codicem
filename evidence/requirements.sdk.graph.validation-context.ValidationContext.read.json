@@ -1,7 +1,7 @@
 {
   "requirement": "Read a graph node and record the fingerprint of the returned contents under {cite}`requirements.sdk.graph.validation-context.read_node.inputs`.\n\n```rust,ignore\nimpl<'d, D: Domain> ValidationContext<'d, D> {\n    pub fn read(&self, node: &NodeId<D>) -> Result<D::NodeContent, D::Error>;\n}\n```",
   "determination": true,
-  "rationale": "structural: The only structural obligation is the prescribed signature: `impl<'d, D: Domain> ValidationContext<'d, D> { pub fn read(&self, node: &NodeId<D>) -> Result<D::NodeContent, D::Error>; }`. The root `crates/trust-but-verify/src/procedure.rs#impl[ValidationContext<'d, D>]#2/fn[read]` declares exactly that: a method on the generic impl, taking `&self` and `&NodeId<D>`, and returning `Result<D::NodeContent, D::Error>`. It is marked {impl}. An alternative with a different signature, such as taking `NodeId` by value or returning a different error type, would break the stated declaration. So this obligation needs evidence, and the root supplies it.\n\nThe other clauses state behavior only: \"Read a graph node and record the fingerprint of the returned contents\". The text names no library, algorithm or interface through which recording must happen. An implementation that records inline would give the same behavior, so how the recording is factored is discretionary. The `read_node.inputs` text is cited context. It describes when the fingerprint is recorded and that a failed read records nothing. Those are behavioral, and tests cover them.\n\nThe code does implement the behavior. `read` calls `read_snapshot`. `read_snapshot` calls `prepare_read(node)?`, then `record_read(*node, snapshot.fingerprint.clone())`, then returns the snapshot. `read` returns `.content`. A failed `prepare_read` returns early through `?`, so nothing is recorded. `record_read` pushes `Dependency::Node(node, fingerprint)` onto the observations. These helpers are reached from the marked root, so they need no separate reference.\n\nbehavioral: The subject requires `ValidationContext::read` to return the node's contents. On success it must record the node identity and the fingerprint of the returned contents. A failed read must record no observation. The evidence goes stale when a later read of the same node has a different fingerprint. I did not read the implementation. The checks below come from the supplied tests.\n\n- **Success records identity and fingerprint.** `snapshots_record_exact_reads_and_retain_distinct_versions` in `crates/trust-but-verify/src/graph/validation_tests.rs` starts with empty dependencies. It reads node 1 containing \"before\" and asserts the content. It then asserts `dependencies()` equals `[Dependency::Node(intern_node(1), fp(\"before\"))]`.\n- **Fingerprint follows the returned contents.** The same test changes the node to \"after\" and reads again. It asserts the content is \"after\" and that the dependencies are the two entries for before and after. The earlier snapshot `earlier` stays unchanged.\n- **Failed read records nothing.** The same test reads missing node 2 and asserts an error. The dependencies afterwards are still the two node-1 entries. `direct_reads_return_complete_unicode_contents_and_snapshots` asserts the error is \"missing\" and that a fresh context has empty `dependencies()` after the failed read.\n- **Staleness.** After `finish`, `record.dependencies` holds the before and after entries. The test asserts `!record.is_current(...)` because node 1's content now differs from one recorded fingerprint. The second test makes the same assertion after replacing the content.\n- **Content shapes.** `direct_reads_return_complete_unicode_contents_and_snapshots` covers empty and large multi-byte Unicode strings. It asserts the returned `contents.format()` equals the original and that the recorded fingerprint equals `fp(original)`. It also asserts the returned contents are unaffected by a later change to the graph.\n\nThe delivery paragraph in `read_node.inputs` describes how an agent harness records fingerprints. It does not add an obligation to this Rust `read`. The text says that for a Rust caller the fingerprint is recorded when `read` returns the contents, and the tests check that. `public_exports_match_the_appendix` only checks the public export inventory and is not needed for the behavior. I found no gap.",
+  "rationale": "structural: The only structural clause is the prescribed signature, `impl<'d, D: Domain> ValidationContext<'d, D> { pub fn read(&self, node: &NodeId<D>) -> Result<D::NodeContent, D::Error>; }`. A `read` taking `NodeId<D>` by value, or returning a different type, would break that signature. `crates/trust-but-verify/src/procedure.rs#impl[ValidationContext<'d, D>]#2/fn[read]` declares exactly that signature and carries the `{impl}` marker. Recording the fingerprint is observable behavior, covered by `read_node.inputs`, which is only cited. Nothing prescribes how it is recorded. `read` delegates to `fn[read_snapshot]` in the same impl, which calls `prepare_read`, then `record_read(*node, snapshot.fingerprint.clone())`, then returns the snapshot. `read` returns `.content`, so a failed read propagates the error through `?` with no recording. No library, algorithm or type is named beyond the signature, and the supplied root covers it.\n\nbehavioral: The reviewed tests adequately check `requirements.sdk.graph.validation-context.ValidationContext.read`. The obligations are to return the node contents and, under `read_node.inputs`, to record the node identity and the fingerprint of the returned contents on success. A failed read must record no observation. A later read with different contents must record a different fingerprint.\n\n- **Success records identity and fingerprint.** `crates/trust-but-verify/src/graph/validation_tests.rs#fn[snapshots_record_exact_reads_and_retain_distinct_versions]` calls `read` on node 1 holding \"before\". It asserts that the returned contents are \"before\". It then asserts that `earlier` equals `[Dependency::Node(node1, fp(\"before\"))]`, so the recorded dependency has the right identity and fingerprint.\n- **Later change.** The same test changes node 1 to \"after\" and reads again. It asserts that the contents are \"after\" and that the dependencies hold both `fp(\"before\")` and `fp(\"after\")` for node 1. The finished record's dependencies match, and `is_current` is false.\n- **Failed read.** The same test reads missing node 2 and asserts `is_err`, and the dependency list afterwards is still the two node-1 entries. `fn[direct_reads_return_complete_unicode_contents_and_snapshots]` in the same file asserts the \"missing\" error on a fresh context and `dependencies().is_empty()`.\n- **Returned contents.** `fn[direct_reads_return_complete_unicode_contents_and_snapshots]` covers an empty string and a large multi-byte Unicode string. It asserts that `read` returns contents whose `format()` equals the original, including after the graph content is replaced. It also asserts that the fingerprint matches `fp(original)`.\n\nThe agent-delivery paragraph of `read_node.inputs` concerns the harness, not `ValidationContext::read`, so it needs no test here. Staleness reporting belongs to `evidence.checking_records`, a cited requirement whose tests are not reassessed here. `public_exports_match_the_appendix` is unrelated to this behavior.",
   "references": "ffe03b155ce413c43801a7d4ae7364eea5158e700ee891be32f7447057a7a1db",
   "inputs": [
     {
@@ -58,11 +58,6 @@
       "hash": "5e3efe54a48c8f95e29eb184caacad03019678d83ccf4910bcd1f67c52801b00"
     },
     {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[ValidationContext<'d,%20D>]#2/fn[record_read]",
-      "hash": "1dc587db0a3a4a600591a2e6a625b750dfea2e58dd92e4513a94ace96580c7b7"
-    },
-    {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[snapshots_record_exact_reads_and_retain_distinct_versions]",
       "hash": "f8ea3ec9bfea77fff1dd9ea1ecbcc8cb80aa310da9dad91e241a49ac2fd1125d"
@@ -75,7 +70,17 @@
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[public_exports_match_the_appendix]",
-      "hash": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+      "hash": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#2/fn[prepare_read]",
+      "hash": "fbcf18f9d49e19cd802b06c9e7f7c44e95e1a92cbfe433f6f876632ce008b54a"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#2/fn[record_read]",
+      "hash": "1dc587db0a3a4a600591a2e6a625b750dfea2e58dd92e4513a94ace96580c7b7"
     }
   ],
   "criteria": {
@@ -148,28 +153,11 @@
               "value": "5e3efe54a48c8f95e29eb184caacad03019678d83ccf4910bcd1f67c52801b00"
             }
           ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/procedure.rs"
-                },
-                "selector": "impl[ValidationContext<'d,%20D>]#2/fn[record_read]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "1dc587db0a3a4a600591a2e6a625b750dfea2e58dd92e4513a94ace96580c7b7"
-            }
-          ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "The only structural obligation is the prescribed signature: `impl<'d, D: Domain> ValidationContext<'d, D> { pub fn read(&self, node: &NodeId<D>) -> Result<D::NodeContent, D::Error>; }`. The root `crates/trust-but-verify/src/procedure.rs#impl[ValidationContext<'d, D>]#2/fn[read]` declares exactly that: a method on the generic impl, taking `&self` and `&NodeId<D>`, and returning `Result<D::NodeContent, D::Error>`. It is marked {impl}. An alternative with a different signature, such as taking `NodeId` by value or returning a different error type, would break the stated declaration. So this obligation needs evidence, and the root supplies it.\n\nThe other clauses state behavior only: \"Read a graph node and record the fingerprint of the returned contents\". The text names no library, algorithm or interface through which recording must happen. An implementation that records inline would give the same behavior, so how the recording is factored is discretionary. The `read_node.inputs` text is cited context. It describes when the fingerprint is recorded and that a failed read records nothing. Those are behavioral, and tests cover them.\n\nThe code does implement the behavior. `read` calls `read_snapshot`. `read_snapshot` calls `prepare_read(node)?`, then `record_read(*node, snapshot.fingerprint.clone())`, then returns the snapshot. `read` returns `.content`. A failed `prepare_read` returns early through `?`, so nothing is recorded. `record_read` pushes `Dependency::Node(node, fingerprint)` onto the observations. These helpers are reached from the marked root, so they need no separate reference."
+        "rationale": "The only structural clause is the prescribed signature, `impl<'d, D: Domain> ValidationContext<'d, D> { pub fn read(&self, node: &NodeId<D>) -> Result<D::NodeContent, D::Error>; }`. A `read` taking `NodeId<D>` by value, or returning a different type, would break that signature. `crates/trust-but-verify/src/procedure.rs#impl[ValidationContext<'d, D>]#2/fn[read]` declares exactly that signature and carries the `{impl}` marker. Recording the fingerprint is observable behavior, covered by `read_node.inputs`, which is only cited. Nothing prescribes how it is recorded. `read` delegates to `fn[read_snapshot]` in the same impl, which calls `prepare_read`, then `record_read(*node, snapshot.fingerprint.clone())`, then returns the snapshot. `read` returns `.content`, so a failed read propagates the error through `?` with no recording. No library, algorithm or type is named beyond the signature, and the supplied root covers it."
       }
     },
     "behavioral": {
@@ -255,14 +243,14 @@
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+              "value": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
             }
           ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "The subject requires `ValidationContext::read` to return the node's contents. On success it must record the node identity and the fingerprint of the returned contents. A failed read must record no observation. The evidence goes stale when a later read of the same node has a different fingerprint. I did not read the implementation. The checks below come from the supplied tests.\n\n- **Success records identity and fingerprint.** `snapshots_record_exact_reads_and_retain_distinct_versions` in `crates/trust-but-verify/src/graph/validation_tests.rs` starts with empty dependencies. It reads node 1 containing \"before\" and asserts the content. It then asserts `dependencies()` equals `[Dependency::Node(intern_node(1), fp(\"before\"))]`.\n- **Fingerprint follows the returned contents.** The same test changes the node to \"after\" and reads again. It asserts the content is \"after\" and that the dependencies are the two entries for before and after. The earlier snapshot `earlier` stays unchanged.\n- **Failed read records nothing.** The same test reads missing node 2 and asserts an error. The dependencies afterwards are still the two node-1 entries. `direct_reads_return_complete_unicode_contents_and_snapshots` asserts the error is \"missing\" and that a fresh context has empty `dependencies()` after the failed read.\n- **Staleness.** After `finish`, `record.dependencies` holds the before and after entries. The test asserts `!record.is_current(...)` because node 1's content now differs from one recorded fingerprint. The second test makes the same assertion after replacing the content.\n- **Content shapes.** `direct_reads_return_complete_unicode_contents_and_snapshots` covers empty and large multi-byte Unicode strings. It asserts the returned `contents.format()` equals the original and that the recorded fingerprint equals `fp(original)`. It also asserts the returned contents are unaffected by a later change to the graph.\n\nThe delivery paragraph in `read_node.inputs` describes how an agent harness records fingerprints. It does not add an obligation to this Rust `read`. The text says that for a Rust caller the fingerprint is recorded when `read` returns the contents, and the tests check that. `public_exports_match_the_appendix` only checks the public export inventory and is not needed for the behavior. I found no gap."
+        "rationale": "The reviewed tests adequately check `requirements.sdk.graph.validation-context.ValidationContext.read`. The obligations are to return the node contents and, under `read_node.inputs`, to record the node identity and the fingerprint of the returned contents on success. A failed read must record no observation. A later read with different contents must record a different fingerprint.\n\n- **Success records identity and fingerprint.** `crates/trust-but-verify/src/graph/validation_tests.rs#fn[snapshots_record_exact_reads_and_retain_distinct_versions]` calls `read` on node 1 holding \"before\". It asserts that the returned contents are \"before\". It then asserts that `earlier` equals `[Dependency::Node(node1, fp(\"before\"))]`, so the recorded dependency has the right identity and fingerprint.\n- **Later change.** The same test changes node 1 to \"after\" and reads again. It asserts that the contents are \"after\" and that the dependencies hold both `fp(\"before\")` and `fp(\"after\")` for node 1. The finished record's dependencies match, and `is_current` is false.\n- **Failed read.** The same test reads missing node 2 and asserts `is_err`, and the dependency list afterwards is still the two node-1 entries. `fn[direct_reads_return_complete_unicode_contents_and_snapshots]` in the same file asserts the \"missing\" error on a fresh context and `dependencies().is_empty()`.\n- **Returned contents.** `fn[direct_reads_return_complete_unicode_contents_and_snapshots]` covers an empty string and a large multi-byte Unicode string. It asserts that `read` returns contents whose `format()` equals the original, including after the graph content is replaced. It also asserts that the fingerprint matches `fp(original)`.\n\nThe agent-delivery paragraph of `read_node.inputs` concerns the harness, not `ValidationContext::read`, so it needs no test here. Staleness reporting belongs to `evidence.checking_records`, a cited requirement whose tests are not reassessed here. `public_exports_match_the_appendix` is unrelated to this behavior."
       }
     }
   },
@@ -342,23 +330,6 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[record_read]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "1dc587db0a3a4a600591a2e6a625b750dfea2e58dd92e4513a94ace96580c7b7"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
               "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
             },
             "selector": "fn[snapshots_record_exact_reads_and_retain_distinct_versions]"
@@ -400,7 +371,41 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+          "value": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[prepare_read]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "fbcf18f9d49e19cd802b06c9e7f7c44e95e1a92cbfe433f6f876632ce008b54a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[record_read]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "1dc587db0a3a4a600591a2e6a625b750dfea2e58dd92e4513a94ace96580c7b7"
         }
       ]
     }

@@ -78,13 +78,13 @@ fn installed_validator() -> Option<std::process::Command> {
     .then(|| Command::new("habeas"))
 }
 
+// {impl}`requirements.integration.validate`
+// {impl}`requirements.integration.validate.optimized`
+// {impl}`requirements.integration.validate.installed`
 /// Run optimized evidence validation for the current Cargo and mdBook project.
 /// Panics with the validator's diagnostics if validation fails.
 #[track_caller]
 pub fn validate() {
-    // {impl}`requirements.integration.validate`
-    // {impl}`requirements.integration.validate.optimized`
-    // {impl}`requirements.integration.validate.installed`
     use std::process::Command;
 
     let validator = std::env::var_os("HABEAS_RELEASE_VALIDATOR")

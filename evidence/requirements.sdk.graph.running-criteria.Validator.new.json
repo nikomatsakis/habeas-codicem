@@ -1,7 +1,7 @@
 {
   "requirement": "`Validator::new` borrows the domain for the validator's lifetime. All counters start at zero, including when another validator has already run criteria on the same domain.\n\n```rust,ignore\nimpl<'d, D: Domain> Validator<'d, D> {\n    pub fn new(domain: &'d D) -> Self;\n}\n```",
   "determination": true,
-  "rationale": "structural: The structural obligations are the prescribed signature `pub fn new(domain: &'d D) -> Self` in `impl<'d, D: Domain> Validator<'d, D>`. They also require borrowing the domain for `'d` and starting every counter at zero. `crates/trust-but-verify/src/graph.rs#impl[Validator<'d, D>]/fn[new]` matches the signature. It stores the `&'d D` reference in `Validator.domain` (`struct[Validator]` has `domain: &'d D`), so the domain is borrowed rather than owned or cloned. It initializes `usage` with `UsageStats::default()`. `struct[UsageStats]` derives `Default`, so all counters are zero. Starting from a fresh default rather than shared state also satisfies the clause about another validator having already run criteria on the same domain. The root is marked `{impl}`, and no other structural obligation needs a root.\n\nbehavioral: The requirement `requirements.sdk.graph.running-criteria.Validator.new` has two obligations. The first is that `new` borrows the domain for the validator's lifetime. The second is that all counters start at zero, including when another validator has already run criteria on the same domain.\n\nThe zero-start obligation is covered by `crates/trust-but-verify/src/agent/tests.rs#fn[validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse]`:\n- A first `Validator::new(&graph)` runs criteria on `graph` and accumulates non-zero usage. The test asserts attempts 3, retries 1, failed attempts 2, token counts and prepared/delivered inputs. It makes the same assertions on `graph.cache().usage()`.\n- The test then creates a second validator with `Validator::new(&graph)` on the same, already-used domain.\n- It asserts that `fresh.usage()` has empty `tools`, zero `prepared_inputs` and `delivered_inputs`, zero `attempts`, `retries` and `failed_attempts`, and zero `reported` and `missing_attempts` for all five `TokenCount` fields.\n- `UsageStats` has exactly these fields: `attempts`, `retries`, `failed_attempts`, `prepared_inputs`, `delivered_inputs`, `tools` and the five token counts. Every counter is therefore asserted. An implementation that seeded the new validator from the domain's cache usage would fail these assertions.\n\nThe borrow obligation is a compile-time property of the signature `new(domain: &'d D)`. The test passes `&graph` and keeps using `graph` afterwards, which fits a shared borrow. `crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]` also type-checks the public SDK against its consumer. Neither test checks the lifetime bound beyond compiling. This is a structural signature choice with no runtime behavior, so it needs no behavioral test.\n\nI found no behavioral gap.",
+  "rationale": "structural: The structural obligations are the signature `pub fn new(domain: &'d D) -> Self` in `impl<'d, D: Domain> Validator<'d, D>`, which borrows the domain for the validator's lifetime, and counters that start at zero. An alternative that took the domain by value, or cloned it, would violate the borrow clause. The root `crates/trust-but-verify/src/graph.rs#impl[Validator<'d, D>]/fn[new]` has exactly that signature. It stores `domain: &'d D` in `struct[Validator]`, whose field is a `&'d D` reference. It initializes `usage` with `UsageStats::default()`. `struct[UsageStats]` derives `Default`, and its fields are `u64` counters (`attempts`, `retries`, and so on) plus token and tool usage types that also derive `Default`. Every counter therefore starts at zero. The constructor keeps no state shared between validators and reads no domain state. Because of that, earlier validators on the same domain cannot affect the counts. The root carries the `{impl}` marker, and no further roots are needed.\n\nbehavioral: **Obligations.** `requirements.sdk.graph.running-criteria.Validator.new` has two parts. First, `Validator::new` borrows the domain for the validator's lifetime. That is a signature and lifetime property, so the compiler enforces it and the structural criterion covers it. It has no runtime behavior to test. Second, all counters start at zero, including when another validator has already run criteria on the same domain.\n\n**Test coverage.** `crates/trust-but-verify/src/agent/tests.rs#fn[validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse]` is marked `{test}` for this requirement.\n- It first runs a validator on the `graph` domain. That run covers a throttled attempt, a successful attempt, a store, a refresh and a terminal failure. It asserts the non-zero totals afterwards.\n- It then calls `Validator::new(&graph)` on the same, already-used domain and asserts `fresh.usage()` is zero in every field.\n- Those fields are `tools` (empty), `prepared_inputs`, `delivered_inputs`, `attempts`, `retries` and `failed_attempts`. They also include `reported` and `missing_attempts` for each of the five `TokenCount` fields: `input_tokens`, `output_tokens`, `cached_input_tokens`, `cache_creation_input_tokens` and `reasoning_tokens`.\n- These match every counter field of `UsageStats` in `crates/trust-but-verify/src/graph.rs#struct[UsageStats]`.\n- The `graph.cache().usage()` totals are non-zero at that point. A `new` that seeded its counters from the domain's accumulated usage would therefore fail these assertions.\n\n**Other test.** `crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]` checks the exported inventory. That is structural and adds no behavioral obligation.\n\nNo gaps found.",
   "references": "87a0f49f1e03497cf180ceef2f37627c9f158f2ac1bd7fa1c39108a162fb67be",
   "inputs": [
     {
@@ -45,7 +45,54 @@
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[public_exports_match_the_appendix]",
-      "hash": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+      "hash": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "struct[TokenCount]",
+      "hash": "7d54791be502d7ebaf54b0ac35aafcb6cbb32f7d274b97abe809cac6c0dbc8f8"
+    },
+    {
+      "requirements": "requirements.sdk.graph.running-criteria.UsageStats",
+      "matches": [
+        "requirements.sdk.graph.running-criteria.UsageStats"
+      ],
+      "text": [
+        ":::{req} UsageStats",
+        "",
+        "`UsageStats` exposes the following totals. `attempts` counts each request sent to the provider once. `retries` counts attempts that repeat a failed request. `failed_attempts` counts attempts that returned a provider error, including those followed by a successful retry.",
+        "",
+        "`prepared_inputs` counts inputs prepared for agent messages. Each node inserted in the opening message counts once. Each requested `read_node` page and each `outgoing_edges` result counts once, including repeated reads. A requested search page counts one input per excerpt on that page. Source listings, search finalization, and opaque custom-tool results contribute zero.",
+        "",
+        "`delivered_inputs` counts those inputs when the provider first responds successfully to the request carrying them. Each input counts once across retries and subsequent turns that replay the same conversation history. For example, if the opening message supplies three nodes and the provider fails permanently before replying, usage records three prepared inputs and zero delivered inputs.",
+        "",
+        "```rust,ignore",
+        "#[non_exhaustive]",
+        "pub struct UsageStats {",
+        "    pub attempts: u64,",
+        "    pub retries: u64,",
+        "    pub failed_attempts: u64,",
+        "    pub prepared_inputs: u64,",
+        "    pub delivered_inputs: u64,",
+        "    pub tools: BTreeMap<String, ToolUsage>,",
+        "    pub input_tokens: TokenCount,",
+        "    pub output_tokens: TokenCount,",
+        "    pub cached_input_tokens: TokenCount,",
+        "    pub cache_creation_input_tokens: TokenCount,",
+        "    pub reasoning_tokens: TokenCount,",
+        "}",
+        "```",
+        "",
+        "Trait implementations",
+        "",
+        "```rust,ignore",
+        "impl Clone for UsageStats;",
+        "impl Debug for UsageStats;",
+        "impl Default for UsageStats;",
+        "impl Serialize for UsageStats;",
+        "```",
+        ":::"
+      ]
     }
   ],
   "criteria": {
@@ -128,7 +175,7 @@
       ],
       "output": {
         "status": "success",
-        "rationale": "The structural obligations are the prescribed signature `pub fn new(domain: &'d D) -> Self` in `impl<'d, D: Domain> Validator<'d, D>`. They also require borrowing the domain for `'d` and starting every counter at zero. `crates/trust-but-verify/src/graph.rs#impl[Validator<'d, D>]/fn[new]` matches the signature. It stores the `&'d D` reference in `Validator.domain` (`struct[Validator]` has `domain: &'d D`), so the domain is borrowed rather than owned or cloned. It initializes `usage` with `UsageStats::default()`. `struct[UsageStats]` derives `Default`, so all counters are zero. Starting from a fresh default rather than shared state also satisfies the clause about another validator having already run criteria on the same domain. The root is marked `{impl}`, and no other structural obligation needs a root."
+        "rationale": "The structural obligations are the signature `pub fn new(domain: &'d D) -> Self` in `impl<'d, D: Domain> Validator<'d, D>`, which borrows the domain for the validator's lifetime, and counters that start at zero. An alternative that took the domain by value, or cloned it, would violate the borrow clause. The root `crates/trust-but-verify/src/graph.rs#impl[Validator<'d, D>]/fn[new]` has exactly that signature. It stores `domain: &'d D` in `struct[Validator]`, whose field is a `&'d D` reference. It initializes `usage` with `UsageStats::default()`. `struct[UsageStats]` derives `Default`, and its fields are `u64` counters (`attempts`, `retries`, and so on) plus token and tool usage types that also derive `Default`. Every counter therefore starts at zero. The constructor keeps no state shared between validators and reads no domain state. Because of that, earlier validators on the same domain cannot affect the counts. The root carries the `{impl}` marker, and no further roots are needed."
       }
     },
     "behavioral": {
@@ -186,7 +233,7 @@
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+              "value": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
             }
           ]
         },
@@ -210,7 +257,7 @@
       ],
       "output": {
         "status": "success",
-        "rationale": "The requirement `requirements.sdk.graph.running-criteria.Validator.new` has two obligations. The first is that `new` borrows the domain for the validator's lifetime. The second is that all counters start at zero, including when another validator has already run criteria on the same domain.\n\nThe zero-start obligation is covered by `crates/trust-but-verify/src/agent/tests.rs#fn[validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse]`:\n- A first `Validator::new(&graph)` runs criteria on `graph` and accumulates non-zero usage. The test asserts attempts 3, retries 1, failed attempts 2, token counts and prepared/delivered inputs. It makes the same assertions on `graph.cache().usage()`.\n- The test then creates a second validator with `Validator::new(&graph)` on the same, already-used domain.\n- It asserts that `fresh.usage()` has empty `tools`, zero `prepared_inputs` and `delivered_inputs`, zero `attempts`, `retries` and `failed_attempts`, and zero `reported` and `missing_attempts` for all five `TokenCount` fields.\n- `UsageStats` has exactly these fields: `attempts`, `retries`, `failed_attempts`, `prepared_inputs`, `delivered_inputs`, `tools` and the five token counts. Every counter is therefore asserted. An implementation that seeded the new validator from the domain's cache usage would fail these assertions.\n\nThe borrow obligation is a compile-time property of the signature `new(domain: &'d D)`. The test passes `&graph` and keeps using `graph` afterwards, which fits a shared borrow. `crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]` also type-checks the public SDK against its consumer. Neither test checks the lifetime bound beyond compiling. This is a structural signature choice with no runtime behavior, so it needs no behavioral test.\n\nI found no behavioral gap."
+        "rationale": "**Obligations.** `requirements.sdk.graph.running-criteria.Validator.new` has two parts. First, `Validator::new` borrows the domain for the validator's lifetime. That is a signature and lifetime property, so the compiler enforces it and the structural criterion covers it. It has no runtime behavior to test. Second, all counters start at zero, including when another validator has already run criteria on the same domain.\n\n**Test coverage.** `crates/trust-but-verify/src/agent/tests.rs#fn[validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse]` is marked `{test}` for this requirement.\n- It first runs a validator on the `graph` domain. That run covers a throttled attempt, a successful attempt, a store, a refresh and a terminal failure. It asserts the non-zero totals afterwards.\n- It then calls `Validator::new(&graph)` on the same, already-used domain and asserts `fresh.usage()` is zero in every field.\n- Those fields are `tools` (empty), `prepared_inputs`, `delivered_inputs`, `attempts`, `retries` and `failed_attempts`. They also include `reported` and `missing_attempts` for each of the five `TokenCount` fields: `input_tokens`, `output_tokens`, `cached_input_tokens`, `cache_creation_input_tokens` and `reasoning_tokens`.\n- These match every counter field of `UsageStats` in `crates/trust-but-verify/src/graph.rs#struct[UsageStats]`.\n- The `graph.cache().usage()` totals are non-zero at that point. A `new` that seeded its counters from the domain's accumulated usage would therefore fail these assertions.\n\n**Other test.** `crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]` checks the exported inventory. That is structural and adds no behavioral obligation.\n\nNo gaps found."
       }
     }
   },
@@ -320,7 +367,35 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+          "value": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "struct[TokenCount]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "7d54791be502d7ebaf54b0ac35aafcb6cbb32f7d274b97abe809cac6c0dbc8f8"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.sdk.graph.running-criteria.UsageStats"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "acada9370a9aa5e46ab48f6bd6c3b337f00d357491ac0b8fc97a4a1bb1811196"
         }
       ]
     }

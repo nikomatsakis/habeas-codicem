@@ -1053,7 +1053,8 @@ async fn malformed_submissions_receive_feedback_and_can_be_corrected() {
         assert!(matches!(answer.decision, Decision::No));
         assert_eq!(vetted, 1);
         let requests = agent.provider.requests.lock().unwrap();
-        let Some(Message::User { content }) = requests[1].chat_history.last() else {
+        let Some(Message::User { content }) = requests[1].chat_history.last().map(AsRef::as_ref)
+        else {
             panic!("expected tool feedback")
         };
         let UserContent::ToolResult(result) = &content[0] else {
@@ -2039,6 +2040,7 @@ impl Conversation for MinimalConversation {
     }
 }
 
+// {test}`requirements.sdk.validation-cache.usage`
 // {test}`requirements.sdk.graph.running-criteria.ToolUsage.calls`
 // {test}`requirements.sdk.graph.running-criteria.ToolUsage.result_bytes`
 // {test}`requirements.sdk.graph.running-criteria.usage_by_tool`

@@ -1,7 +1,7 @@
 {
   "requirement": "Deliver one entry per enclosing item in a text search, even when the item has several hits. Group before pagination so an item's excerpt stays together. Each entry carries a node reference under {cite}`requirements.sdk.graph.validation-context.node_reference`, one excerpt, and the page-local tag used by `finish_search`. The tag accounts for use of the excerpt. The node reference lets the agent read the full item.",
   "determination": true,
-  "rationale": "structural: `requirements.sdk.graph.search.group_hits` has no structural obligation that needs implementation evidence, and it has no implementation edges or roots. Each clause describes output that a caller can observe.\n\n- \"Deliver one entry per enclosing item in a text search, even when the item has several hits.\" This is about what the output contains. Any implementation that returns one entry per item, such as a map, a sort-and-merge or a dedup pass, gives the same results.\n- \"Group before pagination so an item's excerpt stays together.\" This sets an order of operations, but the stated purpose is observable. An item must not be split across pages or appear twice. An implementation that gathers hits in some other internal order but yields the same pages would still meet the text. The clause names no library, algorithm, type or interface.\n- \"Each entry carries a node reference ..., one excerpt, and the page-local tag used by `finish_search`.\" This describes the fields of the output. It does not prescribe a Rust type or a signature. The node reference form is defined by the cited `requirements.sdk.graph.validation-context.node_reference`, which is context only. Its own text covers address resolution and `NodeId<D>`. The cite does not add a structural obligation to this requirement.\n- \"The tag accounts for use of the excerpt\" and \"The node reference lets the agent read the full item.\" Both describe behavior and purpose.\n\nTests can supply the evidence for these behaviors.\n\nbehavioral: The tests check every behavioral obligation in `requirements.sdk.graph.search.group_hits`.\n\n- **One entry per enclosing item, even with several hits.**\n  - `crates/trust-but-verify/src/agent/project_sources.rs#mod[tests]/fn[search_groups_exact_occurrences_and_records_the_selected_declaration]` has three raw hits: one in `const[A]` and two in `const[B]`. It asserts that the delivered `matches` array has exactly two entries, one for `const[A]` and one for `const[B]`.\n  - `search_pages_return_every_original_match_in_order` uses 350 lines, each containing \"hit\" twice. It asserts that the entries across all pages match the 350 lines, with one entry per item.\n- **Group before pagination, so an item's excerpt stays together.** `search_pages_return_every_original_match_in_order` runs `search_text` through the session over several pages. It asserts `pages > 1`, that every page is non-empty, and that entry `count` matches `lines[count]` in order. It also asserts that the total equals `lines.len()`. If hits were paginated before grouping, an item with two hits could be split across a page boundary and produce a duplicate or partial entry, and this assertion would fail.\n- **Each entry carries a node reference, one excerpt and a page-local tag.**\n  - Both tests assert the full entry JSON: `node`, `file`, `selector`, `excerpt` and `tag`.\n  - The paging test asserts tags equal `index+1` on every page, which checks that they are page-local. It also checks `search_id` and the `complete` flag.\n  - The node field is an integer ID, which fits the cited `requirements.sdk.graph.validation-context.node_reference`.\n- **The tag accounts for use of the excerpt.** The grouping test calls `finish_search` with `used:[]` and asserts no dependencies. It then calls it with `used:[\"2\"]` and asserts a single `Dependency::Node` for `const[B]` with the item's fingerprint.\n- **The node reference lets the agent read the full item.** The grouping test calls `session.read_node` on the returned match entry. It asserts the resulting dependency is on `const[B]`'s node.\n\nNo obligation is untested, and I found no ambiguity or acknowledged gap.",
+  "rationale": "structural: `requirements.sdk.graph.search.group_hits` has no structural obligation that needs implementation evidence, and it has no implementation edges. Each clause describes observable behaviour:\n\n- \"Deliver one entry per enclosing item in a text search, even when the item has several hits.\" This concerns the number of entries returned. Any implementation that returns one entry per item behaves the same, whether it groups with a map, a sort-and-merge or a streaming pass.\n- \"Group before pagination so an item's excerpt stays together.\" This is an ordering constraint on results. Page contents and sizes show it, and no named library, algorithm or interface is required.\n- \"Each entry carries a node reference ..., one excerpt, and the page-local tag used by `finish_search`.\" This describes what the output contains. It does not prescribe a Rust type, field names or a signature. The node reference's form is defined by the cited `requirements.sdk.graph.validation-context.node_reference`, which only supplies context. A differently declared entry type that renders the same fields would still conform.\n\nNone of these clauses fixes how the code is built, so Success is correct with no roots. How well tests cover the behaviour is a separate question and is not judged here.\n\nbehavioral: The two marked tests cover each obligation in `requirements.sdk.graph.search.group_hits`.\n\n- **One entry per enclosing item, even with several hits.** `search_groups_exact_occurrences_and_records_the_selected_declaration` in `crates/trust-but-verify/src/agent/project_sources.rs` searches `const A … \"éhit\"; const B … \"hit hit\"`. It checks that the raw search returns three hits: one in `const[A]` and two in `const[B]`. It then asserts that the `search_text` page has exactly two entries, with `const[B]`'s two hits merged into one entry whose excerpt is `const B: &str = \"hit hit\";`.\n- **Group before pagination, so an item's excerpt stays together.** `search_pages_return_every_original_match_in_order` writes 350 lines of `hit N hit`, so each line has two hits. It pages through the whole result and asserts that each entry exactly equals `{node, file, selector, excerpt: lines[count], tag}` in order. It also asserts that the entry count equals 350 and that there is more than one page. A split item would show up as an extra or duplicated entry. The `search_text` dispatch code I read in `crates/trust-but-verify/src/agent/project_sources.rs#impl[Session<'_, D>/ToolSession<D>]/fn[dispatch]` builds the groups from the full hit list before it builds the entries that get paged.\n- **Each entry carries a node reference, one excerpt and a page-local tag.** Both tests assert the exact JSON of every entry, including `node`, `file`, `selector`, `excerpt` and `tag`. The pagination test asserts that tags restart at `\"1\"` on every page (`index+1`). The `node_reference` requirement is cited context, and the grouping test uses the entry's `node` when it reads the item.\n- **The tag accounts for use of the excerpt.** The grouping test calls `finish_search` with `used: []` and expects no dependencies. It calls it again with `used: [\"2\"]` and expects a dependency on `const[B]` with the item's fingerprint.\n- **The node reference lets the agent read the full item.** The grouping test calls `session.read_node` on the second entry. It asserts that the resulting dependency is the `const[B]` node.\n\nI found no unacknowledged gap, and no further test markers are needed.",
   "references": "50619528f9e7bda3269805876ea118b3a4763497258ae3122f0772356d9d2ddf",
   "inputs": [
     {
@@ -39,12 +39,27 @@
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[search_pages_return_every_original_match_in_order]",
-      "hash": "baa98df68943cf5888e142f365e65831861bf813d34bd89d1a42d02ce39cecc7"
+      "hash": "a7318401f2f8f00a43b1d0f6e9868196b73915b18389ff516002b525d0c494fb"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[search_groups_exact_occurrences_and_records_the_selected_declaration]",
       "hash": "31b2ed3b415ba9a7cdf8e933ae5247c8b1bcd9430badda6ea6b37f9d178a619e"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]",
+      "hash": "1e9891fdbb67df918e9440e24bb4ccae95bc15d9677193dee3cc2c09feb845b5"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/pages.rs",
+      "item": "impl[Pages<N,%20L>]/fn[search]",
+      "hash": "affaeb7275d522dc08d00e36ba5b88bc4f30fd276a9b702c9a6c3f60193a0a6d"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/pages.rs",
+      "item": "fn[chunks]",
+      "hash": "9c68375bd25402c0d5dc570e4468e9f15f6be7f383e13d38284cd9b9d6f9258a"
     }
   ],
   "criteria": {
@@ -99,7 +114,7 @@
       ],
       "output": {
         "status": "success",
-        "rationale": "`requirements.sdk.graph.search.group_hits` has no structural obligation that needs implementation evidence, and it has no implementation edges or roots. Each clause describes output that a caller can observe.\n\n- \"Deliver one entry per enclosing item in a text search, even when the item has several hits.\" This is about what the output contains. Any implementation that returns one entry per item, such as a map, a sort-and-merge or a dedup pass, gives the same results.\n- \"Group before pagination so an item's excerpt stays together.\" This sets an order of operations, but the stated purpose is observable. An item must not be split across pages or appear twice. An implementation that gathers hits in some other internal order but yields the same pages would still meet the text. The clause names no library, algorithm, type or interface.\n- \"Each entry carries a node reference ..., one excerpt, and the page-local tag used by `finish_search`.\" This describes the fields of the output. It does not prescribe a Rust type or a signature. The node reference form is defined by the cited `requirements.sdk.graph.validation-context.node_reference`, which is context only. Its own text covers address resolution and `NodeId<D>`. The cite does not add a structural obligation to this requirement.\n- \"The tag accounts for use of the excerpt\" and \"The node reference lets the agent read the full item.\" Both describe behavior and purpose.\n\nTests can supply the evidence for these behaviors."
+        "rationale": "`requirements.sdk.graph.search.group_hits` has no structural obligation that needs implementation evidence, and it has no implementation edges. Each clause describes observable behaviour:\n\n- \"Deliver one entry per enclosing item in a text search, even when the item has several hits.\" This concerns the number of entries returned. Any implementation that returns one entry per item behaves the same, whether it groups with a map, a sort-and-merge or a streaming pass.\n- \"Group before pagination so an item's excerpt stays together.\" This is an ordering constraint on results. Page contents and sizes show it, and no named library, algorithm or interface is required.\n- \"Each entry carries a node reference ..., one excerpt, and the page-local tag used by `finish_search`.\" This describes what the output contains. It does not prescribe a Rust type, field names or a signature. The node reference's form is defined by the cited `requirements.sdk.graph.validation-context.node_reference`, which only supplies context. A differently declared entry type that renders the same fields would still conform.\n\nNone of these clauses fixes how the code is built, so Success is correct with no roots. How well tests cover the behaviour is a separate question and is not judged here."
       }
     },
     "behavioral": {
@@ -151,7 +166,7 @@
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "baa98df68943cf5888e142f365e65831861bf813d34bd89d1a42d02ce39cecc7"
+              "value": "a7318401f2f8f00a43b1d0f6e9868196b73915b18389ff516002b525d0c494fb"
             }
           ]
         },
@@ -171,11 +186,40 @@
               "value": "31b2ed3b415ba9a7cdf8e933ae5247c8b1bcd9430badda6ea6b37f9d178a619e"
             }
           ]
+        },
+        {
+          "OutgoingEdges": [
+            {
+              "Requirement": "requirements.sdk.graph.search.group_hits"
+            },
+            "Implements",
+            {
+              "scheme": "node-path-set-sha256-v1",
+              "value": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+                },
+                "selector": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "1e9891fdbb67df918e9440e24bb4ccae95bc15d9677193dee3cc2c09feb845b5"
+            }
+          ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "The tests check every behavioral obligation in `requirements.sdk.graph.search.group_hits`.\n\n- **One entry per enclosing item, even with several hits.**\n  - `crates/trust-but-verify/src/agent/project_sources.rs#mod[tests]/fn[search_groups_exact_occurrences_and_records_the_selected_declaration]` has three raw hits: one in `const[A]` and two in `const[B]`. It asserts that the delivered `matches` array has exactly two entries, one for `const[A]` and one for `const[B]`.\n  - `search_pages_return_every_original_match_in_order` uses 350 lines, each containing \"hit\" twice. It asserts that the entries across all pages match the 350 lines, with one entry per item.\n- **Group before pagination, so an item's excerpt stays together.** `search_pages_return_every_original_match_in_order` runs `search_text` through the session over several pages. It asserts `pages > 1`, that every page is non-empty, and that entry `count` matches `lines[count]` in order. It also asserts that the total equals `lines.len()`. If hits were paginated before grouping, an item with two hits could be split across a page boundary and produce a duplicate or partial entry, and this assertion would fail.\n- **Each entry carries a node reference, one excerpt and a page-local tag.**\n  - Both tests assert the full entry JSON: `node`, `file`, `selector`, `excerpt` and `tag`.\n  - The paging test asserts tags equal `index+1` on every page, which checks that they are page-local. It also checks `search_id` and the `complete` flag.\n  - The node field is an integer ID, which fits the cited `requirements.sdk.graph.validation-context.node_reference`.\n- **The tag accounts for use of the excerpt.** The grouping test calls `finish_search` with `used:[]` and asserts no dependencies. It then calls it with `used:[\"2\"]` and asserts a single `Dependency::Node` for `const[B]` with the item's fingerprint.\n- **The node reference lets the agent read the full item.** The grouping test calls `session.read_node` on the returned match entry. It asserts the resulting dependency is on `const[B]`'s node.\n\nNo obligation is untested, and I found no ambiguity or acknowledged gap."
+        "rationale": "The two marked tests cover each obligation in `requirements.sdk.graph.search.group_hits`.\n\n- **One entry per enclosing item, even with several hits.** `search_groups_exact_occurrences_and_records_the_selected_declaration` in `crates/trust-but-verify/src/agent/project_sources.rs` searches `const A … \"éhit\"; const B … \"hit hit\"`. It checks that the raw search returns three hits: one in `const[A]` and two in `const[B]`. It then asserts that the `search_text` page has exactly two entries, with `const[B]`'s two hits merged into one entry whose excerpt is `const B: &str = \"hit hit\";`.\n- **Group before pagination, so an item's excerpt stays together.** `search_pages_return_every_original_match_in_order` writes 350 lines of `hit N hit`, so each line has two hits. It pages through the whole result and asserts that each entry exactly equals `{node, file, selector, excerpt: lines[count], tag}` in order. It also asserts that the entry count equals 350 and that there is more than one page. A split item would show up as an extra or duplicated entry. The `search_text` dispatch code I read in `crates/trust-but-verify/src/agent/project_sources.rs#impl[Session<'_, D>/ToolSession<D>]/fn[dispatch]` builds the groups from the full hit list before it builds the entries that get paged.\n- **Each entry carries a node reference, one excerpt and a page-local tag.** Both tests assert the exact JSON of every entry, including `node`, `file`, `selector`, `excerpt` and `tag`. The pagination test asserts that tags restart at `\"1\"` on every page (`index+1`). The `node_reference` requirement is cited context, and the grouping test uses the entry's `node` when it reads the item.\n- **The tag accounts for use of the excerpt.** The grouping test calls `finish_search` with `used: []` and expects no dependencies. It calls it again with `used: [\"2\"]` and expects a dependency on `const[B]` with the item's fingerprint.\n- **The node reference lets the agent read the full item.** The grouping test calls `session.read_node` on the second entry. It asserts that the resulting dependency is the `const[B]` node.\n\nI found no unacknowledged gap, and no further test markers are needed."
       }
     }
   },
@@ -240,7 +284,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "baa98df68943cf5888e142f365e65831861bf813d34bd89d1a42d02ce39cecc7"
+          "value": "a7318401f2f8f00a43b1d0f6e9868196b73915b18389ff516002b525d0c494fb"
         }
       ]
     },
@@ -258,6 +302,57 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "31b2ed3b415ba9a7cdf8e933ae5247c8b1bcd9430badda6ea6b37f9d178a619e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "1e9891fdbb67df918e9440e24bb4ccae95bc15d9677193dee3cc2c09feb845b5"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/pages.rs"
+            },
+            "selector": "impl[Pages<N,%20L>]/fn[search]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "affaeb7275d522dc08d00e36ba5b88bc4f30fd276a9b702c9a6c3f60193a0a6d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/pages.rs"
+            },
+            "selector": "fn[chunks]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "9c68375bd25402c0d5dc570e4468e9f15f6be7f383e13d38284cd9b9d6f9258a"
         }
       ]
     }

@@ -1,7 +1,7 @@
 {
   "requirement": "{impl}`requirements.configuration.feature_sections`\nConfiguration names MUST match `[A-Za-z0-9][A-Za-z0-9_-]*` and be case-sensitive.\nProject-selection keys MUST be canonical absolute project-root paths. Model IDs\nMUST be nonempty opaque strings, preserving tags and ARNs. `api_key_env` MUST\nname a nonempty environment variable without `=` or NUL.\n\nAuthoring MUST validate its fields under {cite}`requirements.configuration.loading`.\nThe `options` map MUST accept backend-defined inference settings rather than a\nclosed Habeas list; the adapter MUST pass them through Rig's provider parameter\nmechanism and report rejection by Rig or the provider. These options MUST NOT\nreplace the selected model, the assessment prompt, or tool definitions.",
   "determination": true,
-  "rationale": "structural: Most clauses in `requirements.authoring.configuration_storage` specify observable behavior. These are the name pattern and case sensitivity, canonical absolute project-root keys, nonempty opaque model IDs, `api_key_env` validity, and validation under `requirements.configuration.loading` (a citation). Also behavioral are that options are not rejected for being outside a Habeas list, that Rig or provider rejection is reported, and that options do not replace the model, prompt or tools. An implementation could enforce each of these in a different way and behave the same, so none of them needs implementation evidence.\n\nTwo clauses are structural:\n\n1. **Open options map.** \"The `options` map MUST accept backend-defined inference settings rather than a closed Habeas list.\" A closed struct of known fields would fail this while looking similar. `src/config.rs#enum[BackendConfig]` is marked as an implementation root. Its variants hold `BedrockConfig`, `OllamaConfig` and `OpenAiConfig`, which each declare `options: BTreeMap<String, OptionValue>`. The types reached from the marked enum carry this obligation, so they need no marker of their own.\n2. **Rig delegation.** \"the adapter MUST pass them through Rig's provider parameter mechanism\". A hand-rolled HTTP body, or merging options into the prompt, would pass the options on without using Rig's mechanism, so this is a real structural obligation. In `crates/trust-but-verify/src/agent/providers.rs#impl[RigProvider/CompletionProvider]/fn[complete]`, the options map is cloned and set as `request.additional_params`. The code then calls `self.model.call(request)`, which is Rig's completion model, and maps failures with `provider_failure`. `apply_bedrock_options` is reached from `complete`, so it needs no marker.\n\nBoth structural obligations have an implementation reference on the review roots. `BackendConfig::options` and `options_json` are reached from `BackendConfig`, so they need no marker either.\n\nbehavioral: Each obligation in `requirements.authoring.configuration_storage` maps to a test that asserts its outcome.\n\n**Configuration names** (the regex, and case sensitivity)\n- `tests/configuration.rs#fn[storage_rules_reject_each_invalid_field_with_its_setting]` rejects these names, each with its setting path in the error: empty, `a.b`, `a b`, `é`, `-x`, `_x`. It also rejects bad `default` values and bad project `config` names. The same checks run for workspace files.\n- The same test accepts `A-1_b`, and accepts `Local` and `local` as distinct names.\n\n**Project-selection keys** (canonical absolute paths)\n- The same test rejects a relative key, a key with `..`, one with `./`, one with a trailing `/`, and a symlink.\n- It accepts both a canonical existing root and a canonical root that does not exist.\n- `user_and_workspace_authoring_tables_round_trip_every_map` and `explicit_project_and_default_selections_choose_whole_configs` check that the canonical key is kept and used.\n\n**Model IDs** (nonempty, opaque, tags and ARNs preserved)\n- Empty Bedrock and Ollama models are rejected, in `storage_rules_reject_each_invalid_field_with_its_setting` and `invalid_schema_and_feature_values_report_the_configuration_path`.\n- ARNs, tags and `@sha256` model IDs are asserted exact through `model_ref()`. The tests are `user_and_workspace_authoring_tables_round_trip_every_map`, `backend_configuration_round_trips_without_materializing_defaults`, `openai_configuration_preserves_model_and_resolves_credentials` and the accepted-values section of the storage-rules test.\n\n**`api_key_env`**\n- Empty, `=` and NUL values are each rejected, and the error names `authoring.configs.local.api_key_env`.\n- A valid `MODEL_KEY_1` is accepted.\n- The OpenAI test covers the empty value and the `api_key` plus `api_key_env` combination.\n\n**Validation under `requirements.configuration.loading`**\n- Every failure case asserts that the error contains both the file path and the setting path, for user and workspace files. `invalid_schema_and_feature_values_report_the_configuration_path` also covers a bad version, unknown keys and a non-finite float.\n\n**`options` accepts backend-defined settings**\n- Arbitrary, nested and unknown keys are accepted and round-trip: `custom.arbitrary`, `max_tokens`, `labels` and `top_k`. This is in `backend_configuration_round_trips_without_materializing_defaults` and `bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted`.\n\n**Pass-through to Rig and provider parameters**\n- `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` asserts that `options.temperature`, `options.num_ctx` and `model` reach the Ollama request.\n- `bedrock_cli_uses_selected_profile_region_and_converse_tools` asserts that `inferenceConfig` and `additionalModelRequestFields` carry the options.\n- `openai_responses_replays_tool_calls_and_records_usage` asserts that `max_output_tokens` and `reasoning.effort` reach the request.\n\n**Rejection is reported**\n- `provider_rejection_of_inference_options_is_reported` covers a provider 400 response whose text appears in stderr. It also covers Rig-side rejection, `Bedrock options.temperature must be a number`, before any request is sent.\n- The unit test `bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted` checks each Bedrock type error.\n\n**Options must not replace the model, prompt or tools**\n- The reserved keys `model`, `modelId`, `model_id`, `prompt`, `messages`, `system`, `tools`, `tool_choice`, `toolChoice` and `toolConfig` are each rejected, for both Ollama and Bedrock, with the `authoring.configs.c.options.` setting named.\n- OpenAI's `input` and `instructions` are rejected.\n- The CLI tests assert that the delivered request `model` and the tools match the selection.\n\nOne residual: OpenAI-specific tests only cover `input` and `instructions`, not `model` or `tools`. I read `BackendConfig::validate` in `src/config.rs`. It applies one shared reserved-key check to every backend, with no per-backend branch. The tests above exercise that shared check, so I did not report this as a gap.\n\nI found no missing test markers.",
+  "rationale": "structural: The structural obligations in `requirements.authoring.configuration_storage` are covered by the two supplied roots. The other clauses state only observable behavior.\n\n**Structural obligations**\n- \"The `options` map MUST accept backend-defined inference settings rather than a closed Habeas list.\" A closed struct of known settings would still load valid TOML but would violate this clause. In `src/config.rs`, `enum[BackendConfig]` has the `Bedrock`, `Ollama` and `Openai` variants. The config structs behind them (`struct[BedrockConfig]` and its siblings) hold `options: BTreeMap<String, OptionValue>`. `enum[OptionValue]` is an open recursive value type (string, boolean, integer, float, array or map). These types are reached from the marked `enum[BackendConfig]` through the types it uses, so they need no markers of their own.\n- \"the adapter MUST pass them through Rig's provider parameter mechanism.\" Sending options in a bespoke request, or dropping them, would keep other behavior but violate this clause. In `crates/trust-but-verify/src/agent/providers.rs`, `impl[RigProvider/CompletionProvider]/fn[complete]` clones the stored options map. It sets `request.additional_params = Some(Value::Object(options))` when the map is nonempty. It then calls `self.model.call(request)`. This sets only `additional_params`. The model, prompt and tools stay in their own request fields, which supports \"MUST NOT replace the selected model, the assessment prompt, or tool definitions\".\n- `fn[complete]` also maps Rig and provider errors with `provider_failure`, which supports \"report rejection by Rig or the provider\". `fn[complete]` also performs Bedrock option extraction through `apply_bedrock_options`, which is reachable from the root.\n\n**Observable-behavior clauses**\n- The clauses on configuration name patterns, case sensitivity, canonical absolute project keys, nonempty model IDs and `api_key_env` content describe validation results. They do not prescribe a library, type or interface, so any validator that gives the same outcomes satisfies them. They need no implementation evidence under this structural criterion.\n- \"Authoring MUST validate its fields under {cite}`requirements.configuration.loading`\" is a citation of the loading requirement. It prescribes no structure. The loading requirement itself states only behavior: what is loaded, what is reported, and isolation between features.\n\nNo gap found.\n\nbehavioral: The marked tests adequately cover each obligation of `requirements.authoring.configuration_storage`.\n\n**Configuration names** (match `[A-Za-z0-9][A-Za-z0-9_-]*`, case-sensitive).\n- `tests/configuration.rs#fn[storage_rules_reject_each_invalid_field_with_its_setting]` rejects these names, each with an error that names the file and the setting: empty, `a.b`, `a b`, `é`, `-x` and `_x`.\n- The same test rejects an invalid `default` and an invalid project `config` name, and applies the rules to `WorkspaceConfig`.\n- It accepts `Local`, `local` and `A-1_b` together, which shows names are case-sensitive and distinct.\n- `explicit_project_and_default_selections_choose_whole_configs` rejects the explicit selection `DEFAULT` when only `default` exists.\n\n**Project-selection keys** (canonical absolute paths).\n- `storage_rules_reject_each_invalid_field_with_its_setting` rejects a relative key, `/../base`, `/./`, a trailing slash and a symlink.\n- The same test accepts the canonical existing root and a canonical root that does not exist.\n- `user_and_workspace_authoring_tables_round_trip_every_map` checks that the canonical key is preserved.\n\n**Model IDs** (nonempty, opaque, tags and ARNs preserved).\n- An empty model is rejected for bedrock in `storage_rules_reject_each_invalid_field_with_its_setting`, and for ollama in `invalid_schema_and_feature_values_report_the_configuration_path`.\n- `name:tag@sha256:abc`, ARNs and `tiny:latest` are preserved exactly in `storage_rules_reject_each_invalid_field_with_its_setting`, `user_and_workspace_authoring_tables_round_trip_every_map`, `backend_configuration_round_trips_without_materializing_defaults` and `openai_configuration_preserves_model_and_resolves_credentials`.\n\n**`api_key_env`** (nonempty, no `=`, no NUL).\n- All three violations are rejected, and the error names `authoring.configs.local.api_key_env`.\n- The openai test also rejects an empty `api_key_env`.\n\n**Validation under `requirements.configuration.loading`.**\n- Each rejection asserts that the error contains the file path and the setting.\n- This covers the user file and the workspace file.\n- `invalid_schema_and_feature_values_report_the_configuration_path` covers non-finite floats and unknown keys.\n\n**`options`.**\n- Arbitrary backend-defined settings are accepted and round-trip in `backend_configuration_round_trips_without_materializing_defaults` and `user_and_workspace_authoring_tables_round_trip_every_map`. These include nested tables, arrays and unknown keys such as `top_k`.\n- Pass-through to the provider is checked in three places:\n  - `tests/authoring_cli.rs#fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]` asserts `temperature` and `num_ctx` in the request body.\n  - `bedrock_cli_uses_selected_profile_region_and_converse_tools` asserts `inferenceConfig` and `additionalModelRequestFields`.\n  - `openai_responses_replays_tool_calls_and_records_usage` asserts `max_output_tokens` and `reasoning`.\n- `crates/trust-but-verify/src/agent/providers.rs#mod[tests]/fn[bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted]` checks that Rig-side Bedrock type errors are rejected.\n- Reporting of rejection is checked by `provider_rejection_of_inference_options_is_reported`. A provider 400 surfaces on stderr, the evidence file is left unchanged, and the usage outcome is `failed`. A Rig-side Bedrock rejection (`options.temperature must be a number`) is reported before any request is sent.\n- Options must not replace the model, prompt or tools. `storage_rules_reject_each_invalid_field_with_its_setting` rejects `model`, `modelId`, `model_id`, `prompt`, `messages`, `system`, `tools`, `tool_choice`, `toolChoice` and `toolConfig` for ollama and bedrock. The openai test rejects `input` and `instructions`. The reserved-key list in `src/config.rs#impl[BackendConfig]/fn[validate]` is shared across backends. The CLI tests assert the request's model and tools are those selected.\n\nI found no untested obligation or marking gap.",
   "references": "51b542ed746f5b2e38cde147e5e84412e35d2f22b8cdbe12ade0a6ef71feb517",
   "inputs": [
     {
@@ -57,7 +57,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/providers.rs",
       "item": "impl[RigProvider/CompletionProvider]/fn[complete]",
-      "hash": "5ef22d9aeefb3a96a508f39f4a00cbc4d49201508ab909e7079551bcffac0476"
+      "hash": "37064e0c8099355191d6b9d5d80220385d0f30836c53a9379342cb0c35b3f38c"
     },
     {
       "file": "src/config.rs",
@@ -66,18 +66,28 @@
     },
     {
       "file": "src/config.rs",
+      "item": "",
+      "hash": "e7149a953699fcb78d559a0e4ebc3cc81c8afe0720452ac54890f714f0f81966"
+    },
+    {
+      "file": "src/config.rs",
       "item": "struct[BedrockConfig]",
       "hash": "e123937a7e339468258c2a8a9a0926311f6b446c5430b1aaf5668aa82d758e15"
     },
     {
       "file": "src/config.rs",
-      "item": "struct[OllamaConfig]",
-      "hash": "75a1dacb21ac62202f7a625fbd76627d723870f174a00fed5d8ec05515f76fc9"
+      "item": "enum[OptionValue]",
+      "hash": "c057e530a7860d09f4e1a5086082044ff94e8f573d0817244d2b5aec50004a74"
     },
     {
-      "file": "src/config.rs",
-      "item": "struct[OpenAiConfig]",
-      "hash": "e461a99c1e9e9f37109a845e66b022b00f9aeae0af212d81f0dac2ebb39d0a51"
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
+      "item": "struct[RigProvider]",
+      "hash": "e6bfca1f16fee771aa05b56f0f4a3fe828d7a132b228c6dbd240a04675f04f9c"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
+      "item": "impl[RigProvider]/fn[connect]",
+      "hash": "4aceeee346dc8ed3d743eb309f00fc0263d4d19929ee2c73cd27fdb6735205c9"
     },
     {
       "file": "crates/trust-but-verify/src/agent/providers.rs",
@@ -151,13 +161,13 @@
     },
     {
       "file": "src/config.rs",
-      "item": "enum[OptionValue]",
-      "hash": "c057e530a7860d09f4e1a5086082044ff94e8f573d0817244d2b5aec50004a74"
+      "item": "impl[BackendConfig]/fn[options_json]",
+      "hash": "3da4add93895e110bcc955074911feb54095840cfd648b2eb0a201329140e691"
     },
     {
       "file": "src/config.rs",
-      "item": "struct[ProjectSelection]",
-      "hash": "9c20bc057d63c1972e2664967a18366422b22742143a834e81e89927f892ce30"
+      "item": "impl[OptionValue]/fn[validate]",
+      "hash": "c4d8657a0632ecf6e2514f5b2de4dd916d1dffe4c12beafd956c415fc4a7305e"
     }
   ],
   "criteria": {
@@ -210,7 +220,7 @@
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "5ef22d9aeefb3a96a508f39f4a00cbc4d49201508ab909e7079551bcffac0476"
+              "value": "37064e0c8099355191d6b9d5d80220385d0f30836c53a9379342cb0c35b3f38c"
             }
           ]
         },
@@ -232,26 +242,19 @@
           ]
         },
         {
-          "OutgoingEdges": [
+          "Node": [
             {
-              "Requirement": "requirements.authoring.configuration_storage"
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/config.rs"
+                },
+                "selector": ""
+              }
             },
-            "Implements",
             {
-              "scheme": "node-path-set-sha256-v1",
-              "value": "46615a25590eff5751cbcf515319a7416d89c17a8d2eb2bd072ae835110e444e"
-            }
-          ]
-        },
-        {
-          "OutgoingEdges": [
-            {
-              "Requirement": "requirements.authoring.configuration_storage"
-            },
-            "Tests",
-            {
-              "scheme": "node-path-set-sha256-v1",
-              "value": "5a037037e6af64b116a67021b58bd5ffc887451c940f40a6e875eaa3f69ea025"
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "7aa6097491e40bfd6f7ecdc336b38df737b0905a882b2161f28719f1b6a3c9e0"
             }
           ]
         },
@@ -280,12 +283,12 @@
                   "scheme": "repo",
                   "location": "src/config.rs"
                 },
-                "selector": "struct[OllamaConfig]"
+                "selector": "enum[OptionValue]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "75a1dacb21ac62202f7a625fbd76627d723870f174a00fed5d8ec05515f76fc9"
+              "value": "c057e530a7860d09f4e1a5086082044ff94e8f573d0817244d2b5aec50004a74"
             }
           ]
         },
@@ -295,21 +298,38 @@
               "Source": {
                 "resource": {
                   "scheme": "repo",
-                  "location": "src/config.rs"
+                  "location": "crates/trust-but-verify/src/agent/providers.rs"
                 },
-                "selector": "struct[OpenAiConfig]"
+                "selector": "struct[RigProvider]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "e461a99c1e9e9f37109a845e66b022b00f9aeae0af212d81f0dac2ebb39d0a51"
+              "value": "e6bfca1f16fee771aa05b56f0f4a3fe828d7a132b228c6dbd240a04675f04f9c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/providers.rs"
+                },
+                "selector": "impl[RigProvider]/fn[connect]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "4aceeee346dc8ed3d743eb309f00fc0263d4d19929ee2c73cd27fdb6735205c9"
             }
           ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "Most clauses in `requirements.authoring.configuration_storage` specify observable behavior. These are the name pattern and case sensitivity, canonical absolute project-root keys, nonempty opaque model IDs, `api_key_env` validity, and validation under `requirements.configuration.loading` (a citation). Also behavioral are that options are not rejected for being outside a Habeas list, that Rig or provider rejection is reported, and that options do not replace the model, prompt or tools. An implementation could enforce each of these in a different way and behave the same, so none of them needs implementation evidence.\n\nTwo clauses are structural:\n\n1. **Open options map.** \"The `options` map MUST accept backend-defined inference settings rather than a closed Habeas list.\" A closed struct of known fields would fail this while looking similar. `src/config.rs#enum[BackendConfig]` is marked as an implementation root. Its variants hold `BedrockConfig`, `OllamaConfig` and `OpenAiConfig`, which each declare `options: BTreeMap<String, OptionValue>`. The types reached from the marked enum carry this obligation, so they need no marker of their own.\n2. **Rig delegation.** \"the adapter MUST pass them through Rig's provider parameter mechanism\". A hand-rolled HTTP body, or merging options into the prompt, would pass the options on without using Rig's mechanism, so this is a real structural obligation. In `crates/trust-but-verify/src/agent/providers.rs#impl[RigProvider/CompletionProvider]/fn[complete]`, the options map is cloned and set as `request.additional_params`. The code then calls `self.model.call(request)`, which is Rig's completion model, and maps failures with `provider_failure`. `apply_bedrock_options` is reached from `complete`, so it needs no marker.\n\nBoth structural obligations have an implementation reference on the review roots. `BackendConfig::options` and `options_json` are reached from `BackendConfig`, so they need no marker either."
+        "rationale": "The structural obligations in `requirements.authoring.configuration_storage` are covered by the two supplied roots. The other clauses state only observable behavior.\n\n**Structural obligations**\n- \"The `options` map MUST accept backend-defined inference settings rather than a closed Habeas list.\" A closed struct of known settings would still load valid TOML but would violate this clause. In `src/config.rs`, `enum[BackendConfig]` has the `Bedrock`, `Ollama` and `Openai` variants. The config structs behind them (`struct[BedrockConfig]` and its siblings) hold `options: BTreeMap<String, OptionValue>`. `enum[OptionValue]` is an open recursive value type (string, boolean, integer, float, array or map). These types are reached from the marked `enum[BackendConfig]` through the types it uses, so they need no markers of their own.\n- \"the adapter MUST pass them through Rig's provider parameter mechanism.\" Sending options in a bespoke request, or dropping them, would keep other behavior but violate this clause. In `crates/trust-but-verify/src/agent/providers.rs`, `impl[RigProvider/CompletionProvider]/fn[complete]` clones the stored options map. It sets `request.additional_params = Some(Value::Object(options))` when the map is nonempty. It then calls `self.model.call(request)`. This sets only `additional_params`. The model, prompt and tools stay in their own request fields, which supports \"MUST NOT replace the selected model, the assessment prompt, or tool definitions\".\n- `fn[complete]` also maps Rig and provider errors with `provider_failure`, which supports \"report rejection by Rig or the provider\". `fn[complete]` also performs Bedrock option extraction through `apply_bedrock_options`, which is reachable from the root.\n\n**Observable-behavior clauses**\n- The clauses on configuration name patterns, case sensitivity, canonical absolute project keys, nonempty model IDs and `api_key_env` content describe validation results. They do not prescribe a library, type or interface, so any validator that gives the same outcomes satisfies them. They need no implementation evidence under this structural criterion.\n- \"Authoring MUST validate its fields under {cite}`requirements.configuration.loading`\" is a citation of the loading requirement. It prescribes no structure. The loading requirement itself states only behavior: what is loaded, what is reported, and isolation between features.\n\nNo gap found."
       }
     },
     "behavioral": {
@@ -589,7 +609,7 @@
       ],
       "output": {
         "status": "success",
-        "rationale": "Each obligation in `requirements.authoring.configuration_storage` maps to a test that asserts its outcome.\n\n**Configuration names** (the regex, and case sensitivity)\n- `tests/configuration.rs#fn[storage_rules_reject_each_invalid_field_with_its_setting]` rejects these names, each with its setting path in the error: empty, `a.b`, `a b`, `é`, `-x`, `_x`. It also rejects bad `default` values and bad project `config` names. The same checks run for workspace files.\n- The same test accepts `A-1_b`, and accepts `Local` and `local` as distinct names.\n\n**Project-selection keys** (canonical absolute paths)\n- The same test rejects a relative key, a key with `..`, one with `./`, one with a trailing `/`, and a symlink.\n- It accepts both a canonical existing root and a canonical root that does not exist.\n- `user_and_workspace_authoring_tables_round_trip_every_map` and `explicit_project_and_default_selections_choose_whole_configs` check that the canonical key is kept and used.\n\n**Model IDs** (nonempty, opaque, tags and ARNs preserved)\n- Empty Bedrock and Ollama models are rejected, in `storage_rules_reject_each_invalid_field_with_its_setting` and `invalid_schema_and_feature_values_report_the_configuration_path`.\n- ARNs, tags and `@sha256` model IDs are asserted exact through `model_ref()`. The tests are `user_and_workspace_authoring_tables_round_trip_every_map`, `backend_configuration_round_trips_without_materializing_defaults`, `openai_configuration_preserves_model_and_resolves_credentials` and the accepted-values section of the storage-rules test.\n\n**`api_key_env`**\n- Empty, `=` and NUL values are each rejected, and the error names `authoring.configs.local.api_key_env`.\n- A valid `MODEL_KEY_1` is accepted.\n- The OpenAI test covers the empty value and the `api_key` plus `api_key_env` combination.\n\n**Validation under `requirements.configuration.loading`**\n- Every failure case asserts that the error contains both the file path and the setting path, for user and workspace files. `invalid_schema_and_feature_values_report_the_configuration_path` also covers a bad version, unknown keys and a non-finite float.\n\n**`options` accepts backend-defined settings**\n- Arbitrary, nested and unknown keys are accepted and round-trip: `custom.arbitrary`, `max_tokens`, `labels` and `top_k`. This is in `backend_configuration_round_trips_without_materializing_defaults` and `bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted`.\n\n**Pass-through to Rig and provider parameters**\n- `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` asserts that `options.temperature`, `options.num_ctx` and `model` reach the Ollama request.\n- `bedrock_cli_uses_selected_profile_region_and_converse_tools` asserts that `inferenceConfig` and `additionalModelRequestFields` carry the options.\n- `openai_responses_replays_tool_calls_and_records_usage` asserts that `max_output_tokens` and `reasoning.effort` reach the request.\n\n**Rejection is reported**\n- `provider_rejection_of_inference_options_is_reported` covers a provider 400 response whose text appears in stderr. It also covers Rig-side rejection, `Bedrock options.temperature must be a number`, before any request is sent.\n- The unit test `bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted` checks each Bedrock type error.\n\n**Options must not replace the model, prompt or tools**\n- The reserved keys `model`, `modelId`, `model_id`, `prompt`, `messages`, `system`, `tools`, `tool_choice`, `toolChoice` and `toolConfig` are each rejected, for both Ollama and Bedrock, with the `authoring.configs.c.options.` setting named.\n- OpenAI's `input` and `instructions` are rejected.\n- The CLI tests assert that the delivered request `model` and the tools match the selection.\n\nOne residual: OpenAI-specific tests only cover `input` and `instructions`, not `model` or `tools`. I read `BackendConfig::validate` in `src/config.rs`. It applies one shared reserved-key check to every backend, with no per-backend branch. The tests above exercise that shared check, so I did not report this as a gap.\n\nI found no missing test markers."
+        "rationale": "The marked tests adequately cover each obligation of `requirements.authoring.configuration_storage`.\n\n**Configuration names** (match `[A-Za-z0-9][A-Za-z0-9_-]*`, case-sensitive).\n- `tests/configuration.rs#fn[storage_rules_reject_each_invalid_field_with_its_setting]` rejects these names, each with an error that names the file and the setting: empty, `a.b`, `a b`, `é`, `-x` and `_x`.\n- The same test rejects an invalid `default` and an invalid project `config` name, and applies the rules to `WorkspaceConfig`.\n- It accepts `Local`, `local` and `A-1_b` together, which shows names are case-sensitive and distinct.\n- `explicit_project_and_default_selections_choose_whole_configs` rejects the explicit selection `DEFAULT` when only `default` exists.\n\n**Project-selection keys** (canonical absolute paths).\n- `storage_rules_reject_each_invalid_field_with_its_setting` rejects a relative key, `/../base`, `/./`, a trailing slash and a symlink.\n- The same test accepts the canonical existing root and a canonical root that does not exist.\n- `user_and_workspace_authoring_tables_round_trip_every_map` checks that the canonical key is preserved.\n\n**Model IDs** (nonempty, opaque, tags and ARNs preserved).\n- An empty model is rejected for bedrock in `storage_rules_reject_each_invalid_field_with_its_setting`, and for ollama in `invalid_schema_and_feature_values_report_the_configuration_path`.\n- `name:tag@sha256:abc`, ARNs and `tiny:latest` are preserved exactly in `storage_rules_reject_each_invalid_field_with_its_setting`, `user_and_workspace_authoring_tables_round_trip_every_map`, `backend_configuration_round_trips_without_materializing_defaults` and `openai_configuration_preserves_model_and_resolves_credentials`.\n\n**`api_key_env`** (nonempty, no `=`, no NUL).\n- All three violations are rejected, and the error names `authoring.configs.local.api_key_env`.\n- The openai test also rejects an empty `api_key_env`.\n\n**Validation under `requirements.configuration.loading`.**\n- Each rejection asserts that the error contains the file path and the setting.\n- This covers the user file and the workspace file.\n- `invalid_schema_and_feature_values_report_the_configuration_path` covers non-finite floats and unknown keys.\n\n**`options`.**\n- Arbitrary backend-defined settings are accepted and round-trip in `backend_configuration_round_trips_without_materializing_defaults` and `user_and_workspace_authoring_tables_round_trip_every_map`. These include nested tables, arrays and unknown keys such as `top_k`.\n- Pass-through to the provider is checked in three places:\n  - `tests/authoring_cli.rs#fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]` asserts `temperature` and `num_ctx` in the request body.\n  - `bedrock_cli_uses_selected_profile_region_and_converse_tools` asserts `inferenceConfig` and `additionalModelRequestFields`.\n  - `openai_responses_replays_tool_calls_and_records_usage` asserts `max_output_tokens` and `reasoning`.\n- `crates/trust-but-verify/src/agent/providers.rs#mod[tests]/fn[bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted]` checks that Rig-side Bedrock type errors are rejected.\n- Reporting of rejection is checked by `provider_rejection_of_inference_options_is_reported`. A provider 400 surfaces on stderr, the evidence file is left unchanged, and the usage outcome is `failed`. A Rig-side Bedrock rejection (`options.temperature must be a number`) is reported before any request is sent.\n- Options must not replace the model, prompt or tools. `storage_rules_reject_each_invalid_field_with_its_setting` rejects `model`, `modelId`, `model_id`, `prompt`, `messages`, `system`, `tools`, `tool_choice`, `toolChoice` and `toolConfig` for ollama and bedrock. The openai test rejects `input` and `instructions`. The reserved-key list in `src/config.rs#impl[BackendConfig]/fn[validate]` is shared across backends. The CLI tests assert the request's model and tools are those selected.\n\nI found no untested obligation or marking gap."
       }
     }
   },
@@ -642,7 +662,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "5ef22d9aeefb3a96a508f39f4a00cbc4d49201508ab909e7079551bcffac0476"
+          "value": "37064e0c8099355191d6b9d5d80220385d0f30836c53a9379342cb0c35b3f38c"
         }
       ]
     },
@@ -664,26 +684,19 @@
       ]
     },
     {
-      "OutgoingEdges": [
+      "Node": [
         {
-          "Requirement": "requirements.authoring.configuration_storage"
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/config.rs"
+            },
+            "selector": ""
+          }
         },
-        "Implements",
         {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "46615a25590eff5751cbcf515319a7416d89c17a8d2eb2bd072ae835110e444e"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.authoring.configuration_storage"
-        },
-        "Tests",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "5a037037e6af64b116a67021b58bd5ffc887451c940f40a6e875eaa3f69ea025"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "7aa6097491e40bfd6f7ecdc336b38df737b0905a882b2161f28719f1b6a3c9e0"
         }
       ]
     },
@@ -712,12 +725,12 @@
               "scheme": "repo",
               "location": "src/config.rs"
             },
-            "selector": "struct[OllamaConfig]"
+            "selector": "enum[OptionValue]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "75a1dacb21ac62202f7a625fbd76627d723870f174a00fed5d8ec05515f76fc9"
+          "value": "c057e530a7860d09f4e1a5086082044ff94e8f573d0817244d2b5aec50004a74"
         }
       ]
     },
@@ -727,14 +740,31 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "src/config.rs"
+              "location": "crates/trust-but-verify/src/agent/providers.rs"
             },
-            "selector": "struct[OpenAiConfig]"
+            "selector": "struct[RigProvider]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "e461a99c1e9e9f37109a845e66b022b00f9aeae0af212d81f0dac2ebb39d0a51"
+          "value": "e6bfca1f16fee771aa05b56f0f4a3fe828d7a132b228c6dbd240a04675f04f9c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/providers.rs"
+            },
+            "selector": "impl[RigProvider]/fn[connect]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "4aceeee346dc8ed3d743eb309f00fc0263d4d19929ee2c73cd27fdb6735205c9"
         }
       ]
     },
@@ -984,12 +1014,12 @@
               "scheme": "repo",
               "location": "src/config.rs"
             },
-            "selector": "enum[OptionValue]"
+            "selector": "impl[BackendConfig]/fn[options_json]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "c057e530a7860d09f4e1a5086082044ff94e8f573d0817244d2b5aec50004a74"
+          "value": "3da4add93895e110bcc955074911feb54095840cfd648b2eb0a201329140e691"
         }
       ]
     },
@@ -1001,12 +1031,12 @@
               "scheme": "repo",
               "location": "src/config.rs"
             },
-            "selector": "struct[ProjectSelection]"
+            "selector": "impl[OptionValue]/fn[validate]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "9c20bc057d63c1972e2664967a18366422b22742143a834e81e89927f892ce30"
+          "value": "c4d8657a0632ecf6e2514f5b2de4dd916d1dffe4c12beafd956c415fc4a7305e"
         }
       ]
     }

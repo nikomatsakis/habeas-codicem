@@ -1,7 +1,7 @@
 {
   "requirement": "`OutlineLang` defines the language interface. Each implementation supplies its\nname, claimed extensions, and outlining operation. Cloning a language shares\nits prepared configuration instead of rebuilding it or copying it in proportion\nto its size. Its result uses the public items, spans, and hashes under\n{cite}`requirements.sdk.outlines.items`. Filename extensions omit the leading dot.\n\n```rust,ignore\npub trait OutlineLang:\n    Clone\n    + Send\n    + Sync {\n    fn name(&self) -> &str;\n    fn extensions(&self) -> &[&str];\n    fn outline(&self, source: &str) -> Result<Outline, OutlineError>;\n    fn fingerprint_scheme(&self) -> &str;\n\n    fn search_structure(\n        &self,\n        _source: &str,\n        _rule: &Map<String, Value>,\n    ) -> Result<Vec<Span>, OutlineError> { ... }\n}\n```",
   "determination": true,
-  "rationale": "structural: The structural obligations are as follows. (1) `OutlineLang` is a trait with supertraits `Clone + Send + Sync`. (2) It has the methods `name`, `extensions`, `outline` and `fingerprint_scheme`, plus a defaulted `search_structure`, with the quoted signatures. (3) Each implementation supplies name, extensions and outlining. (4) Cloning shares prepared configuration rather than rebuilding it or copying it in proportion to its size. (5) The result uses the public `Outline` types.\n\n`crates/trust-but-verify/src/outline/contents.rs#trait[OutlineLang]` declares exactly this trait. Its bounds are `Clone + Send + Sync`. Its methods are `name(&self) -> &str`, `extensions(&self) -> &[&str]`, `outline(&self, &str) -> Result<Outline, OutlineError>` and `fingerprint_scheme(&self) -> &str`. `search_structure` has the required parameters and return type and a default body. The doc comment states the clone-sharing rule.\n\n`crates/trust-but-verify/src/outline/languages/mod.rs#macro[language]` is the bundled implementation. It generates `#[derive(Clone, Copy, Debug, Default)] pub struct $name;` and `impl super::OutlineLang for $name`. The struct is a zero-sized unit struct, and each method reads from the static `$profile`. Cloning therefore copies nothing and rebuilds nothing, which meets the sharing clause. `outline` returns `super::Outline` through `Outline::from_legacy`, so the result uses the public outline types. This is also the only non-test implementation of the trait. The other impls found are test-only `CustomLanguage`, `Duplicates` and `Custom` in `tests/outline_content.rs`.\n\nI considered one violating alternative: a per-language struct that owns its parsing rules and deep-copies them on `Clone`. This root rules that out. The extension-dot convention is a data convention on observable output, so it is discretionary.\n\nBoth supplied roots carry the `{impl}` marker, and no other root is needed.\n\nbehavioral: The tests adequately cover the behavioral obligations of `requirements.sdk.outlines.language_provider`.\n\n- **Name, extensions and outline supplied.** In `crates/trust-but-verify/tests/outline_content.rs`, the helper `fn[bundled_languages_claim_extensions_and_supply_the_same_public_outline]/fn[check]` is reached from the marked test. For each bundled language it asserts a non-empty `name()` and the exact `extensions()` list, and `plain-text` has an empty list. It calls `outline()` directly and asserts the root span is `0..len`. It also asserts that the selectors match the ones `OutlineContent::outline()` exposes, that spans lie within the source, and that `fingerprint_scheme()` has the expected value. `fn[explicit_languages_share_configuration_and_retain_their_scheme]` does the same for a custom `OutlineLang`: name `custom`, extensions `[\"custom\"]`, an outline with root span `0..9`, and the scheme and hashes it returns.\n- **Extensions omit the leading dot.** The exact-equality assertions on lists such as `[\"rs\"]` and `[\"py\",\"pyi\"]`, and on `[\"custom\"]`, would fail if any entry began with a dot. The test also loads files named with each extension in upper case, such as `not-present.RS`, and selects the expected item. That shows the extensions work for matching.\n- **Cloning shares prepared configuration.** In `explicit_languages_share_configuration_and_retain_their_scheme`, `Arc::ptr_eq(&language.configuration, &cloned.configuration)` shows a clone shares the configuration. The test then drops the original, the clone and the scheme handle. It still reads `supplied.fingerprint_scheme()` as `custom-v2`, so the content kept what it needed. For the bundled languages, `check` asserts `size_of::<L>() == 0`, so cloning copies nothing in proportion to size. It also asserts the clone returns the same extensions.\n- **Result uses the public items, spans and hashes.** The tests assert `OutlineContent::outline().items[0].span`, `structural_hash`, `fingerprint` and `fingerprint().scheme`. Bundled and custom languages both go through `OutlineContent`. The bundled languages are also checked against the raw `language.outline(source)`.\n- **Trait surface.** `search_structure` is exercised for every bundled language in `check`. It is also exercised for a custom provider in `custom_provider_handles_generated_content_and_structural_search`. The trait signature is a structural declaration and needs no behavioral test.\n\nI found no behavioral obligation without a test. The `{test}` references on `registered_grammars_match_their_profiles_and_parse_the_selected_language` and `public_exports_match_the_appendix` are additional evidence and are not needed for the verdict.",
+  "rationale": "structural: Structural obligations in `requirements.sdk.outlines.language_provider`:\n- The trait `OutlineLang: Clone + Send + Sync`. An alternative without those supertraits would violate the prescribed declaration. `crates/trust-but-verify/src/outline/contents.rs#trait[OutlineLang]` declares exactly these supertraits.\n- The prescribed method signatures. A language could expose the same results through different signatures, such as `name(&self) -> String` or an `outline` that returns a different type. The trait declares `name`, `extensions`, `outline` and `fingerprint_scheme` with the stated signatures, in `trait[OutlineLang]/fn[name]`, `fn[extensions]`, `fn[outline]` and `fn[fingerprint_scheme]`. It also declares a default `search_structure` that takes `&serde_json::Map<String, serde_json::Value>` and returns `Result<Vec<Span>, OutlineError>`. `outline` returns `Result<Outline, OutlineError>`, so results use the public `Outline` type from the items requirement.\n- Cloning shares prepared configuration instead of rebuilding or copying it. An implementation that deep-copied or rebuilt its rules on `Clone` would violate this. The trait doc states the contract. The bundled implementations, generated by `crates/trust-but-verify/src/outline/languages/mod.rs#macro[language]`, are zero-sized `Clone, Copy` structs. They read a shared `$profile` path, so cloning cannot rebuild or copy configuration in proportion to its size. The macro also supplies `name`, `extensions`, `outline` (through `parse_with` and `Outline::from_legacy`), `fingerprint_scheme` and `search_structure`, all taken from the profile.\n\nThe other clauses are observable behavior, or are covered by their own sub-requirements. These are the clause that extensions omit the leading dot, and the `fingerprint_scheme` and `structural_search` children, which are marked on their trait methods. The two roots therefore cover the structural obligations. The trait is also implemented by the test-only `CustomLanguage` and similar types in `tests/outline_content.rs`, which are not roots here.\n\nbehavioral: The marked tests cover each behavioral obligation in `requirements.sdk.outlines.language_provider`.\n\n- **Name, extensions and outlining operation.**\n  - `crates/trust-but-verify/tests/outline_content.rs#fn[bundled_languages_claim_extensions_and_supply_the_same_public_outline]` has a helper `check`. It asserts `name()` is non-empty, `extensions()` equals the exact expected lists, and `fingerprint_scheme()` matches. It calls `outline()` directly.\n  - Every expected extension list is written without a leading dot, for example `[\"rs\"]` and `[\"md\", \"markdown\"]`. The exact comparison enforces the no-dot rule.\n  - The test checks `PlainText` has name `plain-text` and no extensions.\n  - `crates/trust-but-verify/tests/outline_content.rs#fn[explicit_languages_share_configuration_and_retain_their_scheme]` checks a custom implementation's `name()`, `extensions()` and `outline()` result.\n- **Cloning shares prepared configuration.** The custom-language test clones `CustomLanguage` and asserts `Arc::ptr_eq` on the configuration. It also drops the originals and the scheme `Arc`, then confirms the scheme survives. The bundled languages are zero-sized, which `check` asserts with `size_of::<L>() == 0`, so cloning them neither rebuilds nor copies anything.\n- **Result uses the public items, spans and hashes.**\n  - `check` verifies the raw `outline()` root has an empty selector and span `0..len`.\n  - It verifies the raw selectors match those of `OutlineContent`'s outline.\n  - It verifies every item span is a valid slice of the source.\n  - The custom-language test asserts the root span, the structural hash and the item's own hash.\n- **`search_structure`.** `check` calls `search_structure` on each bundled language and asserts the ranges are non-empty and valid. `crates/trust-but-verify/src/outline/tests.rs#fn[custom_provider_handles_generated_content_and_structural_search]` covers a custom provider. `crates/trust-but-verify/src/sources/tests.rs#fn[registered_grammars_match_their_profiles_and_parse_the_selected_language]` checks the registered grammars.\n- **Trait shape.** `crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]` checks the public API inventory. The trait signature is a structural obligation, so it needs no behavioral test.\n\nI found no gap.",
   "references": "df05caa874a771acf430e14d443df1d8581090f8b83152178cfb66d9b16d2cc5",
   "inputs": [
     {
@@ -72,6 +72,16 @@
     },
     {
       "file": "crates/trust-but-verify/src/outline/contents.rs",
+      "item": "trait[OutlineLang]/fn[name]",
+      "hash": "0bdc88d8b8d6576b155340989134b6554aa8d7b4deb8f250187f565f30b9f22c"
+    },
+    {
+      "file": "crates/trust-but-verify/src/outline/contents.rs",
+      "item": "trait[OutlineLang]/fn[extensions]",
+      "hash": "ac0f39826878e8967f621ffe958e8abdd190970742cb87e7730c2dfc36e20de9"
+    },
+    {
+      "file": "crates/trust-but-verify/src/outline/contents.rs",
       "item": "trait[OutlineLang]/fn[outline]",
       "hash": "69f2290a7ce69ca4096dfbfc8b2e6ffa52dfff5e5e8c27418a34ee741e5f4833"
     },
@@ -79,11 +89,6 @@
       "file": "crates/trust-but-verify/src/outline/contents.rs",
       "item": "trait[OutlineLang]/fn[fingerprint_scheme]",
       "hash": "cfb6653a4a8cf7d41b50cd449596819a921db51bc8beebe420312f6e3fbe114d"
-    },
-    {
-      "file": "crates/trust-but-verify/src/outline/contents.rs",
-      "item": "trait[OutlineLang]/fn[extensions]",
-      "hash": "ac0f39826878e8967f621ffe958e8abdd190970742cb87e7730c2dfc36e20de9"
     },
     {
       "file": "crates/trust-but-verify/src/outline/contents.rs",
@@ -113,7 +118,12 @@
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[public_exports_match_the_appendix]",
-      "hash": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+      "hash": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/outline_content.rs",
+      "item": "struct[CustomLanguage]",
+      "hash": "e1ac50e251a123424fe417d677f11e5944a9f1dc9452e09f5463202202d81d07"
     },
     {
       "file": "crates/trust-but-verify/tests/outline_content.rs",
@@ -121,14 +131,14 @@
       "hash": "c0957bf4c20d8ced5a327ec1c206273f6f865f97a41872fe7f3ae7c5270da677"
     },
     {
-      "file": "crates/trust-but-verify/src/outline/contents.rs",
-      "item": "trait[OutlineLang]/fn[name]",
-      "hash": "0bdc88d8b8d6576b155340989134b6554aa8d7b4deb8f250187f565f30b9f22c"
+      "file": "crates/trust-but-verify/tests/outline_content.rs",
+      "item": "impl[CustomLanguage/OutlineLang]/fn[fingerprint_scheme]",
+      "hash": "fde4583063e379381ccd3a0d6e58df87fcb64fd06b129f0c13131fae27c75307"
     },
     {
       "file": "crates/trust-but-verify/tests/outline_content.rs",
-      "item": "fn[bundled_languages_claim_extensions_and_supply_the_same_public_outline]/fn[check]",
-      "hash": "b36ca21a817dc8c7944227109cd39007e663dbc4591b8aa60393c94474855991"
+      "item": "impl[CustomLanguage/OutlineLang]/fn[outline]",
+      "hash": "08eff2c0647214fc63d0d23789408074c21bf7a72c4a82462d645b3e0215d80d"
     },
     {
       "file": "crates/trust-but-verify/tests/outline_content.rs",
@@ -139,6 +149,26 @@
       "file": "crates/trust-but-verify/tests/outline_content.rs",
       "item": "impl[CustomLanguage/OutlineLang]/fn[name]",
       "hash": "d8b0f04178b2e0740a617a91b40484cb663f304994439f6039b068f7568e9f9e"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/outline_content.rs",
+      "item": "fn[bundled_languages_claim_extensions_and_supply_the_same_public_outline]/fn[check]",
+      "hash": "b36ca21a817dc8c7944227109cd39007e663dbc4591b8aa60393c94474855991"
+    },
+    {
+      "file": "crates/trust-but-verify/src/outline/languages/mod.rs",
+      "item": "macro@8f870aac097a",
+      "hash": "8f870aac097ad5803fec2db3ed8c7cc72cff25f5de92b2302667d0345b552dc1"
+    },
+    {
+      "file": "crates/trust-but-verify/src/outline/languages/mod.rs",
+      "item": "fn[profiles]",
+      "hash": "4e23d3338746b14f068d77ba344c4a4549c9eece57b82f7c88c85f59203fe0c8"
+    },
+    {
+      "file": "crates/trust-but-verify/src/outline/languages/mod.rs",
+      "item": "macro@049a7bb0be73",
+      "hash": "049a7bb0be73206ef2c5df371be596e67e41f6c42169275943dbec23134d734f"
     }
   ],
   "criteria": {
@@ -220,6 +250,40 @@
                   "scheme": "repo",
                   "location": "crates/trust-but-verify/src/outline/contents.rs"
                 },
+                "selector": "trait[OutlineLang]/fn[name]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "0bdc88d8b8d6576b155340989134b6554aa8d7b4deb8f250187f565f30b9f22c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/outline/contents.rs"
+                },
+                "selector": "trait[OutlineLang]/fn[extensions]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "ac0f39826878e8967f621ffe958e8abdd190970742cb87e7730c2dfc36e20de9"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/outline/contents.rs"
+                },
                 "selector": "trait[OutlineLang]/fn[outline]"
               }
             },
@@ -254,23 +318,6 @@
                   "scheme": "repo",
                   "location": "crates/trust-but-verify/src/outline/contents.rs"
                 },
-                "selector": "trait[OutlineLang]/fn[extensions]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "ac0f39826878e8967f621ffe958e8abdd190970742cb87e7730c2dfc36e20de9"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/outline/contents.rs"
-                },
                 "selector": "trait[OutlineLang]/fn[search_structure]"
               }
             },
@@ -283,7 +330,7 @@
       ],
       "output": {
         "status": "success",
-        "rationale": "The structural obligations are as follows. (1) `OutlineLang` is a trait with supertraits `Clone + Send + Sync`. (2) It has the methods `name`, `extensions`, `outline` and `fingerprint_scheme`, plus a defaulted `search_structure`, with the quoted signatures. (3) Each implementation supplies name, extensions and outlining. (4) Cloning shares prepared configuration rather than rebuilding it or copying it in proportion to its size. (5) The result uses the public `Outline` types.\n\n`crates/trust-but-verify/src/outline/contents.rs#trait[OutlineLang]` declares exactly this trait. Its bounds are `Clone + Send + Sync`. Its methods are `name(&self) -> &str`, `extensions(&self) -> &[&str]`, `outline(&self, &str) -> Result<Outline, OutlineError>` and `fingerprint_scheme(&self) -> &str`. `search_structure` has the required parameters and return type and a default body. The doc comment states the clone-sharing rule.\n\n`crates/trust-but-verify/src/outline/languages/mod.rs#macro[language]` is the bundled implementation. It generates `#[derive(Clone, Copy, Debug, Default)] pub struct $name;` and `impl super::OutlineLang for $name`. The struct is a zero-sized unit struct, and each method reads from the static `$profile`. Cloning therefore copies nothing and rebuilds nothing, which meets the sharing clause. `outline` returns `super::Outline` through `Outline::from_legacy`, so the result uses the public outline types. This is also the only non-test implementation of the trait. The other impls found are test-only `CustomLanguage`, `Duplicates` and `Custom` in `tests/outline_content.rs`.\n\nI considered one violating alternative: a per-language struct that owns its parsing rules and deep-copies them on `Clone`. This root rules that out. The extension-dot convention is a data convention on observable output, so it is discretionary.\n\nBoth supplied roots carry the `{impl}` marker, and no other root is needed."
+        "rationale": "Structural obligations in `requirements.sdk.outlines.language_provider`:\n- The trait `OutlineLang: Clone + Send + Sync`. An alternative without those supertraits would violate the prescribed declaration. `crates/trust-but-verify/src/outline/contents.rs#trait[OutlineLang]` declares exactly these supertraits.\n- The prescribed method signatures. A language could expose the same results through different signatures, such as `name(&self) -> String` or an `outline` that returns a different type. The trait declares `name`, `extensions`, `outline` and `fingerprint_scheme` with the stated signatures, in `trait[OutlineLang]/fn[name]`, `fn[extensions]`, `fn[outline]` and `fn[fingerprint_scheme]`. It also declares a default `search_structure` that takes `&serde_json::Map<String, serde_json::Value>` and returns `Result<Vec<Span>, OutlineError>`. `outline` returns `Result<Outline, OutlineError>`, so results use the public `Outline` type from the items requirement.\n- Cloning shares prepared configuration instead of rebuilding or copying it. An implementation that deep-copied or rebuilt its rules on `Clone` would violate this. The trait doc states the contract. The bundled implementations, generated by `crates/trust-but-verify/src/outline/languages/mod.rs#macro[language]`, are zero-sized `Clone, Copy` structs. They read a shared `$profile` path, so cloning cannot rebuild or copy configuration in proportion to its size. The macro also supplies `name`, `extensions`, `outline` (through `parse_with` and `Outline::from_legacy`), `fingerprint_scheme` and `search_structure`, all taken from the profile.\n\nThe other clauses are observable behavior, or are covered by their own sub-requirements. These are the clause that extensions omit the leading dot, and the `fingerprint_scheme` and `structural_search` children, which are marked on their trait methods. The two roots therefore cover the structural obligations. The trait is also implemented by the test-only `CustomLanguage` and similar types in `tests/outline_content.rs`, which are not roots here."
       }
     },
     "behavioral": {
@@ -403,19 +450,7 @@
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
-            }
-          ]
-        },
-        {
-          "OutgoingEdges": [
-            {
-              "Requirement": "requirements.sdk.outlines.language_provider"
-            },
-            "Implements",
-            {
-              "scheme": "node-path-set-sha256-v1",
-              "value": "79282d91d14259066422af09865160f53aec786c4f5bea5029a5502891b5c416"
+              "value": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
             }
           ]
         },
@@ -425,14 +460,14 @@
               "Source": {
                 "resource": {
                   "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/outline/languages/mod.rs"
+                  "location": "crates/trust-but-verify/tests/outline_content.rs"
                 },
-                "selector": "macro[language]"
+                "selector": "struct[CustomLanguage]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "e7d28820421845a6b8cd6930d1f0728409c69af8fd8466e0d49db65dd52e3b8f"
+              "value": "e1ac50e251a123424fe417d677f11e5944a9f1dc9452e09f5463202202d81d07"
             }
           ]
         },
@@ -459,14 +494,14 @@
               "Source": {
                 "resource": {
                   "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/outline/contents.rs"
+                  "location": "crates/trust-but-verify/tests/outline_content.rs"
                 },
-                "selector": "trait[OutlineLang]"
+                "selector": "impl[CustomLanguage/OutlineLang]/fn[fingerprint_scheme]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "805b4c8330219e8e2389f279ccd13f1f2323ff409e49ccdcbefc88b28d210f72"
+              "value": "fde4583063e379381ccd3a0d6e58df87fcb64fd06b129f0c13131fae27c75307"
             }
           ]
         },
@@ -476,14 +511,14 @@
               "Source": {
                 "resource": {
                   "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/outline/contents.rs"
+                  "location": "crates/trust-but-verify/tests/outline_content.rs"
                 },
-                "selector": "trait[OutlineLang]/fn[outline]"
+                "selector": "impl[CustomLanguage/OutlineLang]/fn[outline]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "69f2290a7ce69ca4096dfbfc8b2e6ffa52dfff5e5e8c27418a34ee741e5f4833"
+              "value": "08eff2c0647214fc63d0d23789408074c21bf7a72c4a82462d645b3e0215d80d"
             }
           ]
         },
@@ -493,14 +528,14 @@
               "Source": {
                 "resource": {
                   "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/outline/contents.rs"
+                  "location": "crates/trust-but-verify/tests/outline_content.rs"
                 },
-                "selector": "trait[OutlineLang]/fn[extensions]"
+                "selector": "impl[CustomLanguage/OutlineLang]/fn[extensions]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "ac0f39826878e8967f621ffe958e8abdd190970742cb87e7730c2dfc36e20de9"
+              "value": "3157640e92fb8ce47911cb2e536b06fccf1d8736fbfd6aaa29ebf8ab7aee86b4"
             }
           ]
         },
@@ -510,31 +545,14 @@
               "Source": {
                 "resource": {
                   "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/outline/contents.rs"
+                  "location": "crates/trust-but-verify/tests/outline_content.rs"
                 },
-                "selector": "trait[OutlineLang]/fn[name]"
+                "selector": "impl[CustomLanguage/OutlineLang]/fn[name]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "0bdc88d8b8d6576b155340989134b6554aa8d7b4deb8f250187f565f30b9f22c"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/outline/contents.rs"
-                },
-                "selector": "trait[OutlineLang]/fn[search_structure]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "e1cefab8feeb1b645e55a6d7820eec800d35fc4a00522eaa292158095dd341eb"
+              "value": "d8b0f04178b2e0740a617a91b40484cb663f304994439f6039b068f7568e9f9e"
             }
           ]
         },
@@ -558,7 +576,7 @@
       ],
       "output": {
         "status": "success",
-        "rationale": "The tests adequately cover the behavioral obligations of `requirements.sdk.outlines.language_provider`.\n\n- **Name, extensions and outline supplied.** In `crates/trust-but-verify/tests/outline_content.rs`, the helper `fn[bundled_languages_claim_extensions_and_supply_the_same_public_outline]/fn[check]` is reached from the marked test. For each bundled language it asserts a non-empty `name()` and the exact `extensions()` list, and `plain-text` has an empty list. It calls `outline()` directly and asserts the root span is `0..len`. It also asserts that the selectors match the ones `OutlineContent::outline()` exposes, that spans lie within the source, and that `fingerprint_scheme()` has the expected value. `fn[explicit_languages_share_configuration_and_retain_their_scheme]` does the same for a custom `OutlineLang`: name `custom`, extensions `[\"custom\"]`, an outline with root span `0..9`, and the scheme and hashes it returns.\n- **Extensions omit the leading dot.** The exact-equality assertions on lists such as `[\"rs\"]` and `[\"py\",\"pyi\"]`, and on `[\"custom\"]`, would fail if any entry began with a dot. The test also loads files named with each extension in upper case, such as `not-present.RS`, and selects the expected item. That shows the extensions work for matching.\n- **Cloning shares prepared configuration.** In `explicit_languages_share_configuration_and_retain_their_scheme`, `Arc::ptr_eq(&language.configuration, &cloned.configuration)` shows a clone shares the configuration. The test then drops the original, the clone and the scheme handle. It still reads `supplied.fingerprint_scheme()` as `custom-v2`, so the content kept what it needed. For the bundled languages, `check` asserts `size_of::<L>() == 0`, so cloning copies nothing in proportion to size. It also asserts the clone returns the same extensions.\n- **Result uses the public items, spans and hashes.** The tests assert `OutlineContent::outline().items[0].span`, `structural_hash`, `fingerprint` and `fingerprint().scheme`. Bundled and custom languages both go through `OutlineContent`. The bundled languages are also checked against the raw `language.outline(source)`.\n- **Trait surface.** `search_structure` is exercised for every bundled language in `check`. It is also exercised for a custom provider in `custom_provider_handles_generated_content_and_structural_search`. The trait signature is a structural declaration and needs no behavioral test.\n\nI found no behavioral obligation without a test. The `{test}` references on `registered_grammars_match_their_profiles_and_parse_the_selected_language` and `public_exports_match_the_appendix` are additional evidence and are not needed for the verdict."
+        "rationale": "The marked tests cover each behavioral obligation in `requirements.sdk.outlines.language_provider`.\n\n- **Name, extensions and outlining operation.**\n  - `crates/trust-but-verify/tests/outline_content.rs#fn[bundled_languages_claim_extensions_and_supply_the_same_public_outline]` has a helper `check`. It asserts `name()` is non-empty, `extensions()` equals the exact expected lists, and `fingerprint_scheme()` matches. It calls `outline()` directly.\n  - Every expected extension list is written without a leading dot, for example `[\"rs\"]` and `[\"md\", \"markdown\"]`. The exact comparison enforces the no-dot rule.\n  - The test checks `PlainText` has name `plain-text` and no extensions.\n  - `crates/trust-but-verify/tests/outline_content.rs#fn[explicit_languages_share_configuration_and_retain_their_scheme]` checks a custom implementation's `name()`, `extensions()` and `outline()` result.\n- **Cloning shares prepared configuration.** The custom-language test clones `CustomLanguage` and asserts `Arc::ptr_eq` on the configuration. It also drops the originals and the scheme `Arc`, then confirms the scheme survives. The bundled languages are zero-sized, which `check` asserts with `size_of::<L>() == 0`, so cloning them neither rebuilds nor copies anything.\n- **Result uses the public items, spans and hashes.**\n  - `check` verifies the raw `outline()` root has an empty selector and span `0..len`.\n  - It verifies the raw selectors match those of `OutlineContent`'s outline.\n  - It verifies every item span is a valid slice of the source.\n  - The custom-language test asserts the root span, the structural hash and the item's own hash.\n- **`search_structure`.** `check` calls `search_structure` on each bundled language and asserts the ranges are non-empty and valid. `crates/trust-but-verify/src/outline/tests.rs#fn[custom_provider_handles_generated_content_and_structural_search]` covers a custom provider. `crates/trust-but-verify/src/sources/tests.rs#fn[registered_grammars_match_their_profiles_and_parse_the_selected_language]` checks the registered grammars.\n- **Trait shape.** `crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]` checks the public API inventory. The trait signature is a structural obligation, so it needs no behavioral test.\n\nI found no gap."
       }
     }
   },
@@ -640,6 +658,40 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/outline/contents.rs"
             },
+            "selector": "trait[OutlineLang]/fn[name]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "0bdc88d8b8d6576b155340989134b6554aa8d7b4deb8f250187f565f30b9f22c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/outline/contents.rs"
+            },
+            "selector": "trait[OutlineLang]/fn[extensions]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "ac0f39826878e8967f621ffe958e8abdd190970742cb87e7730c2dfc36e20de9"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/outline/contents.rs"
+            },
             "selector": "trait[OutlineLang]/fn[outline]"
           }
         },
@@ -663,23 +715,6 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "cfb6653a4a8cf7d41b50cd449596819a921db51bc8beebe420312f6e3fbe114d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/outline/contents.rs"
-            },
-            "selector": "trait[OutlineLang]/fn[extensions]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "ac0f39826878e8967f621ffe958e8abdd190970742cb87e7730c2dfc36e20de9"
         }
       ]
     },
@@ -781,19 +816,24 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+          "value": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
         }
       ]
     },
     {
-      "OutgoingEdges": [
+      "Node": [
         {
-          "Requirement": "requirements.sdk.outlines.language_provider"
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/outline_content.rs"
+            },
+            "selector": "struct[CustomLanguage]"
+          }
         },
-        "Implements",
         {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "79282d91d14259066422af09865160f53aec786c4f5bea5029a5502891b5c416"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "e1ac50e251a123424fe417d677f11e5944a9f1dc9452e09f5463202202d81d07"
         }
       ]
     },
@@ -820,14 +860,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/outline/contents.rs"
+              "location": "crates/trust-but-verify/tests/outline_content.rs"
             },
-            "selector": "trait[OutlineLang]/fn[name]"
+            "selector": "impl[CustomLanguage/OutlineLang]/fn[fingerprint_scheme]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "0bdc88d8b8d6576b155340989134b6554aa8d7b4deb8f250187f565f30b9f22c"
+          "value": "fde4583063e379381ccd3a0d6e58df87fcb64fd06b129f0c13131fae27c75307"
         }
       ]
     },
@@ -839,12 +879,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/tests/outline_content.rs"
             },
-            "selector": "fn[bundled_languages_claim_extensions_and_supply_the_same_public_outline]/fn[check]"
+            "selector": "impl[CustomLanguage/OutlineLang]/fn[outline]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "b36ca21a817dc8c7944227109cd39007e663dbc4591b8aa60393c94474855991"
+          "value": "08eff2c0647214fc63d0d23789408074c21bf7a72c4a82462d645b3e0215d80d"
         }
       ]
     },
@@ -879,6 +919,74 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "d8b0f04178b2e0740a617a91b40484cb663f304994439f6039b068f7568e9f9e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/outline_content.rs"
+            },
+            "selector": "fn[bundled_languages_claim_extensions_and_supply_the_same_public_outline]/fn[check]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b36ca21a817dc8c7944227109cd39007e663dbc4591b8aa60393c94474855991"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/outline/languages/mod.rs"
+            },
+            "selector": "macro@8f870aac097a"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "8f870aac097ad5803fec2db3ed8c7cc72cff25f5de92b2302667d0345b552dc1"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/outline/languages/mod.rs"
+            },
+            "selector": "fn[profiles]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "4e23d3338746b14f068d77ba344c4a4549c9eece57b82f7c88c85f59203fe0c8"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/outline/languages/mod.rs"
+            },
+            "selector": "macro@049a7bb0be73"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "049a7bb0be73206ef2c5df371be596e67e41f6c42169275943dbec23134d734f"
         }
       ]
     }

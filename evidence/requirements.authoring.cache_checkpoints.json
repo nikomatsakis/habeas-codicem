@@ -1,8 +1,8 @@
 {
   "requirement": "For backends that accept explicit cache checkpoints, when the backend and model\nsupport prompt caching, every provider request MUST place one cache checkpoint\nafter the system prompt of {cite}`requirements.authoring.prompt_parts` and\nanother at the end of its last message, so each request reuses the tool\ndefinitions and system prompt that earlier assessments of its kind sent, and\nthe conversation its own earlier requests sent. Cache checkpoints MUST NOT\nchange the content of a request.\n\nFor OpenAI, which caches matching prompt prefixes automatically, the harness\nMUST keep the system prompt and tool definitions unchanged across requests in\none conversation and replay prior conversation content in its original order.\nIt MUST NOT insert checkpoint blocks.",
   "determination": true,
-  "rationale": "structural: `requirements.authoring.cache_checkpoints` has no structural obligations, and it has no implementation edges, which is consistent with that.\n\nI checked each clause for a required library, algorithm, signature, type, field, or delegation through a named interface:\n\n- \"every provider request MUST place one cache checkpoint after the system prompt ... and another at the end of its last message\". This describes the content of requests sent to the backend. A different internal design could add the checkpoints in any layer or with any data structure and send the same requests. The location of the code is discretionary.\n- \"Cache checkpoints MUST NOT change the content of a request\". This is an observable property of the request.\n- \"For OpenAI ... the harness MUST keep the system prompt and tool definitions unchanged across requests in one conversation and replay prior conversation content in its original order. It MUST NOT insert checkpoint blocks.\" These are also constraints on the emitted requests. They do not prescribe how the harness is built.\n- The condition \"For backends that accept explicit cache checkpoints, when the backend and model support prompt caching\" only says when the behavior applies. It names no interface through which that must be decided.\n- The citation of `requirements.authoring.prompt_parts` is context only. Its own structural content, such as how prompts are assembled, belongs to that requirement.\n\nEvery clause therefore specifies observable request behavior. Tests would verify it, and the behavioral criterion covers that. No implementation root is needed.\n\nbehavioral: The reviewed tests cover each behavioral obligation of `requirements.authoring.cache_checkpoints`.\n\n**Explicit-checkpoint backends (Bedrock)**\n- `tests/authoring_cli.rs#fn[claude_requests_carry_cache_checkpoints_and_record_cache_usage]` runs two requests against a Claude model. The second follows a reasoning turn.\n  - For every request it asserts that `system` is the prompt text followed by one `cachePoint`.\n  - It asserts that the last message ends in a `cachePoint`.\n  - It asserts that the body holds exactly two `cachePoint` strings, so no extra or stale checkpoints remain.\n- The \"MUST NOT change the content of a request\" obligation is covered. The same run against an uncached model (`fixture-uncached-model`) yields requests with no `cachePoint`. Each cached body, once `without_cache_points` strips the checkpoints, equals the plain body.\n- The \"when the backend and model support caching\" condition is covered in both directions. `crates/trust-but-verify/src/agent/providers.rs#mod[tests]/fn[cache_checkpoints_are_requested_for_caching_models]` asserts `bedrock_caches` is true for Claude (including an ARN) and Nova models. It asserts false for Llama and the fixture model. The end-to-end test shows no checkpoints for the uncached model.\n- The unit test also checks that `place_cache_checkpoints` changes only the cache option, including after a reasoning turn.\n\n**OpenAI**\n- `tests/authoring_cli.rs#fn[openai_responses_replays_tool_calls_and_records_usage]` makes two requests in one conversation.\n  - It asserts that `instructions` and `tools` are identical across them.\n  - It asserts that the second `input` begins with the first request's `input` unchanged, followed by the `function_call` and `function_call_output` in order.\n  - It asserts via `assert_no_checkpoints` that neither request contains `cachePoint`, `cache_control`, or checkpoint block types.\n\nThe statement that checkpoints let a request reuse earlier content is the purpose of the checkpoints. It is not a separate observable obligation. I found no unmarked relevant tests and no untested obligations.",
-  "references": "4b2d75a3e9ccf889fc8e7de39891781654ec77849f2c0170b2937de1f5afbdfa",
+  "rationale": "structural: I found no structural obligation in `requirements.authoring.cache_checkpoints`, so it needs no implementation evidence. It has no `Implements` edges and no review roots were supplied.\n\nEach clause constrains only what a provider request contains, not how the code is built:\n- \"every provider request MUST place one cache checkpoint after the system prompt ... and another at the end of its last message\": a different builder, a post-processing pass over the request, or a different library would send the same request, so the construction is discretionary.\n- \"Cache checkpoints MUST NOT change the content of a request\": this is a property of the request content.\n- For OpenAI, \"MUST keep the system prompt and tool definitions unchanged across requests\", \"replay prior conversation content in its original order\" and \"MUST NOT insert checkpoint blocks\": these are also properties of the request. They do not prescribe a type, signature, field, library or named interface.\n\nThe requirement cites `requirements.authoring.prompt_parts` only for context. The text names no required library, algorithm, signature or delegation. Whether the requests behave as described is a behavioral question, so I left it to the behavioral criterion.\n\nbehavioral: The reviewed tests cover every behavioral obligation of `requirements.authoring.cache_checkpoints`.\n\n**Explicit-checkpoint backends (Bedrock)**\n- `tests/authoring_cli.rs#fn[claude_requests_carry_cache_checkpoints_and_record_cache_usage]` runs a two-request conversation against a caching Claude model. The second request follows a reasoning turn.\n- For every request it asserts that the system array is `[text, cachePoint]`. The system text starts with `# Task`, so the checkpoint comes right after the system prompt.\n- It asserts that the last message's final block is the checkpoint, and that the body contains exactly two `cachePoint` occurrences. That rules out extra or stale checkpoints.\n- \"Checkpoints MUST NOT change the content of a request\" is checked by comparing each cached body, with the checkpoints stripped by `without_cache_points`, against the body from a non-caching model (`fixture-uncached-model`). It also asserts that the non-caching model's body has no `cachePoint`.\n- `crates/trust-but-verify/src/agent/providers.rs#mod[tests]/fn[cache_checkpoints_are_requested_for_caching_models]` covers the \"backend and model support\" condition. `bedrock_caches` is true for Claude and Nova, including an ARN, and false for Llama and an unknown model. It also checks that `place_cache_checkpoints` only sets the cache option and leaves the rest of the request unchanged, including after a reasoning turn.\n- `tests/authoring_cli.rs#fn[bedrock_continues_when_the_model_refuses_a_checkpoint_after_reasoning]` covers the case where a model rejects a checkpoint after a reasoning turn. The conversation continues, and the follow-up keeps the system checkpoint but has no message checkpoint. I read this as the model not supporting a checkpoint in that situation. The requirement's conditional wording allows that reading.\n\n**OpenAI**\n- `tests/authoring_cli.rs#fn[openai_responses_replays_tool_calls_and_records_usage]` covers the unchanged-prefix obligations. Both requests have identical `instructions` and `tools`.\n- The second request's input starts with exactly the first request's input, followed by the function call and then its output, in the original order.\n- `assert_no_checkpoints` recursively rejects `cachePoint`, `cache_control` and checkpoint-typed blocks in every request.\n\nThe requirement's reference to the system prompt being the same across assessments of a kind comes from the cited `requirements.authoring.prompt_parts`. That requirement is not reassessed here. I found no unmarked relevant tests and no unresolved gaps.",
+  "references": "dd49806d441f3c03a990ecd209769a47f10d3564ff33e830b2791a44eeade05f",
   "inputs": [
     {
       "requirements": "requirements.authoring.cache_checkpoints",
@@ -46,7 +46,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/providers.rs",
       "item": "mod[tests]/fn[cache_checkpoints_are_requested_for_caching_models]",
-      "hash": "bf1d467d486bbc62b611a7680d8d2e17f6f1fbddd30ac916a1534ce1aabc1c41"
+      "hash": "5e52b84ce6b9029062aa2fdab59891df294a04635a3cf3dc2ab524aa46b48f4d"
     },
     {
       "file": "tests/authoring_cli.rs",
@@ -55,23 +55,13 @@
     },
     {
       "file": "tests/authoring_cli.rs",
-      "item": "fn[openai_responses_replays_tool_calls_and_records_usage]",
-      "hash": "eec0229912407844fab6244fd0268fc9a8554f246029eb2539c7548881e7c7d1"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/providers.rs",
-      "item": "impl[RigProvider]/fn[connect]",
-      "hash": "4aceeee346dc8ed3d743eb309f00fc0263d4d19929ee2c73cd27fdb6735205c9"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/providers.rs",
-      "item": "impl[RigProvider/CompletionProvider]/fn[complete]",
-      "hash": "5ef22d9aeefb3a96a508f39f4a00cbc4d49201508ab909e7079551bcffac0476"
+      "item": "fn[bedrock_continues_when_the_model_refuses_a_checkpoint_after_reasoning]",
+      "hash": "1fc99348c9316848d0c68eb3bcb8551fbab9fd4df7bb048f3f5c791ad33eaef1"
     },
     {
       "file": "tests/authoring_cli.rs",
-      "item": "fn[openai_responses_replays_tool_calls_and_records_usage]/fn[assert_no_checkpoints]",
-      "hash": "102ef203f460d3cdf20cc04e01a2f772d5d9e6f156fc3d76d2be5f03d1ebfc62"
+      "item": "fn[openai_responses_replays_tool_calls_and_records_usage]",
+      "hash": "eec0229912407844fab6244fd0268fc9a8554f246029eb2539c7548881e7c7d1"
     },
     {
       "file": "tests/authoring_cli.rs",
@@ -84,9 +74,14 @@
       "hash": "b0e3d7fe938ab29f5d6db894480f7fa86aff7baebbfc8da9e77fd6d41498b576"
     },
     {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[openai_responses_replays_tool_calls_and_records_usage]/fn[assert_no_checkpoints]",
+      "hash": "102ef203f460d3cdf20cc04e01a2f772d5d9e6f156fc3d76d2be5f03d1ebfc62"
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/providers.rs",
       "item": "fn[place_cache_checkpoints]",
-      "hash": "faf094ed40b166db2eaebd7866bb146bf9ea99f97597a3eb116802016cdee96a"
+      "hash": "1bd374236f1d2d044db29487bd189021b26258577e99329fb425c0a8ff8b397a"
     }
   ],
   "criteria": {
@@ -100,7 +95,7 @@
             },
             {
               "scheme": "habeas-reference-set-v1",
-              "value": "4b2d75a3e9ccf889fc8e7de39891781654ec77849f2c0170b2937de1f5afbdfa"
+              "value": "dd49806d441f3c03a990ecd209769a47f10d3564ff33e830b2791a44eeade05f"
             }
           ]
         },
@@ -141,7 +136,7 @@
       ],
       "output": {
         "status": "success",
-        "rationale": "`requirements.authoring.cache_checkpoints` has no structural obligations, and it has no implementation edges, which is consistent with that.\n\nI checked each clause for a required library, algorithm, signature, type, field, or delegation through a named interface:\n\n- \"every provider request MUST place one cache checkpoint after the system prompt ... and another at the end of its last message\". This describes the content of requests sent to the backend. A different internal design could add the checkpoints in any layer or with any data structure and send the same requests. The location of the code is discretionary.\n- \"Cache checkpoints MUST NOT change the content of a request\". This is an observable property of the request.\n- \"For OpenAI ... the harness MUST keep the system prompt and tool definitions unchanged across requests in one conversation and replay prior conversation content in its original order. It MUST NOT insert checkpoint blocks.\" These are also constraints on the emitted requests. They do not prescribe how the harness is built.\n- The condition \"For backends that accept explicit cache checkpoints, when the backend and model support prompt caching\" only says when the behavior applies. It names no interface through which that must be decided.\n- The citation of `requirements.authoring.prompt_parts` is context only. Its own structural content, such as how prompts are assembled, belongs to that requirement.\n\nEvery clause therefore specifies observable request behavior. Tests would verify it, and the behavioral criterion covers that. No implementation root is needed."
+        "rationale": "I found no structural obligation in `requirements.authoring.cache_checkpoints`, so it needs no implementation evidence. It has no `Implements` edges and no review roots were supplied.\n\nEach clause constrains only what a provider request contains, not how the code is built:\n- \"every provider request MUST place one cache checkpoint after the system prompt ... and another at the end of its last message\": a different builder, a post-processing pass over the request, or a different library would send the same request, so the construction is discretionary.\n- \"Cache checkpoints MUST NOT change the content of a request\": this is a property of the request content.\n- For OpenAI, \"MUST keep the system prompt and tool definitions unchanged across requests\", \"replay prior conversation content in its original order\" and \"MUST NOT insert checkpoint blocks\": these are also properties of the request. They do not prescribe a type, signature, field, library or named interface.\n\nThe requirement cites `requirements.authoring.prompt_parts` only for context. The text names no required library, algorithm, signature or delegation. Whether the requests behave as described is a behavioral question, so I left it to the behavioral criterion."
       }
     },
     "behavioral": {
@@ -154,7 +149,7 @@
             },
             {
               "scheme": "habeas-reference-set-v1",
-              "value": "4b2d75a3e9ccf889fc8e7de39891781654ec77849f2c0170b2937de1f5afbdfa"
+              "value": "dd49806d441f3c03a990ecd209769a47f10d3564ff33e830b2791a44eeade05f"
             }
           ]
         },
@@ -193,7 +188,7 @@
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "bf1d467d486bbc62b611a7680d8d2e17f6f1fbddd30ac916a1534ce1aabc1c41"
+              "value": "5e52b84ce6b9029062aa2fdab59891df294a04635a3cf3dc2ab524aa46b48f4d"
             }
           ]
         },
@@ -222,46 +217,12 @@
                   "scheme": "repo",
                   "location": "tests/authoring_cli.rs"
                 },
-                "selector": "fn[openai_responses_replays_tool_calls_and_records_usage]"
+                "selector": "fn[bedrock_continues_when_the_model_refuses_a_checkpoint_after_reasoning]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "f57589b2e5b4f8c6b27ed9a4b5eeef341b62db04398c059076185cee372271f3"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/agent/providers.rs"
-                },
-                "selector": "impl[RigProvider]/fn[connect]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "4aceeee346dc8ed3d743eb309f00fc0263d4d19929ee2c73cd27fdb6735205c9"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/agent/providers.rs"
-                },
-                "selector": "impl[RigProvider/CompletionProvider]/fn[complete]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "5ef22d9aeefb3a96a508f39f4a00cbc4d49201508ab909e7079551bcffac0476"
+              "value": "1fc99348c9316848d0c68eb3bcb8551fbab9fd4df7bb048f3f5c791ad33eaef1"
             }
           ]
         },
@@ -273,12 +234,12 @@
                   "scheme": "repo",
                   "location": "tests/authoring_cli.rs"
                 },
-                "selector": "fn[openai_responses_replays_tool_calls_and_records_usage]/fn[assert_no_checkpoints]"
+                "selector": "fn[openai_responses_replays_tool_calls_and_records_usage]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "102ef203f460d3cdf20cc04e01a2f772d5d9e6f156fc3d76d2be5f03d1ebfc62"
+              "value": "f57589b2e5b4f8c6b27ed9a4b5eeef341b62db04398c059076185cee372271f3"
             }
           ]
         },
@@ -315,11 +276,28 @@
               "value": "b0e3d7fe938ab29f5d6db894480f7fa86aff7baebbfc8da9e77fd6d41498b576"
             }
           ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/authoring_cli.rs"
+                },
+                "selector": "fn[openai_responses_replays_tool_calls_and_records_usage]/fn[assert_no_checkpoints]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "102ef203f460d3cdf20cc04e01a2f772d5d9e6f156fc3d76d2be5f03d1ebfc62"
+            }
+          ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "The reviewed tests cover each behavioral obligation of `requirements.authoring.cache_checkpoints`.\n\n**Explicit-checkpoint backends (Bedrock)**\n- `tests/authoring_cli.rs#fn[claude_requests_carry_cache_checkpoints_and_record_cache_usage]` runs two requests against a Claude model. The second follows a reasoning turn.\n  - For every request it asserts that `system` is the prompt text followed by one `cachePoint`.\n  - It asserts that the last message ends in a `cachePoint`.\n  - It asserts that the body holds exactly two `cachePoint` strings, so no extra or stale checkpoints remain.\n- The \"MUST NOT change the content of a request\" obligation is covered. The same run against an uncached model (`fixture-uncached-model`) yields requests with no `cachePoint`. Each cached body, once `without_cache_points` strips the checkpoints, equals the plain body.\n- The \"when the backend and model support caching\" condition is covered in both directions. `crates/trust-but-verify/src/agent/providers.rs#mod[tests]/fn[cache_checkpoints_are_requested_for_caching_models]` asserts `bedrock_caches` is true for Claude (including an ARN) and Nova models. It asserts false for Llama and the fixture model. The end-to-end test shows no checkpoints for the uncached model.\n- The unit test also checks that `place_cache_checkpoints` changes only the cache option, including after a reasoning turn.\n\n**OpenAI**\n- `tests/authoring_cli.rs#fn[openai_responses_replays_tool_calls_and_records_usage]` makes two requests in one conversation.\n  - It asserts that `instructions` and `tools` are identical across them.\n  - It asserts that the second `input` begins with the first request's `input` unchanged, followed by the `function_call` and `function_call_output` in order.\n  - It asserts via `assert_no_checkpoints` that neither request contains `cachePoint`, `cache_control`, or checkpoint block types.\n\nThe statement that checkpoints let a request reuse earlier content is the purpose of the checkpoints. It is not a separate observable obligation. I found no unmarked relevant tests and no untested obligations."
+        "rationale": "The reviewed tests cover every behavioral obligation of `requirements.authoring.cache_checkpoints`.\n\n**Explicit-checkpoint backends (Bedrock)**\n- `tests/authoring_cli.rs#fn[claude_requests_carry_cache_checkpoints_and_record_cache_usage]` runs a two-request conversation against a caching Claude model. The second request follows a reasoning turn.\n- For every request it asserts that the system array is `[text, cachePoint]`. The system text starts with `# Task`, so the checkpoint comes right after the system prompt.\n- It asserts that the last message's final block is the checkpoint, and that the body contains exactly two `cachePoint` occurrences. That rules out extra or stale checkpoints.\n- \"Checkpoints MUST NOT change the content of a request\" is checked by comparing each cached body, with the checkpoints stripped by `without_cache_points`, against the body from a non-caching model (`fixture-uncached-model`). It also asserts that the non-caching model's body has no `cachePoint`.\n- `crates/trust-but-verify/src/agent/providers.rs#mod[tests]/fn[cache_checkpoints_are_requested_for_caching_models]` covers the \"backend and model support\" condition. `bedrock_caches` is true for Claude and Nova, including an ARN, and false for Llama and an unknown model. It also checks that `place_cache_checkpoints` only sets the cache option and leaves the rest of the request unchanged, including after a reasoning turn.\n- `tests/authoring_cli.rs#fn[bedrock_continues_when_the_model_refuses_a_checkpoint_after_reasoning]` covers the case where a model rejects a checkpoint after a reasoning turn. The conversation continues, and the follow-up keeps the system checkpoint but has no message checkpoint. I read this as the model not supporting a checkpoint in that situation. The requirement's conditional wording allows that reading.\n\n**OpenAI**\n- `tests/authoring_cli.rs#fn[openai_responses_replays_tool_calls_and_records_usage]` covers the unchanged-prefix obligations. Both requests have identical `instructions` and `tools`.\n- The second request's input starts with exactly the first request's input, followed by the function call and then its output, in the original order.\n- `assert_no_checkpoints` recursively rejects `cachePoint`, `cache_control` and checkpoint-typed blocks in every request.\n\nThe requirement's reference to the system prompt being the same across assessments of a kind comes from the cited `requirements.authoring.prompt_parts`. That requirement is not reassessed here. I found no unmarked relevant tests and no unresolved gaps."
       }
     }
   },
@@ -333,7 +311,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "4b2d75a3e9ccf889fc8e7de39891781654ec77849f2c0170b2937de1f5afbdfa"
+          "value": "dd49806d441f3c03a990ecd209769a47f10d3564ff33e830b2791a44eeade05f"
         }
       ]
     },
@@ -384,7 +362,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "bf1d467d486bbc62b611a7680d8d2e17f6f1fbddd30ac916a1534ce1aabc1c41"
+          "value": "5e52b84ce6b9029062aa2fdab59891df294a04635a3cf3dc2ab524aa46b48f4d"
         }
       ]
     },
@@ -413,46 +391,12 @@
               "scheme": "repo",
               "location": "tests/authoring_cli.rs"
             },
-            "selector": "fn[openai_responses_replays_tool_calls_and_records_usage]"
+            "selector": "fn[bedrock_continues_when_the_model_refuses_a_checkpoint_after_reasoning]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "f57589b2e5b4f8c6b27ed9a4b5eeef341b62db04398c059076185cee372271f3"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/providers.rs"
-            },
-            "selector": "impl[RigProvider]/fn[connect]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "4aceeee346dc8ed3d743eb309f00fc0263d4d19929ee2c73cd27fdb6735205c9"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/providers.rs"
-            },
-            "selector": "impl[RigProvider/CompletionProvider]/fn[complete]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "5ef22d9aeefb3a96a508f39f4a00cbc4d49201508ab909e7079551bcffac0476"
+          "value": "1fc99348c9316848d0c68eb3bcb8551fbab9fd4df7bb048f3f5c791ad33eaef1"
         }
       ]
     },
@@ -464,12 +408,12 @@
               "scheme": "repo",
               "location": "tests/authoring_cli.rs"
             },
-            "selector": "fn[openai_responses_replays_tool_calls_and_records_usage]/fn[assert_no_checkpoints]"
+            "selector": "fn[openai_responses_replays_tool_calls_and_records_usage]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "102ef203f460d3cdf20cc04e01a2f772d5d9e6f156fc3d76d2be5f03d1ebfc62"
+          "value": "f57589b2e5b4f8c6b27ed9a4b5eeef341b62db04398c059076185cee372271f3"
         }
       ]
     },
@@ -513,6 +457,23 @@
           "Source": {
             "resource": {
               "scheme": "repo",
+              "location": "tests/authoring_cli.rs"
+            },
+            "selector": "fn[openai_responses_replays_tool_calls_and_records_usage]/fn[assert_no_checkpoints]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "102ef203f460d3cdf20cc04e01a2f772d5d9e6f156fc3d76d2be5f03d1ebfc62"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/providers.rs"
             },
             "selector": "fn[place_cache_checkpoints]"
@@ -520,7 +481,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "faf094ed40b166db2eaebd7866bb146bf9ea99f97597a3eb116802016cdee96a"
+          "value": "1bd374236f1d2d044db29487bd189021b26258577e99329fb425c0a8ff8b397a"
         }
       ]
     }

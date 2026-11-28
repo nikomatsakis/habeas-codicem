@@ -1,7 +1,7 @@
 {
   "requirement": "The SDK presents node inputs using the returned value's `NodeContents::format`\nunder {cite}`requirements.sdk.graph.node_content.format`.\nIts text and fingerprint describe the same retained observation.\n\n```rust,ignore\nlet contents = domain.node_content(&node_id)?;\nlet text = contents.format();\n```\n\nLoading and fallible preparation occur in `Domain::node_content` under\n{cite}`requirements.sdk.graph.node_content`. For inputs queued on an ask\nbuilder, these failures return `ValidationError::Graph`. During a `read_node`\ntool call, they are returned to the agent as a tool error, so it can continue\nand recover.",
   "determination": true,
-  "rationale": "structural: The structural obligation is delegation through a named interface. The text says \"The SDK presents node inputs using the returned value's `NodeContents::format`\". It also says \"Loading and fallible preparation occur in `Domain::node_content`\". An alternative could render inputs with `Debug` or a separate serializer, or could re-read the node after fingerprinting. That would keep the output similar but violate these clauses, so they are structural. The error-routing clauses (`ValidationError::Graph` for the ask builder, a tool error for `read_node`) only specify observable behavior.\n\nBoth supplied roots meet the obligation:\n- `crates/trust-but-verify/src/procedure.rs#impl[Ask<'a, 'd, D, R, P>]#2/fn[execute]` calls `ctx.prepare_read(&node)` for each queued input. It maps failures with `.map_err(ValidationError::Graph)?`, and it builds the input text from `snapshot.content.format()` (redaction is applied to that text afterwards). The fingerprint stored in `PreparedInput` is the snapshot's fingerprint.\n- `crates/trust-but-verify/src/agent/tools.rs#impl[SessionTools<'a, D>]/fn[read_node]` calls `inspection.prepare_read(&node)` and renders `snapshot.content.format()`. It records the observation with `snapshot.fingerprint`. A failure becomes an `io::Error` returned from the tool function. Where the tool framework turns that into a tool error for the agent is observable behavior, not structure, so I did not trace it.\n\nBoth roots go through `crates/trust-but-verify/src/procedure.rs#impl[ValidationContext<'d, D>]#2/fn[prepare_read]`. It calls `self.graph.node_content(node)?` once, computes `content.fingerprint()` from that same value, and returns both together as a `Snapshot`. The text and fingerprint therefore describe the same retained observation. That helper is reached from both marked roots, so it needs no marker of its own.\n\nThe `NodeContents::format` signature and its \"no further reads\" property belong to `requirements.sdk.graph.node_content.format`, which is cited here, not refined here. I judged only the supplied text.\n\nbehavioral: The tests adequately cover `requirements.sdk.graph.agent-calls.judge.rendering`.\n\n- **Rendering through `format`.** `src/agent/tests.rs#fn[default_tool_accepts_scalar_results_and_keeps_the_exact_prefix]` sets a custom formatter and asserts the user message sent to the agent contains \"formatted input: source\". The delivered text therefore comes from the returned value's `format`, not from a separate rendering path. `explicit_insertions_preserve_order_repetition_and_selection_snapshots` in `src/graph/validation_tests.rs` checks the order and repetition of delivered inputs. `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer` checks that domain contents appear in the message, in order. `src/sdk.rs#mod[tests]/fn[domain_formats_supplied_contents_without_resolving_a_replacement]` checks that `format` uses only the supplied contents.\n- **Text and fingerprint describe the same observation.** `tests/contracts.rs#fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]` reads a snapshot, then changes the underlying contents. It asserts `format()` still returns \"before\", the fingerprint is unchanged and matches the snapshot, and the node was read only once. The agent tests also check that the recorded `Dependency::Node` fingerprint matches the content delivered to the agent (\"source\"). `agent_executions_isolate_conversations_and_dependency_traces` checks the same.\n- **Ask-builder failures return `ValidationError::Graph`.** `src/graph/validation_tests.rs#fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]` forces a loading failure with `fail_read`. It asserts `Err(ValidationError::Graph(\"read\"))` for both current-node and selected-node inputs. It forces a preparation failure with `fail_prepare`. It asserts `Err(ValidationError::Graph(\"render\"))`. It also asserts that no dependencies are recorded and that the agent is not invoked.\n- **Failures in a `read_node` tool call reach the agent as a tool error.** `src/agent/tests.rs#fn[node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents]` makes `Domain::node_content` fail. It asserts the second request carries an error `ToolResult` for `read_node` with the message \"unsupported node contents\". It asserts the agent then submits a result, so it can continue and recover. It asserts no dependency is recorded. The test only exercises a preparation failure. A loading failure comes from the same `Domain::node_content` error return, and the ask-builder test covers both kinds. I treat this as covered and not a separate gap.\n\nThe requirement that formatting needs no further reads is the cited `requirements.sdk.graph.node_content.format`. It is not reassessed here, and `domain_formats_supplied_contents_without_resolving_a_replacement` covers it.",
+  "rationale": "structural: The structural obligations in `requirements.sdk.graph.agent-calls.judge.rendering` are covered by the two roots.\n\n1. **Present inputs with the returned value's `NodeContents::format`.**\n   - An implementation could render inputs another way, for example by using the `Debug` output or by re-reading the resource. That would violate the clause.\n   - `crates/trust-but-verify/src/agent/tools.rs#impl[SessionTools<'a, D>]/fn[read_node]` calls `inspection.prepare_read(&node)` and then `snapshot.content.format()`.\n   - `crates/trust-but-verify/src/procedure.rs#impl[Ask<'a, 'd, D, R, P>]#2/fn[execute]` calls `self.ctx.prepare_read(&node)` for each queued input and then `snapshot.content.format()`.\n\n2. **Text and fingerprint describe the same retained observation.**\n   - The shared helper `procedure.rs#impl[ValidationContext<'d, D>]#2/fn[prepare_read]` calls `graph.node_content(node)`. It takes `content.fingerprint()` from that same value and returns both as a `Snapshot`.\n   - Both roots format `snapshot.content` and pair the text with `snapshot.fingerprint`. `read_node` builds `Dependency::Node(node, snapshot.fingerprint)`, and `execute` builds `PreparedInput { text, fingerprint }`.\n   - Formatting therefore uses the retained value and does no further read.\n\n3. **Loading and fallible preparation happen in `Domain::node_content`.** `prepare_read` is the only loading step in both paths, and it goes through `node_content`. This clause is context from the cited `requirements.sdk.graph.node_content`.\n\n4. **Ask-builder failures return `ValidationError::Graph`.** `execute` maps a `prepare_read` failure with `.map_err(ValidationError::Graph)`.\n\n5. **`read_node` failures go back to the agent as a tool error.** `read_node` returns the `prepare_read` failure as an `io::Error` instead of panicking or retrying. The conversion of that error into a tool-error reply is observable behavior, not a structural obligation of this text.\n\nThe redaction applied after `format()` and the way pages are built are discretionary. The `{impl}` markers are on both roots, and no further roots are needed.\n\nbehavioral: The reviewed tests cover each observable obligation of `requirements.sdk.graph.agent-calls.judge.rendering`.\n\n1. **Inputs are presented with `NodeContents::format`.**\n   - `crates/trust-but-verify/src/agent/tests.rs#fn[default_tool_accepts_scalar_results_and_keeps_the_exact_prefix]` sets a custom formatter that prefixes the text with `formatted input: `. It asserts that the user message sent to the agent contains `formatted input: source`.\n   - `crates/trust-but-verify/src/graph/validation_tests.rs#fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]` asserts the exact delivered inputs, in order, for the current node and for successors.\n   - `src/sdk.rs#mod[tests]/fn[domain_formats_supplied_contents_without_resolving_a_replacement]` asserts that `format()` on the prepared contents returns the supplied text and path.\n   - `crates/trust-but-verify/src/agent/tests.rs#fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]` asserts the ordering of the delivered contents.\n   - `crates/trust-but-verify/src/agent/tests.rs#fn[agent_executions_isolate_conversations_and_dependency_traces]` also exercises delivery through the formatter.\n\n2. **Text and fingerprint describe the same retained observation.**\n   - `crates/trust-but-verify/tests/contracts.rs#fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]` reads a snapshot, then mutates the underlying content.\n   - It asserts that `format()` still returns `before` and that the fingerprint still equals the snapshot fingerprint (`before`).\n   - It also asserts that only one read occurred.\n   - The ordering and dependency assertions in the validation and agent tests also tie each delivered text to its fingerprint.\n\n3. **Failures for queued ask-builder inputs return `ValidationError::Graph`.**\n   - `crates/trust-but-verify/src/graph/validation_tests.rs#fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]` forces a load failure (`fail_read`) for the current node and for a selected node.\n   - It forces a preparation failure (`fail_prepare`) for both. It asserts `Err(ValidationError::Graph(\"read\"))` and `Err(ValidationError::Graph(\"render\"))`.\n   - It also asserts that no dependencies are recorded and that no agent request is made.\n\n4. **Failures during a `read_node` tool call are returned to the agent as a tool error, so it can continue.**\n   - `crates/trust-but-verify/src/agent/tests.rs#fn[node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents]` makes the formatter inside `Domain::node_content` fail.\n   - It scripts a `read_node` call followed by `submit_result`. It asserts that the second request carries a tool result with `is_error`, the name `read_node` and the message `unsupported node contents`.\n   - It asserts that `ask` still succeeds, which shows recovery, and that no dependencies are recorded.\n\nThe tool-error test exercises only a preparation failure, not a load failure. Both failures are `Err` results from `Domain::node_content`, and the tool path returns that error without distinguishing them. I did not treat this as a separate gap.\n\nThe prose about loading and preparation happening in `Domain::node_content` is a structural obligation. It needs no separate behavioral test.",
   "references": "c977547238a81cb98391fb6925b1da84b1b40b993d321565952baffccf99dd68",
   "inputs": [
     {
@@ -166,7 +166,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[default_tool_accepts_scalar_results_and_keeps_the_exact_prefix]",
-      "hash": "b21ab2eaac76ebcd70b3df5138b1b841dde9352a83ecc64db940873ddddf9bf3"
+      "hash": "c96090b904540f27907c9927a9c6f77a4e3ebf85a75fcd983569be655821be47"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -176,12 +176,12 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents]",
-      "hash": "421d302372b0b1869b776dbeb21275e6942dae97306c67651f019c874d362a04"
+      "hash": "63a3e780b1741aa8111ee299db8c0cf724757b49deb7822f4ab7301f5a1b2207"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]",
-      "hash": "e7612967baf35151d91388d3bdcba2d29524109c2ecbbe5f1d242cfce6f6f959"
+      "hash": "e28b69f092651a66561d8b9ed54e6b7c678f70b7543352ad8fe674bfbba1cbe9"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
@@ -209,14 +209,24 @@
       "hash": "21810abef2babd76af80ac45074aec57489ea7a56fdaa1f4596a8eb6e048e796"
     },
     {
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "impl[Memory/Domain]/fn[node_content]",
+      "hash": "b349c79de3f7318fb56a0371a63b05bef13c245cd377e32967bf0d7c01aa9374"
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "impl[Memory/Domain]/fn[node_content]",
       "hash": "5534d42af219c1ca7e739d318ae5ee044ff41631eee302d0b9ce1ebf94bd5467"
     },
     {
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]",
+      "hash": "1a1a252964872efc8573135d5fb391176e8a78b08c0d975f77b8072c6591f9e8"
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]",
-      "hash": "ce5910db3f51c79716eacd6ed0e14047a6cc9620e87298ed573bacdddbd27216"
+      "item": "impl[ParallelConversations/CompletionProvider]/fn[complete]",
+      "hash": "e8c05b39afe598f15c87559c2b72724d15d74184962907b8c67383d4a9a497d6"
     }
   ],
   "criteria": {
@@ -365,7 +375,7 @@
       ],
       "output": {
         "status": "success",
-        "rationale": "The structural obligation is delegation through a named interface. The text says \"The SDK presents node inputs using the returned value's `NodeContents::format`\". It also says \"Loading and fallible preparation occur in `Domain::node_content`\". An alternative could render inputs with `Debug` or a separate serializer, or could re-read the node after fingerprinting. That would keep the output similar but violate these clauses, so they are structural. The error-routing clauses (`ValidationError::Graph` for the ask builder, a tool error for `read_node`) only specify observable behavior.\n\nBoth supplied roots meet the obligation:\n- `crates/trust-but-verify/src/procedure.rs#impl[Ask<'a, 'd, D, R, P>]#2/fn[execute]` calls `ctx.prepare_read(&node)` for each queued input. It maps failures with `.map_err(ValidationError::Graph)?`, and it builds the input text from `snapshot.content.format()` (redaction is applied to that text afterwards). The fingerprint stored in `PreparedInput` is the snapshot's fingerprint.\n- `crates/trust-but-verify/src/agent/tools.rs#impl[SessionTools<'a, D>]/fn[read_node]` calls `inspection.prepare_read(&node)` and renders `snapshot.content.format()`. It records the observation with `snapshot.fingerprint`. A failure becomes an `io::Error` returned from the tool function. Where the tool framework turns that into a tool error for the agent is observable behavior, not structure, so I did not trace it.\n\nBoth roots go through `crates/trust-but-verify/src/procedure.rs#impl[ValidationContext<'d, D>]#2/fn[prepare_read]`. It calls `self.graph.node_content(node)?` once, computes `content.fingerprint()` from that same value, and returns both together as a `Snapshot`. The text and fingerprint therefore describe the same retained observation. That helper is reached from both marked roots, so it needs no marker of its own.\n\nThe `NodeContents::format` signature and its \"no further reads\" property belong to `requirements.sdk.graph.node_content.format`, which is cited here, not refined here. I judged only the supplied text."
+        "rationale": "The structural obligations in `requirements.sdk.graph.agent-calls.judge.rendering` are covered by the two roots.\n\n1. **Present inputs with the returned value's `NodeContents::format`.**\n   - An implementation could render inputs another way, for example by using the `Debug` output or by re-reading the resource. That would violate the clause.\n   - `crates/trust-but-verify/src/agent/tools.rs#impl[SessionTools<'a, D>]/fn[read_node]` calls `inspection.prepare_read(&node)` and then `snapshot.content.format()`.\n   - `crates/trust-but-verify/src/procedure.rs#impl[Ask<'a, 'd, D, R, P>]#2/fn[execute]` calls `self.ctx.prepare_read(&node)` for each queued input and then `snapshot.content.format()`.\n\n2. **Text and fingerprint describe the same retained observation.**\n   - The shared helper `procedure.rs#impl[ValidationContext<'d, D>]#2/fn[prepare_read]` calls `graph.node_content(node)`. It takes `content.fingerprint()` from that same value and returns both as a `Snapshot`.\n   - Both roots format `snapshot.content` and pair the text with `snapshot.fingerprint`. `read_node` builds `Dependency::Node(node, snapshot.fingerprint)`, and `execute` builds `PreparedInput { text, fingerprint }`.\n   - Formatting therefore uses the retained value and does no further read.\n\n3. **Loading and fallible preparation happen in `Domain::node_content`.** `prepare_read` is the only loading step in both paths, and it goes through `node_content`. This clause is context from the cited `requirements.sdk.graph.node_content`.\n\n4. **Ask-builder failures return `ValidationError::Graph`.** `execute` maps a `prepare_read` failure with `.map_err(ValidationError::Graph)`.\n\n5. **`read_node` failures go back to the agent as a tool error.** `read_node` returns the `prepare_read` failure as an `io::Error` instead of panicking or retrying. The conversion of that error into a tool-error reply is observable behavior, not a structural obligation of this text.\n\nThe redaction applied after `format()` and the way pages are built are discretionary. The `{impl}` markers are on both roots, and no further roots are needed."
       }
     },
     "behavioral": {
@@ -428,7 +438,7 @@
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "b21ab2eaac76ebcd70b3df5138b1b841dde9352a83ecc64db940873ddddf9bf3"
+              "value": "c96090b904540f27907c9927a9c6f77a4e3ebf85a75fcd983569be655821be47"
             }
           ]
         },
@@ -462,7 +472,7 @@
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "421d302372b0b1869b776dbeb21275e6942dae97306c67651f019c874d362a04"
+              "value": "63a3e780b1741aa8111ee299db8c0cf724757b49deb7822f4ab7301f5a1b2207"
             }
           ]
         },
@@ -479,7 +489,7 @@
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "e7612967baf35151d91388d3bdcba2d29524109c2ecbbe5f1d242cfce6f6f959"
+              "value": "e28b69f092651a66561d8b9ed54e6b7c678f70b7543352ad8fe674bfbba1cbe9"
             }
           ]
         },
@@ -618,6 +628,23 @@
               "Source": {
                 "resource": {
                   "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "impl[Memory/Domain]/fn[node_content]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "b349c79de3f7318fb56a0371a63b05bef13c245cd377e32967bf0d7c01aa9374"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
                   "location": "crates/trust-but-verify/src/agent/tests.rs"
                 },
                 "selector": "impl[Memory/Domain]/fn[node_content]"
@@ -632,7 +659,7 @@
       ],
       "output": {
         "status": "success",
-        "rationale": "The tests adequately cover `requirements.sdk.graph.agent-calls.judge.rendering`.\n\n- **Rendering through `format`.** `src/agent/tests.rs#fn[default_tool_accepts_scalar_results_and_keeps_the_exact_prefix]` sets a custom formatter and asserts the user message sent to the agent contains \"formatted input: source\". The delivered text therefore comes from the returned value's `format`, not from a separate rendering path. `explicit_insertions_preserve_order_repetition_and_selection_snapshots` in `src/graph/validation_tests.rs` checks the order and repetition of delivered inputs. `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer` checks that domain contents appear in the message, in order. `src/sdk.rs#mod[tests]/fn[domain_formats_supplied_contents_without_resolving_a_replacement]` checks that `format` uses only the supplied contents.\n- **Text and fingerprint describe the same observation.** `tests/contracts.rs#fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]` reads a snapshot, then changes the underlying contents. It asserts `format()` still returns \"before\", the fingerprint is unchanged and matches the snapshot, and the node was read only once. The agent tests also check that the recorded `Dependency::Node` fingerprint matches the content delivered to the agent (\"source\"). `agent_executions_isolate_conversations_and_dependency_traces` checks the same.\n- **Ask-builder failures return `ValidationError::Graph`.** `src/graph/validation_tests.rs#fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]` forces a loading failure with `fail_read`. It asserts `Err(ValidationError::Graph(\"read\"))` for both current-node and selected-node inputs. It forces a preparation failure with `fail_prepare`. It asserts `Err(ValidationError::Graph(\"render\"))`. It also asserts that no dependencies are recorded and that the agent is not invoked.\n- **Failures in a `read_node` tool call reach the agent as a tool error.** `src/agent/tests.rs#fn[node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents]` makes `Domain::node_content` fail. It asserts the second request carries an error `ToolResult` for `read_node` with the message \"unsupported node contents\". It asserts the agent then submits a result, so it can continue and recover. It asserts no dependency is recorded. The test only exercises a preparation failure. A loading failure comes from the same `Domain::node_content` error return, and the ask-builder test covers both kinds. I treat this as covered and not a separate gap.\n\nThe requirement that formatting needs no further reads is the cited `requirements.sdk.graph.node_content.format`. It is not reassessed here, and `domain_formats_supplied_contents_without_resolving_a_replacement` covers it."
+        "rationale": "The reviewed tests cover each observable obligation of `requirements.sdk.graph.agent-calls.judge.rendering`.\n\n1. **Inputs are presented with `NodeContents::format`.**\n   - `crates/trust-but-verify/src/agent/tests.rs#fn[default_tool_accepts_scalar_results_and_keeps_the_exact_prefix]` sets a custom formatter that prefixes the text with `formatted input: `. It asserts that the user message sent to the agent contains `formatted input: source`.\n   - `crates/trust-but-verify/src/graph/validation_tests.rs#fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]` asserts the exact delivered inputs, in order, for the current node and for successors.\n   - `src/sdk.rs#mod[tests]/fn[domain_formats_supplied_contents_without_resolving_a_replacement]` asserts that `format()` on the prepared contents returns the supplied text and path.\n   - `crates/trust-but-verify/src/agent/tests.rs#fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]` asserts the ordering of the delivered contents.\n   - `crates/trust-but-verify/src/agent/tests.rs#fn[agent_executions_isolate_conversations_and_dependency_traces]` also exercises delivery through the formatter.\n\n2. **Text and fingerprint describe the same retained observation.**\n   - `crates/trust-but-verify/tests/contracts.rs#fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]` reads a snapshot, then mutates the underlying content.\n   - It asserts that `format()` still returns `before` and that the fingerprint still equals the snapshot fingerprint (`before`).\n   - It also asserts that only one read occurred.\n   - The ordering and dependency assertions in the validation and agent tests also tie each delivered text to its fingerprint.\n\n3. **Failures for queued ask-builder inputs return `ValidationError::Graph`.**\n   - `crates/trust-but-verify/src/graph/validation_tests.rs#fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]` forces a load failure (`fail_read`) for the current node and for a selected node.\n   - It forces a preparation failure (`fail_prepare`) for both. It asserts `Err(ValidationError::Graph(\"read\"))` and `Err(ValidationError::Graph(\"render\"))`.\n   - It also asserts that no dependencies are recorded and that no agent request is made.\n\n4. **Failures during a `read_node` tool call are returned to the agent as a tool error, so it can continue.**\n   - `crates/trust-but-verify/src/agent/tests.rs#fn[node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents]` makes the formatter inside `Domain::node_content` fail.\n   - It scripts a `read_node` call followed by `submit_result`. It asserts that the second request carries a tool result with `is_error`, the name `read_node` and the message `unsupported node contents`.\n   - It asserts that `ask` still succeeds, which shows recovery, and that no dependencies are recorded.\n\nThe tool-error test exercises only a preparation failure, not a load failure. Both failures are `Err` results from `Domain::node_content`, and the tool path returns that error without distinguishing them. I did not treat this as a separate gap.\n\nThe prose about loading and preparation happening in `Domain::node_content` is a structural obligation. It needs no separate behavioral test."
       }
     }
   },
@@ -791,7 +818,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "b21ab2eaac76ebcd70b3df5138b1b841dde9352a83ecc64db940873ddddf9bf3"
+          "value": "c96090b904540f27907c9927a9c6f77a4e3ebf85a75fcd983569be655821be47"
         }
       ]
     },
@@ -825,7 +852,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "421d302372b0b1869b776dbeb21275e6942dae97306c67651f019c874d362a04"
+          "value": "63a3e780b1741aa8111ee299db8c0cf724757b49deb7822f4ab7301f5a1b2207"
         }
       ]
     },
@@ -842,7 +869,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "e7612967baf35151d91388d3bdcba2d29524109c2ecbbe5f1d242cfce6f6f959"
+          "value": "e28b69f092651a66561d8b9ed54e6b7c678f70b7543352ad8fe674bfbba1cbe9"
         }
       ]
     },
@@ -937,6 +964,23 @@
           "Source": {
             "resource": {
               "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+            },
+            "selector": "impl[Memory/Domain]/fn[node_content]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b349c79de3f7318fb56a0371a63b05bef13c245cd377e32967bf0d7c01aa9374"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
             "selector": "impl[Memory/Domain]/fn[node_content]"
@@ -954,14 +998,31 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
             },
-            "selector": "fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]"
+            "selector": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "07f3a94cd585fd150e0944575c24f6d3538f7ec6c1f07277c24bb2f20ee7fd87"
+          "value": "f9d8fbc31acd81ef8aa636e21fe02910790b3ec81c15b618e8fdb2b93a7a50de"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
+            },
+            "selector": "impl[ParallelConversations/CompletionProvider]/fn[complete]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "e8c05b39afe598f15c87559c2b72724d15d74184962907b8c67383d4a9a497d6"
         }
       ]
     }

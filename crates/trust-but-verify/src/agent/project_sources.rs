@@ -549,6 +549,7 @@ mod tests {
     // {test}`requirements.authoring.finish_search.inputs`
     // {test}`requirements.authoring.tool_descriptions.common_case`
     // {test}`requirements.authoring.delivered_inputs`
+    // {test}`requirements.sdk.graph.validation-context.pages.inputs`
     async fn search_obligations_follow_delivery_and_keep_the_original_snapshot() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("source.txt");
@@ -702,6 +703,7 @@ mod tests {
         assert!(peer.dispatch("get_next_page", &next).await.is_err());
         std::fs::write(&path, "changed after search").unwrap();
         let delivery = session.dispatch("get_next_page", &next).await.unwrap();
+        assert!(delivery.dependencies.is_empty());
         let second: Value = serde_json::from_str(&delivery.text).unwrap();
         assert_eq!(
             delivery.input_count,
@@ -777,6 +779,7 @@ mod tests {
     // {test}`requirements.sdk.graph.search.search_structure.mcp`
     // {test}`requirements.sdk.graph.running-criteria.UsageStats`
     #[tokio::test]
+    // {test}`requirements.sdk.graph.validation-context.pages.inputs`
     async fn structural_search_counts_each_visible_excerpt_across_pages() {
         let root = tempfile::tempdir().unwrap();
         let code: String = (0..200)
@@ -798,6 +801,7 @@ mod tests {
             .unwrap();
         let mut seen = 0;
         loop {
+            assert!(delivery.dependencies.is_empty());
             let page: Value = serde_json::from_str(&delivery.text).unwrap();
             assert_eq!(page["complete"], true);
             assert_eq!(page.get("instructions").is_some(), seen == 0);
@@ -909,6 +913,7 @@ mod tests {
     // {test}`requirements.sdk.graph.search.search_text.mcp`
     #[tokio::test]
     // {test}`requirements.sdk.graph.search.group_hits`
+    // {test}`requirements.sdk.graph.validation-context.pages.inputs`
     async fn search_pages_return_every_original_match_in_order() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("source.txt");
@@ -959,6 +964,7 @@ mod tests {
         let mut count = 0;
         let mut pages = 0;
         loop {
+            assert!(delivery.dependencies.is_empty());
             let page: Value = serde_json::from_str(&delivery.text).unwrap();
             assert_eq!(page["complete"], true);
             assert!(uuid::Uuid::parse_str(page["search_id"].as_str().unwrap()).is_ok());

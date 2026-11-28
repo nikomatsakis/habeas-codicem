@@ -5,6 +5,7 @@ use std::process::Command;
 
 use toml_edit::{Array, DocumentMut, Item, Table, value};
 
+// {impl}`requirements.integration.validate.optimized`
 const TEST_SOURCE: &str = "#[test]\nfn habeas() {\n    habeas::validate();\n}\n";
 const BADGE_CSS: &str = include_str!("../md/habeas.css");
 

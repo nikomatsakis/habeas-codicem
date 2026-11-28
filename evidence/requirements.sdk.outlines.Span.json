@@ -1,7 +1,7 @@
 {
   "requirement": "`trust_but_verify::outline::Span` locates text by byte offsets from the start\nof the original source snapshot, including when a caller selects a nested item.\n`start` is inclusive and `end` is exclusive. A valid span satisfies\n`start <= end <= source.len()` and both offsets are UTF-8 character boundaries.\nFor `source: &str`, `&source[span]` yields the same slice as\n`&source[span.start..span.end]`, with the same bounds and boundary checks.\n\n```rust,ignore\n#[non_exhaustive]\npub struct Span {\n    pub start: usize,\n    pub end: usize,\n}\n\nimpl Span {\n    pub fn new(start: usize, end: usize) -> Self;\n}\n```\n\nTrait implementations\n\n```rust,ignore\nimpl Clone for Span;\nimpl Copy for Span;\nimpl Eq for Span;\nimpl PartialEq for Span;\nimpl Debug for Span;\nimpl Index<Span> for str {\n    type Output = str;\n}\n```",
   "determination": true,
-  "rationale": "structural: The structural obligations in `requirements.sdk.outlines.Span` all map to the supplied roots in `crates/trust-but-verify/src/outline/contents.rs`.\n\n- **Type shape:** The text prescribes `#[non_exhaustive] pub struct Span { pub start: usize, pub end: usize }`. An alternative with private fields or `u32` offsets would break the prescribed public fields and types. `struct[Span]` declares exactly this shape.\n- **Constructor:** The text prescribes `pub fn new(start: usize, end: usize) -> Self`. A `non_exhaustive` struct cannot be built outside the crate without it. `impl[Span]/fn[new]` has this signature and returns `Self { start, end }`.\n- **Trait implementations:** The text lists `Clone`, `Copy`, `Eq`, `PartialEq` and `Debug` for `Span`. Dropping `Copy`, for example, would keep runtime results the same but violate the listed set. `struct[Span]` derives all five.\n- **Indexing:** The text lists `impl Index<Span> for str` with `Output = str`. It also says `&source[span]` yields the same slice as `&source[span.start..span.end]`, with the same bounds and boundary checks. `impl[str/std::ops::Index<Span>]` declares the `Output` type and implements `index`. `index` delegates to `&self[span.range()]`, so str's own range indexing supplies the slice and the checks.\n\nThe clause that spans are offsets from the original snapshot, including for nested items, and the validity conditions `start <= end <= source.len()` on UTF-8 boundaries describe observable behavior. They don't prescribe a particular implementation. Any construction that yields correct offsets conforms. I proposed no further roots: the `range()` helper is reached from the marked `index`, so it needs no marker.\n\nbehavioral: The reviewed tests adequately check the behavioral obligations of `requirements.sdk.outlines.Span`.\n\n- **Indexing a `str` by `Span`, with the same slice as `&source[span.start..span.end]`.** `crates/trust-but-verify/tests/outline_content.rs#fn[span_indexes_str_at_utf8_byte_boundaries]` uses the source \"aé🦀\". It indexes with valid spans `Span::new(0,0)`, `(1,3)` and `(3,7)`. It asserts each equals the range-indexed slice. It also asserts the exact outputs \"é\" and \"\" for the empty span at the end, `(7,7)`. This covers inclusive start, exclusive end, multi-byte characters and `end == len`.\n- **Bounds and boundary checks.** The same test asserts that these spans panic:\n  - `(2,3)`, `(0,2)` and `(2,2)`: offsets inside a UTF-8 character.\n  - `(0,8)`: `end > len`.\n  - `(3,1)`: `start > end`.\n  These match the validity conditions in the requirement text.\n- **Derived traits.** The test's `needs_eq::<Span>()` call checks `Eq`. `PartialEq` and `Debug` are used by `assert_eq!` on `Span` values elsewhere. `Copy` is exercised because `span` is used again after `&source[span]`, and `Copy` implies `Clone`.\n- **Offsets relative to the original snapshot, including nested items.**\n  - `fn[unicode_spans_use_bytes_and_whitespace_only_lines_create_no_items]` checks item spans in byte offsets of the whole source, for example `(6,10)` for the 🦀 line. It also checks `&source[item.span]` against the item text.\n  - `fn[setext_sections_inside_directives_lists_and_quotes_retain_container_spans]` checks nested sections inside directives, lists and quotes. Their `span.start` and `name_span` are offsets into the original source. The test asserts `selected.text() == &source[item.span]`, with non-ASCII text before the span.\n- **`#[non_exhaustive]` and the struct shape.** These are structural. The `compile_fail,E0639` doctest on `Span` and the public API export test cover them. This criterion does not require further behavioral tests for them.\n\nI found no behavioral obligation that the reviewed tests would let a violation pass.",
+  "rationale": "structural: The structural obligations in `requirements.sdk.outlines.Span` are covered by the supplied roots.\n\n- **Struct shape.** The text prescribes `#[non_exhaustive] pub struct Span { pub start: usize, pub end: usize }`. `crates/trust-but-verify/src/outline/contents.rs#struct[Span]` declares exactly this. An alternative with private fields or a different offset type would break the public `start` and `end` fields. An alternative without `non_exhaustive` would break the prescribed attribute. The struct also carries a `compile_fail` doctest.\n- **Derived traits.** The text lists `Clone`, `Copy`, `Eq`, `PartialEq` and `Debug`. `struct[Span]` has `#[derive(Clone, Copy, Debug, PartialEq, Eq)]`.\n- **Constructor.** The text prescribes `pub fn new(start: usize, end: usize) -> Self`. `impl[Span]/fn[new]` has that signature and returns `Self { start, end }`. A non-exhaustive struct cannot be built outside the crate, so the constructor is required.\n- **Indexing.** The text prescribes `impl Index<Span> for str` with `type Output = str`, so that `&source[span]` equals `&source[span.start..span.end]` with the same bounds and boundary checks. `impl[str/std::ops::Index<Span>]` declares that impl with `Output = str`. It delegates to `&self[span.range()]`, and `impl[Span]/fn[range]` returns `self.start..self.end`. Delegating to the standard `Range<usize>` indexing gives the same bounds and UTF-8 boundary checks. `range` is reached from the marked impl, so it needs no marker of its own.\n\nThe remaining clauses describe observable meaning: offsets are measured from the original snapshot, `start` is inclusive, `end` is exclusive, and a valid span satisfies the stated bounds. These constrain the values produced by outline code, not the structure, so they need no further implementation roots here.\n\nbehavioral: The tests adequately check `requirements.sdk.outlines.Span`.\n\n**Indexing `str` by `Span`** (`crates/trust-but-verify/tests/outline_content.rs#fn[span_indexes_str_at_utf8_byte_boundaries]`):\n- It uses the source \"aé🦀\", which has 1-, 2- and 4-byte characters.\n- Valid spans `(0,0)`, `(1,3)` and `(3,7)` are asserted equal to `&source[span.start..span.end]`. That covers the \"same slice as range indexing\" clause.\n- It asserts the exact result \"é\" for `(1,3)`. It asserts \"\" for the empty span at `source.len()`, which is the inclusive-start, exclusive-end boundary.\n- Invalid spans are each asserted to panic: `(2,3)` has its start inside a character, `(0,2)` has its end inside one, and `(2,2)` has both offsets inside one. `(0,8)` has an end past `len`. `(3,1)` has `start > end`. Together these cover every part of the validity rule: `start <= end <= len` and both offsets on UTF-8 boundaries. They also check that the panics match range indexing's bounds and boundary checks.\n- `needs_eq::<Span>()` checks `Eq`.\n- The test reads `span.start` after indexing by value, so it needs `Copy`, and `Copy` requires `Clone`.\n- `assert_eq!` on `Span` values in the tests requires `PartialEq` and `Debug`.\n\n**Byte offsets from the original snapshot, including nested items:**\n- `unicode_spans_use_bytes_and_whitespace_only_lines_create_no_items` asserts exact byte offsets such as `(6,10)` for multibyte text. It also asserts `&source[item.span]` equals the selected item's text.\n- `setext_sections_inside_directives_lists_and_quotes_retain_container_spans` checks spans for nested sections inside a directive, a quote and a list. `item.span.start` and `name_span` are byte offsets into the original source, and `selected.text() == &source[item.span]`.\n- `OutlineContent::select` shares the same snapshot, so a selected nested item keeps original-snapshot offsets. The tests above assert those original offsets for nested items.\n\n**Structural items:** `#[non_exhaustive]` and the exact derives are structural. The `compile_fail` doctest on `struct[Span]` and `crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]` cover them, and they need no further behavioral test. `Span::new` has no conditional and does no transformation of its own, and the tests use it throughout.\n\nI found no behavioral obligation without a test.",
   "references": "1911e121edb2a599ace03a7de739f31cfec8b437b7fd310548d16f0d9016c5d8",
   "inputs": [
     {
@@ -67,6 +67,16 @@
       "hash": "675ea531b0c951e1a1dbce5d48d1939cc19ebd9bd34c96d87ed2725a0459fccc"
     },
     {
+      "file": "crates/trust-but-verify/src/outline/contents.rs",
+      "item": "impl[str/std::ops::Index<Span>]/type[Output]",
+      "hash": "af70854a1aad32744f1b2b0c381ecdc5dd748405d82a04646d96ce71161afe28"
+    },
+    {
+      "file": "crates/trust-but-verify/src/outline/contents.rs",
+      "item": "impl[Span]/fn[range]",
+      "hash": "e9ec6b927679493491c716ea64b9f31487a41370f83725a49925063572ec9d51"
+    },
+    {
       "file": "crates/trust-but-verify/tests/outline_content.rs",
       "item": "fn[span_indexes_str_at_utf8_byte_boundaries]",
       "hash": "4e5e68285f0e12d08fc932dabd3154d684a2bec801aa19ded20749306ee1e291"
@@ -84,17 +94,22 @@
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[public_exports_match_the_appendix]",
-      "hash": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+      "hash": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
     },
     {
       "file": "crates/trust-but-verify/src/outline/contents.rs",
-      "item": "impl[str/std::ops::Index<Span>]/type[Output]",
-      "hash": "af70854a1aad32744f1b2b0c381ecdc5dd748405d82a04646d96ce71161afe28"
+      "item": "impl[OutlineContent]/fn[select]",
+      "hash": "33d1beebc0df0d646a2f26046abb75fab11069b321345e7638c8c647823e1afc"
     },
     {
-      "file": "crates/trust-but-verify/src/outline/contents.rs",
-      "item": "impl[Span]/fn[range]",
-      "hash": "e9ec6b927679493491c716ea64b9f31487a41370f83725a49925063572ec9d51"
+      "file": "crates/trust-but-verify/tests/outline_content.rs",
+      "item": "fn[yaml_selection_includes_comments_owned_by_the_entry]",
+      "hash": "68a8a0faf2a876accef76ae20480d7640d9564ccb6b14c23c9a4c41efd65698f"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/outline_content.rs",
+      "item": "fn[selected_item_reads_checked_file_spans_with_snapshot_redaction]",
+      "hash": "bce78c0748c28ad94682bc3b418f100ab87483c82b1644b2a8d162759cf242a5"
     },
     {
       "file": "crates/trust-but-verify/tests/outline_content.rs",
@@ -180,18 +195,6 @@
           ]
         },
         {
-          "OutgoingEdges": [
-            {
-              "Requirement": "requirements.sdk.outlines.Span"
-            },
-            "Implements",
-            {
-              "scheme": "node-path-set-sha256-v1",
-              "value": "4b1140b40927b4bc0d571bcf7d3f1f8930f094d33e36c8b6cf81bdd63ac4d13c"
-            }
-          ]
-        },
-        {
           "Node": [
             {
               "Source": {
@@ -207,11 +210,45 @@
               "value": "675ea531b0c951e1a1dbce5d48d1939cc19ebd9bd34c96d87ed2725a0459fccc"
             }
           ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/outline/contents.rs"
+                },
+                "selector": "impl[str/std::ops::Index<Span>]/type[Output]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "af70854a1aad32744f1b2b0c381ecdc5dd748405d82a04646d96ce71161afe28"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/outline/contents.rs"
+                },
+                "selector": "impl[Span]/fn[range]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "e9ec6b927679493491c716ea64b9f31487a41370f83725a49925063572ec9d51"
+            }
+          ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "The structural obligations in `requirements.sdk.outlines.Span` all map to the supplied roots in `crates/trust-but-verify/src/outline/contents.rs`.\n\n- **Type shape:** The text prescribes `#[non_exhaustive] pub struct Span { pub start: usize, pub end: usize }`. An alternative with private fields or `u32` offsets would break the prescribed public fields and types. `struct[Span]` declares exactly this shape.\n- **Constructor:** The text prescribes `pub fn new(start: usize, end: usize) -> Self`. A `non_exhaustive` struct cannot be built outside the crate without it. `impl[Span]/fn[new]` has this signature and returns `Self { start, end }`.\n- **Trait implementations:** The text lists `Clone`, `Copy`, `Eq`, `PartialEq` and `Debug` for `Span`. Dropping `Copy`, for example, would keep runtime results the same but violate the listed set. `struct[Span]` derives all five.\n- **Indexing:** The text lists `impl Index<Span> for str` with `Output = str`. It also says `&source[span]` yields the same slice as `&source[span.start..span.end]`, with the same bounds and boundary checks. `impl[str/std::ops::Index<Span>]` declares the `Output` type and implements `index`. `index` delegates to `&self[span.range()]`, so str's own range indexing supplies the slice and the checks.\n\nThe clause that spans are offsets from the original snapshot, including for nested items, and the validity conditions `start <= end <= source.len()` on UTF-8 boundaries describe observable behavior. They don't prescribe a particular implementation. Any construction that yields correct offsets conforms. I proposed no further roots: the `range()` helper is reached from the marked `index`, so it needs no marker."
+        "rationale": "The structural obligations in `requirements.sdk.outlines.Span` are covered by the supplied roots.\n\n- **Struct shape.** The text prescribes `#[non_exhaustive] pub struct Span { pub start: usize, pub end: usize }`. `crates/trust-but-verify/src/outline/contents.rs#struct[Span]` declares exactly this. An alternative with private fields or a different offset type would break the public `start` and `end` fields. An alternative without `non_exhaustive` would break the prescribed attribute. The struct also carries a `compile_fail` doctest.\n- **Derived traits.** The text lists `Clone`, `Copy`, `Eq`, `PartialEq` and `Debug`. `struct[Span]` has `#[derive(Clone, Copy, Debug, PartialEq, Eq)]`.\n- **Constructor.** The text prescribes `pub fn new(start: usize, end: usize) -> Self`. `impl[Span]/fn[new]` has that signature and returns `Self { start, end }`. A non-exhaustive struct cannot be built outside the crate, so the constructor is required.\n- **Indexing.** The text prescribes `impl Index<Span> for str` with `type Output = str`, so that `&source[span]` equals `&source[span.start..span.end]` with the same bounds and boundary checks. `impl[str/std::ops::Index<Span>]` declares that impl with `Output = str`. It delegates to `&self[span.range()]`, and `impl[Span]/fn[range]` returns `self.start..self.end`. Delegating to the standard `Range<usize>` indexing gives the same bounds and UTF-8 boundary checks. `range` is reached from the marked impl, so it needs no marker of its own.\n\nThe remaining clauses describe observable meaning: offsets are measured from the original snapshot, `start` is inclusive, `end` is exclusive, and a valid span satisfies the stated bounds. These constrain the values produced by outline code, not the structure, so they need no further implementation roots here."
       }
     },
     "behavioral": {
@@ -320,14 +357,65 @@
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+              "value": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/outline/contents.rs"
+                },
+                "selector": "impl[OutlineContent]/fn[select]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "33d1beebc0df0d646a2f26046abb75fab11069b321345e7638c8c647823e1afc"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/outline_content.rs"
+                },
+                "selector": "fn[yaml_selection_includes_comments_owned_by_the_entry]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "68a8a0faf2a876accef76ae20480d7640d9564ccb6b14c23c9a4c41efd65698f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/outline/contents.rs"
+                },
+                "selector": "impl[str/std::ops::Index<Span>]/fn[index]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "675ea531b0c951e1a1dbce5d48d1939cc19ebd9bd34c96d87ed2725a0459fccc"
             }
           ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "The reviewed tests adequately check the behavioral obligations of `requirements.sdk.outlines.Span`.\n\n- **Indexing a `str` by `Span`, with the same slice as `&source[span.start..span.end]`.** `crates/trust-but-verify/tests/outline_content.rs#fn[span_indexes_str_at_utf8_byte_boundaries]` uses the source \"aé🦀\". It indexes with valid spans `Span::new(0,0)`, `(1,3)` and `(3,7)`. It asserts each equals the range-indexed slice. It also asserts the exact outputs \"é\" and \"\" for the empty span at the end, `(7,7)`. This covers inclusive start, exclusive end, multi-byte characters and `end == len`.\n- **Bounds and boundary checks.** The same test asserts that these spans panic:\n  - `(2,3)`, `(0,2)` and `(2,2)`: offsets inside a UTF-8 character.\n  - `(0,8)`: `end > len`.\n  - `(3,1)`: `start > end`.\n  These match the validity conditions in the requirement text.\n- **Derived traits.** The test's `needs_eq::<Span>()` call checks `Eq`. `PartialEq` and `Debug` are used by `assert_eq!` on `Span` values elsewhere. `Copy` is exercised because `span` is used again after `&source[span]`, and `Copy` implies `Clone`.\n- **Offsets relative to the original snapshot, including nested items.**\n  - `fn[unicode_spans_use_bytes_and_whitespace_only_lines_create_no_items]` checks item spans in byte offsets of the whole source, for example `(6,10)` for the 🦀 line. It also checks `&source[item.span]` against the item text.\n  - `fn[setext_sections_inside_directives_lists_and_quotes_retain_container_spans]` checks nested sections inside directives, lists and quotes. Their `span.start` and `name_span` are offsets into the original source. The test asserts `selected.text() == &source[item.span]`, with non-ASCII text before the span.\n- **`#[non_exhaustive]` and the struct shape.** These are structural. The `compile_fail,E0639` doctest on `Span` and the public API export test cover them. This criterion does not require further behavioral tests for them.\n\nI found no behavioral obligation that the reviewed tests would let a violation pass."
+        "rationale": "The tests adequately check `requirements.sdk.outlines.Span`.\n\n**Indexing `str` by `Span`** (`crates/trust-but-verify/tests/outline_content.rs#fn[span_indexes_str_at_utf8_byte_boundaries]`):\n- It uses the source \"aé🦀\", which has 1-, 2- and 4-byte characters.\n- Valid spans `(0,0)`, `(1,3)` and `(3,7)` are asserted equal to `&source[span.start..span.end]`. That covers the \"same slice as range indexing\" clause.\n- It asserts the exact result \"é\" for `(1,3)`. It asserts \"\" for the empty span at `source.len()`, which is the inclusive-start, exclusive-end boundary.\n- Invalid spans are each asserted to panic: `(2,3)` has its start inside a character, `(0,2)` has its end inside one, and `(2,2)` has both offsets inside one. `(0,8)` has an end past `len`. `(3,1)` has `start > end`. Together these cover every part of the validity rule: `start <= end <= len` and both offsets on UTF-8 boundaries. They also check that the panics match range indexing's bounds and boundary checks.\n- `needs_eq::<Span>()` checks `Eq`.\n- The test reads `span.start` after indexing by value, so it needs `Copy`, and `Copy` requires `Clone`.\n- `assert_eq!` on `Span` values in the tests requires `PartialEq` and `Debug`.\n\n**Byte offsets from the original snapshot, including nested items:**\n- `unicode_spans_use_bytes_and_whitespace_only_lines_create_no_items` asserts exact byte offsets such as `(6,10)` for multibyte text. It also asserts `&source[item.span]` equals the selected item's text.\n- `setext_sections_inside_directives_lists_and_quotes_retain_container_spans` checks spans for nested sections inside a directive, a quote and a list. `item.span.start` and `name_span` are byte offsets into the original source, and `selected.text() == &source[item.span]`.\n- `OutlineContent::select` shares the same snapshot, so a selected nested item keeps original-snapshot offsets. The tests above assert those original offsets for nested items.\n\n**Structural items:** `#[non_exhaustive]` and the exact derives are structural. The `compile_fail` doctest on `struct[Span]` and `crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]` cover them, and they need no further behavioral test. `Span::new` has no conditional and does no transformation of its own, and the tests use it throughout.\n\nI found no behavioral obligation without a test."
       }
     }
   },
@@ -408,18 +496,6 @@
       ]
     },
     {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.outlines.Span"
-        },
-        "Implements",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "4b1140b40927b4bc0d571bcf7d3f1f8930f094d33e36c8b6cf81bdd63ac4d13c"
-        }
-      ]
-    },
-    {
       "Node": [
         {
           "Source": {
@@ -433,6 +509,40 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "675ea531b0c951e1a1dbce5d48d1939cc19ebd9bd34c96d87ed2725a0459fccc"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/outline/contents.rs"
+            },
+            "selector": "impl[str/std::ops::Index<Span>]/type[Output]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "af70854a1aad32744f1b2b0c381ecdc5dd748405d82a04646d96ce71161afe28"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/outline/contents.rs"
+            },
+            "selector": "impl[Span]/fn[range]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "e9ec6b927679493491c716ea64b9f31487a41370f83725a49925063572ec9d51"
         }
       ]
     },
@@ -500,7 +610,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+          "value": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
         }
       ]
     },
@@ -512,12 +622,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/outline/contents.rs"
             },
-            "selector": "impl[str/std::ops::Index<Span>]/type[Output]"
+            "selector": "impl[OutlineContent]/fn[select]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "af70854a1aad32744f1b2b0c381ecdc5dd748405d82a04646d96ce71161afe28"
+          "value": "33d1beebc0df0d646a2f26046abb75fab11069b321345e7638c8c647823e1afc"
         }
       ]
     },
@@ -527,14 +637,31 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/outline/contents.rs"
+              "location": "crates/trust-but-verify/tests/outline_content.rs"
             },
-            "selector": "impl[Span]/fn[range]"
+            "selector": "fn[yaml_selection_includes_comments_owned_by_the_entry]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "e9ec6b927679493491c716ea64b9f31487a41370f83725a49925063572ec9d51"
+          "value": "68a8a0faf2a876accef76ae20480d7640d9564ccb6b14c23c9a4c41efd65698f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/outline_content.rs"
+            },
+            "selector": "fn[selected_item_reads_checked_file_spans_with_snapshot_redaction]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "bce78c0748c28ad94682bc3b418f100ab87483c82b1644b2a8d162759cf242a5"
         }
       ]
     },

@@ -1,7 +1,7 @@
 {
   "requirement": "Return the saved answer when its version is compatible and its inputs are current. Otherwise execute the criterion and store the new result under {cite}`requirements.sdk.graph.evidence.refresh_evidence`.\n\n```rust,ignore\nimpl<'d, D: Domain> Validator<'d, D> {\n    pub fn refresh_evidence<V: Criterion<D>>(\n        &mut self,\n        criterion: V,\n    ) -> impl Future<Output = Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>>> + Send;\n}\n```",
   "determination": true,
-  "rationale": "structural: The only structural obligation in `requirements.sdk.graph.running-criteria.refresh_evidence` is the prescribed signature: `impl<'d, D: Domain> Validator<'d, D>` with `pub fn refresh_evidence<V: Criterion<D>>(&mut self, criterion: V) -> impl Future<Output = Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>>> + Send`. The `Validator` receiver, the `&mut self` and by-value `criterion` parameters, the `Criterion<D>` bound and the `Send` future return type cannot be changed without changing the declared API, so the signature binds the implementation.\n\n`crates/trust-but-verify/src/graph.rs#impl[Validator<'d, D>]/fn[refresh_evidence]` declares exactly this signature. It is already marked {impl} for the requirement, so it is the root that carries the obligation.\n\nThe behavioral clauses need no structural evidence. These clauses are returning the saved answer when its version is compatible and its inputs are current, and otherwise executing the criterion and storing the result. Any implementation that gives the same observable results meets them. Which helpers the code calls is a discretionary choice. The cited requirements, `requirements.sdk.graph.evidence.refresh_evidence` and the others it cites, supply context and are judged separately.\n\nThe body does follow the described flow. It loads the saved evidence, checks version compatibility and input freshness, and returns the saved answer if both pass. Otherwise it calls `verify`, then `store_evidence`, and returns the new result.\n\nbehavioral: The subject has two behavioral obligations. It says to return the saved answer when its version is compatible and its inputs are current. Otherwise it says to execute the criterion and store the new result. The signature is also stated: `&mut self`, a `Send` future, and a `Fingerprinted` result.\n\n1. **Reuse of a current, compatible answer.** `tests/contracts.rs#fn[refresh_reuses_current_positive_negative_and_legacy_answers_without_saving]` saves an answer and then calls `refresh_evidence` again.\n   - The second criterion is built with a different answer and `failure = Some(\"must reuse\")`, so executing it would fail. The test asserts the reused output, dependencies, source node, criterion path and version equal the saved ones.\n   - It asserts `(executions, writes) == (1, 1)`, so there was no re-execution and no re-save. It asserts `reads == [2, 2]`, so the input was re-read to check freshness, and it asserts the stored record is unchanged.\n   - It runs for both a satisfied and an unsatisfied answer, and for revision `v1` and the legacy `*`.\n   - `tests/contracts.rs#fn[validation_and_answer_need_send_without_sync]` also reuses a saved answer and checks that no extra execution or write happened.\n\n2. **Execute and store when the record is missing, incompatible or stale.** `tests/contracts.rs#fn[refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace]` covers four causes: `missing`, `revision` (incompatible version), `contents` (changed input contents) and `successors` (changed edge successors).\n   - For each cause it asserts the new output and a fresh dependency trace.\n   - It asserts the execution and write counts: 1 and 1 for a missing record, 2 and 2 for the others.\n   - It asserts the exact read sequence. This shows an incompatible revision skips resolving obsolete inputs, and changed contents are read before the new trace.\n   - It asserts there is one stored record whose output, dependencies and version equal the returned values, so the replacement is stored under the evidence storage requirement.\n\n3. **`Send` signature.** `validation_and_answer_need_send_without_sync` drives `refresh_evidence` through a `send(...)` helper, which checks the future is `Send`. It also checks a fresh refresh executes and writes.\n\nThe subject's text states no error-propagation obligation. That obligation is in `requirements.sdk.graph.evidence.refresh_evidence`, which is cited context here and is not reassessed. `tests/public_api.rs#fn[public_exports_match_the_appendix]` covers the exported surface.\n\nI found no gaps in test adequacy.",
+  "rationale": "structural: The only structural obligation in `requirements.sdk.graph.running-criteria.refresh_evidence` is the prescribed signature. That signature is `impl<'d, D: Domain> Validator<'d, D>` with `pub fn refresh_evidence<V: Criterion<D>>(&mut self, criterion: V) -> impl Future<Output = Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>>> + Send`.\n\nA reviewer could change the generic bound, the `&mut self` receiver, the `Send` future or the result type. Those changes would break callers, so they are not discretionary.\n\nThe root `crates/trust-but-verify/src/graph.rs#impl[Validator<'d, D>]/fn[refresh_evidence]` declares exactly this signature. It carries the `{impl}` marker for this requirement.\n\nThe body also follows the prose. It loads the saved evidence with `load_evidence`. It returns that evidence when `criterion.version().is_compatible_with(saved.version())` holds and `check_inputs` reports the inputs current. Otherwise it calls `verify` and then `store_evidence` before returning the result. Errors are propagated with `?`.\n\nThe detailed obligations for loading, version matching, input checking, execution and saving are delegated to `requirements.sdk.graph.evidence.refresh_evidence` and the requirements it cites. They are judged against those declarations, not here. No further root is needed for this requirement.\n\nbehavioral: The subject has two behavioral obligations. `refresh_evidence` returns the saved answer when its version is compatible and its inputs are current. Otherwise it executes the criterion and stores the new result.\n\n1. **Reuse of a current, compatible answer.** `tests/contracts.rs#fn[refresh_reuses_current_positive_negative_and_legacy_answers_without_saving]` covers this.\n   - It saves a record with a dependency on node 2, then rewrites the version to `v1` or the legacy `*`. It does this for both satisfied and unsatisfied answers.\n   - It refreshes again with a criterion that would fail (`failure = \"must reuse\"`) and would return the opposite answer.\n   - It asserts that the output, dependencies, source node, criterion path and version all match the saved ones.\n   - It asserts `(executions, writes) == (1, 1)`, that the input was re-read (`reads == [2, 2]`), and that the record is unchanged.\n2. **Execute and store when the record is missing, incompatible or stale.** `tests/contracts.rs#fn[refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace]` covers four causes: `missing`, `revision` (incompatible), `contents` (changed content fingerprint) and `successors` (changed edges).\n   - For each cause it asserts the new output, the fresh dependency trace, and the execution and write counts.\n   - It asserts the read sequence, which also shows that an incompatible revision skips the old inputs and that changed content is detected by reading input 2 before input 1.\n   - It asserts that the stored record has the new output, dependencies and version.\n3. **Signature and `Send`.** `tests/contracts.rs#fn[validation_and_answer_need_send_without_sync]` runs `refresh_evidence` through a `send` helper. It checks a fresh result and then reuse, with 2 executions and 2 writes in total.\n\nThe cited requirement `requirements.sdk.graph.evidence.refresh_evidence` also says errors propagate and that the result is stored before it is returned. The subject's own text does not state error propagation.\n- Error propagation is tested by `refresh_propagates_load_decode_check_execution_and_save_errors` and `refresh_serialization_failure_preserves_the_saved_record`. Neither carries a marker for the subject, but they are not needed to meet it.\n- Storage before return is checked by the assertions on `state.records` in the fresh-trace test.\n\n`public_exports_match_the_appendix` is a structural export check and adds no behavioral obligation here.\n\nI found no behavioral obligation of the subject without a test that exercises it and asserts the outcome.",
   "references": "171d8534ba3180641c2052a02eab5ecf0aa85261d629c29035fd64989c65c9e8",
   "inputs": [
     {
@@ -67,7 +67,17 @@
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[public_exports_match_the_appendix]",
-      "hash": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+      "hash": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "fn[refresh_propagates_load_decode_check_execution_and_save_errors]",
+      "hash": "8a56e1e1c3052f0337a2fe970b68f0959e7b8730899aa7d4306d05d96ae8af9e"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "fn[refresh_serialization_failure_preserves_the_saved_record]",
+      "hash": "48ee6252aa0da8c7a8b5e500d287e9e714cf5c4d3e7babaa2cf5f745aab71f6f"
     }
   ],
   "criteria": {
@@ -127,7 +137,7 @@
       ],
       "output": {
         "status": "success",
-        "rationale": "The only structural obligation in `requirements.sdk.graph.running-criteria.refresh_evidence` is the prescribed signature: `impl<'d, D: Domain> Validator<'d, D>` with `pub fn refresh_evidence<V: Criterion<D>>(&mut self, criterion: V) -> impl Future<Output = Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>>> + Send`. The `Validator` receiver, the `&mut self` and by-value `criterion` parameters, the `Criterion<D>` bound and the `Send` future return type cannot be changed without changing the declared API, so the signature binds the implementation.\n\n`crates/trust-but-verify/src/graph.rs#impl[Validator<'d, D>]/fn[refresh_evidence]` declares exactly this signature. It is already marked {impl} for the requirement, so it is the root that carries the obligation.\n\nThe behavioral clauses need no structural evidence. These clauses are returning the saved answer when its version is compatible and its inputs are current, and otherwise executing the criterion and storing the result. Any implementation that gives the same observable results meets them. Which helpers the code calls is a discretionary choice. The cited requirements, `requirements.sdk.graph.evidence.refresh_evidence` and the others it cites, supply context and are judged separately.\n\nThe body does follow the described flow. It loads the saved evidence, checks version compatibility and input freshness, and returns the saved answer if both pass. Otherwise it calls `verify`, then `store_evidence`, and returns the new result."
+        "rationale": "The only structural obligation in `requirements.sdk.graph.running-criteria.refresh_evidence` is the prescribed signature. That signature is `impl<'d, D: Domain> Validator<'d, D>` with `pub fn refresh_evidence<V: Criterion<D>>(&mut self, criterion: V) -> impl Future<Output = Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>>> + Send`.\n\nA reviewer could change the generic bound, the `&mut self` receiver, the `Send` future or the result type. Those changes would break callers, so they are not discretionary.\n\nThe root `crates/trust-but-verify/src/graph.rs#impl[Validator<'d, D>]/fn[refresh_evidence]` declares exactly this signature. It carries the `{impl}` marker for this requirement.\n\nThe body also follows the prose. It loads the saved evidence with `load_evidence`. It returns that evidence when `criterion.version().is_compatible_with(saved.version())` holds and `check_inputs` reports the inputs current. Otherwise it calls `verify` and then `store_evidence` before returning the result. Errors are propagated with `?`.\n\nThe detailed obligations for loading, version matching, input checking, execution and saving are delegated to `requirements.sdk.graph.evidence.refresh_evidence` and the requirements it cites. They are judged against those declarations, not here. No further root is needed for this requirement."
       }
     },
     "behavioral": {
@@ -230,14 +240,31 @@
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+              "value": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[refresh_propagates_load_decode_check_execution_and_save_errors]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "8a56e1e1c3052f0337a2fe970b68f0959e7b8730899aa7d4306d05d96ae8af9e"
             }
           ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "The subject has two behavioral obligations. It says to return the saved answer when its version is compatible and its inputs are current. Otherwise it says to execute the criterion and store the new result. The signature is also stated: `&mut self`, a `Send` future, and a `Fingerprinted` result.\n\n1. **Reuse of a current, compatible answer.** `tests/contracts.rs#fn[refresh_reuses_current_positive_negative_and_legacy_answers_without_saving]` saves an answer and then calls `refresh_evidence` again.\n   - The second criterion is built with a different answer and `failure = Some(\"must reuse\")`, so executing it would fail. The test asserts the reused output, dependencies, source node, criterion path and version equal the saved ones.\n   - It asserts `(executions, writes) == (1, 1)`, so there was no re-execution and no re-save. It asserts `reads == [2, 2]`, so the input was re-read to check freshness, and it asserts the stored record is unchanged.\n   - It runs for both a satisfied and an unsatisfied answer, and for revision `v1` and the legacy `*`.\n   - `tests/contracts.rs#fn[validation_and_answer_need_send_without_sync]` also reuses a saved answer and checks that no extra execution or write happened.\n\n2. **Execute and store when the record is missing, incompatible or stale.** `tests/contracts.rs#fn[refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace]` covers four causes: `missing`, `revision` (incompatible version), `contents` (changed input contents) and `successors` (changed edge successors).\n   - For each cause it asserts the new output and a fresh dependency trace.\n   - It asserts the execution and write counts: 1 and 1 for a missing record, 2 and 2 for the others.\n   - It asserts the exact read sequence. This shows an incompatible revision skips resolving obsolete inputs, and changed contents are read before the new trace.\n   - It asserts there is one stored record whose output, dependencies and version equal the returned values, so the replacement is stored under the evidence storage requirement.\n\n3. **`Send` signature.** `validation_and_answer_need_send_without_sync` drives `refresh_evidence` through a `send(...)` helper, which checks the future is `Send`. It also checks a fresh refresh executes and writes.\n\nThe subject's text states no error-propagation obligation. That obligation is in `requirements.sdk.graph.evidence.refresh_evidence`, which is cited context here and is not reassessed. `tests/public_api.rs#fn[public_exports_match_the_appendix]` covers the exported surface.\n\nI found no gaps in test adequacy."
+        "rationale": "The subject has two behavioral obligations. `refresh_evidence` returns the saved answer when its version is compatible and its inputs are current. Otherwise it executes the criterion and stores the new result.\n\n1. **Reuse of a current, compatible answer.** `tests/contracts.rs#fn[refresh_reuses_current_positive_negative_and_legacy_answers_without_saving]` covers this.\n   - It saves a record with a dependency on node 2, then rewrites the version to `v1` or the legacy `*`. It does this for both satisfied and unsatisfied answers.\n   - It refreshes again with a criterion that would fail (`failure = \"must reuse\"`) and would return the opposite answer.\n   - It asserts that the output, dependencies, source node, criterion path and version all match the saved ones.\n   - It asserts `(executions, writes) == (1, 1)`, that the input was re-read (`reads == [2, 2]`), and that the record is unchanged.\n2. **Execute and store when the record is missing, incompatible or stale.** `tests/contracts.rs#fn[refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace]` covers four causes: `missing`, `revision` (incompatible), `contents` (changed content fingerprint) and `successors` (changed edges).\n   - For each cause it asserts the new output, the fresh dependency trace, and the execution and write counts.\n   - It asserts the read sequence, which also shows that an incompatible revision skips the old inputs and that changed content is detected by reading input 2 before input 1.\n   - It asserts that the stored record has the new output, dependencies and version.\n3. **Signature and `Send`.** `tests/contracts.rs#fn[validation_and_answer_need_send_without_sync]` runs `refresh_evidence` through a `send` helper. It checks a fresh result and then reuse, with 2 executions and 2 writes in total.\n\nThe cited requirement `requirements.sdk.graph.evidence.refresh_evidence` also says errors propagate and that the result is stored before it is returned. The subject's own text does not state error propagation.\n- Error propagation is tested by `refresh_propagates_load_decode_check_execution_and_save_errors` and `refresh_serialization_failure_preserves_the_saved_record`. Neither carries a marker for the subject, but they are not needed to meet it.\n- Storage before return is checked by the assertions on `state.records` in the fresh-trace test.\n\n`public_exports_match_the_appendix` is a structural export check and adds no behavioral obligation here.\n\nI found no behavioral obligation of the subject without a test that exercises it and asserts the outcome."
       }
     }
   },
@@ -358,7 +385,41 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+          "value": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/contracts.rs"
+            },
+            "selector": "fn[refresh_propagates_load_decode_check_execution_and_save_errors]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "8a56e1e1c3052f0337a2fe970b68f0959e7b8730899aa7d4306d05d96ae8af9e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/contracts.rs"
+            },
+            "selector": "fn[refresh_serialization_failure_preserves_the_saved_record]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "48ee6252aa0da8c7a8b5e500d287e9e714cf5c4d3e7babaa2cf5f745aab71f6f"
         }
       ]
     }

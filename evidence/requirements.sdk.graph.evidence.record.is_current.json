@@ -1,7 +1,7 @@
 {
   "requirement": "`record.is_current(graph, version)` returns `Ok(false)` immediately if the criterion version is incompatible. For a compatible version, it checks each saved dependency against the graph, stopping at the first changed fingerprint or domain error. An empty dependency list passes.\n\n```rust,ignore\nimpl<N, L> Record<N, L> {\n    pub fn is_current<D>(\n        &self,\n        graph: &D,\n        version: &CriterionVersion,\n    ) -> Result<bool, D::Error>\n    where\n        D: Domain<NodeData = N, EdgeLabel = L>;\n}\n```",
   "determination": true,
-  "rationale": "structural: The only structural obligation in the text is the prescribed public signature: `impl<N, L> Record<N, L> { pub fn is_current<D>(&self, graph: &D, version: &CriterionVersion) -> Result<bool, D::Error> where D: Domain<NodeData = N, EdgeLabel = L> }`. The root `crates/trust-but-verify/src/graph.rs#impl[Record<N,%20L>]/fn[is_current]` declares exactly that signature and bounds, so it implements the obligation. A version that returns `Result<bool, String>` would compile against different callers, and that is the kind of change the signature clause rules out.\n\nThe other clauses describe observable behavior only:\n- It returns `Ok(false)` for an incompatible version.\n- It checks each dependency and stops at the first changed fingerprint or domain error.\n- An empty list passes.\n\nOther code could produce the same results, for example by checking dependencies in a different structure or order, so these are not structural obligations. `is_current` also does these things:\n- It returns `Ok(false)` early when `version.is_compatible_with` fails.\n- It calls `dependencies_are_current`, which loops over the dependencies. That function propagates domain errors with `?`, returns `Ok(false)` on the first mismatch, and returns `Ok(true)` for an empty list.\n\nNo further implementation roots are needed.\n\nbehavioral: The reviewed tests cover each behavioral obligation of `requirements.sdk.graph.evidence.record.is_current`.\n\n- **Incompatible version returns `Ok(false)` immediately.** `record_freshness_short_circuits_before_later_graph_reads` in `crates/trust-but-verify/src/graph/validation_tests.rs` builds a record saved with `v1` and two dependencies. It checks it against `v2` and asserts `Ok(false)`. It then asserts `graph.state.reads` is empty, so the graph is not consulted.\n- **Empty dependency list passes.** The same test asserts `Ok(true)` for a record with no dependencies.\n- **Every saved dependency is checked, and all-matching records are current.** `a_matching_dependency_does_not_hide_a_later_changed_dependency` first asserts `Ok(true)` when both dependencies match. It does this for both `Dependency::Node` and `Dependency::OutgoingEdges` as the later dependency. It then changes only the later dependency and asserts `Ok(false)`. The first dependency is unchanged, so a check that stopped after the first dependency would fail the test.\n- **Stops at the first changed fingerprint.** `record_freshness_short_circuits_before_later_graph_reads` changes dependency 1 to \"changed\" and asserts `Ok(false)`. It also asserts `reads == [1]`, so dependency 2 is never read.\n- **Stops at the first domain error.** The same test uses a graph with no content for node 1. It asserts `Err(\"missing\")` and `reads == [1]`, so the later dependency is not read after the error.\n\nOne case is untested: a domain error raised while reading an edge dependency. It runs through the same `?` propagation in `dependencies_are_current` as the node case, so it is not a separate obligation.\n\nThe test in `crates/trust-but-verify/tests/public_api.rs` (`public_exports_match_the_appendix`) is not behavioral evidence for this requirement. It checks the public export inventory, which covers the signature only. The text names no obligation that needs a separate test for it.",
+  "rationale": "structural: The only structural obligation in `requirements.sdk.graph.evidence.record.is_current` is the prescribed public signature: a method on `impl<N, L> Record<N, L>` with `&self`, `graph: &D`, `version: &CriterionVersion`, returning `Result<bool, D::Error>`, where `D: Domain<NodeData = N, EdgeLabel = L>`. The root `crates/trust-but-verify/src/graph.rs#impl[Record<N,%20L>]/fn[is_current]` declares exactly this signature and carries the `{impl}` marker. It also returns `Ok(false)` before touching dependencies when `version.is_compatible_with(self.version.as_ref())` fails. Otherwise it delegates to `dependencies_are_current` over `restore_dependencies`, which are reachable helpers from the marked root and need no separate marker. The other clauses are observable behavior: stopping at the first changed fingerprint or error, and an empty list passing. Any implementation with the same results would satisfy them, so they impose no further structural obligation.\n\nbehavioral: Obligations and the tests that cover them:\n\n1. **Incompatible version returns `Ok(false)` immediately.** `record_freshness_short_circuits_before_later_graph_reads` in `crates/trust-but-verify/src/graph/validation_tests.rs` saves a record at v1 with two dependencies and checks it against v2. It asserts `Ok(false)` and asserts that `reads` is empty, so the graph was never consulted. Which versions count as compatible is defined by `CriterionVersion::is_compatible_with`, and `wildcard_versions_still_check_inputs_and_errors` tests that function directly. `is_current` only needs to return false when that check fails, and the v1/v2 scenario covers that.\n\n2. **Empty dependency list passes.** The same test asserts `Ok(true)` for a record with no dependencies and a matching version.\n\n3. **Stops at the first changed fingerprint.** After contents change, the test checks a record with dependencies [1, 2] where node 1 is changed. It asserts `Ok(false)` and that `reads == [1]`, so node 2 was never read.\n\n4. **Stops at the first domain error.** Node 1 is missing, and the test asserts `Err(\"missing\")` with `reads == [1]`. Checking stopped at the error and node 2 was not read.\n\n5. **Checks each dependency, so a matching one does not mask a later change.** `a_matching_dependency_does_not_hide_a_later_changed_dependency` runs two cases, for a node dependency and for an outgoing-edges dependency. In each, the record is current while everything matches, and `is_current` is false once only the later dependency changes. It also asserts that the first dependency's content is unchanged.\n\nThe `public_exports_match_the_appendix` test in `tests/public_api.rs` checks the exported API surface, not behavior. It is only context for the signature shown in the requirement. The signature is a structural obligation and needs no behavioral test.\n\nI found no obligation without a test.",
   "references": "35d699a9472aa9feb77c48c23982a265e0a75f513c9ae44addf74925fe62f33b",
   "inputs": [
     {
@@ -34,11 +34,6 @@
       "hash": "93d6e22a92726afdf0b3ee8438ab48952ea07c806733c4f704a0129c211b8fed"
     },
     {
-      "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "fn[dependencies_are_current]",
-      "hash": "4c26499b686c87c01a0d27a9ea401cdf5cdcf3bd0c3d52cb2d13d7772c69d0b1"
-    },
-    {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[a_matching_dependency_does_not_hide_a_later_changed_dependency]",
       "hash": "0a5565baf8c14d9288b60a5c0621ef0ca2ee1a9bf5eb61d6cafaa511cee7689c"
@@ -51,7 +46,7 @@
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[public_exports_match_the_appendix]",
-      "hash": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+      "hash": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
     },
     {
       "file": "crates/trust-but-verify/src/graph.rs",
@@ -60,8 +55,13 @@
     },
     {
       "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "enum[Dependency]",
-      "hash": "fe5519f4fbe4dbde50c868209706c52775c0c142e88c97d75bbebf4a296ed0c0"
+      "item": "fn[restore_dependencies]",
+      "hash": "86c797e1378971d211866ba56319aa6479945920e67dc44398b11518679b3575"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "fn[dependencies_are_current]",
+      "hash": "4c26499b686c87c01a0d27a9ea401cdf5cdcf3bd0c3d52cb2d13d7772c69d0b1"
     }
   ],
   "criteria": {
@@ -106,28 +106,11 @@
               "value": "93d6e22a92726afdf0b3ee8438ab48952ea07c806733c4f704a0129c211b8fed"
             }
           ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/graph.rs"
-                },
-                "selector": "fn[dependencies_are_current]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "4c26499b686c87c01a0d27a9ea401cdf5cdcf3bd0c3d52cb2d13d7772c69d0b1"
-            }
-          ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "The only structural obligation in the text is the prescribed public signature: `impl<N, L> Record<N, L> { pub fn is_current<D>(&self, graph: &D, version: &CriterionVersion) -> Result<bool, D::Error> where D: Domain<NodeData = N, EdgeLabel = L> }`. The root `crates/trust-but-verify/src/graph.rs#impl[Record<N,%20L>]/fn[is_current]` declares exactly that signature and bounds, so it implements the obligation. A version that returns `Result<bool, String>` would compile against different callers, and that is the kind of change the signature clause rules out.\n\nThe other clauses describe observable behavior only:\n- It returns `Ok(false)` for an incompatible version.\n- It checks each dependency and stops at the first changed fingerprint or domain error.\n- An empty list passes.\n\nOther code could produce the same results, for example by checking dependencies in a different structure or order, so these are not structural obligations. `is_current` also does these things:\n- It returns `Ok(false)` early when `version.is_compatible_with` fails.\n- It calls `dependencies_are_current`, which loops over the dependencies. That function propagates domain errors with `?`, returns `Ok(false)` on the first mismatch, and returns `Ok(true)` for an empty list.\n\nNo further implementation roots are needed."
+        "rationale": "The only structural obligation in `requirements.sdk.graph.evidence.record.is_current` is the prescribed public signature: a method on `impl<N, L> Record<N, L>` with `&self`, `graph: &D`, `version: &CriterionVersion`, returning `Result<bool, D::Error>`, where `D: Domain<NodeData = N, EdgeLabel = L>`. The root `crates/trust-but-verify/src/graph.rs#impl[Record<N,%20L>]/fn[is_current]` declares exactly this signature and carries the `{impl}` marker. It also returns `Ok(false)` before touching dependencies when `version.is_compatible_with(self.version.as_ref())` fails. Otherwise it delegates to `dependencies_are_current` over `restore_dependencies`, which are reachable helpers from the marked root and need no separate marker. The other clauses are observable behavior: stopping at the first changed fingerprint or error, and an empty list passing. Any implementation with the same results would satisfy them, so they impose no further structural obligation."
       }
     },
     "behavioral": {
@@ -202,24 +185,7 @@
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/graph.rs"
-                },
-                "selector": "impl[Record<N,%20L>]/fn[is_current]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "93d6e22a92726afdf0b3ee8438ab48952ea07c806733c4f704a0129c211b8fed"
+              "value": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
             }
           ]
         },
@@ -248,19 +214,19 @@
                   "scheme": "repo",
                   "location": "crates/trust-but-verify/src/graph.rs"
                 },
-                "selector": "fn[dependencies_are_current]"
+                "selector": "impl[Record<N,%20L>]/fn[is_current]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "4c26499b686c87c01a0d27a9ea401cdf5cdcf3bd0c3d52cb2d13d7772c69d0b1"
+              "value": "93d6e22a92726afdf0b3ee8438ab48952ea07c806733c4f704a0129c211b8fed"
             }
           ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "The reviewed tests cover each behavioral obligation of `requirements.sdk.graph.evidence.record.is_current`.\n\n- **Incompatible version returns `Ok(false)` immediately.** `record_freshness_short_circuits_before_later_graph_reads` in `crates/trust-but-verify/src/graph/validation_tests.rs` builds a record saved with `v1` and two dependencies. It checks it against `v2` and asserts `Ok(false)`. It then asserts `graph.state.reads` is empty, so the graph is not consulted.\n- **Empty dependency list passes.** The same test asserts `Ok(true)` for a record with no dependencies.\n- **Every saved dependency is checked, and all-matching records are current.** `a_matching_dependency_does_not_hide_a_later_changed_dependency` first asserts `Ok(true)` when both dependencies match. It does this for both `Dependency::Node` and `Dependency::OutgoingEdges` as the later dependency. It then changes only the later dependency and asserts `Ok(false)`. The first dependency is unchanged, so a check that stopped after the first dependency would fail the test.\n- **Stops at the first changed fingerprint.** `record_freshness_short_circuits_before_later_graph_reads` changes dependency 1 to \"changed\" and asserts `Ok(false)`. It also asserts `reads == [1]`, so dependency 2 is never read.\n- **Stops at the first domain error.** The same test uses a graph with no content for node 1. It asserts `Err(\"missing\")` and `reads == [1]`, so the later dependency is not read after the error.\n\nOne case is untested: a domain error raised while reading an edge dependency. It runs through the same `?` propagation in `dependencies_are_current` as the node case, so it is not a separate obligation.\n\nThe test in `crates/trust-but-verify/tests/public_api.rs` (`public_exports_match_the_appendix`) is not behavioral evidence for this requirement. It checks the public export inventory, which covers the signature only. The text names no obligation that needs a separate test for it."
+        "rationale": "Obligations and the tests that cover them:\n\n1. **Incompatible version returns `Ok(false)` immediately.** `record_freshness_short_circuits_before_later_graph_reads` in `crates/trust-but-verify/src/graph/validation_tests.rs` saves a record at v1 with two dependencies and checks it against v2. It asserts `Ok(false)` and asserts that `reads` is empty, so the graph was never consulted. Which versions count as compatible is defined by `CriterionVersion::is_compatible_with`, and `wildcard_versions_still_check_inputs_and_errors` tests that function directly. `is_current` only needs to return false when that check fails, and the v1/v2 scenario covers that.\n\n2. **Empty dependency list passes.** The same test asserts `Ok(true)` for a record with no dependencies and a matching version.\n\n3. **Stops at the first changed fingerprint.** After contents change, the test checks a record with dependencies [1, 2] where node 1 is changed. It asserts `Ok(false)` and that `reads == [1]`, so node 2 was never read.\n\n4. **Stops at the first domain error.** Node 1 is missing, and the test asserts `Err(\"missing\")` with `reads == [1]`. Checking stopped at the error and node 2 was not read.\n\n5. **Checks each dependency, so a matching one does not mask a later change.** `a_matching_dependency_does_not_hide_a_later_changed_dependency` runs two cases, for a node dependency and for an outgoing-edges dependency. In each, the record is current while everything matches, and `is_current` is false once only the later dependency changes. It also asserts that the first dependency's content is unchanged.\n\nThe `public_exports_match_the_appendix` test in `tests/public_api.rs` checks the exported API surface, not behavior. It is only context for the signature shown in the requirement. The signature is a structural obligation and needs no behavioral test.\n\nI found no obligation without a test."
       }
     }
   },
@@ -312,23 +278,6 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
-            },
-            "selector": "fn[dependencies_are_current]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "4c26499b686c87c01a0d27a9ea401cdf5cdcf3bd0c3d52cb2d13d7772c69d0b1"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
               "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
             },
             "selector": "fn[a_matching_dependency_does_not_hide_a_later_changed_dependency]"
@@ -370,7 +319,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+          "value": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
         }
       ]
     },
@@ -399,12 +348,29 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/graph.rs"
             },
-            "selector": "enum[Dependency]"
+            "selector": "fn[restore_dependencies]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "fe5519f4fbe4dbde50c868209706c52775c0c142e88c97d75bbebf4a296ed0c0"
+          "value": "86c797e1378971d211866ba56319aa6479945920e67dc44398b11518679b3575"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "fn[dependencies_are_current]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "4c26499b686c87c01a0d27a9ea401cdf5cdcf3bd0c3d52cb2d13d7772c69d0b1"
         }
       ]
     }

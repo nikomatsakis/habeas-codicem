@@ -1,7 +1,7 @@
 {
   "requirement": "Maps node and criterion paths to a record under the configured root. `load` returns `None` for a missing record. `store` atomically replaces the record.\n\n```rust,ignore\npub struct FileEvidenceStorage { /* private fields */ }\n\nimpl FileEvidenceStorage {\n    pub fn new(root: impl Into<PathBuf>) -> Self;\n    pub fn record_path(&self, path: &NodePath, criterion: &CriterionPath) -> PathBuf;\n    pub async fn load<N, L>(\n        &self,\n        path: &NodePath,\n        criterion: &CriterionPath,\n    ) -> Result<Option<Record<N, L>>, FileStorageError>\n    where\n        N: DeserializeOwned + Send,\n        L: DeserializeOwned + Send;\n    pub async fn store<N, L>(\n        &self,\n        path: &NodePath,\n        criterion: &CriterionPath,\n        record: &Record<N, L>,\n    ) -> Result<(), FileStorageError>\n    where\n        N: Serialize + Sync,\n        L: Serialize + Sync;\n}\n```\n\nTrait implementations\n\n```rust,ignore\nimpl Clone for FileEvidenceStorage;\n```",
   "determination": true,
-  "rationale": "structural: The structural obligations in the text are the public type `FileEvidenceStorage` with private fields, the constructor `new(root: impl Into<PathBuf>) -> Self`, the public `record_path(&self, &NodePath, &CriterionPath) -> PathBuf`, the async `load` and `store` signatures with their bounds, and `impl Clone`. Each is covered by the supplied roots or by code they reach.\n\n- `crates/trust-but-verify/src/storage.rs#struct[FileEvidenceStorage]` is a `pub struct` with one private `root: PathBuf` field and `#[derive(Clone)]`. That meets both the private-fields clause and the Clone trait implementation.\n- `crates/trust-but-verify/src/storage.rs#impl[FileEvidenceStorage]/fn[new]` matches `new(root: impl Into<PathBuf>) -> Self` and stores `root.into()`.\n- `crates/trust-but-verify/src/storage.rs#impl[FileEvidenceStorage]/fn[load]` is async with the stated `N: DeserializeOwned + Send, L: DeserializeOwned + Send` bounds and the stated return type. It calls `record_path`, maps `NotFound` to `Ok(None)`, and decodes the record as JSON.\n- `crates/trust-but-verify/src/storage.rs#impl[FileEvidenceStorage]/fn[store]` is async with the stated `Serialize + Sync` bounds and signature. It calls `record_path`, writes to a `tempfile::NamedTempFile` in the target's parent directory, and replaces the target through `write_and_replace`. That is the atomic replace the text asks for.\n- `crates/trust-but-verify/src/storage.rs#impl[FileEvidenceStorage]/fn[record_path]` is not a supplied root, but it is called by both `load` and `store`, which carry the impl marker. A reviewer reaches it through them, so it needs no separate reference. Its public signature matches the text.\n- `write_and_replace` and `TemporaryRecord` are helpers reached from `store`, so they need no separate reference.\n\nThe path-mapping layout, such as hex-encoded segments and the `criteria` directory, is not prescribed. The text only says paths map to a record under the root, so that layout is observable behavior and not a structural obligation.\n\nbehavioral: Behavioral obligations in `requirements.sdk.filesystem-storage.FileEvidenceStorage`, and the tests that cover them:\n\n1. **Path mapping.** `record_path` maps node and criterion paths to a record under the configured root. `paths_are_injective_and_loading_missing_records_has_no_side_effects` asserts exact `record_path` results for empty, empty-string, multi-segment, slash, `..`, NUL, control-character and Unicode segments. `source_and_criterion_boundaries_preserve_independent_records` asserts exact paths for the source/criterion boundary cases. It then stores a distinct record at each path and loads every record back, which shows the records stay independent.\n\n2. **`load` returns `None` for a missing record.** Both tests above assert `is_none()` on missing records. The first also asserts that the missing root is not created.\n\n3. **`store` atomically replaces the record.**\n   - `concurrent_readers_only_observe_complete_records_from_competing_writes` has two writers repeatedly replacing one record while a reader loads it. Every observed record must be fully consistent: version, dependencies and output must all belong to the same writer, and the 8192-character padding must be complete. It also asserts that only one directory entry remains at the end.\n   - `failed_serialization_preserves_records_and_failed_replacement_cleans_up` shows a failed store leaves the original bytes unchanged. It also shows that a failed replacement leaves no temporary file next to `record.json`.\n   - The round-trip tests show that `store` replaces the previous value, and that the loaded value equals what was stored.\n\n4. **Interface and error behavior.** The round-trip test checks that `load` returns `Json` errors for malformed or incompatible data and `Io` errors for an unreadable record, with matching messages. The `store` failure test checks `Json` and `Io` errors. Both are consistent with the `Result<_, FileStorageError>` signatures. The signatures are also exercised by every test and by the `public_api.rs` check that Habeas compiles against the SDK.\n\n5. **`Clone`.** This is a `#[derive(Clone)]` on a struct holding one `PathBuf`. It has no conditional and no transformation of its own, so it needs no separate test. `StoredGraph` in `tests/support/stored_graph.rs` also derives `Clone` over this type, so the impl is exercised at compile time.\n\nI found no input class or failure case that the requirement names and that goes untested. The tests are marked with `{test}` references to the subject.",
+  "rationale": "structural: The structural obligations in `requirements.sdk.filesystem-storage.FileEvidenceStorage` are the prescribed public type and signatures, and the `Clone` implementation. The supplied roots cover them.\n\n- **Type and `Clone`:** `struct FileEvidenceStorage` in `crates/trust-but-verify/src/storage.rs` is `pub`, has a private `root: PathBuf` field, and derives `Clone`. This matches `pub struct FileEvidenceStorage { /* private fields */ }` and `impl Clone`. An alternative with a public field or without `Clone` would break the prescribed interface.\n- **`new`:** `impl[FileEvidenceStorage]/fn[new]` has the signature `new(root: impl Into<PathBuf>) -> Self`.\n- **`load`:** `impl[FileEvidenceStorage]/fn[load]` is `async`, takes `&NodePath` and `&CriterionPath`, and returns `Result<Option<Record<N, L>>, FileStorageError>`. Its bounds are `N, L: DeserializeOwned + Send`, as the text prescribes.\n- **`store`:** `impl[FileEvidenceStorage]/fn[store]` is `async`, takes `&Record<N, L>`, returns `Result<(), FileStorageError>`, and has bounds `Serialize + Sync`, as prescribed.\n- **`record_path`:** `impl[FileEvidenceStorage]/fn[record_path]` is `pub` with the prescribed signature. It is not a supplied root, but the marked `load` and `store` both call it, so a reviewer reaches it by following them. It needs no marker of its own.\n- **Helpers:** `store` calls `write_and_replace`, and through it `TemporaryRecord` and its `tempfile::NamedTempFile` implementation. These are also reached from the marked `store`, so they need no marker.\n\nThe behavioral clauses are not structural obligations. These are mapping paths to a record under the root, returning `None` for a missing record, and replacing the record atomically. The text names no library, algorithm or delegation for them, and any implementation with the same observable results would satisfy them. They are left to the behavioral criterion.\n\nbehavioral: The reviewed tests cover each observable obligation of `requirements.sdk.filesystem-storage.FileEvidenceStorage`.\n\n- **Path mapping under the root.**\n  - `tests/storage.rs#fn[paths_are_injective_and_loading_missing_records_has_no_side_effects]` asserts exact `record_path` results for empty, empty-string, multi-segment, `/`, `..`, NUL, control-character, `é` and combining-accent segments.\n  - `tests/storage.rs#fn[source_and_criterion_boundaries_preserve_independent_records]` asserts exact paths for source/criterion boundary pairs that could collide, such as `[a],[b,c]` against `[a,b],[c]`. It stores a distinct record for each pair and reloads all of them to check they stay independent.\n- **`load` returns `None` for a missing record.** The first test asserts `None` for every case under a root that does not exist, and asserts the root is still absent afterwards. The second test asserts `None` before each `store`.\n- **`store` atomically replaces the record.**\n  - `tests/storage.rs#fn[concurrent_readers_only_observe_complete_records_from_competing_writes]` has two writers repeatedly replacing one record while a reader loads it. The reader asserts every observation is a complete, self-consistent record, with matching version, dependencies, output id and padding length. It also asserts that only one file remains in the directory.\n  - `tests/storage.rs#fn[failed_serialization_preserves_records_and_failed_replacement_cleans_up]` checks that a failed serialization leaves the old bytes unchanged. It also checks that a failed replacement leaves no temporary file behind.\n  - The replace-and-reload path is covered by `fn[records_round_trip_and_malformed_or_incompatible_data_is_an_error]` and by the second test's loop.\n- **Interface, signatures and the `Clone` trait implementation.** `tests/public_api.rs#fn[public_exports_match_the_appendix]` compares the documented declaration, including trait implementations and members, with rustdoc output. This covers the `Clone` impl and the method signatures. `Clone` is a plain `#[derive(Clone)]` with no logic of its own. `FileEvidenceStorage::new` has no conditional, and the `Send`/`Sync` and interface details are covered by `requirements.sdk.filesystem-storage.interface`.\n\nI found no obligation without a test, and the assertions enforce the expected outcomes.",
   "references": "cac21933faeed0d8d0754d784d9e4509818cfb8bf8655eb09424a695b517e3d3",
   "inputs": [
     {
@@ -79,6 +79,11 @@
       "hash": "589990c2e0793cd01f42904c5fe4f80d34d680b1b22731ab810292133d4d70a0"
     },
     {
+      "file": "crates/trust-but-verify/src/storage.rs",
+      "item": "impl[tempfile::NamedTempFile/TemporaryRecord]/fn[replace]",
+      "hash": "7c418435fb29e93814a0b83f6c2287bdb654ffa12ef50433175aeb931a84c149"
+    },
+    {
       "file": "crates/trust-but-verify/tests/storage.rs",
       "item": "fn[paths_are_injective_and_loading_missing_records_has_no_side_effects]",
       "hash": "7e8c5492e1c427e77ef904b23ea4ba90d7e0f1f6e413cd366137c4641b1beadd"
@@ -106,12 +111,34 @@
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[public_exports_match_the_appendix]",
-      "hash": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+      "hash": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
     },
     {
-      "file": "crates/trust-but-verify/tests/support/stored_graph.rs",
-      "item": "struct[StoredGraph]",
-      "hash": "aa9696d3d6328b2572fab129fd5a6837964e118f6c5f60d1931a28d545295000"
+      "requirements": "requirements.sdk.filesystem-storage.interface",
+      "matches": [
+        "requirements.sdk.filesystem-storage.interface"
+      ],
+      "text": [
+        ":::{req} interface",
+        "`FileEvidenceStorage::new` retains the root directory without touching the filesystem.",
+        "The store implements `Send` and `Sync`. Its `load` and `store` futures are `Send`.",
+        "",
+        "`Record`, `Dependency`, and `Fingerprint` support Serde when their type",
+        "parameters do. `Criterion::Ok` is always serializable; its JSON value is",
+        "already in the record. The SDK supplies `Record<D::NodeData, D::EdgeLabel>` under {cite}`requirements.sdk.graph.evidence.persisted_dependencies`. Serialization bounds on durable node data and edge labels",
+        "apply when using this helper.",
+        ":::"
+      ]
+    },
+    {
+      "file": "crates/trust-but-verify/tests/public_api.rs",
+      "item": "impl[RustdocSignatures]/fn[trait_impls]",
+      "hash": "ebfad3e82996cc9623a2e46280c4e4e3056bb114f9fa5bb9bb4e65413bf00080"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/public_api.rs",
+      "item": "fn[check_declaration]",
+      "hash": "8b1c73c8b7f4d630486c6b27caf3e51bce10a936030636789da17673aad8f019"
     }
   ],
   "criteria": {
@@ -209,6 +236,18 @@
           ]
         },
         {
+          "OutgoingEdges": [
+            {
+              "Requirement": "requirements.sdk.filesystem-storage.FileEvidenceStorage"
+            },
+            "Implements",
+            {
+              "scheme": "node-path-set-sha256-v1",
+              "value": "887112f09191a54247efd24442672360241a723f859639fb0e466a1ce7b13d4f"
+            }
+          ]
+        },
+        {
           "Node": [
             {
               "Source": {
@@ -241,11 +280,28 @@
               "value": "589990c2e0793cd01f42904c5fe4f80d34d680b1b22731ab810292133d4d70a0"
             }
           ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/storage.rs"
+                },
+                "selector": "impl[tempfile::NamedTempFile/TemporaryRecord]/fn[replace]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "7c418435fb29e93814a0b83f6c2287bdb654ffa12ef50433175aeb931a84c149"
+            }
+          ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "The structural obligations in the text are the public type `FileEvidenceStorage` with private fields, the constructor `new(root: impl Into<PathBuf>) -> Self`, the public `record_path(&self, &NodePath, &CriterionPath) -> PathBuf`, the async `load` and `store` signatures with their bounds, and `impl Clone`. Each is covered by the supplied roots or by code they reach.\n\n- `crates/trust-but-verify/src/storage.rs#struct[FileEvidenceStorage]` is a `pub struct` with one private `root: PathBuf` field and `#[derive(Clone)]`. That meets both the private-fields clause and the Clone trait implementation.\n- `crates/trust-but-verify/src/storage.rs#impl[FileEvidenceStorage]/fn[new]` matches `new(root: impl Into<PathBuf>) -> Self` and stores `root.into()`.\n- `crates/trust-but-verify/src/storage.rs#impl[FileEvidenceStorage]/fn[load]` is async with the stated `N: DeserializeOwned + Send, L: DeserializeOwned + Send` bounds and the stated return type. It calls `record_path`, maps `NotFound` to `Ok(None)`, and decodes the record as JSON.\n- `crates/trust-but-verify/src/storage.rs#impl[FileEvidenceStorage]/fn[store]` is async with the stated `Serialize + Sync` bounds and signature. It calls `record_path`, writes to a `tempfile::NamedTempFile` in the target's parent directory, and replaces the target through `write_and_replace`. That is the atomic replace the text asks for.\n- `crates/trust-but-verify/src/storage.rs#impl[FileEvidenceStorage]/fn[record_path]` is not a supplied root, but it is called by both `load` and `store`, which carry the impl marker. A reviewer reaches it through them, so it needs no separate reference. Its public signature matches the text.\n- `write_and_replace` and `TemporaryRecord` are helpers reached from `store`, so they need no separate reference.\n\nThe path-mapping layout, such as hex-encoded segments and the `criteria` directory, is not prescribed. The text only says paths map to a record under the root, so that layout is observable behavior and not a structural obligation."
+        "rationale": "The structural obligations in `requirements.sdk.filesystem-storage.FileEvidenceStorage` are the prescribed public type and signatures, and the `Clone` implementation. The supplied roots cover them.\n\n- **Type and `Clone`:** `struct FileEvidenceStorage` in `crates/trust-but-verify/src/storage.rs` is `pub`, has a private `root: PathBuf` field, and derives `Clone`. This matches `pub struct FileEvidenceStorage { /* private fields */ }` and `impl Clone`. An alternative with a public field or without `Clone` would break the prescribed interface.\n- **`new`:** `impl[FileEvidenceStorage]/fn[new]` has the signature `new(root: impl Into<PathBuf>) -> Self`.\n- **`load`:** `impl[FileEvidenceStorage]/fn[load]` is `async`, takes `&NodePath` and `&CriterionPath`, and returns `Result<Option<Record<N, L>>, FileStorageError>`. Its bounds are `N, L: DeserializeOwned + Send`, as the text prescribes.\n- **`store`:** `impl[FileEvidenceStorage]/fn[store]` is `async`, takes `&Record<N, L>`, returns `Result<(), FileStorageError>`, and has bounds `Serialize + Sync`, as prescribed.\n- **`record_path`:** `impl[FileEvidenceStorage]/fn[record_path]` is `pub` with the prescribed signature. It is not a supplied root, but the marked `load` and `store` both call it, so a reviewer reaches it by following them. It needs no marker of its own.\n- **Helpers:** `store` calls `write_and_replace`, and through it `TemporaryRecord` and its `tempfile::NamedTempFile` implementation. These are also reached from the marked `store`, so they need no marker.\n\nThe behavioral clauses are not structural obligations. These are mapping paths to a record under the root, returning `None` for a missing record, and replacing the record atomically. The text names no library, algorithm or delegation for them, and any implementation with the same observable results would satisfy them. They are left to the behavioral criterion."
       }
     },
     "behavioral": {
@@ -371,19 +427,18 @@
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+              "value": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
             }
           ]
         },
         {
-          "OutgoingEdges": [
+          "Node": [
             {
-              "Requirement": "requirements.sdk.filesystem-storage.FileEvidenceStorage"
+              "Requirement": "requirements.sdk.filesystem-storage.interface"
             },
-            "Tests",
             {
-              "scheme": "node-path-set-sha256-v1",
-              "value": "28d239d1815c8efda378188755be088029eed283d4d6ee398618a77d75444d5b"
+              "scheme": "habeas-input-v1",
+              "value": "907a8b42f730a702a31af4318432bf12d99dc1434306b57a2e5f1b66b7dd9f67"
             }
           ]
         },
@@ -410,21 +465,38 @@
               "Source": {
                 "resource": {
                   "scheme": "repo",
-                  "location": "crates/trust-but-verify/tests/support/stored_graph.rs"
+                  "location": "crates/trust-but-verify/tests/public_api.rs"
                 },
-                "selector": "struct[StoredGraph]"
+                "selector": "impl[RustdocSignatures]/fn[trait_impls]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "aa9696d3d6328b2572fab129fd5a6837964e118f6c5f60d1931a28d545295000"
+              "value": "ebfad3e82996cc9623a2e46280c4e4e3056bb114f9fa5bb9bb4e65413bf00080"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/public_api.rs"
+                },
+                "selector": "fn[check_declaration]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "8b1c73c8b7f4d630486c6b27caf3e51bce10a936030636789da17673aad8f019"
             }
           ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "Behavioral obligations in `requirements.sdk.filesystem-storage.FileEvidenceStorage`, and the tests that cover them:\n\n1. **Path mapping.** `record_path` maps node and criterion paths to a record under the configured root. `paths_are_injective_and_loading_missing_records_has_no_side_effects` asserts exact `record_path` results for empty, empty-string, multi-segment, slash, `..`, NUL, control-character and Unicode segments. `source_and_criterion_boundaries_preserve_independent_records` asserts exact paths for the source/criterion boundary cases. It then stores a distinct record at each path and loads every record back, which shows the records stay independent.\n\n2. **`load` returns `None` for a missing record.** Both tests above assert `is_none()` on missing records. The first also asserts that the missing root is not created.\n\n3. **`store` atomically replaces the record.**\n   - `concurrent_readers_only_observe_complete_records_from_competing_writes` has two writers repeatedly replacing one record while a reader loads it. Every observed record must be fully consistent: version, dependencies and output must all belong to the same writer, and the 8192-character padding must be complete. It also asserts that only one directory entry remains at the end.\n   - `failed_serialization_preserves_records_and_failed_replacement_cleans_up` shows a failed store leaves the original bytes unchanged. It also shows that a failed replacement leaves no temporary file next to `record.json`.\n   - The round-trip tests show that `store` replaces the previous value, and that the loaded value equals what was stored.\n\n4. **Interface and error behavior.** The round-trip test checks that `load` returns `Json` errors for malformed or incompatible data and `Io` errors for an unreadable record, with matching messages. The `store` failure test checks `Json` and `Io` errors. Both are consistent with the `Result<_, FileStorageError>` signatures. The signatures are also exercised by every test and by the `public_api.rs` check that Habeas compiles against the SDK.\n\n5. **`Clone`.** This is a `#[derive(Clone)]` on a struct holding one `PathBuf`. It has no conditional and no transformation of its own, so it needs no separate test. `StoredGraph` in `tests/support/stored_graph.rs` also derives `Clone` over this type, so the impl is exercised at compile time.\n\nI found no input class or failure case that the requirement names and that goes untested. The tests are marked with `{test}` references to the subject."
+        "rationale": "The reviewed tests cover each observable obligation of `requirements.sdk.filesystem-storage.FileEvidenceStorage`.\n\n- **Path mapping under the root.**\n  - `tests/storage.rs#fn[paths_are_injective_and_loading_missing_records_has_no_side_effects]` asserts exact `record_path` results for empty, empty-string, multi-segment, `/`, `..`, NUL, control-character, `é` and combining-accent segments.\n  - `tests/storage.rs#fn[source_and_criterion_boundaries_preserve_independent_records]` asserts exact paths for source/criterion boundary pairs that could collide, such as `[a],[b,c]` against `[a,b],[c]`. It stores a distinct record for each pair and reloads all of them to check they stay independent.\n- **`load` returns `None` for a missing record.** The first test asserts `None` for every case under a root that does not exist, and asserts the root is still absent afterwards. The second test asserts `None` before each `store`.\n- **`store` atomically replaces the record.**\n  - `tests/storage.rs#fn[concurrent_readers_only_observe_complete_records_from_competing_writes]` has two writers repeatedly replacing one record while a reader loads it. The reader asserts every observation is a complete, self-consistent record, with matching version, dependencies, output id and padding length. It also asserts that only one file remains in the directory.\n  - `tests/storage.rs#fn[failed_serialization_preserves_records_and_failed_replacement_cleans_up]` checks that a failed serialization leaves the old bytes unchanged. It also checks that a failed replacement leaves no temporary file behind.\n  - The replace-and-reload path is covered by `fn[records_round_trip_and_malformed_or_incompatible_data_is_an_error]` and by the second test's loop.\n- **Interface, signatures and the `Clone` trait implementation.** `tests/public_api.rs#fn[public_exports_match_the_appendix]` compares the documented declaration, including trait implementations and members, with rustdoc output. This covers the `Clone` impl and the method signatures. `Clone` is a plain `#[derive(Clone)]` with no logic of its own. `FileEvidenceStorage::new` has no conditional, and the `Send`/`Sync` and interface details are covered by `requirements.sdk.filesystem-storage.interface`.\n\nI found no obligation without a test, and the assertions enforce the expected outcomes."
       }
     }
   },
@@ -522,6 +594,18 @@
       ]
     },
     {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.sdk.filesystem-storage.FileEvidenceStorage"
+        },
+        "Implements",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "887112f09191a54247efd24442672360241a723f859639fb0e466a1ce7b13d4f"
+        }
+      ]
+    },
+    {
       "Node": [
         {
           "Source": {
@@ -552,6 +636,23 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "589990c2e0793cd01f42904c5fe4f80d34d680b1b22731ab810292133d4d70a0"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/storage.rs"
+            },
+            "selector": "impl[tempfile::NamedTempFile/TemporaryRecord]/fn[replace]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "7c418435fb29e93814a0b83f6c2287bdb654ffa12ef50433175aeb931a84c149"
         }
       ]
     },
@@ -653,19 +754,18 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+          "value": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
         }
       ]
     },
     {
-      "OutgoingEdges": [
+      "Node": [
         {
-          "Requirement": "requirements.sdk.filesystem-storage.FileEvidenceStorage"
+          "Requirement": "requirements.sdk.filesystem-storage.interface"
         },
-        "Tests",
         {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "28d239d1815c8efda378188755be088029eed283d4d6ee398618a77d75444d5b"
+          "scheme": "habeas-input-v1",
+          "value": "907a8b42f730a702a31af4318432bf12d99dc1434306b57a2e5f1b66b7dd9f67"
         }
       ]
     },
@@ -675,26 +775,31 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/support/stored_graph.rs"
+              "location": "crates/trust-but-verify/tests/public_api.rs"
             },
-            "selector": "struct[StoredGraph]"
+            "selector": "impl[RustdocSignatures]/fn[trait_impls]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "aa9696d3d6328b2572fab129fd5a6837964e118f6c5f60d1931a28d545295000"
+          "value": "ebfad3e82996cc9623a2e46280c4e4e3056bb114f9fa5bb9bb4e65413bf00080"
         }
       ]
     },
     {
-      "OutgoingEdges": [
+      "Node": [
         {
-          "Requirement": "requirements.sdk.filesystem-storage.FileEvidenceStorage"
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/public_api.rs"
+            },
+            "selector": "fn[check_declaration]"
+          }
         },
-        "Implements",
         {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "887112f09191a54247efd24442672360241a723f859639fb0e466a1ce7b13d4f"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "8b1c73c8b7f4d630486c6b27caf3e51bce10a936030636789da17673aad8f019"
         }
       ]
     }

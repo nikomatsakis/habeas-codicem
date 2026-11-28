@@ -248,6 +248,7 @@ esac
     let matching = format!("habeas {version}");
     let registry =
         format!("registry+https://github.com/rust-lang/crates.io-index#habeas@{version}");
+    let alternate_registry = format!("registry+https://example.org/index#habeas@{version}");
     let mut child = Command::new(std::env::current_exe().unwrap());
     child
         .args(["--exact", "validate_child", "--nocapture"])
@@ -270,6 +271,7 @@ esac
         (&registry, "habeas 0.0.0", "0", "0", "--version\nbuild\n"),
         (&registry, &matching, "0", "1", "--version\nbuild\n"),
         (&registry, &matching, "1", "0", "build\n"),
+        (&alternate_registry, &matching, "0", "0", "build\n"),
         (
             "path+file:///checkout#habeas",
             &matching,

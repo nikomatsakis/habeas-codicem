@@ -1,7 +1,7 @@
 {
   "requirement": "Each public SDK item has one defining module path. The SDK exposes no public\nre-exports. The chapter that introduces each supported type or free function owns its declaration.\nThe [public API inventory](sdk/public-api.md) links each item to that requirement,\nwhich describes its purpose\nand declares its public Rust interface, including fields, enum variants, trait\nmembers, and inherent methods. A change to that interface requires a change to\nthe owning requirement. Every supported struct with public fields is\n`#[non_exhaustive]`. Its constructor accepts the values needed to create it.\nAdditional fields have consuming builder methods that accept a concrete value.\nOptional fields start as `None`. Backend inference options start empty and can\nbe added one key at a time.\n\nThe SDK’s public modules follow the interfaces introduced in these chapters.\n\n- `domain`: application data and the `Domain` and `NodeContents` traits.\n- `graph`: criterion definitions, graph observations, evidence, and functions for running criteria.\n- `request`: `ValidationContext`, typed `Ask` builders, context values, and request phases.\n- `agent`: configuration for the supplied agents.\n- `sources`: project inspection, search queries, and their results.\n- `outline`: selectable source contents and language rules; `outline::languages`\n  supplies bundled languages, and `outline::selector` defines selector syntax.\n- `storage`: filesystem evidence storage.\n\nSource access, search engines, redaction, provider transports, agent-result paging,\nand conversation machinery are implementation details of those interfaces.",
   "determination": true,
-  "rationale": "structural: **Structural obligations in `requirements.sdk.public_api`.** These clauses prescribe how the types are built, so they need implementation evidence:\n- \"Every supported struct with public fields is `#[non_exhaustive]`.\" A struct without the attribute would behave the same inside the crate but would let outside callers use struct literals.\n- \"Its constructor accepts the values needed to create it.\"\n- \"Additional fields have consuming builder methods that accept a concrete value.\" A `&mut self` setter, or one taking `Option<T>` or `impl Into<T>`, would behave the same but violates this clause.\n- \"Optional fields start as `None`.\"\n- \"Backend inference options start empty and can be added one key at a time.\"\n\nThe module list and the \"no public re-exports\" rule are about what is exposed. Those are owned by `requirements.sdk.public-api.exports`, which is not among these roots. The statements about purpose, inventory links and implementation details describe no structural behavior.\n\n**Evidence in the supplied roots:**\n- **`#[non_exhaustive]`:** every supplied struct with public fields carries it. They are `BedrockCredentials`, `BedrockConfig`, `OpenAiConfig` and `OllamaConfig` in `agent/config.rs`. They also include `Fingerprint`, `Snapshot`, `Record`, `UsageStats`, `ToolUsage` and `TokenCount` in `graph.rs`. In `outline/contents.rs` they are `OutlineData`, `Span`, `Outline`, `OutlineItem`, `OutlineAttachment` and `OutlineError`. In `outline/selector.rs` they are `Segment` and `SelectorError`. In `sources/public.rs` they are `SourceFile`, `TextQuery`, `TextMatch`, `StructuralQuery`, `StructuralMatch`, `SearchResults` and `SearchHit`.\n- **Constructors:** each impl has a `new` taking the required values.\n  - Examples are `BedrockConfig::new(model)`, `BedrockCredentials::new(access_key_id, secret_access_key)` and `OllamaConfig::new(model)`.\n  - Others are `TextQuery::new(pattern)`, `StructuralQuery::new(language, rule)`, `Record::new`, `OutlineItem::new`, `Segment::new` and `SearchHit::new`.\n  - `SearchHit::new` also derives `text` from the span.\n  - `OpenAiConfig::new` uses `Default`, and every OpenAI field is optional.\n- **Optional fields start `None`:** the `new` bodies I read set optional fields to `None`: `BedrockConfig::new`, `OllamaConfig::new`, `BedrockCredentials::new`, `OutlineItem::new`, `Outline::new`, `Segment::new`, `SourceFile::new`, `TextQuery::new` and `StructuralQuery::new`.\n- **Options start empty and grow by one key:** `BedrockConfig::new` and `OllamaConfig::new` set `options: BTreeMap::new()`, and `OpenAiConfig::new` uses `Default`. Each of the three `option(mut self, key: String, value: OptionValue)` methods does `self.options.insert(key, value)`.\n- **Consuming builders with concrete values:** every builder I saw takes `mut self` and a concrete parameter. Examples are `session_token(SecretString)`, `aws_profile(String)`, `api_key(SecretString)`, `with_diagnostic(OutlineError)`, `with_name_span(Span)`, `ordinal(usize)`, `SourceFile::language(LanguageId)`, and `TextQuery::scope`, `context_lines` and `limit(usize)`.\n\n**Public surface.** The public modules in `lib.rs` are `agent` (`agent/config.rs`), `outline` (`outline/contents.rs`) and `sources` (`sources/public.rs`). The others are `domain`, `graph`, `request` and `storage`. Types with public fields but no `#[non_exhaustive]` sit in private or `#[doc(hidden)]` modules. They include `ToolAgent`, `ToolDelivery`, `ParsedSource`, `SourceAnalysis`, `ResourceId`, `Profile` and `KindRule`. I found no other public struct with public fields in the crate that lacks the attribute.\n\nThe roots show no structural gap.\n\nbehavioral: Each obligation of `requirements.sdk.public_api` that needs behavioral evidence has a test that asserts its outcome.\n\n**Single defining path, inventory and interface commitment.** `tests/public_api.rs#fn[public_exports_match_the_appendix]` does the following:\n- It generates rustdoc for the crate and walks every public module through `documented_exports`.\n- It compares the set of paths and item kinds with the inventory parsed by `specified_exports`. Missing and unexpected items both fail, and duplicates are rejected.\n- It runs `check_declaration` on every item. This compares fields, variants, trait members, inherent methods and trait impls with the owning requirement's declaration, so an interface change without a requirement change fails.\n- It runs `check_hidden_exports`, which rejects `doc(hidden)` public items.\n- It asserts the crate defines no Cargo features and that the shipping `habeas` consumer compiles against the SDK.\n\n`fn[member_order_is_free_but_field_and_method_types_are_committed]` tests the comparison itself. Reordering members is accepted. Changing a field type, a return type or `&mut self` is rejected.\n\n**No public re-exports.** `fn[sdk_has_no_public_reexports]` parses every `src/**/*.rs` file with tree-sitter and fails on any `pub use` declaration.\n\n**Public struct fields imply `#[non_exhaustive]`.** `check_declaration` asserts that any published struct with `structfield` entries carries `#[non_exhaustive]`.\n\n**Constructors, consuming builders, `None` defaults and options.** Constructor and builder signatures are enforced by the declaration comparison above. Behavior is tested in these tests:\n- `agent/config.rs#mod[tests]/fn[backend_builders_set_only_the_requested_fields]` covers the backend configs and credentials. The constructors set only the required values. Each builder sets one field. Optional fields are absent (`None`) until set. Options start empty and are added one key at a time, and a repeated key overwrites.\n- `outline/selector.rs#mod[tests]/fn[parses_named_anonymous_and_ordinal_segments]` covers `Segment::new` with `ordinal` starting as `None` and the consuming `.ordinal(n)`, plus `SelectorError::new`.\n- `tests/outline_content.rs#fn[outline_constructors_preserve_fields_and_replace_attachments]` covers `OutlineItem`, `Outline` and `OutlineAttachment`. Optional spans start as `None` and builders set them. `Outline.diagnostic` starts as `None`.\n- `tests/source_defaults.rs#fn[source_bytes_error_kinds_and_language_names_round_trip]` covers `SourceFile::new` with `language` starting as `None` and the `.language` builder.\n- `tests/source_defaults.rs#fn[scoped_text_results_keep_line_numbers_context_and_completeness]` covers `TextQuery`. `limit` starts as `None`, `context_lines` starts at 0, and the builders set them.\n- `tests/source_defaults.rs#fn[built_in_languages_and_structural_search_use_the_project_scope]` covers `StructuralQuery`, including `limit` starting as `None` and the builder.\n\n**Remaining structs.** The other public-field structs have only value-storing constructors. These are `Fingerprint`, `Snapshot`, `Record`, `OutlineData`, `TextMatch`, `StructuralMatch`, `SearchHit`, `SearchResults`, `UsageStats`, `ToolUsage` and `TokenCount`. They have no builders or optional-field defaults beyond what the rustdoc declaration check already enforces, and the project's other tests also exercise them. I found no further behavioral distinction that is untested.\n\n**Public module list.** The module list is covered by the export-inventory comparison, since every public module is walked from the crate root.\n\n**Not assessed here.** The chapters and the purpose text for each item are owned by their own requirements and need no test here.",
+  "rationale": "structural: **Structural obligations in `requirements.sdk.public_api`**\n\n1. \"Every supported struct with public fields is `#[non_exhaustive]`.\" A struct that omitted the attribute, with the same fields and runtime behavior, would let callers build it with a struct literal. That would violate the clause, so it is structural.\n2. \"Its constructor accepts the values needed to create it.\" A struct with no constructor, or one that needs extra setters before it is valid, would violate this clause.\n3. \"Additional fields have consuming builder methods that accept a concrete value.\" A builder taking `&mut self` or `impl Into<..>`, or one missing for an additional field, would violate it.\n4. \"Optional fields start as `None`. Backend inference options start empty and can be added one key at a time.\" A constructor that seeded optional fields with values, or an options setter that replaced the whole map, would violate this.\n5. \"Each public SDK item has one defining module path. The SDK exposes no public re-exports.\" This constrains the module layout.\n6. The \"public modules follow the interfaces\" list. It names `domain`, `graph`, `request`, `agent`, `sources`, `outline`, `outline::languages`, `outline::selector` and `storage`. It also says that source access, search engines, redaction, provider transports, agent-result paging and conversation machinery are implementation details.\n7. \"Describes its purpose and declares its public Rust interface\", and a change to the interface needs a change to the owning requirement. These are documentation obligations about the book. The code cannot meet them or fail them, so they need no implementation root.\n\nThe supplied roots cover obligations 1–4. I checked each struct and its constructor and builders.\n\n**Agent configuration (`crates/trust-but-verify/src/agent/config.rs`)**\n- `struct[BedrockCredentials]` and `impl[BedrockCredentials]`: the struct is `#[non_exhaustive]`. `new` takes the two required secrets and sets `session_token` to `None`. `session_token(mut self, SecretString)` is the consuming builder.\n- `struct[BedrockConfig]` and `impl[BedrockConfig]`: `#[non_exhaustive]`. `new(model)` sets `aws_profile`, `region` and `credentials` to `None` and `options` to an empty `BTreeMap`. Consuming builders exist for `aws_profile`, `region` and `credentials`, each taking a concrete value. `option(key, value)` inserts one key at a time.\n- `struct[OpenAiConfig]` and `impl[OpenAiConfig]#1`: `#[non_exhaustive]`. `new()` is `Self::default()`, so every field is `None` or empty. Builders exist for `model`, `endpoint`, `api_key_env` and `api_key`, plus `option`.\n- `struct[OllamaConfig]` and `impl[OllamaConfig]#1`: `#[non_exhaustive]`. `new(model)` leaves the optional fields `None` and `options` empty. Builders exist for `endpoint`, `api_key_env` and `api_key`, plus `option`.\n\n**Graph (`crates/trust-but-verify/src/graph.rs`)**\n- `struct[Fingerprint]`, `struct[Snapshot]` and `struct[Record]` are `#[non_exhaustive]`. Their `new` constructors take every field.\n- `struct[UsageStats]`, `struct[ToolUsage]` and `struct[TokenCount]` are `#[non_exhaustive]` output counters built with `Default`. That is a constructor needing no values.\n\n**Outline (`crates/trust-but-verify/src/outline/contents.rs` and `selector.rs`)**\n- `struct[OutlineData]` is `#[non_exhaustive]`. `root`, `new` and `selector(self, String)` build it.\n- `struct[Span]`, `struct[Outline]`, `struct[OutlineAttachment]`, `struct[OutlineError]`, `struct[Segment]` and `struct[SelectorError]` are `#[non_exhaustive]`, each with a `new` taking the required fields. `Outline::new` sets `diagnostic` to `None`, and `with_diagnostic` is the consuming builder. `Segment::ordinal(mut self, usize)` is the builder for the optional ordinal.\n- `struct[OutlineItem]` is `#[non_exhaustive]`. `new` takes `selector`, `kind`, `span` and `structural_hash`. It sets `name_span`, `header_span`, `trailer_span` and `own_hash` to `None` and `attachments` to an empty `Vec`. `with_name_span`, `with_header_span`, `with_trailer_span`, `with_own_hash` and `with_attachments` are consuming builders.\n\n**Sources (`crates/trust-but-verify/src/sources/public.rs`)**\n- `struct[SourceFile]`, `struct[TextQuery]`, `struct[StructuralQuery]`, `struct[TextMatch]`, `struct[StructuralMatch]`, `struct[SearchResults]` and `struct[SearchHit]` are all `#[non_exhaustive]`.\n- `new` takes the required values. `SourceFile::new` sets `language` to `None`. `TextQuery::new` and `StructuralQuery::new` set `limit` to `None`.\n- `language`, `scope`, `context_lines` and `limit` are consuming builders taking concrete values.\n- `SearchHit` keeps a `pub(crate)` field, and `SearchHit::new` takes everything needed.\n\n**Check for missing roots**\nI searched `crates/trust-but-verify/src` for structs with public fields. The only ones outside the roots are in modules that `lib.rs` declares private (`agent_runtime`, `source_engine`, `outline_engine`, `resource`):\n- `ToolDelivery`\n- `ToolAgent`\n- `Profile`\n- `KindRule`\n- `ResourceId`\n- `ParsedSource`\n- `SourceAnalysis`\n\nThey are implementation details, so the clause does not apply to them. `NodePath`, `CriterionPath`, `Fingerprinted` and `ValidationCache` have only private fields. The public module list in `lib.rs` matches the listed modules, and `lib.rs` has no `pub use`.\n\n**Judgment calls**\n- `Record::new` takes `version: Option<CriterionVersion>` directly instead of starting it as `None`. The value is part of the stored evidence record and is needed to create it, so I treated this as consistent with the constructor clause.\n- The `UsageStats`, `ToolUsage` and `TokenCount` structs have no `new`. I read `Default` as their constructor.\n\nThe supplied roots demonstrate every structural obligation, so no gap remains.\n\nbehavioral: The marked tests adequately cover `requirements.sdk.public_api`.\n\n**Public items, interface declarations and non-exhaustive structs**\n- `public_exports_match_the_appendix` in `tests/public_api.rs` generates rustdoc for the crate. It walks every public module and compares the exports and item kinds with the inventory. That covers the module list and the rule that each item has one defining module path. It asserts there are no duplicate exports.\n- The same test calls `check_declaration` for each item. That helper checks that the owning requirement chapter exists, describes the item and declares its fields, variants, trait members and inherent methods. It compares signature parts with rustdoc, checks the trait impls and indexed members, and asserts that any struct with public fields is `#[non_exhaustive]`.\n- It also calls `check_hidden_exports` to reject `doc(hidden)` public items.\n- Because the declarations are compared with rustdoc, a changed interface that is not mirrored in the owning requirement fails the test.\n- The comparison would also catch a constructor or builder whose signature drifts from the declared one, including a builder that stops consuming `self`.\n- `member_order_is_free_but_field_and_method_types_are_committed` checks the comparison's sensitivity. Member order is free, while a changed field type, return type or receiver mutability is detected.\n- `sdk_has_no_public_reexports` parses every source file under `src` and fails on any `pub use`. That covers \"no public re-exports\".\n\n**Constructors, builders, `None` defaults and backend options**\n- `backend_builders_set_only_the_requested_fields` in `src/agent/config.rs` covers the config structs.\n  - It checks that `BedrockConfig::new`, `OpenAiConfig::new`, `OllamaConfig::new` and `BedrockCredentials::new` take only the needed values. Optional fields start `None`, shown by their absence from the serialized form.\n  - It checks that each builder sets its field.\n  - It checks that options start empty and are added one key at a time. Overwriting key `a` while adding `b` is also checked.\n- `outline_constructors_preserve_fields_and_replace_attachments` covers `OutlineItem`, `Outline`, `OutlineAttachment` and `OutlineError`. It checks that optional spans and the diagnostic start `None` and that the builders set them.\n- `parses_named_anonymous_and_ordinal_segments` covers `Segment::new` with `ordinal` `None` and the consuming `ordinal` builder. It also covers `SelectorError::new`.\n- In `tests/source_defaults.rs`, `source_bytes_error_kinds_and_language_names_round_trip` covers `SourceFile::new` with `language` `None` and the `language` builder.\n- In the same file, `scoped_text_results_keep_line_numbers_context_and_completeness` and `built_in_languages_and_structural_search_use_the_project_scope` cover the `TextQuery` and `StructuralQuery` constructors. They check `limit` `None` and `context_lines` 0 at construction. They also check the `scope`, `context_lines` and `limit` builders.\n\n**Exempt obligations**\n- The remaining struct constructors are plain field-to-field pass-throughs with no conditional or transformation. They are `Fingerprint::new`, `Snapshot::new` and `Record::new`, all in `src/graph.rs`. They need no separate behavioral test.\n- The rustdoc comparison already pins their signatures.\n\nI found no obligation without a test, and no relevant test without a marker.",
   "references": "ff26cce57156928dcbabdc044701f8d46dc8e7c70c63a4395ca249a881d7b6df",
   "inputs": [
     {
@@ -275,14 +275,34 @@
       "hash": "04d833c451263d870079ba071ad6753d03bb516e1847a6d22f5b41a68aa6dd6b"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/config.rs",
-      "item": "",
-      "hash": "ceae680f34a16bea5e1665e9accccaa52ac4e05c4989f1cbe0087adacfe97c12"
+      "file": "crates/trust-but-verify/src/sources/public.rs",
+      "item": "impl[TextQuery]/fn[new]",
+      "hash": "2c1655cdcac0dfe419825f6603b80a700a8bebe46e9c0b6bf8a600814833d805"
     },
     {
-      "file": "crates/trust-but-verify/src/lib.rs",
-      "item": "",
-      "hash": "44d28c5f96c889a30904e2115a973912548490656f3f62c408e4846afeb97808"
+      "file": "crates/trust-but-verify/src/sources/public.rs",
+      "item": "impl[StructuralQuery]/fn[new]",
+      "hash": "15de7bbba284278a35c850befc480789e0fa3cdade4037bc07baeee9e6d2d9f8"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/public.rs",
+      "item": "impl[SourceFile]/fn[new]",
+      "hash": "f5b49cb9cdbc58c8da2c6313861a935a0a40137bf1785a00bb827bee976a752e"
+    },
+    {
+      "file": "crates/trust-but-verify/src/outline/contents.rs",
+      "item": "impl[OutlineItem]/fn[new]",
+      "hash": "fe9000fcf8efce5fa34e3bfe7745425d01de5b6dd56cc38c9f0703f0bec35711"
+    },
+    {
+      "file": "crates/trust-but-verify/src/outline/contents.rs",
+      "item": "impl[Outline]#1/fn[new]",
+      "hash": "5a21d74fc4dbb216579459921dfc270cc706056ac5f962710c3536c9c7b7d2f4"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/config.rs",
+      "item": "impl[BedrockConfig]/fn[new]",
+      "hash": "1a659f663c904dbab8c8154ef68b5d7b055c7a7db79a2269181941bfb641e3a5"
     },
     {
       "file": "crates/trust-but-verify/src/agent/config.rs",
@@ -296,23 +316,13 @@
     },
     {
       "file": "crates/trust-but-verify/src/agent/config.rs",
-      "item": "impl[OpenAiConfig]#1/fn[option]",
-      "hash": "0ce0f042b647e27714df2d41da2906d21ff80014eadf647dafe8d1320c5a1f3e"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/config.rs",
-      "item": "impl[OllamaConfig]#1/fn[option]",
-      "hash": "0ce0f042b647e27714df2d41da2906d21ff80014eadf647dafe8d1320c5a1f3e"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/config.rs",
       "item": "impl[OllamaConfig]#1/fn[new]",
       "hash": "9bb3f855ec2f44559ed9756d3d350a7a3da60ab67c86dc403a6d825dd79fa5ac"
     },
     {
       "file": "crates/trust-but-verify/src/agent/config.rs",
-      "item": "impl[BedrockConfig]/fn[new]",
-      "hash": "1a659f663c904dbab8c8154ef68b5d7b055c7a7db79a2269181941bfb641e3a5"
+      "item": "impl[OpenAiConfig]#1/fn[option]",
+      "hash": "0ce0f042b647e27714df2d41da2906d21ff80014eadf647dafe8d1320c5a1f3e"
     },
     {
       "file": "crates/trust-but-verify/src/agent/config.rs",
@@ -320,64 +330,19 @@
       "hash": "e16038248c16af55aec64ca85cbe0e81c92d4eb375d421cf73b4d6db9380f0c4"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/config.rs",
-      "item": "impl[BedrockCredentials]/fn[session_token]",
-      "hash": "3cfaca28ce1d4a9a9b4c1c3b6c0b5071d38fc84265a97f11dfa5d04f86e35204"
-    },
-    {
-      "file": "crates/trust-but-verify/src/outline/contents.rs",
-      "item": "impl[OutlineItem]/fn[new]",
-      "hash": "fe9000fcf8efce5fa34e3bfe7745425d01de5b6dd56cc38c9f0703f0bec35711"
-    },
-    {
-      "file": "crates/trust-but-verify/src/outline/contents.rs",
-      "item": "impl[Outline]#1/fn[new]",
-      "hash": "5a21d74fc4dbb216579459921dfc270cc706056ac5f962710c3536c9c7b7d2f4"
-    },
-    {
-      "file": "crates/trust-but-verify/src/outline/selector.rs",
-      "item": "impl[Segment]/fn[new]",
-      "hash": "23c55eef11c69527b11338bdb0fa3c4317503da14faf629979ee1dbff3a572f3"
-    },
-    {
-      "file": "crates/trust-but-verify/src/sources/public.rs",
-      "item": "impl[SourceFile]/fn[new]",
-      "hash": "f5b49cb9cdbc58c8da2c6313861a935a0a40137bf1785a00bb827bee976a752e"
-    },
-    {
-      "file": "crates/trust-but-verify/src/sources/public.rs",
-      "item": "impl[TextQuery]/fn[new]",
-      "hash": "2c1655cdcac0dfe419825f6603b80a700a8bebe46e9c0b6bf8a600814833d805"
-    },
-    {
-      "file": "crates/trust-but-verify/src/sources/public.rs",
-      "item": "impl[StructuralQuery]/fn[new]",
-      "hash": "15de7bbba284278a35c850befc480789e0fa3cdade4037bc07baeee9e6d2d9f8"
-    },
-    {
-      "file": "crates/trust-but-verify/src/sources/public.rs",
-      "item": "impl[SearchHit<N>]/fn[new]",
-      "hash": "f7815a8255d7a75f1a47aab2c02c7b8ef8adbd7ee0bda485b8df8a9ff6b0bf52"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "impl[Record<N,%20L>]/fn[new]",
-      "hash": "f2d753db66bf3416373611462fd7eda4d875896fc42008b0c3aa9566f0f8e741"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/backoff.rs",
-      "item": "struct[ProviderBackoff]",
-      "hash": "2dfe8b6644f89e5ebe015a4d6b970be93b3c4707ec6e55551a69437429ce3f65"
-    },
-    {
       "file": "crates/trust-but-verify/src/agent/tools.rs",
-      "item": "struct[ToolAgent]",
-      "hash": "e0b8638379da3f8c40d75900d1c5fa4bcf1b3376ed61a983a8e59ffb0f8e3612"
+      "item": "struct[ToolDelivery]",
+      "hash": "5c4791f1c8a7082b032e68cb98cd451ef13b816bf6db49fcbbbe06252e62533b"
     },
     {
-      "file": "crates/trust-but-verify/src/domain.rs",
-      "item": "struct[ValidationCache]",
-      "hash": "59a1685bcb72103a9b5f6dd2487d6a9ae1fc23b25867b10188cb310a34c24128"
+      "file": "crates/trust-but-verify/src/outline/language.rs",
+      "item": "struct[Profile]",
+      "hash": "2cb7d4f3d43b13d671bc86ebae81da1f0b84c3b9f5b2a44434d4c7201903d48b"
+    },
+    {
+      "file": "crates/trust-but-verify/src/outline/language.rs",
+      "item": "",
+      "hash": "e9c8b8c7fdba611d9f3e23477a4dda02754f27acd35ac3cd1f2c30d5b77fe17c"
     },
     {
       "file": "crates/trust-but-verify/src/graph.rs",
@@ -391,123 +356,13 @@
     },
     {
       "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "struct[CriterionVersion]",
-      "hash": "1c20de6607b0eab946f1ef746f9246ab1327f596484637974b8b269c025334ba"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph.rs",
       "item": "struct[Fingerprinted]",
       "hash": "c6e18fa4a798779be3a50fb4fa254440d06777576dca8b7f55cfff442bcbad3e"
     },
     {
-      "file": "crates/trust-but-verify/src/lib.rs",
-      "item": "mod[agent]",
-      "hash": "b0b31b2ba7612b1062cd4ed5e58a23a2e5ca6c0337ae316c6e0b25f37a255607"
-    },
-    {
-      "file": "crates/trust-but-verify/src/lib.rs",
-      "item": "mod[domain]",
-      "hash": "e068bc5b0594b35683c4bec397c81889c5a830688631943d4c1f29a6729fa0a5"
-    },
-    {
-      "file": "crates/trust-but-verify/src/lib.rs",
-      "item": "mod[graph]",
-      "hash": "9c1793226bb73de59a2f0c081f85af315a8b1d3313980ba2074ed9bf11398b27"
-    },
-    {
-      "file": "crates/trust-but-verify/src/lib.rs",
-      "item": "mod[outline]",
-      "hash": "12c6eea7025d16d0932b1fb9acf9667127a7f817b9dcacc6f3fb5329da7c1774"
-    },
-    {
-      "file": "crates/trust-but-verify/src/lib.rs",
-      "item": "mod[request]",
-      "hash": "382529a91125d3a651af5c12abf43720eea886dbade68168f53d02cd1040c706"
-    },
-    {
-      "file": "crates/trust-but-verify/src/lib.rs",
-      "item": "mod[sources]",
-      "hash": "8d0668e19c0dd1c3160d7c454ff34db453600d1e649b59d562b08d452483f0ad"
-    },
-    {
-      "file": "crates/trust-but-verify/src/lib.rs",
-      "item": "mod[storage]",
-      "hash": "33ee0ebbe629e97e1e0a93eca03113422b6cafe7017af12279a8058f3ca67da4"
-    },
-    {
-      "file": "crates/trust-but-verify/src/lib.rs",
-      "item": "mod[source_engine]",
-      "hash": "dffeebbf0d984df820dda349508fb6ee2240c27f8b04625e036b38c546da7932"
-    },
-    {
-      "file": "crates/trust-but-verify/src/lib.rs",
-      "item": "mod[agent_runtime]",
-      "hash": "ec59e886f3ce573f9b32bf24cb70d7fc78d5ba5def2591dcb8bf4eff93949a62"
-    },
-    {
-      "file": "crates/trust-but-verify/src/lib.rs",
-      "item": "mod[outline_engine]",
-      "hash": "d95a1bca6ec7b1bf73a3f33c7a99efce19a82ffee747ae877883c11b6401ae85"
-    },
-    {
-      "file": "crates/trust-but-verify/src/lib.rs",
-      "item": "mod[redaction]",
-      "hash": "a16e666b917d6cec09c4005ea29be414e3806e86c209fecf67c83785070aa58b"
-    },
-    {
-      "file": "crates/trust-but-verify/src/lib.rs",
-      "item": "mod[resource]",
-      "hash": "e8581857bed076f755318e91b17f8a3c3cfb602999228b416c93db5148413977"
-    },
-    {
-      "file": "crates/trust-but-verify/src/lib.rs",
-      "item": "mod[search]",
-      "hash": "fbaa9254ed3b4c1101015997e55d14ba6a32b111f4901130baffd2cba02f8ba7"
-    },
-    {
-      "file": "crates/trust-but-verify/src/lib.rs",
-      "item": "mod[structural]",
-      "hash": "b4efa4542aea9daec0d3bce8d297bc3d157d7193c4529e932cd6ee464c7bbc29"
-    },
-    {
-      "file": "crates/trust-but-verify/src/outline/mod.rs",
-      "item": "mod[language]",
-      "hash": "a2b801524a34bb5194f0603d0a5c4aed00ce33906c0177215a02dca92106fa6f"
-    },
-    {
-      "file": "crates/trust-but-verify/src/outline/mod.rs",
-      "item": "mod[profile]",
-      "hash": "ee203f627da13dd9714b1275b4ab65957d89f94271b8ef64243918d239d5b6fe"
-    },
-    {
-      "file": "crates/trust-but-verify/src/outline/mod.rs",
-      "item": "mod[hash]",
-      "hash": "ff843ab8273f85ef540eb8f1b24363a6a42ebb6fed1531af2eb7cfd916b3dd74"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "struct[ValidationContext]",
-      "hash": "defb99017b963c4c84a93ef11f1d3ff8b4b060eec08f941d74c06b9189e77643"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "struct[ContextPhase]",
-      "hash": "38eb48632ba183ca42f37eb48a05202c7223921264852f809778194b2fd58cc8"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "struct[NodePhase]",
-      "hash": "527ee6b89b350999503c7587571996ebcefc8e2e11f3fa726e4a07e4e3861e04"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "struct[Ask]",
-      "hash": "b38a7967586a6b57f32ac9441bea1003e46964014583c1dbc2797f9896771465"
-    },
-    {
-      "file": "crates/trust-but-verify/src/redaction/mod.rs",
-      "item": "struct[Redaction]",
-      "hash": "9ac27ea8c8056a1a8eade918cb8d64d216b4d4bc3e109921fa063ec2dc67a1f8"
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "struct[ValidationCache]",
+      "hash": "59a1685bcb72103a9b5f6dd2487d6a9ae1fc23b25867b10188cb310a34c24128"
     },
     {
       "file": "crates/trust-but-verify/src/agent/config.rs",
@@ -532,7 +387,7 @@
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[public_exports_match_the_appendix]",
-      "hash": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+      "hash": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
     },
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
@@ -575,49 +430,49 @@
       "hash": "65a3eee55db1fd3ad773d4487b96e1f8bca8c11defb29214379a2a30881e7218"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/config.rs",
-      "item": "enum[AgentConfig]",
-      "hash": "42fa0e71e4831941d1e9b9df8480d4a0b52cabc7348b81f4e84f0e400c810c96"
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "impl[Fingerprint]/fn[new]",
+      "hash": "ccfc604d9db65971a30e9b8c7c663c60a6afd8c50d0f70131f8595d2b34974d2"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "impl[Snapshot<T>]/fn[new]",
+      "hash": "d857562647702d31867389337df4883697bb7c4c3c367651566c8945d6b718a1"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "impl[Record<N,%20L>]/fn[new]",
+      "hash": "f2d753db66bf3416373611462fd7eda4d875896fc42008b0c3aa9566f0f8e741"
     },
     {
       "file": "crates/trust-but-verify/src/agent/config.rs",
-      "item": "enum[OptionValue]",
-      "hash": "2245be38eb7310756e22ebee29030d2b16cd53de7c2de00b925e40013294d808"
+      "item": "impl[OllamaConfig]#1/fn[option]",
+      "hash": "0ce0f042b647e27714df2d41da2906d21ff80014eadf647dafe8d1320c5a1f3e"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/config.rs",
+      "item": "impl[BedrockCredentials]/fn[session_token]",
+      "hash": "3cfaca28ce1d4a9a9b4c1c3b6c0b5071d38fc84265a97f11dfa5d04f86e35204"
+    },
+    {
+      "file": "crates/trust-but-verify/src/outline/selector.rs",
+      "item": "impl[Segment]/fn[new]",
+      "hash": "23c55eef11c69527b11338bdb0fa3c4317503da14faf629979ee1dbff3a572f3"
     },
     {
       "file": "crates/trust-but-verify/src/outline/contents.rs",
-      "item": "enum[AttachmentKind]",
-      "hash": "8b02bbbb08345fe9a4589d7a32a4fdade147cc5fb96fd95b761dc770a3ac54fb"
+      "item": "impl[OutlineData]/fn[new]",
+      "hash": "cf04a56092fe81cc94a3f900c1f5d5a1290264c596c34b6aef94e0efc6bde9ef"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/config.rs",
-      "item": "struct[AgentWithTools]",
-      "hash": "d0f7e836ee2c4c9de45615e648e60124128a3222e8424fcf6ee576d2eca808c4"
+      "file": "crates/trust-but-verify/src/sources/public.rs",
+      "item": "impl[SearchHit<N>]/fn[new]",
+      "hash": "f7815a8255d7a75f1a47aab2c02c7b8ef8adbd7ee0bda485b8df8a9ff6b0bf52"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tools.rs",
-      "item": "struct[ToolDelivery]",
-      "hash": "5c4791f1c8a7082b032e68cb98cd451ef13b816bf6db49fcbbbe06252e62533b"
-    },
-    {
-      "file": "crates/trust-but-verify/src/outline/language.rs",
-      "item": "struct[KindRule]",
-      "hash": "64df3e765dd0c01826a2f116f4b6dd5c631ac9dc600c9551567432cd07c8698f"
-    },
-    {
-      "file": "crates/trust-but-verify/src/outline/language.rs",
-      "item": "struct[Profile]",
-      "hash": "2cb7d4f3d43b13d671bc86ebae81da1f0b84c3b9f5b2a44434d4c7201903d48b"
-    },
-    {
-      "file": "crates/trust-but-verify/src/outline/mod.rs",
-      "item": "struct[OutlineNode]",
-      "hash": "c770e7915abed69363cc68cecbab4e7e51d9f93a7652ffe81e3e177b68136372"
-    },
-    {
-      "file": "crates/trust-but-verify/src/outline/mod.rs",
-      "item": "struct[LegacyOutline]",
-      "hash": "1d7fc667070fb03505abde4c49c6857ba697dd229170694440fb4c4f115a47fb"
+      "item": "struct[ToolAgent]",
+      "hash": "e0b8638379da3f8c40d75900d1c5fa4bcf1b3376ed61a983a8e59ffb0f8e3612"
     },
     {
       "file": "crates/trust-but-verify/src/resource.rs",
@@ -625,49 +480,49 @@
       "hash": "af28f562f5a3c30e0fdfc88fd63d9ffeb80c7c6e976ebebe36852b7e41803147"
     },
     {
-      "file": "crates/trust-but-verify/src/resource.rs",
-      "item": "struct[OutlineId]",
-      "hash": "9543bcf06a00c28e75f5ac6ecc918eee4dd2908ac879d6799919d97294e5c336"
-    },
-    {
-      "file": "crates/trust-but-verify/src/sources.rs",
-      "item": "struct[ParsedSource]",
-      "hash": "84199152a07a33d89da9b83b964bd12527ff065621647b491d8f82f54d5a565e"
-    },
-    {
       "file": "crates/trust-but-verify/src/sources.rs",
       "item": "struct[SourceAnalysis]",
       "hash": "0a4d44ab438bc3e75af7f4a62bc7ca8270502f080a406ee3ef482b334c10eeae"
     },
     {
-      "file": "crates/trust-but-verify/src/sources/public.rs",
-      "item": "struct[Sources]",
-      "hash": "93def44a374d6accf86ce51aea24d7336f12b2c633968eb9a224d53391ddb0d5"
+      "file": "crates/trust-but-verify/src/outline/mod.rs",
+      "item": "mod[language]",
+      "hash": "a2b801524a34bb5194f0603d0a5c4aed00ce33906c0177215a02dca92106fa6f"
     },
     {
-      "file": "crates/trust-but-verify/src/sources/public.rs",
-      "item": "struct[SourceProject]",
-      "hash": "5a0142fa31a4872df1ca157355bbd7cedae25d7e09fbb41dc7940b74bb133434"
-    },
-    {
-      "file": "crates/trust-but-verify/src/storage.rs",
-      "item": "struct[FileEvidenceStorage]",
-      "hash": "d096685ec94558a746d6241d96cd243551fbfba0be01a776feb0a667c76d25bd"
+      "file": "crates/trust-but-verify/src/outline/mod.rs",
+      "item": "mod[profile]",
+      "hash": "ee203f627da13dd9714b1275b4ab65957d89f94271b8ef64243918d239d5b6fe"
     },
     {
       "file": "crates/trust-but-verify/src/agent.rs",
-      "item": "mod[pages]",
-      "hash": "187d8ce41bc95c8fa3623701017c3149126d3bab473432c43d39cc3f879bd356"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent.rs",
-      "item": "mod[configured]",
-      "hash": "6dbdfc4042dc55eba62d17d8d21a3e213972f87f5592f057dec27636750cd78d"
+      "item": "mod[project_sources]",
+      "hash": "cdfd07285a667dbcbae8cf34cfab10c163c8bfeb2d995c86c95c6663770d3dd1"
     },
     {
       "file": "crates/trust-but-verify/src/agent.rs",
       "item": "mod[tools]",
       "hash": "c2360cece8d18363775345f9e1c52943be769818685d48b3263c377605f25c82"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent.rs",
+      "item": "use@3a6bc7d176b4",
+      "hash": "3a6bc7d176b498bbc4415d1740be67b9be0cb7cef481a019d06ad25b7f1db934"
+    },
+    {
+      "file": "crates/trust-but-verify/src/lib.rs",
+      "item": "mod[sources]",
+      "hash": "8d0668e19c0dd1c3160d7c454ff34db453600d1e649b59d562b08d452483f0ad"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/public_api.rs",
+      "item": "const[INVENTORY]",
+      "hash": "7b9c6a37ed4689e88df95f2f9a7bd91a1a7ff0a5b66725d48e2e13fa5c266675"
+    },
+    {
+      "file": "md/requirements/sdk/public-api.md",
+      "item": "section[Public%20API%20inventory]/block@0c0707961259",
+      "hash": "b293876e32df956b534726b69d1676ef536477c79dbbe7164b17c02e22a3007b"
     }
   ],
   "criteria": {
@@ -1501,14 +1356,14 @@
               "Source": {
                 "resource": {
                   "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/agent/config.rs"
+                  "location": "crates/trust-but-verify/src/sources/public.rs"
                 },
-                "selector": ""
+                "selector": "impl[TextQuery]/fn[new]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "c8f2e76437f0f6f085416514d50003b537a6d11f523c5c9e3e675f79fdcb89ab"
+              "value": "2c1655cdcac0dfe419825f6603b80a700a8bebe46e9c0b6bf8a600814833d805"
             }
           ]
         },
@@ -1518,14 +1373,82 @@
               "Source": {
                 "resource": {
                   "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/lib.rs"
+                  "location": "crates/trust-but-verify/src/sources/public.rs"
                 },
-                "selector": ""
+                "selector": "impl[StructuralQuery]/fn[new]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "28f6c6f0434c088a93dcaf6f4ccc41be4f5ea4cb0e2a2cd787b53b4ae46fd494"
+              "value": "15de7bbba284278a35c850befc480789e0fa3cdade4037bc07baeee9e6d2d9f8"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/sources/public.rs"
+                },
+                "selector": "impl[SourceFile]/fn[new]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f5b49cb9cdbc58c8da2c6313861a935a0a40137bf1785a00bb827bee976a752e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/outline/contents.rs"
+                },
+                "selector": "impl[OutlineItem]/fn[new]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "fe9000fcf8efce5fa34e3bfe7745425d01de5b6dd56cc38c9f0703f0bec35711"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/outline/contents.rs"
+                },
+                "selector": "impl[Outline]#1/fn[new]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "5a21d74fc4dbb216579459921dfc270cc706056ac5f962710c3536c9c7b7d2f4"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/config.rs"
+                },
+                "selector": "impl[BedrockConfig]/fn[new]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "1a659f663c904dbab8c8154ef68b5d7b055c7a7db79a2269181941bfb641e3a5"
             }
           ]
         },
@@ -1571,40 +1494,6 @@
                   "scheme": "repo",
                   "location": "crates/trust-but-verify/src/agent/config.rs"
                 },
-                "selector": "impl[OpenAiConfig]#1/fn[option]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "0ce0f042b647e27714df2d41da2906d21ff80014eadf647dafe8d1320c5a1f3e"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/agent/config.rs"
-                },
-                "selector": "impl[OllamaConfig]#1/fn[option]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "0ce0f042b647e27714df2d41da2906d21ff80014eadf647dafe8d1320c5a1f3e"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/agent/config.rs"
-                },
                 "selector": "impl[OllamaConfig]#1/fn[new]"
               }
             },
@@ -1622,12 +1511,12 @@
                   "scheme": "repo",
                   "location": "crates/trust-but-verify/src/agent/config.rs"
                 },
-                "selector": "impl[BedrockConfig]/fn[new]"
+                "selector": "impl[OpenAiConfig]#1/fn[option]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "1a659f663c904dbab8c8154ef68b5d7b055c7a7db79a2269181941bfb641e3a5"
+              "value": "0ce0f042b647e27714df2d41da2906d21ff80014eadf647dafe8d1320c5a1f3e"
             }
           ]
         },
@@ -1654,184 +1543,14 @@
               "Source": {
                 "resource": {
                   "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/agent/config.rs"
-                },
-                "selector": "impl[BedrockCredentials]/fn[session_token]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "3cfaca28ce1d4a9a9b4c1c3b6c0b5071d38fc84265a97f11dfa5d04f86e35204"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/outline/contents.rs"
-                },
-                "selector": "impl[OutlineItem]/fn[new]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "fe9000fcf8efce5fa34e3bfe7745425d01de5b6dd56cc38c9f0703f0bec35711"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/outline/contents.rs"
-                },
-                "selector": "impl[Outline]#1/fn[new]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "5a21d74fc4dbb216579459921dfc270cc706056ac5f962710c3536c9c7b7d2f4"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/outline/selector.rs"
-                },
-                "selector": "impl[Segment]/fn[new]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "23c55eef11c69527b11338bdb0fa3c4317503da14faf629979ee1dbff3a572f3"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/sources/public.rs"
-                },
-                "selector": "impl[SourceFile]/fn[new]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "f5b49cb9cdbc58c8da2c6313861a935a0a40137bf1785a00bb827bee976a752e"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/sources/public.rs"
-                },
-                "selector": "impl[TextQuery]/fn[new]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "2c1655cdcac0dfe419825f6603b80a700a8bebe46e9c0b6bf8a600814833d805"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/sources/public.rs"
-                },
-                "selector": "impl[StructuralQuery]/fn[new]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "15de7bbba284278a35c850befc480789e0fa3cdade4037bc07baeee9e6d2d9f8"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/sources/public.rs"
-                },
-                "selector": "impl[SearchHit<N>]/fn[new]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "f7815a8255d7a75f1a47aab2c02c7b8ef8adbd7ee0bda485b8df8a9ff6b0bf52"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/graph.rs"
-                },
-                "selector": "impl[Record<N,%20L>]/fn[new]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "f2d753db66bf3416373611462fd7eda4d875896fc42008b0c3aa9566f0f8e741"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/agent/backoff.rs"
-                },
-                "selector": "struct[ProviderBackoff]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "2dfe8b6644f89e5ebe015a4d6b970be93b3c4707ec6e55551a69437429ce3f65"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
                   "location": "crates/trust-but-verify/src/agent/tools.rs"
                 },
-                "selector": "struct[ToolAgent]"
+                "selector": "struct[ToolDelivery]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "e0b8638379da3f8c40d75900d1c5fa4bcf1b3376ed61a983a8e59ffb0f8e3612"
+              "value": "5c4791f1c8a7082b032e68cb98cd451ef13b816bf6db49fcbbbe06252e62533b"
             }
           ]
         },
@@ -1841,14 +1560,31 @@
               "Source": {
                 "resource": {
                   "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/domain.rs"
+                  "location": "crates/trust-but-verify/src/outline/language.rs"
                 },
-                "selector": "struct[ValidationCache]"
+                "selector": "struct[Profile]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "59a1685bcb72103a9b5f6dd2487d6a9ae1fc23b25867b10188cb310a34c24128"
+              "value": "2cb7d4f3d43b13d671bc86ebae81da1f0b84c3b9f5b2a44434d4c7201903d48b"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/outline/language.rs"
+                },
+                "selector": ""
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "2790b4157a95e7f150eaa2fef94a5b1ad0b2f98dc1d919bd7ac63a3859cf9d5e"
             }
           ]
         },
@@ -1894,23 +1630,6 @@
                   "scheme": "repo",
                   "location": "crates/trust-but-verify/src/graph.rs"
                 },
-                "selector": "struct[CriterionVersion]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "1c20de6607b0eab946f1ef746f9246ab1327f596484637974b8b269c025334ba"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/graph.rs"
-                },
                 "selector": "struct[Fingerprinted]"
               }
             },
@@ -1926,378 +1645,21 @@
               "Source": {
                 "resource": {
                   "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/lib.rs"
+                  "location": "crates/trust-but-verify/src/domain.rs"
                 },
-                "selector": "mod[agent]"
+                "selector": "struct[ValidationCache]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "b0b31b2ba7612b1062cd4ed5e58a23a2e5ca6c0337ae316c6e0b25f37a255607"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/lib.rs"
-                },
-                "selector": "mod[domain]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "e068bc5b0594b35683c4bec397c81889c5a830688631943d4c1f29a6729fa0a5"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/lib.rs"
-                },
-                "selector": "mod[graph]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "9c1793226bb73de59a2f0c081f85af315a8b1d3313980ba2074ed9bf11398b27"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/lib.rs"
-                },
-                "selector": "mod[outline]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "12c6eea7025d16d0932b1fb9acf9667127a7f817b9dcacc6f3fb5329da7c1774"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/lib.rs"
-                },
-                "selector": "mod[request]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "382529a91125d3a651af5c12abf43720eea886dbade68168f53d02cd1040c706"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/lib.rs"
-                },
-                "selector": "mod[sources]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "8d0668e19c0dd1c3160d7c454ff34db453600d1e649b59d562b08d452483f0ad"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/lib.rs"
-                },
-                "selector": "mod[storage]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "33ee0ebbe629e97e1e0a93eca03113422b6cafe7017af12279a8058f3ca67da4"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/lib.rs"
-                },
-                "selector": "mod[source_engine]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "dffeebbf0d984df820dda349508fb6ee2240c27f8b04625e036b38c546da7932"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/lib.rs"
-                },
-                "selector": "mod[agent_runtime]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "ec59e886f3ce573f9b32bf24cb70d7fc78d5ba5def2591dcb8bf4eff93949a62"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/lib.rs"
-                },
-                "selector": "mod[outline_engine]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "d95a1bca6ec7b1bf73a3f33c7a99efce19a82ffee747ae877883c11b6401ae85"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/lib.rs"
-                },
-                "selector": "mod[redaction]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "a16e666b917d6cec09c4005ea29be414e3806e86c209fecf67c83785070aa58b"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/lib.rs"
-                },
-                "selector": "mod[resource]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "e8581857bed076f755318e91b17f8a3c3cfb602999228b416c93db5148413977"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/lib.rs"
-                },
-                "selector": "mod[search]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "fbaa9254ed3b4c1101015997e55d14ba6a32b111f4901130baffd2cba02f8ba7"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/lib.rs"
-                },
-                "selector": "mod[structural]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "b4efa4542aea9daec0d3bce8d297bc3d157d7193c4529e932cd6ee464c7bbc29"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/outline/mod.rs"
-                },
-                "selector": "mod[language]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "a2b801524a34bb5194f0603d0a5c4aed00ce33906c0177215a02dca92106fa6f"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/outline/mod.rs"
-                },
-                "selector": "mod[profile]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "ee203f627da13dd9714b1275b4ab65957d89f94271b8ef64243918d239d5b6fe"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/outline/mod.rs"
-                },
-                "selector": "mod[hash]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "ff843ab8273f85ef540eb8f1b24363a6a42ebb6fed1531af2eb7cfd916b3dd74"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/procedure.rs"
-                },
-                "selector": "struct[ValidationContext]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "defb99017b963c4c84a93ef11f1d3ff8b4b060eec08f941d74c06b9189e77643"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/procedure.rs"
-                },
-                "selector": "struct[ContextPhase]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "38eb48632ba183ca42f37eb48a05202c7223921264852f809778194b2fd58cc8"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/procedure.rs"
-                },
-                "selector": "struct[NodePhase]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "527ee6b89b350999503c7587571996ebcefc8e2e11f3fa726e4a07e4e3861e04"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/procedure.rs"
-                },
-                "selector": "struct[Ask]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "b38a7967586a6b57f32ac9441bea1003e46964014583c1dbc2797f9896771465"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/redaction/mod.rs"
-                },
-                "selector": "struct[Redaction]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "9ac27ea8c8056a1a8eade918cb8d64d216b4d4bc3e109921fa063ec2dc67a1f8"
+              "value": "59a1685bcb72103a9b5f6dd2487d6a9ae1fc23b25867b10188cb310a34c24128"
             }
           ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "**Structural obligations in `requirements.sdk.public_api`.** These clauses prescribe how the types are built, so they need implementation evidence:\n- \"Every supported struct with public fields is `#[non_exhaustive]`.\" A struct without the attribute would behave the same inside the crate but would let outside callers use struct literals.\n- \"Its constructor accepts the values needed to create it.\"\n- \"Additional fields have consuming builder methods that accept a concrete value.\" A `&mut self` setter, or one taking `Option<T>` or `impl Into<T>`, would behave the same but violates this clause.\n- \"Optional fields start as `None`.\"\n- \"Backend inference options start empty and can be added one key at a time.\"\n\nThe module list and the \"no public re-exports\" rule are about what is exposed. Those are owned by `requirements.sdk.public-api.exports`, which is not among these roots. The statements about purpose, inventory links and implementation details describe no structural behavior.\n\n**Evidence in the supplied roots:**\n- **`#[non_exhaustive]`:** every supplied struct with public fields carries it. They are `BedrockCredentials`, `BedrockConfig`, `OpenAiConfig` and `OllamaConfig` in `agent/config.rs`. They also include `Fingerprint`, `Snapshot`, `Record`, `UsageStats`, `ToolUsage` and `TokenCount` in `graph.rs`. In `outline/contents.rs` they are `OutlineData`, `Span`, `Outline`, `OutlineItem`, `OutlineAttachment` and `OutlineError`. In `outline/selector.rs` they are `Segment` and `SelectorError`. In `sources/public.rs` they are `SourceFile`, `TextQuery`, `TextMatch`, `StructuralQuery`, `StructuralMatch`, `SearchResults` and `SearchHit`.\n- **Constructors:** each impl has a `new` taking the required values.\n  - Examples are `BedrockConfig::new(model)`, `BedrockCredentials::new(access_key_id, secret_access_key)` and `OllamaConfig::new(model)`.\n  - Others are `TextQuery::new(pattern)`, `StructuralQuery::new(language, rule)`, `Record::new`, `OutlineItem::new`, `Segment::new` and `SearchHit::new`.\n  - `SearchHit::new` also derives `text` from the span.\n  - `OpenAiConfig::new` uses `Default`, and every OpenAI field is optional.\n- **Optional fields start `None`:** the `new` bodies I read set optional fields to `None`: `BedrockConfig::new`, `OllamaConfig::new`, `BedrockCredentials::new`, `OutlineItem::new`, `Outline::new`, `Segment::new`, `SourceFile::new`, `TextQuery::new` and `StructuralQuery::new`.\n- **Options start empty and grow by one key:** `BedrockConfig::new` and `OllamaConfig::new` set `options: BTreeMap::new()`, and `OpenAiConfig::new` uses `Default`. Each of the three `option(mut self, key: String, value: OptionValue)` methods does `self.options.insert(key, value)`.\n- **Consuming builders with concrete values:** every builder I saw takes `mut self` and a concrete parameter. Examples are `session_token(SecretString)`, `aws_profile(String)`, `api_key(SecretString)`, `with_diagnostic(OutlineError)`, `with_name_span(Span)`, `ordinal(usize)`, `SourceFile::language(LanguageId)`, and `TextQuery::scope`, `context_lines` and `limit(usize)`.\n\n**Public surface.** The public modules in `lib.rs` are `agent` (`agent/config.rs`), `outline` (`outline/contents.rs`) and `sources` (`sources/public.rs`). The others are `domain`, `graph`, `request` and `storage`. Types with public fields but no `#[non_exhaustive]` sit in private or `#[doc(hidden)]` modules. They include `ToolAgent`, `ToolDelivery`, `ParsedSource`, `SourceAnalysis`, `ResourceId`, `Profile` and `KindRule`. I found no other public struct with public fields in the crate that lacks the attribute.\n\nThe roots show no structural gap."
+        "rationale": "**Structural obligations in `requirements.sdk.public_api`**\n\n1. \"Every supported struct with public fields is `#[non_exhaustive]`.\" A struct that omitted the attribute, with the same fields and runtime behavior, would let callers build it with a struct literal. That would violate the clause, so it is structural.\n2. \"Its constructor accepts the values needed to create it.\" A struct with no constructor, or one that needs extra setters before it is valid, would violate this clause.\n3. \"Additional fields have consuming builder methods that accept a concrete value.\" A builder taking `&mut self` or `impl Into<..>`, or one missing for an additional field, would violate it.\n4. \"Optional fields start as `None`. Backend inference options start empty and can be added one key at a time.\" A constructor that seeded optional fields with values, or an options setter that replaced the whole map, would violate this.\n5. \"Each public SDK item has one defining module path. The SDK exposes no public re-exports.\" This constrains the module layout.\n6. The \"public modules follow the interfaces\" list. It names `domain`, `graph`, `request`, `agent`, `sources`, `outline`, `outline::languages`, `outline::selector` and `storage`. It also says that source access, search engines, redaction, provider transports, agent-result paging and conversation machinery are implementation details.\n7. \"Describes its purpose and declares its public Rust interface\", and a change to the interface needs a change to the owning requirement. These are documentation obligations about the book. The code cannot meet them or fail them, so they need no implementation root.\n\nThe supplied roots cover obligations 1–4. I checked each struct and its constructor and builders.\n\n**Agent configuration (`crates/trust-but-verify/src/agent/config.rs`)**\n- `struct[BedrockCredentials]` and `impl[BedrockCredentials]`: the struct is `#[non_exhaustive]`. `new` takes the two required secrets and sets `session_token` to `None`. `session_token(mut self, SecretString)` is the consuming builder.\n- `struct[BedrockConfig]` and `impl[BedrockConfig]`: `#[non_exhaustive]`. `new(model)` sets `aws_profile`, `region` and `credentials` to `None` and `options` to an empty `BTreeMap`. Consuming builders exist for `aws_profile`, `region` and `credentials`, each taking a concrete value. `option(key, value)` inserts one key at a time.\n- `struct[OpenAiConfig]` and `impl[OpenAiConfig]#1`: `#[non_exhaustive]`. `new()` is `Self::default()`, so every field is `None` or empty. Builders exist for `model`, `endpoint`, `api_key_env` and `api_key`, plus `option`.\n- `struct[OllamaConfig]` and `impl[OllamaConfig]#1`: `#[non_exhaustive]`. `new(model)` leaves the optional fields `None` and `options` empty. Builders exist for `endpoint`, `api_key_env` and `api_key`, plus `option`.\n\n**Graph (`crates/trust-but-verify/src/graph.rs`)**\n- `struct[Fingerprint]`, `struct[Snapshot]` and `struct[Record]` are `#[non_exhaustive]`. Their `new` constructors take every field.\n- `struct[UsageStats]`, `struct[ToolUsage]` and `struct[TokenCount]` are `#[non_exhaustive]` output counters built with `Default`. That is a constructor needing no values.\n\n**Outline (`crates/trust-but-verify/src/outline/contents.rs` and `selector.rs`)**\n- `struct[OutlineData]` is `#[non_exhaustive]`. `root`, `new` and `selector(self, String)` build it.\n- `struct[Span]`, `struct[Outline]`, `struct[OutlineAttachment]`, `struct[OutlineError]`, `struct[Segment]` and `struct[SelectorError]` are `#[non_exhaustive]`, each with a `new` taking the required fields. `Outline::new` sets `diagnostic` to `None`, and `with_diagnostic` is the consuming builder. `Segment::ordinal(mut self, usize)` is the builder for the optional ordinal.\n- `struct[OutlineItem]` is `#[non_exhaustive]`. `new` takes `selector`, `kind`, `span` and `structural_hash`. It sets `name_span`, `header_span`, `trailer_span` and `own_hash` to `None` and `attachments` to an empty `Vec`. `with_name_span`, `with_header_span`, `with_trailer_span`, `with_own_hash` and `with_attachments` are consuming builders.\n\n**Sources (`crates/trust-but-verify/src/sources/public.rs`)**\n- `struct[SourceFile]`, `struct[TextQuery]`, `struct[StructuralQuery]`, `struct[TextMatch]`, `struct[StructuralMatch]`, `struct[SearchResults]` and `struct[SearchHit]` are all `#[non_exhaustive]`.\n- `new` takes the required values. `SourceFile::new` sets `language` to `None`. `TextQuery::new` and `StructuralQuery::new` set `limit` to `None`.\n- `language`, `scope`, `context_lines` and `limit` are consuming builders taking concrete values.\n- `SearchHit` keeps a `pub(crate)` field, and `SearchHit::new` takes everything needed.\n\n**Check for missing roots**\nI searched `crates/trust-but-verify/src` for structs with public fields. The only ones outside the roots are in modules that `lib.rs` declares private (`agent_runtime`, `source_engine`, `outline_engine`, `resource`):\n- `ToolDelivery`\n- `ToolAgent`\n- `Profile`\n- `KindRule`\n- `ResourceId`\n- `ParsedSource`\n- `SourceAnalysis`\n\nThey are implementation details, so the clause does not apply to them. `NodePath`, `CriterionPath`, `Fingerprinted` and `ValidationCache` have only private fields. The public module list in `lib.rs` matches the listed modules, and `lib.rs` has no `pub use`.\n\n**Judgment calls**\n- `Record::new` takes `version: Option<CriterionVersion>` directly instead of starting it as `None`. The value is part of the stored evidence record and is needed to create it, so I treated this as consistent with the constructor clause.\n- The `UsageStats`, `ToolUsage` and `TokenCount` structs have no `new`. I read `Default` as their constructor.\n\nThe supplied roots demonstrate every structural obligation, so no gap remains."
       }
     },
     "behavioral": {
@@ -2406,7 +1768,7 @@
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+              "value": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
             }
           ]
         },
@@ -2559,154 +1921,6 @@
           ]
         },
         {
-          "OutgoingEdges": [
-            {
-              "Requirement": "requirements.sdk.public_api"
-            },
-            "Implements",
-            {
-              "scheme": "node-path-set-sha256-v1",
-              "value": "51bb1315a462f0220cc5b75a249d5b2eb597caf9a93a9a0ff3c89b492bba27e9"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/agent/config.rs"
-                },
-                "selector": "enum[AgentConfig]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "42fa0e71e4831941d1e9b9df8480d4a0b52cabc7348b81f4e84f0e400c810c96"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/agent/config.rs"
-                },
-                "selector": "struct[BedrockCredentials]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "d4fd647dd74bad32bc508d41401a527b32af8076b050394e7af54fdb9b05cb85"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/agent/config.rs"
-                },
-                "selector": "struct[BedrockConfig]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "5102a7bdbb89a0b0985297359edcfda271aca9887e84cd7acd6d2cdc2f3f1e88"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/agent/config.rs"
-                },
-                "selector": "struct[OpenAiConfig]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "3c6a24d2ee693ee12b34f32c9489ee9b77e4731d7a62b4308ecdbff8ace23990"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/agent/config.rs"
-                },
-                "selector": "struct[OllamaConfig]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "ad7251cc9d50cd62caa43fd3b2aac6cb84885dd6252328fb0dcdcbef79ddc80e"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/agent/config.rs"
-                },
-                "selector": "enum[OptionValue]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "2245be38eb7310756e22ebee29030d2b16cd53de7c2de00b925e40013294d808"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/graph.rs"
-                },
-                "selector": "struct[Fingerprint]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "8525a648cc94de4b3c90595605e8b74c889473404e79c3ae0f5fd6b81252d9bf"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/graph.rs"
-                },
-                "selector": "struct[Snapshot]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "e9d6631a26d4e1c45d47715b2e5ec32b86afcc492f9d438ef6ed9bcced605789"
-            }
-          ]
-        },
-        {
           "Node": [
             {
               "Source": {
@@ -2731,12 +1945,12 @@
                   "scheme": "repo",
                   "location": "crates/trust-but-verify/src/graph.rs"
                 },
-                "selector": "struct[UsageStats]"
+                "selector": "impl[Fingerprint]/fn[new]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "47585df12ee63f2905fabc2be40e0f34ccfdb0f88fa577b947a66176c34112e1"
+              "value": "ccfc604d9db65971a30e9b8c7c663c60a6afd8c50d0f70131f8595d2b34974d2"
             }
           ]
         },
@@ -2748,12 +1962,12 @@
                   "scheme": "repo",
                   "location": "crates/trust-but-verify/src/graph.rs"
                 },
-                "selector": "struct[ToolUsage]"
+                "selector": "impl[Snapshot<T>]/fn[new]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "9e21c7beedcd42b9f5088e297155eddff308431ed309f8b067113268146a7e53"
+              "value": "d857562647702d31867389337df4883697bb7c4c3c367651566c8945d6b718a1"
             }
           ]
         },
@@ -2765,291 +1979,19 @@
                   "scheme": "repo",
                   "location": "crates/trust-but-verify/src/graph.rs"
                 },
-                "selector": "struct[TokenCount]"
+                "selector": "impl[Record<N,%20L>]/fn[new]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "7d54791be502d7ebaf54b0ac35aafcb6cbb32f7d274b97abe809cac6c0dbc8f8"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/outline/contents.rs"
-                },
-                "selector": "struct[OutlineData]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "7cce184f25a4611ec1721d50cc16029ef92506cc3642246a25c2c7988b5b6b4b"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/outline/contents.rs"
-                },
-                "selector": "struct[Span]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "a599e456ca47166a26e94523c103155ca5db82356deedd894cfbbba0a827ff18"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/outline/contents.rs"
-                },
-                "selector": "struct[Outline]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "e4ef18f80e94c5048ceb66908925b06d2ed717e7f87e47b1ad1cd4cec07529d3"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/outline/contents.rs"
-                },
-                "selector": "struct[OutlineItem]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "5a9a0d04931c3d352f3680fee8a6dc3d522674c91025314bf2e69d0e67889c68"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/outline/contents.rs"
-                },
-                "selector": "struct[OutlineAttachment]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "2099ab9b4c9c7584801e8a6b26affd37a1c2fa2f5e34d2984d4bd672e8c4abb9"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/outline/contents.rs"
-                },
-                "selector": "enum[AttachmentKind]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "8b02bbbb08345fe9a4589d7a32a4fdade147cc5fb96fd95b761dc770a3ac54fb"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/outline/contents.rs"
-                },
-                "selector": "struct[OutlineError]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "c78481eafd31d96c9108e1e601ead4fc9e4f0c768b3bb139f87ab0790102c655"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/outline/selector.rs"
-                },
-                "selector": "struct[Segment]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "96bb051f3e3c83b96e896113511728fc53849d2988905f8e8b02aa24581783bc"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/outline/selector.rs"
-                },
-                "selector": "struct[SelectorError]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "f1a9163585f7dfeca60e3cdb1ef85bce90990da3346d6ba11a764c676040c3f8"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/sources/public.rs"
-                },
-                "selector": "struct[SourceFile]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "b8081f46be9b6e0d5b715bd7264fe932dd3f135db66be081789784b9d000252b"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/sources/public.rs"
-                },
-                "selector": "struct[TextQuery]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "c0aeace89975a62bd121c3fea7d719e5563a897c1d1e3b698795960bbfbcae98"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/sources/public.rs"
-                },
-                "selector": "struct[TextMatch]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "7f00661f683c6f01b8db9f1865e7bedf35375d626145e31660194d13069fe22d"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/sources/public.rs"
-                },
-                "selector": "struct[StructuralQuery]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "35f4596e0b8ef799542e1203e4cfa00f136d5cd023d627ca67f8e31a577bccb8"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/sources/public.rs"
-                },
-                "selector": "struct[StructuralMatch]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "8309bdfb34ea410e1ff64e7ab037e336a52b93a8796e8604fd5b8d01f2a84ec3"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/sources/public.rs"
-                },
-                "selector": "struct[SearchResults]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "7635ff11101b68c6ae7a2cdb7ba1821b1c93160e87348f77fa2ccaf559af96a2"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/sources/public.rs"
-                },
-                "selector": "struct[SearchHit]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "6329a9554d836b667a36cbddf6f6a61e9a1ef843fe553ac9bac468ef2e72bfba"
+              "value": "f2d753db66bf3416373611462fd7eda4d875896fc42008b0c3aa9566f0f8e741"
             }
           ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "Each obligation of `requirements.sdk.public_api` that needs behavioral evidence has a test that asserts its outcome.\n\n**Single defining path, inventory and interface commitment.** `tests/public_api.rs#fn[public_exports_match_the_appendix]` does the following:\n- It generates rustdoc for the crate and walks every public module through `documented_exports`.\n- It compares the set of paths and item kinds with the inventory parsed by `specified_exports`. Missing and unexpected items both fail, and duplicates are rejected.\n- It runs `check_declaration` on every item. This compares fields, variants, trait members, inherent methods and trait impls with the owning requirement's declaration, so an interface change without a requirement change fails.\n- It runs `check_hidden_exports`, which rejects `doc(hidden)` public items.\n- It asserts the crate defines no Cargo features and that the shipping `habeas` consumer compiles against the SDK.\n\n`fn[member_order_is_free_but_field_and_method_types_are_committed]` tests the comparison itself. Reordering members is accepted. Changing a field type, a return type or `&mut self` is rejected.\n\n**No public re-exports.** `fn[sdk_has_no_public_reexports]` parses every `src/**/*.rs` file with tree-sitter and fails on any `pub use` declaration.\n\n**Public struct fields imply `#[non_exhaustive]`.** `check_declaration` asserts that any published struct with `structfield` entries carries `#[non_exhaustive]`.\n\n**Constructors, consuming builders, `None` defaults and options.** Constructor and builder signatures are enforced by the declaration comparison above. Behavior is tested in these tests:\n- `agent/config.rs#mod[tests]/fn[backend_builders_set_only_the_requested_fields]` covers the backend configs and credentials. The constructors set only the required values. Each builder sets one field. Optional fields are absent (`None`) until set. Options start empty and are added one key at a time, and a repeated key overwrites.\n- `outline/selector.rs#mod[tests]/fn[parses_named_anonymous_and_ordinal_segments]` covers `Segment::new` with `ordinal` starting as `None` and the consuming `.ordinal(n)`, plus `SelectorError::new`.\n- `tests/outline_content.rs#fn[outline_constructors_preserve_fields_and_replace_attachments]` covers `OutlineItem`, `Outline` and `OutlineAttachment`. Optional spans start as `None` and builders set them. `Outline.diagnostic` starts as `None`.\n- `tests/source_defaults.rs#fn[source_bytes_error_kinds_and_language_names_round_trip]` covers `SourceFile::new` with `language` starting as `None` and the `.language` builder.\n- `tests/source_defaults.rs#fn[scoped_text_results_keep_line_numbers_context_and_completeness]` covers `TextQuery`. `limit` starts as `None`, `context_lines` starts at 0, and the builders set them.\n- `tests/source_defaults.rs#fn[built_in_languages_and_structural_search_use_the_project_scope]` covers `StructuralQuery`, including `limit` starting as `None` and the builder.\n\n**Remaining structs.** The other public-field structs have only value-storing constructors. These are `Fingerprint`, `Snapshot`, `Record`, `OutlineData`, `TextMatch`, `StructuralMatch`, `SearchHit`, `SearchResults`, `UsageStats`, `ToolUsage` and `TokenCount`. They have no builders or optional-field defaults beyond what the rustdoc declaration check already enforces, and the project's other tests also exercise them. I found no further behavioral distinction that is untested.\n\n**Public module list.** The module list is covered by the export-inventory comparison, since every public module is walked from the crate root.\n\n**Not assessed here.** The chapters and the purpose text for each item are owned by their own requirements and need no test here."
+        "rationale": "The marked tests adequately cover `requirements.sdk.public_api`.\n\n**Public items, interface declarations and non-exhaustive structs**\n- `public_exports_match_the_appendix` in `tests/public_api.rs` generates rustdoc for the crate. It walks every public module and compares the exports and item kinds with the inventory. That covers the module list and the rule that each item has one defining module path. It asserts there are no duplicate exports.\n- The same test calls `check_declaration` for each item. That helper checks that the owning requirement chapter exists, describes the item and declares its fields, variants, trait members and inherent methods. It compares signature parts with rustdoc, checks the trait impls and indexed members, and asserts that any struct with public fields is `#[non_exhaustive]`.\n- It also calls `check_hidden_exports` to reject `doc(hidden)` public items.\n- Because the declarations are compared with rustdoc, a changed interface that is not mirrored in the owning requirement fails the test.\n- The comparison would also catch a constructor or builder whose signature drifts from the declared one, including a builder that stops consuming `self`.\n- `member_order_is_free_but_field_and_method_types_are_committed` checks the comparison's sensitivity. Member order is free, while a changed field type, return type or receiver mutability is detected.\n- `sdk_has_no_public_reexports` parses every source file under `src` and fails on any `pub use`. That covers \"no public re-exports\".\n\n**Constructors, builders, `None` defaults and backend options**\n- `backend_builders_set_only_the_requested_fields` in `src/agent/config.rs` covers the config structs.\n  - It checks that `BedrockConfig::new`, `OpenAiConfig::new`, `OllamaConfig::new` and `BedrockCredentials::new` take only the needed values. Optional fields start `None`, shown by their absence from the serialized form.\n  - It checks that each builder sets its field.\n  - It checks that options start empty and are added one key at a time. Overwriting key `a` while adding `b` is also checked.\n- `outline_constructors_preserve_fields_and_replace_attachments` covers `OutlineItem`, `Outline`, `OutlineAttachment` and `OutlineError`. It checks that optional spans and the diagnostic start `None` and that the builders set them.\n- `parses_named_anonymous_and_ordinal_segments` covers `Segment::new` with `ordinal` `None` and the consuming `ordinal` builder. It also covers `SelectorError::new`.\n- In `tests/source_defaults.rs`, `source_bytes_error_kinds_and_language_names_round_trip` covers `SourceFile::new` with `language` `None` and the `language` builder.\n- In the same file, `scoped_text_results_keep_line_numbers_context_and_completeness` and `built_in_languages_and_structural_search_use_the_project_scope` cover the `TextQuery` and `StructuralQuery` constructors. They check `limit` `None` and `context_lines` 0 at construction. They also check the `scope`, `context_lines` and `limit` builders.\n\n**Exempt obligations**\n- The remaining struct constructors are plain field-to-field pass-throughs with no conditional or transformation. They are `Fingerprint::new`, `Snapshot::new` and `Record::new`, all in `src/graph.rs`. They need no separate behavioral test.\n- The rustdoc comparison already pins their signatures.\n\nI found no obligation without a test, and no relevant test without a marker."
       }
     }
   },
@@ -3883,14 +2825,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/config.rs"
+              "location": "crates/trust-but-verify/src/sources/public.rs"
             },
-            "selector": ""
+            "selector": "impl[TextQuery]/fn[new]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "c8f2e76437f0f6f085416514d50003b537a6d11f523c5c9e3e675f79fdcb89ab"
+          "value": "2c1655cdcac0dfe419825f6603b80a700a8bebe46e9c0b6bf8a600814833d805"
         }
       ]
     },
@@ -3900,14 +2842,82 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/lib.rs"
+              "location": "crates/trust-but-verify/src/sources/public.rs"
             },
-            "selector": ""
+            "selector": "impl[StructuralQuery]/fn[new]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "28f6c6f0434c088a93dcaf6f4ccc41be4f5ea4cb0e2a2cd787b53b4ae46fd494"
+          "value": "15de7bbba284278a35c850befc480789e0fa3cdade4037bc07baeee9e6d2d9f8"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/public.rs"
+            },
+            "selector": "impl[SourceFile]/fn[new]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "f5b49cb9cdbc58c8da2c6313861a935a0a40137bf1785a00bb827bee976a752e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/outline/contents.rs"
+            },
+            "selector": "impl[OutlineItem]/fn[new]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "fe9000fcf8efce5fa34e3bfe7745425d01de5b6dd56cc38c9f0703f0bec35711"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/outline/contents.rs"
+            },
+            "selector": "impl[Outline]#1/fn[new]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "5a21d74fc4dbb216579459921dfc270cc706056ac5f962710c3536c9c7b7d2f4"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/config.rs"
+            },
+            "selector": "impl[BedrockConfig]/fn[new]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "1a659f663c904dbab8c8154ef68b5d7b055c7a7db79a2269181941bfb641e3a5"
         }
       ]
     },
@@ -3953,40 +2963,6 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/config.rs"
             },
-            "selector": "impl[OpenAiConfig]#1/fn[option]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "0ce0f042b647e27714df2d41da2906d21ff80014eadf647dafe8d1320c5a1f3e"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/config.rs"
-            },
-            "selector": "impl[OllamaConfig]#1/fn[option]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "0ce0f042b647e27714df2d41da2906d21ff80014eadf647dafe8d1320c5a1f3e"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/config.rs"
-            },
             "selector": "impl[OllamaConfig]#1/fn[new]"
           }
         },
@@ -4004,12 +2980,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/config.rs"
             },
-            "selector": "impl[BedrockConfig]/fn[new]"
+            "selector": "impl[OpenAiConfig]#1/fn[option]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "1a659f663c904dbab8c8154ef68b5d7b055c7a7db79a2269181941bfb641e3a5"
+          "value": "0ce0f042b647e27714df2d41da2906d21ff80014eadf647dafe8d1320c5a1f3e"
         }
       ]
     },
@@ -4036,184 +3012,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/config.rs"
-            },
-            "selector": "impl[BedrockCredentials]/fn[session_token]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "3cfaca28ce1d4a9a9b4c1c3b6c0b5071d38fc84265a97f11dfa5d04f86e35204"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/outline/contents.rs"
-            },
-            "selector": "impl[OutlineItem]/fn[new]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "fe9000fcf8efce5fa34e3bfe7745425d01de5b6dd56cc38c9f0703f0bec35711"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/outline/contents.rs"
-            },
-            "selector": "impl[Outline]#1/fn[new]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "5a21d74fc4dbb216579459921dfc270cc706056ac5f962710c3536c9c7b7d2f4"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/outline/selector.rs"
-            },
-            "selector": "impl[Segment]/fn[new]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "23c55eef11c69527b11338bdb0fa3c4317503da14faf629979ee1dbff3a572f3"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/sources/public.rs"
-            },
-            "selector": "impl[SourceFile]/fn[new]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "f5b49cb9cdbc58c8da2c6313861a935a0a40137bf1785a00bb827bee976a752e"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/sources/public.rs"
-            },
-            "selector": "impl[TextQuery]/fn[new]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "2c1655cdcac0dfe419825f6603b80a700a8bebe46e9c0b6bf8a600814833d805"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/sources/public.rs"
-            },
-            "selector": "impl[StructuralQuery]/fn[new]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "15de7bbba284278a35c850befc480789e0fa3cdade4037bc07baeee9e6d2d9f8"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/sources/public.rs"
-            },
-            "selector": "impl[SearchHit<N>]/fn[new]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "f7815a8255d7a75f1a47aab2c02c7b8ef8adbd7ee0bda485b8df8a9ff6b0bf52"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
-            },
-            "selector": "impl[Record<N,%20L>]/fn[new]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "f2d753db66bf3416373611462fd7eda4d875896fc42008b0c3aa9566f0f8e741"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/backoff.rs"
-            },
-            "selector": "struct[ProviderBackoff]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "2dfe8b6644f89e5ebe015a4d6b970be93b3c4707ec6e55551a69437429ce3f65"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/tools.rs"
             },
-            "selector": "struct[ToolAgent]"
+            "selector": "struct[ToolDelivery]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "e0b8638379da3f8c40d75900d1c5fa4bcf1b3376ed61a983a8e59ffb0f8e3612"
+          "value": "5c4791f1c8a7082b032e68cb98cd451ef13b816bf6db49fcbbbe06252e62533b"
         }
       ]
     },
@@ -4223,14 +3029,31 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/domain.rs"
+              "location": "crates/trust-but-verify/src/outline/language.rs"
             },
-            "selector": "struct[ValidationCache]"
+            "selector": "struct[Profile]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "59a1685bcb72103a9b5f6dd2487d6a9ae1fc23b25867b10188cb310a34c24128"
+          "value": "2cb7d4f3d43b13d671bc86ebae81da1f0b84c3b9f5b2a44434d4c7201903d48b"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/outline/language.rs"
+            },
+            "selector": ""
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "2790b4157a95e7f150eaa2fef94a5b1ad0b2f98dc1d919bd7ac63a3859cf9d5e"
         }
       ]
     },
@@ -4276,23 +3099,6 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/graph.rs"
             },
-            "selector": "struct[CriterionVersion]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "1c20de6607b0eab946f1ef746f9246ab1327f596484637974b8b269c025334ba"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
-            },
             "selector": "struct[Fingerprinted]"
           }
         },
@@ -4308,371 +3114,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/lib.rs"
+              "location": "crates/trust-but-verify/src/domain.rs"
             },
-            "selector": "mod[agent]"
+            "selector": "struct[ValidationCache]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "b0b31b2ba7612b1062cd4ed5e58a23a2e5ca6c0337ae316c6e0b25f37a255607"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/lib.rs"
-            },
-            "selector": "mod[domain]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "e068bc5b0594b35683c4bec397c81889c5a830688631943d4c1f29a6729fa0a5"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/lib.rs"
-            },
-            "selector": "mod[graph]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "9c1793226bb73de59a2f0c081f85af315a8b1d3313980ba2074ed9bf11398b27"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/lib.rs"
-            },
-            "selector": "mod[outline]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "12c6eea7025d16d0932b1fb9acf9667127a7f817b9dcacc6f3fb5329da7c1774"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/lib.rs"
-            },
-            "selector": "mod[request]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "382529a91125d3a651af5c12abf43720eea886dbade68168f53d02cd1040c706"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/lib.rs"
-            },
-            "selector": "mod[sources]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "8d0668e19c0dd1c3160d7c454ff34db453600d1e649b59d562b08d452483f0ad"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/lib.rs"
-            },
-            "selector": "mod[storage]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "33ee0ebbe629e97e1e0a93eca03113422b6cafe7017af12279a8058f3ca67da4"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/lib.rs"
-            },
-            "selector": "mod[source_engine]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "dffeebbf0d984df820dda349508fb6ee2240c27f8b04625e036b38c546da7932"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/lib.rs"
-            },
-            "selector": "mod[agent_runtime]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "ec59e886f3ce573f9b32bf24cb70d7fc78d5ba5def2591dcb8bf4eff93949a62"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/lib.rs"
-            },
-            "selector": "mod[outline_engine]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "d95a1bca6ec7b1bf73a3f33c7a99efce19a82ffee747ae877883c11b6401ae85"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/lib.rs"
-            },
-            "selector": "mod[redaction]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "a16e666b917d6cec09c4005ea29be414e3806e86c209fecf67c83785070aa58b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/lib.rs"
-            },
-            "selector": "mod[resource]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "e8581857bed076f755318e91b17f8a3c3cfb602999228b416c93db5148413977"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/lib.rs"
-            },
-            "selector": "mod[search]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "fbaa9254ed3b4c1101015997e55d14ba6a32b111f4901130baffd2cba02f8ba7"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/lib.rs"
-            },
-            "selector": "mod[structural]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "b4efa4542aea9daec0d3bce8d297bc3d157d7193c4529e932cd6ee464c7bbc29"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/outline/mod.rs"
-            },
-            "selector": "mod[language]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "a2b801524a34bb5194f0603d0a5c4aed00ce33906c0177215a02dca92106fa6f"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/outline/mod.rs"
-            },
-            "selector": "mod[profile]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "ee203f627da13dd9714b1275b4ab65957d89f94271b8ef64243918d239d5b6fe"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/outline/mod.rs"
-            },
-            "selector": "mod[hash]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "ff843ab8273f85ef540eb8f1b24363a6a42ebb6fed1531af2eb7cfd916b3dd74"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "struct[ValidationContext]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "defb99017b963c4c84a93ef11f1d3ff8b4b060eec08f941d74c06b9189e77643"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "struct[ContextPhase]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "38eb48632ba183ca42f37eb48a05202c7223921264852f809778194b2fd58cc8"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "struct[NodePhase]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "527ee6b89b350999503c7587571996ebcefc8e2e11f3fa726e4a07e4e3861e04"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "struct[Ask]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "b38a7967586a6b57f32ac9441bea1003e46964014583c1dbc2797f9896771465"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/redaction/mod.rs"
-            },
-            "selector": "struct[Redaction]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "9ac27ea8c8056a1a8eade918cb8d64d216b4d4bc3e109921fa063ec2dc67a1f8"
+          "value": "59a1685bcb72103a9b5f6dd2487d6a9ae1fc23b25867b10188cb310a34c24128"
         }
       ]
     },
@@ -4757,7 +3206,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+          "value": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
         }
       ]
     },
@@ -4910,14 +3359,53 @@
       ]
     },
     {
-      "OutgoingEdges": [
+      "Node": [
         {
-          "Requirement": "requirements.sdk.public_api"
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "impl[Fingerprint]/fn[new]"
+          }
         },
-        "Implements",
         {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "51bb1315a462f0220cc5b75a249d5b2eb597caf9a93a9a0ff3c89b492bba27e9"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "ccfc604d9db65971a30e9b8c7c663c60a6afd8c50d0f70131f8595d2b34974d2"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "impl[Snapshot<T>]/fn[new]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "d857562647702d31867389337df4883697bb7c4c3c367651566c8945d6b718a1"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "impl[Record<N,%20L>]/fn[new]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "f2d753db66bf3416373611462fd7eda4d875896fc42008b0c3aa9566f0f8e741"
         }
       ]
     },
@@ -4929,12 +3417,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/config.rs"
             },
-            "selector": "enum[AgentConfig]"
+            "selector": "impl[OllamaConfig]#1/fn[option]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "42fa0e71e4831941d1e9b9df8480d4a0b52cabc7348b81f4e84f0e400c810c96"
+          "value": "0ce0f042b647e27714df2d41da2906d21ff80014eadf647dafe8d1320c5a1f3e"
         }
       ]
     },
@@ -4946,12 +3434,29 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/config.rs"
             },
-            "selector": "enum[OptionValue]"
+            "selector": "impl[BedrockCredentials]/fn[session_token]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "2245be38eb7310756e22ebee29030d2b16cd53de7c2de00b925e40013294d808"
+          "value": "3cfaca28ce1d4a9a9b4c1c3b6c0b5071d38fc84265a97f11dfa5d04f86e35204"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/outline/selector.rs"
+            },
+            "selector": "impl[Segment]/fn[new]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "23c55eef11c69527b11338bdb0fa3c4317503da14faf629979ee1dbff3a572f3"
         }
       ]
     },
@@ -4963,12 +3468,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/outline/contents.rs"
             },
-            "selector": "enum[AttachmentKind]"
+            "selector": "impl[OutlineData]/fn[new]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "8b02bbbb08345fe9a4589d7a32a4fdade147cc5fb96fd95b761dc770a3ac54fb"
+          "value": "cf04a56092fe81cc94a3f900c1f5d5a1290264c596c34b6aef94e0efc6bde9ef"
         }
       ]
     },
@@ -4978,14 +3483,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/config.rs"
+              "location": "crates/trust-but-verify/src/sources/public.rs"
             },
-            "selector": "struct[AgentWithTools]"
+            "selector": "impl[SearchHit<N>]/fn[new]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "d0f7e836ee2c4c9de45615e648e60124128a3222e8424fcf6ee576d2eca808c4"
+          "value": "f7815a8255d7a75f1a47aab2c02c7b8ef8adbd7ee0bda485b8df8a9ff6b0bf52"
         }
       ]
     },
@@ -4997,80 +3502,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/tools.rs"
             },
-            "selector": "struct[ToolDelivery]"
+            "selector": "struct[ToolAgent]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "5c4791f1c8a7082b032e68cb98cd451ef13b816bf6db49fcbbbe06252e62533b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/outline/language.rs"
-            },
-            "selector": "struct[KindRule]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "64df3e765dd0c01826a2f116f4b6dd5c631ac9dc600c9551567432cd07c8698f"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/outline/language.rs"
-            },
-            "selector": "struct[Profile]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "2cb7d4f3d43b13d671bc86ebae81da1f0b84c3b9f5b2a44434d4c7201903d48b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/outline/mod.rs"
-            },
-            "selector": "struct[OutlineNode]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "c770e7915abed69363cc68cecbab4e7e51d9f93a7652ffe81e3e177b68136372"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/outline/mod.rs"
-            },
-            "selector": "struct[LegacyOutline]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "1d7fc667070fb03505abde4c49c6857ba697dd229170694440fb4c4f115a47fb"
+          "value": "e0b8638379da3f8c40d75900d1c5fa4bcf1b3376ed61a983a8e59ffb0f8e3612"
         }
       ]
     },
@@ -5097,40 +3534,6 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/resource.rs"
-            },
-            "selector": "struct[OutlineId]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "9543bcf06a00c28e75f5ac6ecc918eee4dd2908ac879d6799919d97294e5c336"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/sources.rs"
-            },
-            "selector": "struct[ParsedSource]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "84199152a07a33d89da9b83b964bd12527ff065621647b491d8f82f54d5a565e"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
               "location": "crates/trust-but-verify/src/sources.rs"
             },
             "selector": "struct[SourceAnalysis]"
@@ -5148,14 +3551,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/sources/public.rs"
+              "location": "crates/trust-but-verify/src/outline/mod.rs"
             },
-            "selector": "struct[Sources]"
+            "selector": "mod[language]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "93def44a374d6accf86ce51aea24d7336f12b2c633968eb9a224d53391ddb0d5"
+          "value": "a2b801524a34bb5194f0603d0a5c4aed00ce33906c0177215a02dca92106fa6f"
         }
       ]
     },
@@ -5165,31 +3568,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/sources/public.rs"
+              "location": "crates/trust-but-verify/src/outline/mod.rs"
             },
-            "selector": "struct[SourceProject]"
+            "selector": "mod[profile]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "5a0142fa31a4872df1ca157355bbd7cedae25d7e09fbb41dc7940b74bb133434"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/storage.rs"
-            },
-            "selector": "struct[FileEvidenceStorage]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "d096685ec94558a746d6241d96cd243551fbfba0be01a776feb0a667c76d25bd"
+          "value": "ee203f627da13dd9714b1275b4ab65957d89f94271b8ef64243918d239d5b6fe"
         }
       ]
     },
@@ -5201,29 +3587,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent.rs"
             },
-            "selector": "mod[pages]"
+            "selector": "mod[project_sources]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "187d8ce41bc95c8fa3623701017c3149126d3bab473432c43d39cc3f879bd356"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent.rs"
-            },
-            "selector": "mod[configured]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "6dbdfc4042dc55eba62d17d8d21a3e213972f87f5592f057dec27636750cd78d"
+          "value": "cdfd07285a667dbcbae8cf34cfab10c163c8bfeb2d995c86c95c6663770d3dd1"
         }
       ]
     },
@@ -5241,6 +3610,74 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "c2360cece8d18363775345f9e1c52943be769818685d48b3263c377605f25c82"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent.rs"
+            },
+            "selector": "use@3a6bc7d176b4"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "3a6bc7d176b498bbc4415d1740be67b9be0cb7cef481a019d06ad25b7f1db934"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/lib.rs"
+            },
+            "selector": "mod[sources]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "8d0668e19c0dd1c3160d7c454ff34db453600d1e649b59d562b08d452483f0ad"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/public_api.rs"
+            },
+            "selector": "const[INVENTORY]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "7b9c6a37ed4689e88df95f2f9a7bd91a1a7ff0a5b66725d48e2e13fa5c266675"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "md/requirements/sdk/public-api.md"
+            },
+            "selector": "section[Public%20API%20inventory]/block@0c0707961259"
+          }
+        },
+        {
+          "scheme": "markdown-structural-v1:own-v1",
+          "value": "0c0707961259632e6c5e9ea774d344cacc6bf47d458989a118baa1ee5d0ca630"
         }
       ]
     }

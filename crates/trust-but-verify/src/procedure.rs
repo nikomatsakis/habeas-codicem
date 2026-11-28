@@ -231,6 +231,7 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
 
     /// Prepare a relationship result without claiming delivery.
     // {cite}`habeas:util`
+    // {impl}`requirements.sdk.graph.validation-context.snapshot`
     pub(crate) fn prepare_edges(
         &self,
         node: &NodeId<D>,

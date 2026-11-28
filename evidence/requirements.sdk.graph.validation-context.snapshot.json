@@ -1,8 +1,8 @@
 {
   "requirement": "For a tracked label-specific edge query, the SDK constructs a\n{term}`requirements.sdk.graph.content_snapshot` from the returned targets and\ntheir target-set fingerprint, without another query.\n\nThe public `trust_but_verify::graph::edge_fingerprint(graph, targets)` helper\ncomputes this `Fingerprint` from the domain and a slice of target node IDs.\nIt fingerprints the set of distinct stable paths obtained from `Domain::node_path` under a versioned\nscheme, including when the set is empty. Changing\norder, duplicate edges, or another label's relationships leaves this fingerprint\nunchanged. Assigning different integers to the same targets in a fresh cache preserves the fingerprint. Reading target contents is a separate observation;\n`NodeContents::fingerprint` describes those contents under\n{cite}`requirements.sdk.graph.node_content.fingerprint`.\n\nThe returned vector preserves the graph's ordering and duplicates.\n\n```rust,ignore\npub fn edge_fingerprint<D: Domain>(\n    graph: &D,\n    targets: &[NodeId<D>],\n) -> Fingerprint;\n```",
   "determination": true,
-  "rationale": "structural: The structural obligations in `requirements.sdk.graph.validation-context.snapshot` are met by the supplied root `crates/trust-but-verify/src/graph.rs#fn[edge_fingerprint]`, which carries the {impl} marker.\n\n1. **Public helper and signature.** The text says: \"The public `trust_but_verify::graph::edge_fingerprint(graph, targets)` helper ...\" and gives the signature `pub fn edge_fingerprint<D: Domain>(graph: &D, targets: &[NodeId<D>]) -> Fingerprint`. A different name, module, visibility or parameter shape would break callers and the prescribed API even if it computed the same digest. This is a real structural obligation. The root declares exactly that signature.\n\n2. **Paths from `Domain::node_path`.** The text says it \"fingerprints the set of distinct stable paths obtained from `Domain::node_path`\". An alternative could hash the opaque `NodeId` integers. That would break the stated guarantee that a fresh cache with different integers gives the same fingerprint, so this clause is structural. The root maps each target through `graph.node_path(node).segments`.\n\n3. **Distinct set.** The root sorts and dedups the paths. This makes order and duplicate edges irrelevant and gives an empty set a digest. Other labels never enter, because only the passed targets are used.\n\n4. **Versioned scheme.** The text says \"under a versioned scheme\". The root returns a `Fingerprint` whose scheme is `node-path-set-sha256-v1`, with a SHA-256 digest of the JSON-encoded path set. The specific hash and encoding are not prescribed beyond the versioned scheme, so they are discretionary.\n\n5. **Other clauses are behavioral only.**\n   - Constructing the snapshot \"without another query\" and returning a vector that \"preserves the graph's ordering and duplicates\" describe observable results of the query. An implementation could meet them in several ways, and no named interface, type or algorithm is mandated for them.\n   - \"Reading target contents is a separate observation\" is also behavioral. `NodeContents::fingerprint` is only cited as context.\n   - `Snapshot` and `Fingerprint` come from definitions that this requirement uses and does not refine.\n\nNo other structural obligation is missing an implementation root.\n\nbehavioral: The reviewed tests cover each observable obligation in `requirements.sdk.graph.validation-context.snapshot`.\n\n**Snapshot construction without another query** — `labeled_selections_track_only_target_membership_without_reading_contents` in `validation_tests.rs`:\n- `ctx.outgoing_edges(...)` returns a snapshot whose `content` is `[5,3,5]`.\n- Its `fingerprint` equals `edge_fingerprint(&graph, &[3,5])`.\n- The recorded `Dependency::OutgoingEdges` carries that same fingerprint.\n- The selection log shows exactly one selection per call, so no extra query is made.\n\n**Returned vector keeps ordering and duplicates** — the same test asserts `snapshot.content == [5,3,5]` and `successors == [5,3,5]`.\n\n**Empty set** — the same test checks the empty selection's fingerprint is `edge_fingerprint(&graph, &[])`. `edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding` in `contracts.rs` pins the empty fingerprint to scheme `node-path-set-sha256-v1` and a fixed digest.\n\n**Versioned scheme and distinct stable paths from `node_path`:**\n- That test gives every fingerprint the same scheme as the empty one.\n- It pins a golden digest for one path.\n- It asserts that every fingerprint differs from the empty one and from each other, across several path sets: `a/b` versus `a`,`b`, an empty segment, `é` versus `e\\u{301}`, quotes, newlines, backslashes, and other boundary-sensitive cases.\n- It also asserts that `[a/b]` differs from `[a, b]`.\n\n**Order and duplicates leave the fingerprint unchanged** — the contracts test asserts `[0,1,0]` equals `[1,0]`. The validation test asserts that `[5,3,5]` fingerprints the same as `[3,5]`. Changed membership (`[3]`, `[3,5,9]`) gives a different fingerprint.\n\n**Another label's relationships don't change it:**\n- The validation test adds label-8 edges while `empty` stays current.\n- It changes the label-8 edge to `(8,99)` while `record` stays current.\n- It then changes a label-7 target and asserts the record is no longer current.\n\n**Different integers for the same targets in a fresh cache keep the fingerprint** — `saved_node_and_edge_inputs_survive_a_different_handle_allocation_order` in `contracts.rs`:\n- It saves the evidence, then builds a fresh `ValidationCache` where the target handle differs (`assert_ne!(fresh_target, target)`).\n- The saved record is still current there.\n- The loaded dependencies match the original durable inputs.\n- Clearing the edges makes the check fail.\n\n**Reading target contents is a separate observation** — both the validation test and the contracts test assert `reads.is_empty()` after edge fingerprinting and checking. `NodeContents::fingerprint` is only cited, so it needs no test here.\n\nThe `public_exports_match_the_appendix` test covers the public signature of `edge_fingerprint`, which has no behavior to check beyond that.\n\nI found no untested obligation or unresolved ambiguity.",
-  "references": "6f455ac2cee11ac28e7f365538edf607ebace4ab2961d821ef4691437a923cdd",
+  "rationale": "structural: Structural obligations in `requirements.sdk.graph.validation-context.snapshot`, and where they are met:\n\n1. **Public signature.** The text says `trust_but_verify::graph::edge_fingerprint(graph, targets)` is a public helper with the signature `edge_fingerprint<D: Domain>(graph: &D, targets: &[NodeId<D>]) -> Fingerprint`. An alternative that renamed it, made it private, moved it out of `graph`, or changed its parameters would break the stated public API even though the runtime values would be the same. `crates/trust-but-verify/src/graph.rs#fn[edge_fingerprint]` is `pub` with exactly that signature. `crates/trust-but-verify/src/lib.rs#mod[graph]` is `pub mod graph`. It carries the `{impl}` marker.\n\n2. **Fingerprint construction.** The text says the fingerprint covers \"the set of distinct stable paths obtained from `Domain::node_path` under a versioned scheme, including when the set is empty\". An alternative that hashed the raw `NodeId` integers, or kept the order or duplicates, would violate this. `edge_fingerprint` maps each target through `graph.node_path`, sorts and dedups the paths, and serializes them to JSON. It then hashes the JSON with SHA-256 under the scheme `node-path-set-sha256-v1`. The empty set is hashed like any other. This gives the required behavior: reordering, duplicates and fresh integer assignments leave the fingerprint unchanged. Other labels' edges never enter the input.\n\n3. **Snapshot built from the returned targets without another query.** The text says the SDK constructs a content snapshot \"from the returned targets and their target-set fingerprint, without another query\". The text also says \"The returned vector preserves the graph's ordering and duplicates.\" An alternative that queried the graph a second time for the fingerprint, or deduplicated or sorted the returned vector, would violate these. `crates/trust-but-verify/src/procedure.rs#impl[ValidationContext<'d, D>]#2/fn[prepare_edges]` makes a single `self.graph.outgoing_edges` call. It passes that same `content` to `edge_fingerprint` and returns `Snapshot { content, fingerprint }` with the vector unchanged. It carries the `{impl}` marker.\n\nCallers and other users need no marker. `ValidationContext::outgoing_edges` and `Ask::execute` call `prepare_edges`, and the graph tool dispatch calls it through `self.inspection`. They are reached through the marked `prepare_edges`, so no further root is needed. `dependencies_are_current` only recomputes fingerprints to revalidate dependencies and does not construct snapshots. The statement that reading target contents is separate, and the `{cite}` of `requirements.sdk.graph.node_content.fingerprint`, only give context. `NodeContents::fingerprint` is governed by its own requirement.\n\nbehavioral: The three marked tests cover every observable obligation of `requirements.sdk.graph.validation-context.snapshot`. I did not read the helpers `durable_inputs`, `persist` or the `Memory` and `Application` fixtures. I relied on how the tests use them.\n\n- **Snapshot built from the returned targets and their fingerprint, without another query.** In `crates/trust-but-verify/src/graph/validation_tests.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]`, `outgoing_edges` returns a snapshot whose `content` is `[5,3,5]`. Its `fingerprint` equals `edge_fingerprint` of nodes 3 and 5. The test asserts that exactly one selection (`[1]`) was recorded for that call. It also asserts that `reads` is empty.\n- **Returned vector keeps order and duplicates.** The same test asserts `snapshot.content` and `successors` equal `[5,3,5]`.\n- **Fingerprint covers the set of distinct paths, including the empty set.** `crates/trust-but-verify/tests/contracts.rs#fn[edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding]` asserts a golden empty-set fingerprint with scheme `node-path-set-sha256-v1`. It also asserts a golden value for one path. It checks that path-boundary and encoding variants all give pairwise-distinct fingerprints. These variants are `a/b` vs `a`,`b`, empty string, `é` vs `e\\u{301}`, quote, newline and backslash. The first test also checks that changed target sets give different fingerprints.\n- **Order, duplicates and other labels leave the fingerprint unchanged.**\n  - The contracts test shows `[0,1,0]` and `[1,0]` give the same fingerprint.\n  - The first test shows `[5,3,5]` and `[3,5]` give the same fingerprint, and the recorded dependency uses that fingerprint.\n  - The same test adds an unrelated label-8 edge and keeps the record current. Changing a label-7 target (6 instead of 5) makes it not current.\n- **Same targets under different integers in a fresh cache keep the fingerprint.** `crates/trust-but-verify/tests/contracts.rs#fn[saved_node_and_edge_inputs_survive_a_different_handle_allocation_order]` saves a record. It then reloads it in a fresh `ValidationCache` where the handle differs (`assert_ne!(fresh_target, target)`). The loaded `OutgoingEdges` dependency still passes `check_inputs`. Clearing the edges makes the check fail.\n- **Target contents are a separate observation.** The first test and the contracts test assert that no content reads occurred. The content fingerprint belongs to the cited `requirements.sdk.graph.node_content.fingerprint`, which is context only.\n- **Public helper signature.** `crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]` checks the public export inventory against the spec.",
+  "references": "7b84d2b03f6da3c22944b1a3bd2d8959eb616005c6ccaab1e03ad8732a3425ea",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.validation-context.snapshot",
@@ -72,6 +72,11 @@
       "hash": "fa540d8077eea21345607a2b0d423bb65db6787d9171e34f5acb0a845bc00202"
     },
     {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#2/fn[prepare_edges]",
+      "hash": "917017f2c36bc75e21c8a5e20623856ae658a3d2fc0bb20fa3c424a66ff37dc7"
+    },
+    {
       "definition": "requirements.sdk.graph.content_snapshot",
       "text": [
         ":::{definition} content_snapshot",
@@ -100,6 +105,21 @@
       ]
     },
     {
+      "file": "crates/trust-but-verify/src/lib.rs",
+      "item": "mod[graph]",
+      "hash": "9c1793226bb73de59a2f0c081f85af315a8b1d3313980ba2074ed9bf11398b27"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#2/fn[outgoing_edges]",
+      "hash": "eb9fdf9b1da5d58821486f1def4d05602048096954f29399f5ee43b9904459b2"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]",
+      "hash": "13819c4675914551da6e0dde0cc498d09495c2f2124f3f03e353ca0cdfef866a"
+    },
+    {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[labeled_selections_track_only_target_membership_without_reading_contents]",
       "hash": "99523765d03546a8080ace6dab2053ee9b74cfbd8ee76dd224c1693883961924"
@@ -117,7 +137,7 @@
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[public_exports_match_the_appendix]",
-      "hash": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+      "hash": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
     },
     {
       "file": "crates/trust-but-verify/src/graph.rs",
@@ -125,29 +145,9 @@
       "hash": "4c26499b686c87c01a0d27a9ea401cdf5cdcf3bd0c3d52cb2d13d7772c69d0b1"
     },
     {
-      "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "struct[Snapshot]",
-      "hash": "e9d6631a26d4e1c45d47715b2e5ec32b86afcc492f9d438ef6ed9bcced605789"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "impl[Snapshot<T>]",
-      "hash": "f005de92aa3d66c7efa5b63abe5ae8bfe58d2bdcd115dd820d8b62d0d49174a8"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "impl[Snapshot<T>]/fn[new]",
-      "hash": "d857562647702d31867389337df4883697bb7c4c3c367651566c8945d6b718a1"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[ValidationContext<'d,%20D>]#2/fn[prepare_edges]",
-      "hash": "917017f2c36bc75e21c8a5e20623856ae658a3d2fc0bb20fa3c424a66ff37dc7"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[ValidationContext<'d,%20D>]#2/fn[outgoing_edges]",
-      "hash": "eb9fdf9b1da5d58821486f1def4d05602048096954f29399f5ee43b9904459b2"
+      "file": "crates/trust-but-verify/src/agent/tools.rs",
+      "item": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[dispatch]",
+      "hash": "6d43b82a764c61f1316015f0fbc1b93fe17bcb02f4c46747de7f5748c4b4f8df"
     }
   ],
   "criteria": {
@@ -161,7 +161,7 @@
             },
             {
               "scheme": "habeas-reference-set-v1",
-              "value": "6f455ac2cee11ac28e7f365538edf607ebace4ab2961d821ef4691437a923cdd"
+              "value": "7b84d2b03f6da3c22944b1a3bd2d8959eb616005c6ccaab1e03ad8732a3425ea"
             }
           ]
         },
@@ -207,6 +207,23 @@
         {
           "Node": [
             {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[ValidationContext<'d,%20D>]#2/fn[prepare_edges]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "917017f2c36bc75e21c8a5e20623856ae658a3d2fc0bb20fa3c424a66ff37dc7"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
               "Definition": "requirements.sdk.graph.content_snapshot"
             },
             {
@@ -227,21 +244,60 @@
           ]
         },
         {
-          "OutgoingEdges": [
+          "Node": [
             {
-              "Requirement": "requirements.sdk.graph.validation-context.snapshot"
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/lib.rs"
+                },
+                "selector": "mod[graph]"
+              }
             },
-            "Implements",
             {
-              "scheme": "node-path-set-sha256-v1",
-              "value": "dc5e154a76650b17e76a369afac6f631cbb3ddeb8b63155c01239f08471f4bcf"
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "9c1793226bb73de59a2f0c081f85af315a8b1d3313980ba2074ed9bf11398b27"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[ValidationContext<'d,%20D>]#2/fn[outgoing_edges]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "eb9fdf9b1da5d58821486f1def4d05602048096954f29399f5ee43b9904459b2"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "13819c4675914551da6e0dde0cc498d09495c2f2124f3f03e353ca0cdfef866a"
             }
           ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "The structural obligations in `requirements.sdk.graph.validation-context.snapshot` are met by the supplied root `crates/trust-but-verify/src/graph.rs#fn[edge_fingerprint]`, which carries the {impl} marker.\n\n1. **Public helper and signature.** The text says: \"The public `trust_but_verify::graph::edge_fingerprint(graph, targets)` helper ...\" and gives the signature `pub fn edge_fingerprint<D: Domain>(graph: &D, targets: &[NodeId<D>]) -> Fingerprint`. A different name, module, visibility or parameter shape would break callers and the prescribed API even if it computed the same digest. This is a real structural obligation. The root declares exactly that signature.\n\n2. **Paths from `Domain::node_path`.** The text says it \"fingerprints the set of distinct stable paths obtained from `Domain::node_path`\". An alternative could hash the opaque `NodeId` integers. That would break the stated guarantee that a fresh cache with different integers gives the same fingerprint, so this clause is structural. The root maps each target through `graph.node_path(node).segments`.\n\n3. **Distinct set.** The root sorts and dedups the paths. This makes order and duplicate edges irrelevant and gives an empty set a digest. Other labels never enter, because only the passed targets are used.\n\n4. **Versioned scheme.** The text says \"under a versioned scheme\". The root returns a `Fingerprint` whose scheme is `node-path-set-sha256-v1`, with a SHA-256 digest of the JSON-encoded path set. The specific hash and encoding are not prescribed beyond the versioned scheme, so they are discretionary.\n\n5. **Other clauses are behavioral only.**\n   - Constructing the snapshot \"without another query\" and returning a vector that \"preserves the graph's ordering and duplicates\" describe observable results of the query. An implementation could meet them in several ways, and no named interface, type or algorithm is mandated for them.\n   - \"Reading target contents is a separate observation\" is also behavioral. `NodeContents::fingerprint` is only cited as context.\n   - `Snapshot` and `Fingerprint` come from definitions that this requirement uses and does not refine.\n\nNo other structural obligation is missing an implementation root."
+        "rationale": "Structural obligations in `requirements.sdk.graph.validation-context.snapshot`, and where they are met:\n\n1. **Public signature.** The text says `trust_but_verify::graph::edge_fingerprint(graph, targets)` is a public helper with the signature `edge_fingerprint<D: Domain>(graph: &D, targets: &[NodeId<D>]) -> Fingerprint`. An alternative that renamed it, made it private, moved it out of `graph`, or changed its parameters would break the stated public API even though the runtime values would be the same. `crates/trust-but-verify/src/graph.rs#fn[edge_fingerprint]` is `pub` with exactly that signature. `crates/trust-but-verify/src/lib.rs#mod[graph]` is `pub mod graph`. It carries the `{impl}` marker.\n\n2. **Fingerprint construction.** The text says the fingerprint covers \"the set of distinct stable paths obtained from `Domain::node_path` under a versioned scheme, including when the set is empty\". An alternative that hashed the raw `NodeId` integers, or kept the order or duplicates, would violate this. `edge_fingerprint` maps each target through `graph.node_path`, sorts and dedups the paths, and serializes them to JSON. It then hashes the JSON with SHA-256 under the scheme `node-path-set-sha256-v1`. The empty set is hashed like any other. This gives the required behavior: reordering, duplicates and fresh integer assignments leave the fingerprint unchanged. Other labels' edges never enter the input.\n\n3. **Snapshot built from the returned targets without another query.** The text says the SDK constructs a content snapshot \"from the returned targets and their target-set fingerprint, without another query\". The text also says \"The returned vector preserves the graph's ordering and duplicates.\" An alternative that queried the graph a second time for the fingerprint, or deduplicated or sorted the returned vector, would violate these. `crates/trust-but-verify/src/procedure.rs#impl[ValidationContext<'d, D>]#2/fn[prepare_edges]` makes a single `self.graph.outgoing_edges` call. It passes that same `content` to `edge_fingerprint` and returns `Snapshot { content, fingerprint }` with the vector unchanged. It carries the `{impl}` marker.\n\nCallers and other users need no marker. `ValidationContext::outgoing_edges` and `Ask::execute` call `prepare_edges`, and the graph tool dispatch calls it through `self.inspection`. They are reached through the marked `prepare_edges`, so no further root is needed. `dependencies_are_current` only recomputes fingerprints to revalidate dependencies and does not construct snapshots. The statement that reading target contents is separate, and the `{cite}` of `requirements.sdk.graph.node_content.fingerprint`, only give context. `NodeContents::fingerprint` is governed by its own requirement."
       }
     },
     "behavioral": {
@@ -254,7 +310,7 @@
             },
             {
               "scheme": "habeas-reference-set-v1",
-              "value": "6f455ac2cee11ac28e7f365538edf607ebace4ab2961d821ef4691437a923cdd"
+              "value": "7b84d2b03f6da3c22944b1a3bd2d8959eb616005c6ccaab1e03ad8732a3425ea"
             }
           ]
         },
@@ -344,7 +400,7 @@
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+              "value": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
             }
           ]
         },
@@ -373,7 +429,7 @@
       ],
       "output": {
         "status": "success",
-        "rationale": "The reviewed tests cover each observable obligation in `requirements.sdk.graph.validation-context.snapshot`.\n\n**Snapshot construction without another query** — `labeled_selections_track_only_target_membership_without_reading_contents` in `validation_tests.rs`:\n- `ctx.outgoing_edges(...)` returns a snapshot whose `content` is `[5,3,5]`.\n- Its `fingerprint` equals `edge_fingerprint(&graph, &[3,5])`.\n- The recorded `Dependency::OutgoingEdges` carries that same fingerprint.\n- The selection log shows exactly one selection per call, so no extra query is made.\n\n**Returned vector keeps ordering and duplicates** — the same test asserts `snapshot.content == [5,3,5]` and `successors == [5,3,5]`.\n\n**Empty set** — the same test checks the empty selection's fingerprint is `edge_fingerprint(&graph, &[])`. `edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding` in `contracts.rs` pins the empty fingerprint to scheme `node-path-set-sha256-v1` and a fixed digest.\n\n**Versioned scheme and distinct stable paths from `node_path`:**\n- That test gives every fingerprint the same scheme as the empty one.\n- It pins a golden digest for one path.\n- It asserts that every fingerprint differs from the empty one and from each other, across several path sets: `a/b` versus `a`,`b`, an empty segment, `é` versus `e\\u{301}`, quotes, newlines, backslashes, and other boundary-sensitive cases.\n- It also asserts that `[a/b]` differs from `[a, b]`.\n\n**Order and duplicates leave the fingerprint unchanged** — the contracts test asserts `[0,1,0]` equals `[1,0]`. The validation test asserts that `[5,3,5]` fingerprints the same as `[3,5]`. Changed membership (`[3]`, `[3,5,9]`) gives a different fingerprint.\n\n**Another label's relationships don't change it:**\n- The validation test adds label-8 edges while `empty` stays current.\n- It changes the label-8 edge to `(8,99)` while `record` stays current.\n- It then changes a label-7 target and asserts the record is no longer current.\n\n**Different integers for the same targets in a fresh cache keep the fingerprint** — `saved_node_and_edge_inputs_survive_a_different_handle_allocation_order` in `contracts.rs`:\n- It saves the evidence, then builds a fresh `ValidationCache` where the target handle differs (`assert_ne!(fresh_target, target)`).\n- The saved record is still current there.\n- The loaded dependencies match the original durable inputs.\n- Clearing the edges makes the check fail.\n\n**Reading target contents is a separate observation** — both the validation test and the contracts test assert `reads.is_empty()` after edge fingerprinting and checking. `NodeContents::fingerprint` is only cited, so it needs no test here.\n\nThe `public_exports_match_the_appendix` test covers the public signature of `edge_fingerprint`, which has no behavior to check beyond that.\n\nI found no untested obligation or unresolved ambiguity."
+        "rationale": "The three marked tests cover every observable obligation of `requirements.sdk.graph.validation-context.snapshot`. I did not read the helpers `durable_inputs`, `persist` or the `Memory` and `Application` fixtures. I relied on how the tests use them.\n\n- **Snapshot built from the returned targets and their fingerprint, without another query.** In `crates/trust-but-verify/src/graph/validation_tests.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]`, `outgoing_edges` returns a snapshot whose `content` is `[5,3,5]`. Its `fingerprint` equals `edge_fingerprint` of nodes 3 and 5. The test asserts that exactly one selection (`[1]`) was recorded for that call. It also asserts that `reads` is empty.\n- **Returned vector keeps order and duplicates.** The same test asserts `snapshot.content` and `successors` equal `[5,3,5]`.\n- **Fingerprint covers the set of distinct paths, including the empty set.** `crates/trust-but-verify/tests/contracts.rs#fn[edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding]` asserts a golden empty-set fingerprint with scheme `node-path-set-sha256-v1`. It also asserts a golden value for one path. It checks that path-boundary and encoding variants all give pairwise-distinct fingerprints. These variants are `a/b` vs `a`,`b`, empty string, `é` vs `e\\u{301}`, quote, newline and backslash. The first test also checks that changed target sets give different fingerprints.\n- **Order, duplicates and other labels leave the fingerprint unchanged.**\n  - The contracts test shows `[0,1,0]` and `[1,0]` give the same fingerprint.\n  - The first test shows `[5,3,5]` and `[3,5]` give the same fingerprint, and the recorded dependency uses that fingerprint.\n  - The same test adds an unrelated label-8 edge and keeps the record current. Changing a label-7 target (6 instead of 5) makes it not current.\n- **Same targets under different integers in a fresh cache keep the fingerprint.** `crates/trust-but-verify/tests/contracts.rs#fn[saved_node_and_edge_inputs_survive_a_different_handle_allocation_order]` saves a record. It then reloads it in a fresh `ValidationCache` where the handle differs (`assert_ne!(fresh_target, target)`). The loaded `OutgoingEdges` dependency still passes `check_inputs`. Clearing the edges makes the check fail.\n- **Target contents are a separate observation.** The first test and the contracts test assert that no content reads occurred. The content fingerprint belongs to the cited `requirements.sdk.graph.node_content.fingerprint`, which is context only.\n- **Public helper signature.** `crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]` checks the public export inventory against the spec."
       }
     }
   },
@@ -387,7 +443,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "6f455ac2cee11ac28e7f365538edf607ebace4ab2961d821ef4691437a923cdd"
+          "value": "7b84d2b03f6da3c22944b1a3bd2d8959eb616005c6ccaab1e03ad8732a3425ea"
         }
       ]
     },
@@ -433,6 +489,23 @@
     {
       "Node": [
         {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[prepare_edges]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "917017f2c36bc75e21c8a5e20623856ae658a3d2fc0bb20fa3c424a66ff37dc7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
           "Definition": "requirements.sdk.graph.content_snapshot"
         },
         {
@@ -453,14 +526,53 @@
       ]
     },
     {
-      "OutgoingEdges": [
+      "Node": [
         {
-          "Requirement": "requirements.sdk.graph.validation-context.snapshot"
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/lib.rs"
+            },
+            "selector": "mod[graph]"
+          }
         },
-        "Implements",
         {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "dc5e154a76650b17e76a369afac6f631cbb3ddeb8b63155c01239f08471f4bcf"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "9c1793226bb73de59a2f0c081f85af315a8b1d3313980ba2074ed9bf11398b27"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[outgoing_edges]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "eb9fdf9b1da5d58821486f1def4d05602048096954f29399f5ee43b9904459b2"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "13819c4675914551da6e0dde0cc498d09495c2f2124f3f03e353ca0cdfef866a"
         }
       ]
     },
@@ -528,7 +640,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+          "value": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
         }
       ]
     },
@@ -555,82 +667,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
+              "location": "crates/trust-but-verify/src/agent/tools.rs"
             },
-            "selector": "struct[Snapshot]"
+            "selector": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[dispatch]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "e9d6631a26d4e1c45d47715b2e5ec32b86afcc492f9d438ef6ed9bcced605789"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
-            },
-            "selector": "impl[Snapshot<T>]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "b2c440ccb85b681b462a9518b81a17e2bb272dabadcc47894def6b047362200b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
-            },
-            "selector": "impl[Snapshot<T>]/fn[new]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "d857562647702d31867389337df4883697bb7c4c3c367651566c8945d6b718a1"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[prepare_edges]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "917017f2c36bc75e21c8a5e20623856ae658a3d2fc0bb20fa3c424a66ff37dc7"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[outgoing_edges]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "eb9fdf9b1da5d58821486f1def4d05602048096954f29399f5ee43b9904459b2"
+          "value": "6d43b82a764c61f1316015f0fbc1b93fe17bcb02f4c46747de7f5748c4b4f8df"
         }
       ]
     }

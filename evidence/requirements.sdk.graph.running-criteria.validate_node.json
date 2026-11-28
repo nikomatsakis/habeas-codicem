@@ -1,7 +1,7 @@
 {
   "requirement": "Every call constructs a fresh `ValidationContext` identifying the source node\nand calls `Criterion::execute` with that context. Its completed answer, including\na negative assessment, and captured dependencies form the returned `Fingerprinted`\nunder {cite}`requirements.sdk.graph.evidence.inputs`.",
   "determination": true,
-  "rationale": "structural: The structural obligations in `requirements.sdk.graph.running-criteria.validate_node` are: (1) each call constructs a fresh `ValidationContext` that identifies the source node; (2) it calls `Criterion::execute` with that context; (3) the completed answer and the captured dependencies form the returned `Fingerprinted`. The root `crates/trust-but-verify/src/graph.rs#impl[Validator<'d, D>]/fn[execute]` does all three.\n\n- **Fresh context.** It builds a new context on every call with `ValidationContext::configured(self.domain, node, agent)`. `node` comes from `criterion.source_node_id()`. Reusing a shared context across calls would break this clause, so the clause is structural.\n- **Delegation to the criterion.** It calls `criterion.execute(&mut ctx).await?`, which is the required `Criterion::execute` call. Computing the answer inside the validator instead would break this clause.\n- **Result wrapper.** It returns `Fingerprinted { source: node, criterion: criterion_path, version: Some(version), dependencies: ctx.dependencies(), output: answer }`. The answer is `V::Ok`, so a negative assessment is returned as an ordinary answer. The dependencies come from the context.\n\nThe `Fingerprinted` shape is only cited from `requirements.sdk.graph.evidence.inputs`, so it is context here. The root is the single place that performs this construction and delegation, and no other root needs an `{impl}` marker.\n\nbehavioral: The reviewed tests cover each observable obligation of `requirements.sdk.graph.running-criteria.validate_node`. I did not read the `Memory` and `Application` helper sources. I relied on the assertions in the test bodies.\n\n- **Fresh context per call.** `a_second_verification_starts_with_an_empty_trace` in `crates/trust-but-verify/src/graph/validation_tests.rs` runs two `verify` calls on one validator. The first call's dependencies are `[Node(1)]` and the second call's are only `[Node(2)]`, so no trace carries over. `historical_freshness_reads_do_not_enter_the_replacement_trace` shows that earlier reads (`load_evidence` and `check_inputs`) stay out of the new trace. The saved record holds only `Node(1, root)`. `input_checking_and_execution_keep_separate_observations` in `tests/contracts.rs` shows the same separation. `concurrent_single_node_validations_keep_separate_traces` and `agent_executions_isolate_conversations_and_dependency_traces` (`src/agent/tests.rs`) show that concurrent calls do not share traces.\n- **Context identifies the source node and `Criterion::execute` is called with it.** `concurrent_single_node_validations_keep_separate_traces` runs three nodes. Each record's dependencies name its own node and edge, and each result's `source_node_id` is its own node. `a_second_verification_starts_with_an_empty_trace` asserts `source_node_id` equals the node passed in. `criteria_keep_typed_answers_and_persist_only_when_requested` in `tests/contracts.rs` asserts the execution count (`executions`) and `source_node_id`.\n- **Completed answer, including a negative assessment, forms the returned `Fingerprinted`.** `caller_reuses_negative_answers_and_compares_revisions_explicitly` asserts the output is a negative `result == false`. `criteria_keep_typed_answers_and_persist_only_when_requested` asserts `value.output() == &negative` and checks the path and version. It also checks that `verify` writes nothing, with `writes == 0`.\n- **Captured dependencies are returned.** `concurrent_single_node_validations_keep_separate_traces` compares the exact node and edge dependencies. `changing_one_criteria_input_does_not_invalidate_another` compares the replacement's dependencies with the reads it performed. `agent_edge_tools_record_selections_without_validating_targets` compares the exact `OutgoingEdges` dependencies and checks that failed or malformed tool calls add none. `criteria_keep_typed_answers_and_persist_only_when_requested` asserts that dependencies are empty when nothing was read.\n\nI found no obligation that lacks a test with a relevant assertion.",
+  "rationale": "structural: The subject's structural obligations are: (1) each call constructs a fresh `ValidationContext` identifying the source node, (2) it delegates to `Criterion::execute` with that context, and (3) the completed answer and captured dependencies form the returned `Fingerprinted`. An implementation that reused a shared context, skipped `Criterion::execute`, or built the result without the context's dependencies would violate these clauses.\n\n`crates/trust-but-verify/src/graph.rs#impl[Validator<'d, D>]/fn[execute]` meets all three:\n- It takes the node from `criterion.source_node_id()`.\n- It builds a new local `ValidationContext` per call with `ValidationContext::configured(self.domain, node, agent)`.\n- It calls `criterion.execute(&mut ctx).await?`.\n- It returns `Fingerprinted { source, criterion, version, dependencies: ctx.dependencies(), output: answer }`.\n\nThe answer is the criterion's completed `V::Ok`, so a negative assessment carried in it is returned as the output. The `Fingerprinted` fields match the `requirements.sdk.graph.evidence.inputs` shape, which is cited only as context. I did not read `ValidationContext::configured` or `ctx.dependencies()`. Freshness rests on the context being a local value created inside `execute`. This is the only root, and it carries the `{impl}` marker for this requirement. No further roots are needed.\n\nbehavioral: I judged this from the supplied tests only. I did not request implementation source or helper code, so I did not read how the `Review` criterion builds its `Memory` or `Application` fixtures. I judged those helpers from how the tests use them.\n\nObligations derived from `requirements.sdk.graph.running-criteria.validate_node`:\n1. Each call constructs a fresh `ValidationContext` that identifies the source node.\n2. Each call invokes `Criterion::execute` with that context.\n3. The completed answer, including a negative assessment, plus the captured dependencies form the returned `Fingerprinted`. Its shape is governed by the cited `requirements.sdk.graph.evidence.inputs`.\n\nCoverage:\n- **Fresh context per call.**\n  - `graph/validation_tests.rs#fn[a_second_verification_starts_with_an_empty_trace]` calls `verify` twice on the same `Validator`. The first call returns only `Dependency::Node(1, subject)`. The second call, on a different node, returns only `Dependency::Node(other, ...)`. No trace from the first call carries over.\n  - `graph/validation_tests.rs#fn[concurrent_single_node_validations_keep_separate_traces]` runs three concurrent verifications on different nodes. Each stored record holds only its own node's read and edge observations.\n  - `agent/tests.rs#fn[agent_executions_isolate_conversations_and_dependency_traces]` runs two concurrent agent executions of the same criterion. Each gets its own dependency trace, and the stored records differ.\n  - `graph/validation_tests.rs#fn[historical_freshness_reads_do_not_enter_the_replacement_trace]` shows that earlier reads, such as freshness checks, do not enter the new trace.\n- **Context identifies the source node.**\n  - Criteria that read through the context read the node that was verified. The `Dependency::Node` entries in the tests above name that node.\n  - `source_node_id()` is asserted in `tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` and in `a_second_verification_starts_with_an_empty_trace`.\n- **`execute` is called with the context.** The criteria's context reads and edge queries show up as dependencies, and executions are counted: `state.executions` is checked in the contracts tests and `state.started == [9]` in `caller_reuses_negative_answers_and_compares_revisions_explicitly`.\n- **Negative answer is returned as a completed answer.**\n  - `criteria_keep_typed_answers_and_persist_only_when_requested` asserts that `value.output()` equals the negative assessment (`satisfied: false`) and that `dependencies()` is empty.\n  - `caller_reuses_negative_answers_and_compares_revisions_explicitly` asserts `!value.output().result` and an empty dependency list.\n- **Captured dependencies are returned.**\n  - `changing_one_criteria_input_does_not_invalidate_another` and `input_checking_and_execution_keep_separate_observations` assert the exact dependency lists from execution.\n  - `agent_edge_tools_record_selections_without_validating_targets` asserts the exact `OutgoingEdges` dependencies.\n  - `validation_and_answer_need_send_without_sync` covers the typed output and the `Send` requirement.\n\nI found no obligation that is untested, and no relevant test that lacks a marker.",
   "references": "59826f63dde1de887b8e2c10fe4e51fc2f90ebbdd12df6646c9f05eaf6d81281",
   "inputs": [
     {
@@ -60,7 +60,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[agent_edge_tools_record_selections_without_validating_targets]",
-      "hash": "6a6bd3af3286f4b548affea9dc304e83307c85c71496bd76aaa4e955e8fb5577"
+      "hash": "b6a97104378322ec71f0706145d948cd08299ea50133f0316b1795f099e9aa2c"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
@@ -101,6 +101,21 @@
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[validation_and_answer_need_send_without_sync]",
       "hash": "2bf006acebdb8fc3df250c66c66a218d7e2e7d0edd1566f398067c9a9012f735"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#1/fn[configured]",
+      "hash": "8949a12bea88991a132561dd361e084ad980bf948bac22ff87626e6f06e47116"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "impl[Review/Criterion<Memory>]/fn[execute]",
+      "hash": "99946d075cab7f851d1eeaa77cca97bbcf86b354d48fc1fdad7f0e047578734b"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "impl[Question/Criterion<Memory>]/fn[execute]",
+      "hash": "b1906e0c4845a2120f414886d7f7afa2029fed7cfedeae7855f77c3a8aa45ea3"
     }
   ],
   "criteria": {
@@ -160,7 +175,7 @@
       ],
       "output": {
         "status": "success",
-        "rationale": "The structural obligations in `requirements.sdk.graph.running-criteria.validate_node` are: (1) each call constructs a fresh `ValidationContext` that identifies the source node; (2) it calls `Criterion::execute` with that context; (3) the completed answer and the captured dependencies form the returned `Fingerprinted`. The root `crates/trust-but-verify/src/graph.rs#impl[Validator<'d, D>]/fn[execute]` does all three.\n\n- **Fresh context.** It builds a new context on every call with `ValidationContext::configured(self.domain, node, agent)`. `node` comes from `criterion.source_node_id()`. Reusing a shared context across calls would break this clause, so the clause is structural.\n- **Delegation to the criterion.** It calls `criterion.execute(&mut ctx).await?`, which is the required `Criterion::execute` call. Computing the answer inside the validator instead would break this clause.\n- **Result wrapper.** It returns `Fingerprinted { source: node, criterion: criterion_path, version: Some(version), dependencies: ctx.dependencies(), output: answer }`. The answer is `V::Ok`, so a negative assessment is returned as an ordinary answer. The dependencies come from the context.\n\nThe `Fingerprinted` shape is only cited from `requirements.sdk.graph.evidence.inputs`, so it is context here. The root is the single place that performs this construction and delegation, and no other root needs an `{impl}` marker."
+        "rationale": "The subject's structural obligations are: (1) each call constructs a fresh `ValidationContext` identifying the source node, (2) it delegates to `Criterion::execute` with that context, and (3) the completed answer and captured dependencies form the returned `Fingerprinted`. An implementation that reused a shared context, skipped `Criterion::execute`, or built the result without the context's dependencies would violate these clauses.\n\n`crates/trust-but-verify/src/graph.rs#impl[Validator<'d, D>]/fn[execute]` meets all three:\n- It takes the node from `criterion.source_node_id()`.\n- It builds a new local `ValidationContext` per call with `ValidationContext::configured(self.domain, node, agent)`.\n- It calls `criterion.execute(&mut ctx).await?`.\n- It returns `Fingerprinted { source, criterion, version, dependencies: ctx.dependencies(), output: answer }`.\n\nThe answer is the criterion's completed `V::Ok`, so a negative assessment carried in it is returned as the output. The `Fingerprinted` fields match the `requirements.sdk.graph.evidence.inputs` shape, which is cited only as context. I did not read `ValidationContext::configured` or `ctx.dependencies()`. Freshness rests on the context being a local value created inside `execute`. This is the only root, and it carries the `{impl}` marker for this requirement. No further roots are needed."
       }
     },
     "behavioral": {
@@ -229,7 +244,7 @@
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "b1c00c1e246a9d3cad5d832802238ee07b4387536a473825251974c9a82c5923"
+              "value": "1923ba1a1e40335b0976450eaedbabe266a0cbc1c568947f37797528e5a0c0d0"
             }
           ]
         },
@@ -372,7 +387,7 @@
       ],
       "output": {
         "status": "success",
-        "rationale": "The reviewed tests cover each observable obligation of `requirements.sdk.graph.running-criteria.validate_node`. I did not read the `Memory` and `Application` helper sources. I relied on the assertions in the test bodies.\n\n- **Fresh context per call.** `a_second_verification_starts_with_an_empty_trace` in `crates/trust-but-verify/src/graph/validation_tests.rs` runs two `verify` calls on one validator. The first call's dependencies are `[Node(1)]` and the second call's are only `[Node(2)]`, so no trace carries over. `historical_freshness_reads_do_not_enter_the_replacement_trace` shows that earlier reads (`load_evidence` and `check_inputs`) stay out of the new trace. The saved record holds only `Node(1, root)`. `input_checking_and_execution_keep_separate_observations` in `tests/contracts.rs` shows the same separation. `concurrent_single_node_validations_keep_separate_traces` and `agent_executions_isolate_conversations_and_dependency_traces` (`src/agent/tests.rs`) show that concurrent calls do not share traces.\n- **Context identifies the source node and `Criterion::execute` is called with it.** `concurrent_single_node_validations_keep_separate_traces` runs three nodes. Each record's dependencies name its own node and edge, and each result's `source_node_id` is its own node. `a_second_verification_starts_with_an_empty_trace` asserts `source_node_id` equals the node passed in. `criteria_keep_typed_answers_and_persist_only_when_requested` in `tests/contracts.rs` asserts the execution count (`executions`) and `source_node_id`.\n- **Completed answer, including a negative assessment, forms the returned `Fingerprinted`.** `caller_reuses_negative_answers_and_compares_revisions_explicitly` asserts the output is a negative `result == false`. `criteria_keep_typed_answers_and_persist_only_when_requested` asserts `value.output() == &negative` and checks the path and version. It also checks that `verify` writes nothing, with `writes == 0`.\n- **Captured dependencies are returned.** `concurrent_single_node_validations_keep_separate_traces` compares the exact node and edge dependencies. `changing_one_criteria_input_does_not_invalidate_another` compares the replacement's dependencies with the reads it performed. `agent_edge_tools_record_selections_without_validating_targets` compares the exact `OutgoingEdges` dependencies and checks that failed or malformed tool calls add none. `criteria_keep_typed_answers_and_persist_only_when_requested` asserts that dependencies are empty when nothing was read.\n\nI found no obligation that lacks a test with a relevant assertion."
+        "rationale": "I judged this from the supplied tests only. I did not request implementation source or helper code, so I did not read how the `Review` criterion builds its `Memory` or `Application` fixtures. I judged those helpers from how the tests use them.\n\nObligations derived from `requirements.sdk.graph.running-criteria.validate_node`:\n1. Each call constructs a fresh `ValidationContext` that identifies the source node.\n2. Each call invokes `Criterion::execute` with that context.\n3. The completed answer, including a negative assessment, plus the captured dependencies form the returned `Fingerprinted`. Its shape is governed by the cited `requirements.sdk.graph.evidence.inputs`.\n\nCoverage:\n- **Fresh context per call.**\n  - `graph/validation_tests.rs#fn[a_second_verification_starts_with_an_empty_trace]` calls `verify` twice on the same `Validator`. The first call returns only `Dependency::Node(1, subject)`. The second call, on a different node, returns only `Dependency::Node(other, ...)`. No trace from the first call carries over.\n  - `graph/validation_tests.rs#fn[concurrent_single_node_validations_keep_separate_traces]` runs three concurrent verifications on different nodes. Each stored record holds only its own node's read and edge observations.\n  - `agent/tests.rs#fn[agent_executions_isolate_conversations_and_dependency_traces]` runs two concurrent agent executions of the same criterion. Each gets its own dependency trace, and the stored records differ.\n  - `graph/validation_tests.rs#fn[historical_freshness_reads_do_not_enter_the_replacement_trace]` shows that earlier reads, such as freshness checks, do not enter the new trace.\n- **Context identifies the source node.**\n  - Criteria that read through the context read the node that was verified. The `Dependency::Node` entries in the tests above name that node.\n  - `source_node_id()` is asserted in `tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` and in `a_second_verification_starts_with_an_empty_trace`.\n- **`execute` is called with the context.** The criteria's context reads and edge queries show up as dependencies, and executions are counted: `state.executions` is checked in the contracts tests and `state.started == [9]` in `caller_reuses_negative_answers_and_compares_revisions_explicitly`.\n- **Negative answer is returned as a completed answer.**\n  - `criteria_keep_typed_answers_and_persist_only_when_requested` asserts that `value.output()` equals the negative assessment (`satisfied: false`) and that `dependencies()` is empty.\n  - `caller_reuses_negative_answers_and_compares_revisions_explicitly` asserts `!value.output().result` and an empty dependency list.\n- **Captured dependencies are returned.**\n  - `changing_one_criteria_input_does_not_invalidate_another` and `input_checking_and_execution_keep_separate_observations` assert the exact dependency lists from execution.\n  - `agent_edge_tools_record_selections_without_validating_targets` asserts the exact `OutgoingEdges` dependencies.\n  - `validation_and_answer_need_send_without_sync` covers the typed output and the `Send` requirement.\n\nI found no obligation that is untested, and no relevant test that lacks a marker."
       }
     }
   },
@@ -459,7 +474,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "b1c00c1e246a9d3cad5d832802238ee07b4387536a473825251974c9a82c5923"
+          "value": "1923ba1a1e40335b0976450eaedbabe266a0cbc1c568947f37797528e5a0c0d0"
         }
       ]
     },
@@ -596,6 +611,57 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "2bf006acebdb8fc3df250c66c66a218d7e2e7d0edd1566f398067c9a9012f735"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#1/fn[configured]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "8949a12bea88991a132561dd361e084ad980bf948bac22ff87626e6f06e47116"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
+            },
+            "selector": "impl[Review/Criterion<Memory>]/fn[execute]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "99946d075cab7f851d1eeaa77cca97bbcf86b354d48fc1fdad7f0e047578734b"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
+            },
+            "selector": "impl[Question/Criterion<Memory>]/fn[execute]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b1906e0c4845a2120f414886d7f7afa2029fed7cfedeae7855f77c3a8aa45ea3"
         }
       ]
     }

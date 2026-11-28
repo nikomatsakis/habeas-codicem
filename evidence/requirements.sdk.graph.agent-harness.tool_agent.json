@@ -1,7 +1,7 @@
 {
   "requirement": "TBV owns the model conversation, supported backend integrations, tool\ndispatch, and structured submission used by its ask builder.",
   "determination": true,
-  "rationale": "structural: The only structural clause is \"TBV owns the model conversation, supported backend integrations, tool dispatch, and structured submission used by its ask builder.\" This is a delegation obligation. An alternative could hand the loop to a third-party agent runner, such as rig's agent or tool-calling loop. It could produce the same answers but would not be owned by TBV. So the clause is structural, and the roots cover it.\n\n- **Conversation and submission:** `crates/trust-but-verify/src/agent/tools.rs#impl[ToolAgent<P,%20T>]#2/fn[run_with_domain_tools]` builds the opening `CompletionRequest`, including the prompt and prefix. It creates the `GraphSession` and `SessionTools`, then calls TBV's own `converse` loop in `agent.rs`. `converse` drives the loop and checks submissions. The `GraphSession` `Conversation` implementation supplies the `submission_tool` and `submitted_value` handling.\n- **Tool dispatch:** `GraphSession` and `SessionTools` dispatch each tool call, including `read_node` and `outgoing_edges`, to the domain tools. They are reached from the marked `run_with_domain_tools` through `converse`, so they need no separate marker.\n- **Backend integrations:** `crates/trust-but-verify/src/agent/providers.rs#impl[RigProvider]/fn[connect]` builds the Bedrock, OpenAI and Ollama backends. It uses rig only as a completion transport, wrapped in TBV's `RigProvider`. `RigProvider`'s `complete` method, which `converse` reaches through the `CompletionProvider` trait, issues a single completion call. It also applies Bedrock options, normalizes Bedrock client calls and places cache checkpoints. It does not run a conversation loop or dispatch tools.\n\nAll the structural obligations map to source reachable from the two supplied roots, so no further marker is needed.\n\nbehavioral: `requirements.sdk.graph.agent-harness.tool_agent` is an umbrella requirement. It says TBV owns four things: the model conversation, the supported backend integrations, tool dispatch, and structured submission. Its details are refined by `submission`, `submission.*`, `tool_agent.isolation`, `tool_agent.provider_failure`, `fixed_tools`, `with_tool`, `domain_tool_dispatch` and the config requirements. Those obligations are assessed under their own requirements, so I did not reassess them here.\n\nThe reviewed tests cover each obligation the umbrella states:\n\n- **Conversation ownership:**\n  - `tests.rs#fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]` asserts the system prompt, the user message content and order, and the `submit_result` schema in the request.\n  - `configured.rs#mod[tests]/fn[supplied_openai_backend_runs_independent_calls_against_a_local_transport]` asserts that the second request carries the earlier tool output.\n  - `providers.rs#mod[tests]/fn[typed_client_calls_preserve_order_and_native_history]` asserts that response order and native history are preserved.\n- **Backend integrations:**\n  - OpenAI and Ollama are tested end to end against local transports. These tests check the model, option mapping, the tool list, the `submit_result` schema, authorization, and delivery of tool results (`supplied_openai_backend_runs_independent_calls_against_a_local_transport`, `supplied_ollama_backend_delivers_tools_and_results_over_native_chat`).\n  - Bedrock needs a real AWS service, so it is tested through `providers.rs#mod[tests]/fn[bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted]`, `cache_checkpoints_are_requested_for_caching_models` and `typed_client_calls_preserve_order_and_native_history`. This is acceptable.\n- **Tool dispatch:**\n  - `tests.rs#fn[application_tools_preserve_graph_tools_in_the_same_conversation]` asserts the delivered results from `outgoing_edges`, `read_node`, `get_next_page` and the application `increment` tool, plus the recorded dependencies.\n  - `application_tool_factories_create_fresh_state_for_each_agent_call` asserts fresh tool state per call.\n- **Structured submission:** the typed `submit_result` answer is parsed and returned and its fingerprint is stored (`behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer`). Concurrent calls keep their submissions apart (`concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads`, `agent_executions_isolate_conversations_and_dependency_traces`).\n\nI found no behavioral obligation in the text that lacks a test with a relevant assertion.",
+  "rationale": "structural: The only structural obligation is ownership: \"TBV owns the model conversation, supported backend integrations, tool dispatch, and structured submission\". An alternative that hands these to an external agent framework would violate it. The text names no library, signature, or type, so the roots only need to show that TBV's own code holds each of the four pieces.\n\n- **Backend integrations:** `crates/trust-but-verify/src/agent/providers.rs#impl[RigProvider]/fn[connect]` builds the Bedrock, OpenAI and Ollama completion models from `BackendConfig`. It carries `{impl}` for this requirement.\n- **Conversation:** `crates/trust-but-verify/src/agent/tools.rs#impl[ToolAgent<P, T>]#2/fn[run_with_domain_tools]` builds the opening `CompletionRequest`. That request holds the subject message, the node inputs and the prefix, which becomes the preamble. It then calls TBV's own `converse` in `crates/trust-but-verify/src/agent.rs#fn[converse]`, passing the provider, the session, `result_schema` and `finish`. It carries `{impl}`.\n- **Tool dispatch:** `run_with_domain_tools` creates a `GraphSession` over `SessionTools` and the registered domain tools. `converse` uses it through the `Conversation` trait. Its `dispatch` is `tools.rs#impl[GraphSession<'_, '_, D>/Conversation]/fn[dispatch]`, which handles `read_node`, `outgoing_edges` and the other tools. A reviewer reaches this code from the marked root, so it needs no marker of its own.\n- **Structured submission:** `converse` takes the result schema and the `finish` callback, and `run_with_domain_tools` tells the model to finish by calling the submission tool. `converse` is reached from the marked root, so it needs no separate marker.\n\nEvery structural piece the text names is covered by the two supplied roots plus the code they reach. I found no gap.\n\nbehavioral: `requirements.sdk.graph.agent-harness.tool_agent` is an ownership statement. TBV owns four things: the model conversation, the supported backend integrations, tool dispatch, and structured submission. The detailed obligations sit in refining requirements, which are not reassessed here: `tool_agent.isolation`, `submission*`, `fixed_tools`, the `*Config` requirements and `tool_agent.provider_failure`. The observable behaviour that remains, and the tests for it, are:\n\n- **Conversation, tool dispatch and submission (backend-independent).** These run through `ToolAgent` with scripted providers.\n  - `crates/trust-but-verify/src/agent/tests.rs#fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]` asserts the system and user messages sent. It also asserts the `submit_result` schema and that the typed answer is returned, fingerprinted and stored.\n  - `#fn[application_tools_preserve_graph_tools_in_the_same_conversation]` asserts that every request offers the graph tools, the application tool and `submit_result`. It also asserts that multi-turn tool results are delivered back in order and that paging works.\n  - `#fn[application_tool_factories_create_fresh_state_for_each_agent_call]` asserts that application tools are dispatched and that each agent call gets fresh tool state.\n  - `#fn[agent_executions_isolate_conversations_and_dependency_traces]` and `#fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]` cover concurrent conversations. They assert that histories, tool usage and dependencies stay separate, and that each conversation reaches its own submission.\n- **Supplied backend integrations.**\n  - OpenAI: `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[supplied_openai_backend_runs_independent_calls_against_a_local_transport]` runs independent calls against a local transport. It asserts the model, the output limit and the tool list including `submit_result` and its schema. It also asserts that the prompt reaches the model, and that the tool result comes back in the next request as a `function_call_output`.\n  - Ollama: `#fn[supplied_ollama_backend_delivers_tools_and_results_over_native_chat]` uses a native chat transport. It asserts the endpoint, bearer authorization and options. It also asserts the tool schema and that the tool result is delivered on the second turn.\n  - Bedrock: `crates/trust-but-verify/src/agent/providers.rs#mod[tests]/fn[typed_client_calls_preserve_order_and_native_history]` checks that tool calls and native history are normalised in order. `#fn[cache_checkpoints_are_requested_for_caching_models]` and `#fn[bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted]` check the request-side behaviour. Bedrock has no end-to-end test against a local transport. Its AWS-backed transport would need real network services, and the Bedrock-specific behaviour in the conversation path is covered by these unit tests.\n\nEvery obligation I could derive is mapped to a test with real assertions, and I found no unacknowledged gap. Provider failures, submission validity and the other detailed behaviours are delegated to their own requirements.",
   "references": "aa1c0f1341c8ccb7426ee037faa41027ec074499526ea22e602d416bbb0b5a55",
   "inputs": [
     {
@@ -29,12 +29,12 @@
     {
       "file": "crates/trust-but-verify/src/agent.rs",
       "item": "fn[converse]",
-      "hash": "55becd8ddcdf0ba7ba8ee7111d2ed87a3574922747be6c914fb5f8f80cd1e64c"
+      "hash": "b664f957f4a77588596c6224d8175ec50ee6a2012013b9bfb7dc82a46e3ee241"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/providers.rs",
-      "item": "impl[RigProvider/CompletionProvider]/fn[complete]",
-      "hash": "5ef22d9aeefb3a96a508f39f4a00cbc4d49201508ab909e7079551bcffac0476"
+      "file": "crates/trust-but-verify/src/agent/tools.rs",
+      "item": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[dispatch]",
+      "hash": "6d43b82a764c61f1316015f0fbc1b93fe17bcb02f4c46747de7f5748c4b4f8df"
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
@@ -54,7 +54,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/providers.rs",
       "item": "mod[tests]/fn[cache_checkpoints_are_requested_for_caching_models]",
-      "hash": "bf1d467d486bbc62b611a7680d8d2e17f6f1fbddd30ac916a1534ce1aabc1c41"
+      "hash": "5e52b84ce6b9029062aa2fdab59891df294a04635a3cf3dc2ab524aa46b48f4d"
     },
     {
       "file": "crates/trust-but-verify/src/agent/providers.rs",
@@ -74,7 +74,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]",
-      "hash": "e7612967baf35151d91388d3bdcba2d29524109c2ecbbe5f1d242cfce6f6f959"
+      "hash": "e28b69f092651a66561d8b9ed54e6b7c678f70b7543352ad8fe674bfbba1cbe9"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -84,17 +84,32 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[application_tools_preserve_graph_tools_in_the_same_conversation]",
-      "hash": "9e2ad11eb5530b7198e7344026fc2eec3b661d8c01978caa4163c0001d9cf120"
+      "hash": "1f07c540b21b2617426f8035fcd18bc902a2a9a3e9a8a2997d33dc25c219bc3b"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/tools.rs",
-      "item": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[submit]",
-      "hash": "6be2e73d8b2560e2efa6af25790bb67d021a8ea434976896e26e4e88259aaed6"
+      "file": "crates/trust-but-verify/src/agent/config.rs",
+      "item": "enum[AgentConfig]",
+      "hash": "42fa0e71e4831941d1e9b9df8480d4a0b52cabc7348b81f4e84f0e400c810c96"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/tools.rs",
-      "item": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[dispatch]",
-      "hash": "6d43b82a764c61f1316015f0fbc1b93fe17bcb02f4c46747de7f5748c4b4f8df"
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
+      "item": "impl[RigProvider/CompletionProvider]/fn[complete]",
+      "hash": "37064e0c8099355191d6b9d5d80220385d0f30836c53a9379342cb0c35b3f38c"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
+      "item": "fn[normalize_bedrock_client_calls]",
+      "hash": "b68cbbdb67f2496ab0bbc4467656e47cebda90a56965e93d4381b3a663d24bd7"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
+      "item": "fn[apply_bedrock_options]",
+      "hash": "f469a46a9d4ff0bdb10ee9b7acff7bdc793b65f5a1247eaaf9133c7e46e63025"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
+      "item": "fn[bedrock_caches]",
+      "hash": "c316c3bccc7a2cc2f13634677639ec3cd79776825f5a843115d9098a97948485"
     }
   ],
   "criteria": {
@@ -158,18 +173,6 @@
           ]
         },
         {
-          "OutgoingEdges": [
-            {
-              "Requirement": "requirements.sdk.graph.agent-harness.tool_agent"
-            },
-            "Implements",
-            {
-              "scheme": "node-path-set-sha256-v1",
-              "value": "e8b615bb319c00b9b69bed7051ab69ef9c0a1f6db23e48815897a86713a836aa"
-            }
-          ]
-        },
-        {
           "Node": [
             {
               "Source": {
@@ -182,7 +185,7 @@
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "55becd8ddcdf0ba7ba8ee7111d2ed87a3574922747be6c914fb5f8f80cd1e64c"
+              "value": "b664f957f4a77588596c6224d8175ec50ee6a2012013b9bfb7dc82a46e3ee241"
             }
           ]
         },
@@ -192,21 +195,21 @@
               "Source": {
                 "resource": {
                   "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/agent/providers.rs"
+                  "location": "crates/trust-but-verify/src/agent/tools.rs"
                 },
-                "selector": "impl[RigProvider/CompletionProvider]/fn[complete]"
+                "selector": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[dispatch]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "5ef22d9aeefb3a96a508f39f4a00cbc4d49201508ab909e7079551bcffac0476"
+              "value": "6d43b82a764c61f1316015f0fbc1b93fe17bcb02f4c46747de7f5748c4b4f8df"
             }
           ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "The only structural clause is \"TBV owns the model conversation, supported backend integrations, tool dispatch, and structured submission used by its ask builder.\" This is a delegation obligation. An alternative could hand the loop to a third-party agent runner, such as rig's agent or tool-calling loop. It could produce the same answers but would not be owned by TBV. So the clause is structural, and the roots cover it.\n\n- **Conversation and submission:** `crates/trust-but-verify/src/agent/tools.rs#impl[ToolAgent<P,%20T>]#2/fn[run_with_domain_tools]` builds the opening `CompletionRequest`, including the prompt and prefix. It creates the `GraphSession` and `SessionTools`, then calls TBV's own `converse` loop in `agent.rs`. `converse` drives the loop and checks submissions. The `GraphSession` `Conversation` implementation supplies the `submission_tool` and `submitted_value` handling.\n- **Tool dispatch:** `GraphSession` and `SessionTools` dispatch each tool call, including `read_node` and `outgoing_edges`, to the domain tools. They are reached from the marked `run_with_domain_tools` through `converse`, so they need no separate marker.\n- **Backend integrations:** `crates/trust-but-verify/src/agent/providers.rs#impl[RigProvider]/fn[connect]` builds the Bedrock, OpenAI and Ollama backends. It uses rig only as a completion transport, wrapped in TBV's `RigProvider`. `RigProvider`'s `complete` method, which `converse` reaches through the `CompletionProvider` trait, issues a single completion call. It also applies Bedrock options, normalizes Bedrock client calls and places cache checkpoints. It does not run a conversation loop or dispatch tools.\n\nAll the structural obligations map to source reachable from the two supplied roots, so no further marker is needed."
+        "rationale": "The only structural obligation is ownership: \"TBV owns the model conversation, supported backend integrations, tool dispatch, and structured submission\". An alternative that hands these to an external agent framework would violate it. The text names no library, signature, or type, so the roots only need to show that TBV's own code holds each of the four pieces.\n\n- **Backend integrations:** `crates/trust-but-verify/src/agent/providers.rs#impl[RigProvider]/fn[connect]` builds the Bedrock, OpenAI and Ollama completion models from `BackendConfig`. It carries `{impl}` for this requirement.\n- **Conversation:** `crates/trust-but-verify/src/agent/tools.rs#impl[ToolAgent<P, T>]#2/fn[run_with_domain_tools]` builds the opening `CompletionRequest`. That request holds the subject message, the node inputs and the prefix, which becomes the preamble. It then calls TBV's own `converse` in `crates/trust-but-verify/src/agent.rs#fn[converse]`, passing the provider, the session, `result_schema` and `finish`. It carries `{impl}`.\n- **Tool dispatch:** `run_with_domain_tools` creates a `GraphSession` over `SessionTools` and the registered domain tools. `converse` uses it through the `Conversation` trait. Its `dispatch` is `tools.rs#impl[GraphSession<'_, '_, D>/Conversation]/fn[dispatch]`, which handles `read_node`, `outgoing_edges` and the other tools. A reviewer reaches this code from the marked root, so it needs no marker of its own.\n- **Structured submission:** `converse` takes the result schema and the `finish` callback, and `run_with_domain_tools` tells the model to finish by calling the submission tool. `converse` is reached from the marked root, so it needs no separate marker.\n\nEvery structural piece the text names is covered by the two supplied roots plus the code they reach. I found no gap."
       }
     },
     "behavioral": {
@@ -298,7 +301,7 @@
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "bf1d467d486bbc62b611a7680d8d2e17f6f1fbddd30ac916a1534ce1aabc1c41"
+              "value": "5e52b84ce6b9029062aa2fdab59891df294a04635a3cf3dc2ab524aa46b48f4d"
             }
           ]
         },
@@ -366,7 +369,7 @@
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "e7612967baf35151d91388d3bdcba2d29524109c2ecbbe5f1d242cfce6f6f959"
+              "value": "e28b69f092651a66561d8b9ed54e6b7c678f70b7543352ad8fe674bfbba1cbe9"
             }
           ]
         },
@@ -400,26 +403,14 @@
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "9e2ad11eb5530b7198e7344026fc2eec3b661d8c01978caa4163c0001d9cf120"
-            }
-          ]
-        },
-        {
-          "OutgoingEdges": [
-            {
-              "Requirement": "requirements.sdk.graph.agent-harness.tool_agent"
-            },
-            "Tests",
-            {
-              "scheme": "node-path-set-sha256-v1",
-              "value": "b09a635fd57dc1d73dda185eaa7b03875c24499722155b799e33041a2822acfa"
+              "value": "1f07c540b21b2617426f8035fcd18bc902a2a9a3e9a8a2997d33dc25c219bc3b"
             }
           ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "`requirements.sdk.graph.agent-harness.tool_agent` is an umbrella requirement. It says TBV owns four things: the model conversation, the supported backend integrations, tool dispatch, and structured submission. Its details are refined by `submission`, `submission.*`, `tool_agent.isolation`, `tool_agent.provider_failure`, `fixed_tools`, `with_tool`, `domain_tool_dispatch` and the config requirements. Those obligations are assessed under their own requirements, so I did not reassess them here.\n\nThe reviewed tests cover each obligation the umbrella states:\n\n- **Conversation ownership:**\n  - `tests.rs#fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]` asserts the system prompt, the user message content and order, and the `submit_result` schema in the request.\n  - `configured.rs#mod[tests]/fn[supplied_openai_backend_runs_independent_calls_against_a_local_transport]` asserts that the second request carries the earlier tool output.\n  - `providers.rs#mod[tests]/fn[typed_client_calls_preserve_order_and_native_history]` asserts that response order and native history are preserved.\n- **Backend integrations:**\n  - OpenAI and Ollama are tested end to end against local transports. These tests check the model, option mapping, the tool list, the `submit_result` schema, authorization, and delivery of tool results (`supplied_openai_backend_runs_independent_calls_against_a_local_transport`, `supplied_ollama_backend_delivers_tools_and_results_over_native_chat`).\n  - Bedrock needs a real AWS service, so it is tested through `providers.rs#mod[tests]/fn[bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted]`, `cache_checkpoints_are_requested_for_caching_models` and `typed_client_calls_preserve_order_and_native_history`. This is acceptable.\n- **Tool dispatch:**\n  - `tests.rs#fn[application_tools_preserve_graph_tools_in_the_same_conversation]` asserts the delivered results from `outgoing_edges`, `read_node`, `get_next_page` and the application `increment` tool, plus the recorded dependencies.\n  - `application_tool_factories_create_fresh_state_for_each_agent_call` asserts fresh tool state per call.\n- **Structured submission:** the typed `submit_result` answer is parsed and returned and its fingerprint is stored (`behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer`). Concurrent calls keep their submissions apart (`concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads`, `agent_executions_isolate_conversations_and_dependency_traces`).\n\nI found no behavioral obligation in the text that lacks a test with a relevant assertion."
+        "rationale": "`requirements.sdk.graph.agent-harness.tool_agent` is an ownership statement. TBV owns four things: the model conversation, the supported backend integrations, tool dispatch, and structured submission. The detailed obligations sit in refining requirements, which are not reassessed here: `tool_agent.isolation`, `submission*`, `fixed_tools`, the `*Config` requirements and `tool_agent.provider_failure`. The observable behaviour that remains, and the tests for it, are:\n\n- **Conversation, tool dispatch and submission (backend-independent).** These run through `ToolAgent` with scripted providers.\n  - `crates/trust-but-verify/src/agent/tests.rs#fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]` asserts the system and user messages sent. It also asserts the `submit_result` schema and that the typed answer is returned, fingerprinted and stored.\n  - `#fn[application_tools_preserve_graph_tools_in_the_same_conversation]` asserts that every request offers the graph tools, the application tool and `submit_result`. It also asserts that multi-turn tool results are delivered back in order and that paging works.\n  - `#fn[application_tool_factories_create_fresh_state_for_each_agent_call]` asserts that application tools are dispatched and that each agent call gets fresh tool state.\n  - `#fn[agent_executions_isolate_conversations_and_dependency_traces]` and `#fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]` cover concurrent conversations. They assert that histories, tool usage and dependencies stay separate, and that each conversation reaches its own submission.\n- **Supplied backend integrations.**\n  - OpenAI: `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[supplied_openai_backend_runs_independent_calls_against_a_local_transport]` runs independent calls against a local transport. It asserts the model, the output limit and the tool list including `submit_result` and its schema. It also asserts that the prompt reaches the model, and that the tool result comes back in the next request as a `function_call_output`.\n  - Ollama: `#fn[supplied_ollama_backend_delivers_tools_and_results_over_native_chat]` uses a native chat transport. It asserts the endpoint, bearer authorization and options. It also asserts the tool schema and that the tool result is delivered on the second turn.\n  - Bedrock: `crates/trust-but-verify/src/agent/providers.rs#mod[tests]/fn[typed_client_calls_preserve_order_and_native_history]` checks that tool calls and native history are normalised in order. `#fn[cache_checkpoints_are_requested_for_caching_models]` and `#fn[bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted]` check the request-side behaviour. Bedrock has no end-to-end test against a local transport. Its AWS-backed transport would need real network services, and the Bedrock-specific behaviour in the conversation path is covered by these unit tests.\n\nEvery obligation I could derive is mapped to a test with real assertions, and I found no unacknowledged gap. Provider failures, submission validity and the other detailed behaviours are delegated to their own requirements."
       }
     }
   },
@@ -483,18 +474,6 @@
       ]
     },
     {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.agent-harness.tool_agent"
-        },
-        "Implements",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "e8b615bb319c00b9b69bed7051ab69ef9c0a1f6db23e48815897a86713a836aa"
-        }
-      ]
-    },
-    {
       "Node": [
         {
           "Source": {
@@ -507,7 +486,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "55becd8ddcdf0ba7ba8ee7111d2ed87a3574922747be6c914fb5f8f80cd1e64c"
+          "value": "b664f957f4a77588596c6224d8175ec50ee6a2012013b9bfb7dc82a46e3ee241"
         }
       ]
     },
@@ -517,14 +496,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/providers.rs"
+              "location": "crates/trust-but-verify/src/agent/tools.rs"
             },
-            "selector": "impl[RigProvider/CompletionProvider]/fn[complete]"
+            "selector": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[dispatch]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "5ef22d9aeefb3a96a508f39f4a00cbc4d49201508ab909e7079551bcffac0476"
+          "value": "6d43b82a764c61f1316015f0fbc1b93fe17bcb02f4c46747de7f5748c4b4f8df"
         }
       ]
     },
@@ -592,7 +571,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "bf1d467d486bbc62b611a7680d8d2e17f6f1fbddd30ac916a1534ce1aabc1c41"
+          "value": "5e52b84ce6b9029062aa2fdab59891df294a04635a3cf3dc2ab524aa46b48f4d"
         }
       ]
     },
@@ -660,7 +639,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "e7612967baf35151d91388d3bdcba2d29524109c2ecbbe5f1d242cfce6f6f959"
+          "value": "e28b69f092651a66561d8b9ed54e6b7c678f70b7543352ad8fe674bfbba1cbe9"
         }
       ]
     },
@@ -694,7 +673,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "9e2ad11eb5530b7198e7344026fc2eec3b661d8c01978caa4163c0001d9cf120"
+          "value": "1f07c540b21b2617426f8035fcd18bc902a2a9a3e9a8a2997d33dc25c219bc3b"
         }
       ]
     },
@@ -703,10 +682,10 @@
         {
           "Requirement": "requirements.sdk.graph.agent-harness.tool_agent"
         },
-        "Tests",
+        "Implements",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "b09a635fd57dc1d73dda185eaa7b03875c24499722155b799e33041a2822acfa"
+          "value": "e8b615bb319c00b9b69bed7051ab69ef9c0a1f6db23e48815897a86713a836aa"
         }
       ]
     },
@@ -716,14 +695,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tools.rs"
+              "location": "crates/trust-but-verify/src/agent/config.rs"
             },
-            "selector": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[submit]"
+            "selector": "enum[AgentConfig]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "6be2e73d8b2560e2efa6af25790bb67d021a8ea434976896e26e4e88259aaed6"
+          "value": "42fa0e71e4831941d1e9b9df8480d4a0b52cabc7348b81f4e84f0e400c810c96"
         }
       ]
     },
@@ -733,14 +712,65 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tools.rs"
+              "location": "crates/trust-but-verify/src/agent/providers.rs"
             },
-            "selector": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[dispatch]"
+            "selector": "impl[RigProvider/CompletionProvider]/fn[complete]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "6d43b82a764c61f1316015f0fbc1b93fe17bcb02f4c46747de7f5748c4b4f8df"
+          "value": "37064e0c8099355191d6b9d5d80220385d0f30836c53a9379342cb0c35b3f38c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/providers.rs"
+            },
+            "selector": "fn[normalize_bedrock_client_calls]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b68cbbdb67f2496ab0bbc4467656e47cebda90a56965e93d4381b3a663d24bd7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/providers.rs"
+            },
+            "selector": "fn[apply_bedrock_options]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "f469a46a9d4ff0bdb10ee9b7acff7bdc793b65f5a1247eaaf9133c7e46e63025"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/providers.rs"
+            },
+            "selector": "fn[bedrock_caches]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "c316c3bccc7a2cc2f13634677639ec3cd79776825f5a843115d9098a97948485"
         }
       ]
     }

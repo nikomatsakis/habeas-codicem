@@ -550,6 +550,7 @@ mod tests {
         }
     }
 
+    // {test}`requirements.sdk.validation-cache.usage`
     // {test}`requirements.sdk.validation-cache.with_agent`
     // {test}`requirements.sdk.graph.agent-harness.AgentWithTools`
     // {test}`requirements.sdk.graph.agent-harness.AgentSettings`

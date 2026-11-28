@@ -1,7 +1,7 @@
 {
   "requirement": "The authoring harness MUST use Rig and support Bedrock, Ollama, and OpenAI. Users MUST be\nable to select a backend and model through configuration without changing the\nassessment tools, prompt, or evidence format.",
   "determination": true,
-  "rationale": "structural: The only structural obligation in `requirements.authoring.provider` is \"MUST use Rig\". An implementation on a hand-written HTTP client or the vendor SDKs directly could give the same observable results, so this clause constrains how the harness is built. The roots cover it.\n\n- `crates/trust-but-verify/src/agent/providers.rs#impl[RigProvider]/fn[connect]` builds the Bedrock, OpenAI and Ollama backends through Rig. Bedrock uses `rig_bedrock::client::BedrockRuntime`. OpenAI uses `rig_core::providers::openai`, and Ollama uses `rig_core::providers::ollama`. Each ends in `.erase()`, which produces one Rig completion model. The backend and model are chosen from `BackendConfig` and nothing else.\n- `crates/trust-but-verify/src/agent/providers.rs#impl[RigProvider/CompletionProvider]/fn[complete]` sends every request through that Rig model with `self.model.call(request)`. The same path serves all three backends, so tools, prompt and evidence format are not backend-specific.\n\nThe other clauses state only observable behavior. These are \"support Bedrock, Ollama, and OpenAI\" and \"select a backend and model through configuration without changing the assessment tools, prompt, or evidence format\". Several implementations could satisfy them, so no further structural evidence is needed. Other items reached from these two roots, such as the option and cache helpers, need no marker. The requirement's test edges supply evidence for the behavioral clauses.\n\nbehavioral: Obligations derived from `requirements.authoring.provider`:\n1. The harness uses Rig. This states an implementation choice with no independent observable behavior, so it needs no test.\n2. It supports Bedrock, Ollama and OpenAI. Each backend is exercised through the CLI against a mock server:\n   - `tests/authoring_cli.rs#fn[all_adapters_preserve_prompt_tools_and_evidence_with_default_connections]` runs all three backends. It asserts the endpoint path, the model and the credentials for each: no auth header for Ollama, SDK default-chain credentials and region for Bedrock, and `Bearer` from `OPENAI_API_KEY` for OpenAI.\n   - `tests/authoring_cli.rs#fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]` covers Bedrock in more depth. It checks the profile, the region, the Converse tool-use round trip with history replay, and both typed and untyped tool calls.\n   - `tests/authoring_cli.rs#fn[openai_responses_replays_tool_calls_and_records_usage]` covers the OpenAI tool-call round trip.\n   - `tests/authoring_cli.rs#fn[authoring_uses_nearest_workspace_configuration_without_a_user_file]` covers Ollama selected from workspace configuration.\n   - The unit tests `typed_client_calls_preserve_order_and_native_history` and `malformed_typed_client_calls_are_reported` in `crates/trust-but-verify/src/agent/providers.rs` cover Bedrock client-call normalization.\n   - `tests/live_bedrock.rs#fn[live_bedrock_authoring]` is a live check that is skipped under CI.\n3. Users select a backend and model through configuration. Every CLI test selects them only through the config file, and each asserts that the model reaching the provider matches the configured `model`.\n4. Switching the backend must not change the assessment tools, the prompt or the evidence format. `all_adapters_preserve_prompt_tools_and_evidence_with_default_connections` runs an identical project and submission through all three backends. It uses `prompt_and_tools`, which removes only the provider-specific envelopes. It then asserts equal prompt text and equal sorted tool name, description and schema triples across Ollama, Bedrock and OpenAI. It also asserts 12 tools and asserts that the entire evidence JSON documents are equal across the three. The Bedrock and OpenAI tests additionally check the tool set (12 tools) and the prompt contents.\n\nAll obligations are tested with assertions that would catch a backend-specific change to the tools, prompt or evidence. I found no gap.",
+  "rationale": "structural: The text has two structural obligations. (1) \"MUST use Rig\": an implementation on a hand-written HTTP client or another LLM library would behave the same but would violate this clause. (2) \"support Bedrock, Ollama, and OpenAI\" with backend and model chosen by configuration: a build with only one backend, or with backends hard-coded instead of chosen from configuration, would violate it. Keeping assessment tools, prompt and evidence format unchanged is observable behavior. It is not a structural obligation.\n\n`crates/trust-but-verify/src/agent/providers.rs#impl[RigProvider]/fn[connect]` matches on `BackendConfig`. It builds a Rig completion model for each of Bedrock (`rig_bedrock`), OpenAI (`rig_core` openai responses) and Ollama (`rig_core` ollama native completion). Each model is type-erased into one `model` field, so the backend and model name come only from configuration. Nothing downstream depends on which backend was chosen, apart from provider-specific options.\n\n`crates/trust-but-verify/src/agent/providers.rs#impl[RigProvider/CompletionProvider]/fn[complete]` sends every request through the same Rig model with `self.model.call(request)`. That is the common interface the tools, prompt and evidence format sit on top of.\n\nThe configuration enum (`src/config.rs#enum[BackendConfig]`) and its mapping to Rig are covered by the refining requirements `requirements.authoring.configuration_storage` and `requirements.authoring.rig_configuration_mapping`. The enum is also reached through the marked `connect`. No further root is needed.\n\nbehavioral: The text has one structural obligation (use Rig), which needs no behavioral test here. It has two behavioral obligations.\n\n1. Support Bedrock, Ollama and OpenAI, with the backend and model chosen by configuration.\n   - `tests/authoring_cli.rs#fn[all_adapters_preserve_prompt_tools_and_evidence_with_default_connections]` drives the CLI against a mock server for each backend. Each run is selected by its config file.\n     - Ollama: the request body `model` equals `MODEL`, and no authorization header is sent.\n     - Bedrock: the request path is `/model/default-chain-model/converse`, and the SDK default chain supplies credentials and region.\n     - OpenAI: the request goes to `/responses` with a Bearer key, and the body `model` is `fixture-openai`.\n   - `fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]` covers Bedrock model selection, the profile and the region, in both typed and untyped tool-call forms. It checks native history replay and the usage backend and model.\n   - `fn[openai_responses_replays_tool_calls_and_records_usage]` covers OpenAI selection, the model, and the request history across tool calls.\n   - `fn[authoring_uses_nearest_workspace_configuration_without_a_user_file]` covers Ollama selected through a workspace configuration, with the model checked in the request and in usage.\n   - `mod[tests]/fn[typed_client_calls_preserve_order_and_native_history]` and `fn[malformed_typed_client_calls_are_reported]` in `providers.rs` cover Bedrock tool-call normalization.\n   - `tests/live_bedrock.rs#fn[live_bedrock_authoring]` is a live check.\n\n2. Changing the backend or model must not change the assessment tools, prompt or evidence format.\n   - The all-adapters test runs identical projects and submissions through the three backends. It asserts that `prompt_and_tools` is equal across Ollama, Bedrock and OpenAI. That helper compares the prompt text and the sorted tool names, descriptions and schemas, with only the provider envelopes stripped.\n   - It asserts there are 12 tools.\n   - It asserts the entire evidence JSON is equal across all three backends.\n   - The Bedrock and OpenAI tests also check the tool set, the tool schemas and the prompt content.\n\nThe tests both exercise these behaviors and assert their outcomes, so I found no unaddressed gap.",
   "references": "5e7b9b6ab46e3b038dcd6af07ff82ca42bad7240f8da723fbe07f207919325fe",
   "inputs": [
     {
@@ -25,7 +25,12 @@
     {
       "file": "crates/trust-but-verify/src/agent/providers.rs",
       "item": "impl[RigProvider/CompletionProvider]/fn[complete]",
-      "hash": "5ef22d9aeefb3a96a508f39f4a00cbc4d49201508ab909e7079551bcffac0476"
+      "hash": "37064e0c8099355191d6b9d5d80220385d0f30836c53a9379342cb0c35b3f38c"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "enum[BackendConfig]",
+      "hash": "021d3215d0c12d74640c3ca5707ac7430c183ef7654f3d5c25909d839124e06f"
     },
     {
       "file": "crates/trust-but-verify/src/agent/providers.rs",
@@ -66,11 +71,6 @@
       "file": "tests/authoring_cli.rs",
       "item": "fn[prompt_and_tools]",
       "hash": "90c2533007ea67c4906ba38eeb72627c05c1357cdf4cbfcc715f570c1e5c2c94"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "enum[BackendConfig]",
-      "hash": "021d3215d0c12d74640c3ca5707ac7430c183ef7654f3d5c25909d839124e06f"
     }
   ],
   "criteria": {
@@ -129,38 +129,31 @@
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "5ef22d9aeefb3a96a508f39f4a00cbc4d49201508ab909e7079551bcffac0476"
+              "value": "37064e0c8099355191d6b9d5d80220385d0f30836c53a9379342cb0c35b3f38c"
             }
           ]
         },
         {
-          "OutgoingEdges": [
+          "Node": [
             {
-              "Requirement": "requirements.authoring.provider"
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/config.rs"
+                },
+                "selector": "enum[BackendConfig]"
+              }
             },
-            "Implements",
             {
-              "scheme": "node-path-set-sha256-v1",
-              "value": "debd09a152e9ba71f5bc8022875bd0e888e3c5d5906c5258d0fecfb66c9afadb"
-            }
-          ]
-        },
-        {
-          "OutgoingEdges": [
-            {
-              "Requirement": "requirements.authoring.provider"
-            },
-            "Tests",
-            {
-              "scheme": "node-path-set-sha256-v1",
-              "value": "ae67e4cb12a0035c0bc6a1c483a469e40b5f34460752a41fb5414e72e5834191"
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "021d3215d0c12d74640c3ca5707ac7430c183ef7654f3d5c25909d839124e06f"
             }
           ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "The only structural obligation in `requirements.authoring.provider` is \"MUST use Rig\". An implementation on a hand-written HTTP client or the vendor SDKs directly could give the same observable results, so this clause constrains how the harness is built. The roots cover it.\n\n- `crates/trust-but-verify/src/agent/providers.rs#impl[RigProvider]/fn[connect]` builds the Bedrock, OpenAI and Ollama backends through Rig. Bedrock uses `rig_bedrock::client::BedrockRuntime`. OpenAI uses `rig_core::providers::openai`, and Ollama uses `rig_core::providers::ollama`. Each ends in `.erase()`, which produces one Rig completion model. The backend and model are chosen from `BackendConfig` and nothing else.\n- `crates/trust-but-verify/src/agent/providers.rs#impl[RigProvider/CompletionProvider]/fn[complete]` sends every request through that Rig model with `self.model.call(request)`. The same path serves all three backends, so tools, prompt and evidence format are not backend-specific.\n\nThe other clauses state only observable behavior. These are \"support Bedrock, Ollama, and OpenAI\" and \"select a backend and model through configuration without changing the assessment tools, prompt, or evidence format\". Several implementations could satisfy them, so no further structural evidence is needed. Other items reached from these two roots, such as the option and cache helpers, need no marker. The requirement's test edges supply evidence for the behavioral clauses."
+        "rationale": "The text has two structural obligations. (1) \"MUST use Rig\": an implementation on a hand-written HTTP client or another LLM library would behave the same but would violate this clause. (2) \"support Bedrock, Ollama, and OpenAI\" with backend and model chosen by configuration: a build with only one backend, or with backends hard-coded instead of chosen from configuration, would violate it. Keeping assessment tools, prompt and evidence format unchanged is observable behavior. It is not a structural obligation.\n\n`crates/trust-but-verify/src/agent/providers.rs#impl[RigProvider]/fn[connect]` matches on `BackendConfig`. It builds a Rig completion model for each of Bedrock (`rig_bedrock`), OpenAI (`rig_core` openai responses) and Ollama (`rig_core` ollama native completion). Each model is type-erased into one `model` field, so the backend and model name come only from configuration. Nothing downstream depends on which backend was chosen, apart from provider-specific options.\n\n`crates/trust-but-verify/src/agent/providers.rs#impl[RigProvider/CompletionProvider]/fn[complete]` sends every request through the same Rig model with `self.model.call(request)`. That is the common interface the tools, prompt and evidence format sit on top of.\n\nThe configuration enum (`src/config.rs#enum[BackendConfig]`) and its mapping to Rig are covered by the refining requirements `requirements.authoring.configuration_storage` and `requirements.authoring.rig_configuration_mapping`. The enum is also reached through the marked `connect`. No further root is needed."
       }
     },
     "behavioral": {
@@ -327,7 +320,7 @@
       ],
       "output": {
         "status": "success",
-        "rationale": "Obligations derived from `requirements.authoring.provider`:\n1. The harness uses Rig. This states an implementation choice with no independent observable behavior, so it needs no test.\n2. It supports Bedrock, Ollama and OpenAI. Each backend is exercised through the CLI against a mock server:\n   - `tests/authoring_cli.rs#fn[all_adapters_preserve_prompt_tools_and_evidence_with_default_connections]` runs all three backends. It asserts the endpoint path, the model and the credentials for each: no auth header for Ollama, SDK default-chain credentials and region for Bedrock, and `Bearer` from `OPENAI_API_KEY` for OpenAI.\n   - `tests/authoring_cli.rs#fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]` covers Bedrock in more depth. It checks the profile, the region, the Converse tool-use round trip with history replay, and both typed and untyped tool calls.\n   - `tests/authoring_cli.rs#fn[openai_responses_replays_tool_calls_and_records_usage]` covers the OpenAI tool-call round trip.\n   - `tests/authoring_cli.rs#fn[authoring_uses_nearest_workspace_configuration_without_a_user_file]` covers Ollama selected from workspace configuration.\n   - The unit tests `typed_client_calls_preserve_order_and_native_history` and `malformed_typed_client_calls_are_reported` in `crates/trust-but-verify/src/agent/providers.rs` cover Bedrock client-call normalization.\n   - `tests/live_bedrock.rs#fn[live_bedrock_authoring]` is a live check that is skipped under CI.\n3. Users select a backend and model through configuration. Every CLI test selects them only through the config file, and each asserts that the model reaching the provider matches the configured `model`.\n4. Switching the backend must not change the assessment tools, the prompt or the evidence format. `all_adapters_preserve_prompt_tools_and_evidence_with_default_connections` runs an identical project and submission through all three backends. It uses `prompt_and_tools`, which removes only the provider-specific envelopes. It then asserts equal prompt text and equal sorted tool name, description and schema triples across Ollama, Bedrock and OpenAI. It also asserts 12 tools and asserts that the entire evidence JSON documents are equal across the three. The Bedrock and OpenAI tests additionally check the tool set (12 tools) and the prompt contents.\n\nAll obligations are tested with assertions that would catch a backend-specific change to the tools, prompt or evidence. I found no gap."
+        "rationale": "The text has one structural obligation (use Rig), which needs no behavioral test here. It has two behavioral obligations.\n\n1. Support Bedrock, Ollama and OpenAI, with the backend and model chosen by configuration.\n   - `tests/authoring_cli.rs#fn[all_adapters_preserve_prompt_tools_and_evidence_with_default_connections]` drives the CLI against a mock server for each backend. Each run is selected by its config file.\n     - Ollama: the request body `model` equals `MODEL`, and no authorization header is sent.\n     - Bedrock: the request path is `/model/default-chain-model/converse`, and the SDK default chain supplies credentials and region.\n     - OpenAI: the request goes to `/responses` with a Bearer key, and the body `model` is `fixture-openai`.\n   - `fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]` covers Bedrock model selection, the profile and the region, in both typed and untyped tool-call forms. It checks native history replay and the usage backend and model.\n   - `fn[openai_responses_replays_tool_calls_and_records_usage]` covers OpenAI selection, the model, and the request history across tool calls.\n   - `fn[authoring_uses_nearest_workspace_configuration_without_a_user_file]` covers Ollama selected through a workspace configuration, with the model checked in the request and in usage.\n   - `mod[tests]/fn[typed_client_calls_preserve_order_and_native_history]` and `fn[malformed_typed_client_calls_are_reported]` in `providers.rs` cover Bedrock tool-call normalization.\n   - `tests/live_bedrock.rs#fn[live_bedrock_authoring]` is a live check.\n\n2. Changing the backend or model must not change the assessment tools, prompt or evidence format.\n   - The all-adapters test runs identical projects and submissions through the three backends. It asserts that `prompt_and_tools` is equal across Ollama, Bedrock and OpenAI. That helper compares the prompt text and the sorted tool names, descriptions and schemas, with only the provider envelopes stripped.\n   - It asserts there are 12 tools.\n   - It asserts the entire evidence JSON is equal across all three backends.\n   - The Bedrock and OpenAI tests also check the tool set, the tool schemas and the prompt content.\n\nThe tests both exercise these behaviors and assert their outcomes, so I found no unaddressed gap."
       }
     }
   },
@@ -386,31 +379,24 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "5ef22d9aeefb3a96a508f39f4a00cbc4d49201508ab909e7079551bcffac0476"
+          "value": "37064e0c8099355191d6b9d5d80220385d0f30836c53a9379342cb0c35b3f38c"
         }
       ]
     },
     {
-      "OutgoingEdges": [
+      "Node": [
         {
-          "Requirement": "requirements.authoring.provider"
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/config.rs"
+            },
+            "selector": "enum[BackendConfig]"
+          }
         },
-        "Implements",
         {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "debd09a152e9ba71f5bc8022875bd0e888e3c5d5906c5258d0fecfb66c9afadb"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.authoring.provider"
-        },
-        "Tests",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "ae67e4cb12a0035c0bc6a1c483a469e40b5f34460752a41fb5414e72e5834191"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "021d3215d0c12d74640c3ca5707ac7430c183ef7654f3d5c25909d839124e06f"
         }
       ]
     },
@@ -547,23 +533,6 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "90c2533007ea67c4906ba38eeb72627c05c1357cdf4cbfcc715f570c1e5c2c94"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/config.rs"
-            },
-            "selector": "enum[BackendConfig]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "021d3215d0c12d74640c3ca5707ac7430c183ef7654f3d5c25909d839124e06f"
         }
       ]
     }
