@@ -405,6 +405,7 @@ fn registered_grammars_match_their_profiles_and_parse_the_selected_language() {
     }
 }
 
+// {test}`requirements.sdk.graph.search.SearchResults`
 // {test}`requirements.sdk.sources.provider_defaults`
 // {test}`requirements.sdk.sources.provider_defaults.composition`
 // {test}`requirements.sdk.sources.provider_results`

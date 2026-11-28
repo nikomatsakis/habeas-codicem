@@ -32,6 +32,8 @@ habeas setup
 
 `habeas setup` adds Habeas as a Cargo dev dependency, configures mdBook to use the installed `habeas mdbook` preprocessor, copies the badge stylesheet, creates `tests/habeas.rs`, configures the per-process collector in `.config/nextest.toml` at the Cargo workspace root, and enables the automatically generated documented coverage gaps chapter under the requirements index. That test calls `habeas::validate()`, so normal Cargo tests check your requirements and evidence.
 
+Updating the Habeas dev dependency also updates how existing `habeas::validate()` tests run. If you use a crates.io dev-dependency, you can install and cache the matching CLI in CI with `cargo install habeas --locked --version '=<version>'`. The test checks the dependency source offline and runs `habeas --version` before using the executable on `PATH`. A local or Git dependency, or a missing or mismatched CLI, uses a release build from the dependency source cached in the workspace target directory. `habeas coverage` can reuse its matching release CLI directly. The evidence scan runs outside coverage.
+
 Once the plugin is enabled, `cargo agents sync` provides Habeas's skills to your configured agents. Run it again after updating the Habeas dependency to refresh the skills.
 
 If you previously ran `habeas agents` or `habeas setup --install-skills`, inspect the resulting `.agents/skills/habeas-*` directories for local edits before your first Symposium sync. Save customized files under different names or elsewhere, remove those old copies, and run `cargo agents sync` to receive Symposium-managed skills.

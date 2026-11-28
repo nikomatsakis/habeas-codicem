@@ -8,7 +8,7 @@ mod hook;
 mod setup;
 
 #[derive(Parser)]
-#[command(name = "habeas")]
+#[command(name = "habeas", version)]
 // {impl}`requirements.cli.clap`
 struct Cli {
     #[command(subcommand)]
@@ -18,6 +18,8 @@ struct Cli {
 #[derive(Subcommand)]
 // {impl}`requirements.authoring.reporting`
 enum Command {
+    /// Check saved requirement and review evidence for the current project.
+    Validate,
     /// Run nextest with independent LLVM coverage for each test process.
     Coverage {
         #[arg(last = true)]
@@ -151,6 +153,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         } | Command::Setup { .. }
             | Command::Coverage { .. }
             | Command::CoverageCheck
+            | Command::Validate
             | Command::Test
             | Command::CoverageProcess { .. }
             | Command::Hook { .. }
@@ -160,6 +163,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         habeas::config::load_workspace_evidence(&std::env::current_dir()?)?;
     }
     match cli.command {
+        Command::Validate => validate(),
         Command::Coverage { args } => {
             std::process::exit(habeas::execution_coverage::run(
                 &setup::project_root()?,
@@ -385,4 +389,23 @@ fn main() -> Result<(), Box<dyn Error>> {
             command: HookCommand::SessionStart,
         } => hook::session_start(),
     }
+}
+
+// {impl}`requirements.integration.validate`
+fn validate() -> Result<(), Box<dyn Error>> {
+    let root = setup::find_project_root(&std::env::current_dir()?)
+        .ok_or("cannot find Cargo and mdBook project root")?;
+    let report = habeas::validate_repository(&root)?;
+    if !report.errors.is_empty() {
+        eprintln!(
+            "Habeas validation failed ({} requirements, {} examples, {} evidence files, {} errors):\n- {}\n\nRun `habeas author --all` to author missing or outdated evidence using the configured model, then address any reported gaps and rerun the tests. Do not write evidence judgments or snapshots by hand.",
+            report.requirements,
+            report.examples,
+            report.evidence_files,
+            report.errors.len(),
+            report.errors.join("\n- ")
+        );
+        std::process::exit(1);
+    }
+    Ok(())
 }

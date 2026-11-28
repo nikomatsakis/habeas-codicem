@@ -335,6 +335,7 @@ fn local_path_setup_rejects_a_missing_crate_directory() {
     assert!(habeas_dependencies(project).is_empty());
 }
 
+// {test}`requirements.integration.validate.optimized`
 // {test}`requirements.cli.setup`
 // {test}`requirements.cli.setup_css`
 // {test}`requirements.cli.setup_local_path`

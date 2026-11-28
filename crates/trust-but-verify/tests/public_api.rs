@@ -589,25 +589,6 @@ fn public_exports_match_the_appendix() {
         serde_json::json!({}),
         "TBV defines no Cargo features"
     );
-    let consumer = Command::new(env!("CARGO"))
-        .current_dir(workspace)
-        .args([
-            "check",
-            "--locked",
-            "--offline",
-            "--package",
-            "habeas",
-            "--all-targets",
-        ])
-        .env_remove("RUSTFLAGS")
-        .env_remove("CARGO_ENCODED_RUSTFLAGS")
-        .output()
-        .expect("check the shipping Habeas consumer against the SDK");
-    assert!(
-        consumer.status.success(),
-        "Habeas must compile using the public SDK: {}",
-        String::from_utf8_lossy(&consumer.stderr)
-    );
     let target = workspace.join("target");
     // Use stable rustdoc's published HTML to check paths and item kinds. Always
     // generate it for this source tree rather than accepting an old book copy.

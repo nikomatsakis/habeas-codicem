@@ -15,6 +15,9 @@ pub(crate) fn validate(pattern: &str) -> Result<(), String> {
 
 // {cite}`habeas:util`
 pub(crate) fn matches(pattern: &str, name: &str) -> bool {
+    if !pattern.contains('*') {
+        return pattern == name;
+    }
     let bytes = name.as_bytes();
     let mut previous = vec![false; bytes.len() + 1];
     previous[0] = true;

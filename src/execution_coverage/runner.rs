@@ -1188,6 +1188,7 @@ pub fn collect_process(args: &[OsString]) -> io::Result<i32> {
     command
         .args(&args[1..])
         .env("LLVM_PROFILE_FILE", dir.join("%p-%m.profraw"));
+    configure_validator(&mut command, !cfg!(debug_assertions))?;
     if let Ok(environment) = std::env::var("HABEAS_COVERAGE_TEST_BUILD_ENV") {
         let environment: BTreeMap<String, Option<String>> = serde_json::from_str(&environment)?;
         for (name, value) in environment {
@@ -1873,9 +1874,50 @@ fn function_counts(
     Ok(counts)
 }
 
+// {impl}`requirements.integration.validate.optimized`
+fn configure_validator(command: &mut Command, release_collector: bool) -> io::Result<()> {
+    // The collector is a private copy of the CLI that started this suite.
+    if release_collector {
+        command
+            .env("HABEAS_RELEASE_VALIDATOR", std::env::current_exe()?)
+            .env("HABEAS_VALIDATOR_SOURCE", crate::VALIDATOR_SOURCE);
+    } else {
+        command
+            .env_remove("HABEAS_RELEASE_VALIDATOR")
+            .env_remove("HABEAS_VALIDATOR_SOURCE");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // {test}`requirements.integration.validate.optimized`
+    #[cfg(unix)]
+    #[test]
+    fn only_release_collectors_offer_themselves_to_test_processes() {
+        for release in [false, true] {
+            let mut child = Command::new("sh");
+            child.args([
+                "-c",
+                "printf '%s\\n%s' \"$HABEAS_RELEASE_VALIDATOR\" \"$HABEAS_VALIDATOR_SOURCE\"",
+            ]);
+            configure_validator(&mut child, release).unwrap();
+            let output = child.output().unwrap();
+            assert!(output.status.success());
+            let expected = if release {
+                format!(
+                    "{}\n{}",
+                    std::env::current_exe().unwrap().display(),
+                    crate::VALIDATOR_SOURCE
+                )
+            } else {
+                "\n".to_owned()
+            };
+            assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+        }
+    }
 
     // {test}`requirements.test-coverage.storage.provenance`
     #[test]
