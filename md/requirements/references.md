@@ -138,24 +138,38 @@ count anywhere.
 :::
 
 :::{req} builtin_definitions
-Habeas provides built-in definitions named `habeas:<name>`, available in
-every project without a declaration. Each built-in has fixed text, which
-states its obligations and is documented in Habeas's reference documentation,
-and states which reference roles may use it. References resolve built-in
-names alongside project definitions. So that every book stands alone, a
-built-in reference displayed under {cite}`requirements.references.book_badges`
-uses a badge without a link whose hover text gives the built-in's full text.
-Built-ins themselves neither require nor permit definition evidence files and
-do not appear as definitions in the requirements index, `habeas status`, or the
-missing-evidence check of
-{cite}`requirements.ci.coverage`. Per-source citation reviews under
-{cite}`requirements.references.citation_review` may be required for references
-to a built-in. A project definition cannot use a full name beginning with
-`habeas:`; validation reports one,
-and the `:` character already makes such names invalid under
-{cite}`requirements.ci.identifiers`. Validation reports a reference to a
-built-in in a role the built-in does not permit, or that breaks the built-in's
-stated form.
+Habeas MUST resolve built-in names of the form `habeas:<name>` alongside project
+definitions in every project without a project declaration. Each built-in MUST
+specify its permitted reference roles and have fixed text stating its obligations.
+Habeas's reference documentation MUST include that text.
+:::
+
+:::{req} builtin_definitions.reserved_names
+Project definitions MUST NOT use a full name beginning with `habeas:`.
+Validation MUST report a project definition that uses the reserved prefix under
+{cite}`requirements.ci.identifiers`.
+:::
+
+:::{req} builtin_definitions.reference_validation
+Validation MUST report a reference that uses a role the built-in does not permit
+or violates the built-in's stated form.
+:::
+
+:::{req} builtin_definitions.book_badge
+A built-in reference displayed under {cite}`requirements.references.book_badges`
+MUST render as an unlinked badge whose hover text gives the built-in's full text.
+:::
+
+:::{req} builtin_definitions.evidence
+Built-ins MUST neither require nor permit definition evidence files.
+The missing-evidence check under {cite}`requirements.ci.coverage` MUST exclude
+built-ins. References to a built-in remain subject to the per-source citation
+review rules under {cite}`requirements.references.citation_review`.
+:::
+
+:::{req} builtin_definitions.listings
+The requirements index and `habeas status` MUST omit built-ins from their lists
+of definitions.
 :::
 
 :::{req} citation_review

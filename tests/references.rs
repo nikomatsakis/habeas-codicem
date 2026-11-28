@@ -68,6 +68,8 @@ fn unclosed_fences_still_report_unknown_names() {
 
 // {test}`requirements.references.roles`
 // {test}`requirements.references.builtin_definitions`
+// {test}`requirements.references.builtin_definitions.reference_validation`
+// {test}`requirements.references.builtin_definitions.evidence`
 // {test}`requirements.references.rust_item_coverage`
 // {test}`requirements.references.procedure`
 // {test}`requirements.references.util`
@@ -124,7 +126,7 @@ fn fenced_references_in_comments_and_built_in_rules_are_validated() {
 // {test}`requirements.references.citation_review`
 // {test}`requirements.references.rust_item_coverage`
 #[test]
-// {test}`requirements.references.builtin_definitions`
+// {test}`requirements.references.builtin_definitions.reference_validation`
 fn habeas_util_citations_cover_their_item_without_a_citation_review() {
     let temp = project();
     let root = temp.path();
@@ -176,7 +178,9 @@ fn habeas_util_citations_cover_their_item_without_a_citation_review() {
     assert!(!has(&errors, "evidence/habeas:util"), "{errors:#?}");
 }
 
-// {test}`requirements.references.builtin_definitions`
+// {test}`requirements.references.builtin_definitions.reference_validation`
+// {test}`requirements.references.builtin_definitions.evidence`
+// {test}`requirements.references.builtin_definitions.listings`
 #[test]
 fn built_ins_have_no_evidence_index_entry_and_are_checked_by_validation() {
     let temp = project();
@@ -234,7 +238,7 @@ fn built_ins_have_no_evidence_index_entry_and_are_checked_by_validation() {
     assert!(!index.contains("habeas:util"), "{index}");
 }
 
-// {test}`requirements.references.builtin_definitions`
+// {test}`requirements.references.builtin_definitions.reserved_names`
 #[test]
 fn project_definitions_cannot_use_reserved_built_in_names() {
     let temp = project();
@@ -242,6 +246,11 @@ fn project_definitions_cannot_use_reserved_built_in_names() {
     fs::write(
         root.join("md/rules.md"),
         ":::{req} ready\nReady.\n:::\n\n:::{req} habeas:none\nShadow.\n:::\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("md/habeas:shadow.md"),
+        ":::{req} ready\nReady.\n:::\n",
     )
     .unwrap();
     let errors = errors(root);
@@ -252,8 +261,20 @@ fn project_definitions_cannot_use_reserved_built_in_names() {
         ),
         "{errors:#?}"
     );
+    assert!(
+        has(
+            &errors,
+            "md/habeas:shadow.md:1: invalid requirement name \"habeas:shadow.ready\": names beginning with habeas: are reserved"
+        ),
+        "{errors:#?}"
+    );
     let status = habeas::status_markdown(root, true).unwrap();
-    assert!(!status.contains("`habeas:none` (requirement)"), "{status}");
+    for name in ["rules.habeas:none", "habeas:shadow.ready"] {
+        assert!(
+            !status.contains(&format!("`{name}` (requirement)")),
+            "{status}"
+        );
+    }
 }
 
 /// The digest after writing `source` to `src/lib.rs`.

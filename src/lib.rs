@@ -1243,7 +1243,7 @@ mod tests {
 
     // {test}`requirements.references.book_badges`
     // {test}`requirements.references.citation_review.book_commentary.display`
-    // {test}`requirements.references.builtin_definitions`
+    // {test}`requirements.references.builtin_definitions.book_badge`
     // {test}`requirements.index.navigation`
     // {test}`requirements.examples.authoring_inputs`
     #[test]
@@ -1582,7 +1582,7 @@ mod tests {
     }
 
     // {test}`requirements.references.book_badges`
-    // {test}`requirements.references.builtin_definitions`
+    // {test}`requirements.references.builtin_definitions.book_badge`
     // {test}`requirements.test-coverage.check.exceptions.anchor`
     #[test]
     fn fenced_references_render_their_badge_and_body_and_built_ins_are_unlinked() {

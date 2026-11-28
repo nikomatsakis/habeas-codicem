@@ -634,7 +634,11 @@ For an `{impl}` or `{test}` reference in a source outside the book, the words of
 
 ### Built-in definitions
 
-Built-in definitions are named `habeas:<name>` and are available in every project without a declaration. Each has fixed text and permits only certain roles. Built-ins have no evidence files and do not appear in the requirements index or `habeas status`. Project definitions cannot use names beginning with `habeas:`. In the book, a reference to a built-in renders as a badge without a link; hovering over it shows the built-in's text.
+Built-in definitions are named `habeas:<name>` and are available in every project without a declaration. Each has fixed text and permits only certain roles. Validation reports references that violate the built-in's role or form. Project definitions cannot use names beginning with `habeas:`.
+{cite}`requirements.references.builtin_definitions` {cite}`requirements.references.builtin_definitions.reference_validation` {cite}`requirements.references.builtin_definitions.reserved_names`
+
+Built-ins have no definition evidence files and do not appear in the requirements index or `habeas status`. In the book, a reference to a built-in renders as an unlinked badge whose hover text gives the built-in's full text.
+{cite}`requirements.references.builtin_definitions.evidence` {cite}`requirements.references.builtin_definitions.listings` {cite}`requirements.references.builtin_definitions.book_badge`
 
 The built-in `habeas:validate` has this text
 
