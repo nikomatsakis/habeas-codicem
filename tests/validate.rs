@@ -33,6 +33,11 @@ fn validate_in(cwd: &Path, state: &Path) -> Output {
         ])
         .current_dir(cwd)
         .env(CHILD, "1")
+        .env("HABEAS_RELEASE_VALIDATOR", env!("CARGO_BIN_EXE_habeas"))
+        .env(
+            "HABEAS_VALIDATOR_SOURCE",
+            concat!(env!("CARGO_MANIFEST_DIR"), "@", env!("CARGO_PKG_VERSION")),
+        )
         .env("XDG_STATE_HOME", state)
         .env("XDG_CONFIG_HOME", state)
         .env("HOME", state)
@@ -41,6 +46,7 @@ fn validate_in(cwd: &Path, state: &Path) -> Output {
 }
 
 // {test}`requirements.integration.validate`
+// {test}`requirements.integration.validate.optimized`
 // {test}`requirements.test-coverage.check.guidance`
 #[test]
 fn validate_fails_the_test_with_every_error_and_authoring_instructions() {
@@ -118,6 +124,83 @@ fn validate_fails_the_test_with_every_error_and_authoring_instructions() {
         !root.join("target/habeas/coverage").exists(),
         "static validation needs no execution data"
     );
+}
+
+// {test}`requirements.integration.validate.optimized`
+#[cfg(unix)]
+#[test]
+fn standalone_test_builds_the_dependency_validator_for_the_consumer() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    fs::write(root.join("Cargo.toml"), "[package]\nname='consumer'\n").unwrap();
+    fs::write(root.join("book.toml"), "[book]\n").unwrap();
+    let cargo = root.join("cargo");
+    fs::write(&cargo, "#!/bin/sh\npwd > cwd\nprintf '%s\\n' \"$@\" > args\necho 'consumer evidence is stale' >&2\nexit 1\n").unwrap();
+    fs::set_permissions(&cargo, fs::Permissions::from_mode(0o755)).unwrap();
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "validate_child", "--nocapture"])
+        .current_dir(&root)
+        .env(CHILD, "1")
+        .env("CARGO", cargo)
+        .env("CARGO_TARGET_DIR", root.join("build cache"))
+        .env("HABEAS_RELEASE_VALIDATOR", root.join("wrong-version"))
+        .env("HABEAS_VALIDATOR_SOURCE", "different dependency")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("consumer evidence is stale"));
+    assert_eq!(
+        fs::read_to_string(root.join("cwd")).unwrap().trim(),
+        root.to_str().unwrap()
+    );
+    let args = fs::read_to_string(root.join("args")).unwrap();
+    let args: Vec<_> = args.lines().collect();
+    assert!(args.contains(&"--release"));
+    assert!(args.windows(2).any(|pair| pair
+        == [
+            "--manifest-path",
+            concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")
+        ]));
+    assert!(
+        args.windows(2)
+            .any(|pair| pair == ["--target-dir", root.join("build cache").to_str().unwrap()])
+    );
+    assert!(args.ends_with(&["--", "validate"]));
+}
+
+// {test}`requirements.integration.validate.optimized`
+#[cfg(unix)]
+#[test]
+fn matching_collector_validates_the_consumer_without_cargo() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let validator = root.join("release validator");
+    fs::write(&validator, "#!/bin/sh\npwd > cwd\nprintf '%s\\n' \"$@\" > args\nif test -f stale; then echo 'consumer evidence is stale' >&2; exit 1; fi\n").unwrap();
+    fs::set_permissions(&validator, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut child = Command::new(std::env::current_exe().unwrap());
+    child
+        .args(["--exact", "validate_child", "--nocapture"])
+        .current_dir(&root)
+        .env(CHILD, "1")
+        .env("HABEAS_RELEASE_VALIDATOR", validator)
+        .env(
+            "HABEAS_VALIDATOR_SOURCE",
+            concat!(env!("CARGO_MANIFEST_DIR"), "@", env!("CARGO_PKG_VERSION")),
+        )
+        .env("CARGO", root.join("must not invoke cargo"));
+    assert!(child.output().unwrap().status.success());
+    assert_eq!(fs::read_to_string(root.join("args")).unwrap(), "validate\n");
+    assert_eq!(
+        fs::read_to_string(root.join("cwd")).unwrap().trim(),
+        root.to_str().unwrap()
+    );
+    fs::write(root.join("stale"), "").unwrap();
+    let failure = child.output().unwrap();
+    assert!(!failure.status.success());
+    assert!(String::from_utf8_lossy(&failure.stderr).contains("consumer evidence is stale"));
 }
 
 // {test}`requirements.integration.validate`

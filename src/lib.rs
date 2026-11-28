@@ -47,29 +47,66 @@ pub use github::GithubIssues;
 pub use inputs::{outline_input, outline_inputs_for_lines};
 pub use refactor::{RefactorError, refactor};
 
-/// Validate the current Cargo and mdBook project for use in a Cargo test.
-///
-/// Panics with all validation errors so an integration test can simply call
-/// `habeas::validate()`.
+// Identifies the dependency checkout (or registry version) used to compile this library.
+pub(crate) const VALIDATOR_SOURCE: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "@", env!("CARGO_PKG_VERSION"));
+
+/// Run optimized evidence validation for the current Cargo and mdBook project.
+/// Panics with the validator's diagnostics if validation fails.
 #[track_caller]
 pub fn validate() {
     // {impl}`requirements.integration.validate`
-    let cwd = std::env::current_dir().expect("cannot determine current directory");
-    let root = cwd
-        .ancestors()
-        .find(|path| path.join("Cargo.toml").is_file() && path.join("book.toml").is_file())
-        .expect("cannot find Cargo and mdBook project root");
-    let report = validate_repository(root).expect("cannot validate requirement evidence");
-    if !report.errors.is_empty() {
-        panic!(
-            "Habeas validation failed ({} requirements, {} examples, {} evidence files, {} errors):\n- {}\n\nRun `habeas author --all` to author missing or outdated evidence using the configured model, then address any reported gaps and rerun the tests. Do not write evidence judgments or snapshots by hand.",
-            report.requirements,
-            report.examples,
-            report.evidence_files,
-            report.errors.len(),
-            report.errors.join("\n- ")
-        );
-    }
+    // {impl}`requirements.integration.validate.optimized`
+    use std::process::Command;
+
+    let validator = std::env::var_os("HABEAS_RELEASE_VALIDATOR")
+        .filter(|_| std::env::var("HABEAS_VALIDATOR_SOURCE").as_deref() == Ok(VALIDATOR_SOURCE));
+    let mut command = if let Some(validator) = validator {
+        Command::new(validator)
+    } else {
+        let cwd = std::env::current_dir().expect("cannot determine current directory");
+        let root = cwd
+            .ancestors()
+            .find(|p| p.join("Cargo.toml").is_file() && p.join("book.toml").is_file())
+            .expect("cannot find Cargo and mdBook project root");
+        let target = execution_coverage::target_directory(root)
+            .expect("cannot locate Cargo target directory");
+        let mut cargo = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+        // Cargo exports package metadata to tests. Inheriting it invalidates
+        // dependencies such as ring in an otherwise warm release build.
+        cargo.env_remove("CARGO_MANIFEST_DIR");
+        for (name, _) in std::env::vars_os() {
+            if name.to_string_lossy().starts_with("CARGO_PKG_") {
+                cargo.env_remove(name);
+            }
+        }
+        cargo
+            .args([
+                "run",
+                "--quiet",
+                "--locked",
+                "--release",
+                "--manifest-path",
+                concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"),
+                "--bin",
+                "habeas",
+                "--target-dir",
+            ])
+            .arg(target)
+            .arg("--");
+        cargo
+    };
+    let output = command
+        .arg("validate")
+        .output()
+        .expect("cannot launch the Habeas validator");
+    assert!(
+        output.status.success(),
+        "Habeas validator failed ({}):\n{}{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 // {impl}`requirements.examples.definition`

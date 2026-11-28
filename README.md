@@ -192,10 +192,11 @@ Use `habeas coverage` for unit and integration tests, including focused runs
 (`habeas coverage -- -E 'test(name)'`), and `cargo test --doc --workspace` for
 doctests. In this repository use `cargo habeas coverage`.
 
-The repository self-test runs `cargo run --locked --release -p habeas -- validate`.
-This reuses the release CLI built for coverage. The repository scan runs outside
-LLVM instrumentation, while the validation tests on fixture projects still
-contribute coverage.
+The generated test calls `habeas::validate()`. In every project, including
+this repository, the evidence scan runs in a release-mode process outside test
+coverage. `habeas coverage` reuses its own release CLI when it matches the
+dependency. Plain `cargo test` builds the CLI from the Habeas dependency on
+first use and reuses the project's Cargo target directory on subsequent runs.
 
 Coverage conversion runs one attempt per available CPU, with each LLVM
 subprocess using one thread.
