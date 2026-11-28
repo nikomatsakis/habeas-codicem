@@ -14,4 +14,4 @@ configured model.
 cargo add trust-but-verify
 ```
 
-[API documentation](https://docs.rs/trust-but-verify) · [Repository](https://github.com/nikomatsakis/habeas-codicem)
+[The trust-but-verify SDK chapter](https://nikomatsakis.github.io/habeas-codicem/requirements/sdk.html) · [API documentation](https://docs.rs/trust-but-verify) · [Repository](https://github.com/nikomatsakis/habeas-codicem)
