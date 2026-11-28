@@ -418,6 +418,7 @@ impl Drop for AssessmentUsage<'_, '_> {
     }
 }
 
+// {impl}`requirements.authoring.submission`
 // {impl}`requirements.authoring.citation_prompt`
 // {impl}`requirements.authoring.source_tools`
 // {impl}`requirements.authoring.finish_search.inputs`

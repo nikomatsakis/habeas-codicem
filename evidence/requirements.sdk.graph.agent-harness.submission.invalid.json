@@ -1,7 +1,7 @@
 {
   "requirement": "For a response with exactly one `submit_result` call, arguments other than an\nobject containing only the `result` field receive a tool error describing that\nexpected structure. The model can resubmit in the same conversation. Decoding\nthe field's value into `R` follows\n{cite}`requirements.sdk.graph.agent-calls.judge.submission.decoding`.",
   "determination": true,
-  "rationale": "structural: `requirements.sdk.graph.agent-harness.submission.invalid` states only observable behavior, so it has no structural obligation that needs implementation evidence.\n\n- \"For a response with exactly one `submit_result` call, arguments other than an object containing only the `result` field receive a tool error describing that expected structure.\" This is input-to-output behavior. An implementation could validate the arguments with a hand-written check, a serde `deny_unknown_fields` struct, or a JSON-schema validator. All of these give the same tool error, and the text names no library, type, signature or interface.\n- \"The model can resubmit in the same conversation.\" This is a conversation-state behavior. The text does not say how the loop is built.\n- \"Decoding the field's value into `R` follows {cite}`requirements.sdk.graph.agent-calls.judge.submission.decoding`.\" This is a citation. It refers to the decoding rules and does not delegate to a named interface. The decoding rules are a separate requirement and are judged on their own. `R` is the caller's result type, and the text does not constrain how decoding is organised.\n\nThe review roots list is empty and no implementation edges are supplied. No clause creates a structural obligation, so no missing root needs reporting. Whether the behavior holds is a matter for behavioral test evidence, not for this structural criterion.\n\nbehavioral: Obligations in `requirements.sdk.graph.agent-harness.submission.invalid`:\n1. Arguments that are not an object containing only `result` get a tool error describing the expected structure.\n2. The model can resubmit in the same conversation.\n3. Decoding the field's value follows the cited `requirements.sdk.graph.agent-calls.judge.submission.decoding`.\n\nCoverage:\n- Obligation 1, envelope shapes: `crates/trust-but-verify/src/agent/tools.rs#mod[submission_tests]/fn[submission_envelopes_require_one_result_field]` checks `submitted_value` against null, array, string, bool, `{}`, `{\"other\":true}` and `{\"result\":true,\"extra\":false}`. For each it asserts the exact error text, \"Resubmit with exactly one field named `result` containing the answer.\" It also checks that valid envelopes return the inner value unchanged, including null, array, object and false.\n- Obligation 1, through the harness: `crates/trust-but-verify/src/agent/tests.rs#fn[malformed_submissions_receive_feedback_and_can_be_corrected]` sends `{}`, `{\"other\":true}` and `{\"result\":{},\"extra\":true}` through the real agent loop. It asserts the follow-up tool result has `is_error` set and contains \"exactly one field named `result`\" and \"Resubmit\".\n- Obligation 2: the same test scripts a second, valid submission after each bad one. It asserts the final answer is `Decision::No` and that vetting ran exactly once, so the same conversation continues and vetting only sees the decoded answer.\n- Obligation 3: the same test also covers decoding failures (missing field, string-wrapped JSON, inner syntax error, unknown variant, wrong type). That test carries the `{test}` marker for the cited decoding requirement. Decoding itself is the cited requirement's own scope, so it needs no separate assessment here.\n\nThe harness-level test does not send non-object arguments such as null, an array or a string. The unit test covers them directly, and `submitted_value` is the single envelope check used by the harness, so I found no gap. Both tests carry `{test}` markers for the subject.",
+  "rationale": "structural: The text of `requirements.sdk.graph.agent-harness.submission.invalid` states only observable behavior. (1) \"arguments other than an object containing only the `result` field receive a tool error describing that expected structure.\" This is an input-to-output rule. A hand-written check, a schema validator, or a serde struct with `deny_unknown_fields` would all give the same tool error, so the text does not prescribe a library, type, signature or named interface. (2) \"The model can resubmit in the same conversation.\" This is conversation-lifecycle behavior. Any harness that keeps the conversation open meets it, and the text names no structure that must hold it open. (3) \"Decoding the field's value into `R` follows {cite}`requirements.sdk.graph.agent-calls.judge.submission.decoding`.\" This is a citation that supplies context. The decoding rules, such as decoding directly as `R`, belong to that cited requirement and are judged against its own text, not this one. No clause fixes how the implementation is built, and there are no review roots. No structural obligation needs implementation evidence here.\n\nbehavioral: The obligations are: (1) arguments that are not an object containing only `result` get a tool error describing the expected structure; (2) the model can resubmit in the same conversation; (3) decoding the `result` value is governed by the cited `requirements.sdk.graph.agent-calls.judge.submission.decoding`, so it needs no separate test here.\n\nThe tests cover these as follows:\n- `crates/trust-but-verify/src/agent/tests.rs#fn[malformed_submissions_receive_feedback_and_can_be_corrected]` drives the full agent loop with `{}`, `{\"other\":true}` and `{\"result\":{},\"extra\":true}`. Those are the missing-field, wrong-field and extra-field cases. For each one it asserts that the follow-up request carries a tool result with `is_error` set. It asserts that the feedback names \"exactly one field named `result`\". It then scripts a corrected second submission and asserts that it is accepted. The accepted answer is `Decision::No` and the vetting callback runs once, which shows the conversation stayed open for resubmission.\n- `crates/trust-but-verify/src/agent/tools.rs#mod[submission_tests]/fn[submission_envelopes_require_one_result_field]` checks the envelope validator `submitted_value` directly. It covers non-object arguments (null, array, string, bool) and the empty, wrong-field and extra-field objects. It asserts the exact error message. It also asserts that valid `{\"result\": x}` envelopes pass the value through unchanged.\n\nThe non-object argument classes are tested only at the unit level, not through the agent loop. A search showed `submitted_value` is the function that validates the envelope. The loop test shows its error reaches the model as a tool error, so no separate loop-level test is needed. The decoding cases (missing field, wrong type, unknown variant, non-JSON string) are also exercised in the loop test, and they belong to the cited decoding requirement. I found no gap.",
   "references": "33674ed440c58ed0dd8db0ed4248f5a6620f6c85f3d9c9d302375b440a88926f",
   "inputs": [
     {
@@ -26,21 +26,17 @@
       ],
       "text": [
         ":::{req} judge.submission.decoding",
-        "Decode the submitted `result` directly as `R`. If direct decoding fails and the",
-        "value is a string containing JSON, decode that inner JSON as `R` once. A",
-        "successfully decoded answer proceeds to normal vetting. If decoding still fails,",
-        "return the decoding error and guidance on the expected `result` to the model as a",
-        "tool error. For a string that starts with a JSON object or array after leading",
-        "whitespace, report an inner syntax error with its line and column. Keep the",
-        "conversation open for a corrected submission and invoke vetting callbacks only",
-        "for successfully decoded answers.",
+        "Decode the submitted `result` directly as `R` and invoke vetting callbacks only",
+        "for successfully decoded answers. If decoding fails, return the decoding error",
+        "and guidance on the expected `result` to the model as a tool error. Keep the",
+        "conversation open for a corrected submission.",
         ":::"
       ]
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[malformed_submissions_receive_feedback_and_can_be_corrected]",
-      "hash": "f1b5fb0a21031fe3f1e440b4dd9bf4dd751ca4f09fbdd071480abb4fa6cd0a42"
+      "hash": "3496b410e2347c03b97e0e047ab6debb692dbd6ce9f2d0bf113baf77b55dc363"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tools.rs",
@@ -86,14 +82,14 @@
             },
             {
               "scheme": "habeas-input-v1",
-              "value": "fad93bccc42cacb016251988038a4a5cb52547399141fa9b0622cef7b65929dd"
+              "value": "b68fc23e2c2b7669e931647be983ea791f1e2f374d402d825aacd94df34bf965"
             }
           ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "`requirements.sdk.graph.agent-harness.submission.invalid` states only observable behavior, so it has no structural obligation that needs implementation evidence.\n\n- \"For a response with exactly one `submit_result` call, arguments other than an object containing only the `result` field receive a tool error describing that expected structure.\" This is input-to-output behavior. An implementation could validate the arguments with a hand-written check, a serde `deny_unknown_fields` struct, or a JSON-schema validator. All of these give the same tool error, and the text names no library, type, signature or interface.\n- \"The model can resubmit in the same conversation.\" This is a conversation-state behavior. The text does not say how the loop is built.\n- \"Decoding the field's value into `R` follows {cite}`requirements.sdk.graph.agent-calls.judge.submission.decoding`.\" This is a citation. It refers to the decoding rules and does not delegate to a named interface. The decoding rules are a separate requirement and are judged on their own. `R` is the caller's result type, and the text does not constrain how decoding is organised.\n\nThe review roots list is empty and no implementation edges are supplied. No clause creates a structural obligation, so no missing root needs reporting. Whether the behavior holds is a matter for behavioral test evidence, not for this structural criterion."
+        "rationale": "The text of `requirements.sdk.graph.agent-harness.submission.invalid` states only observable behavior. (1) \"arguments other than an object containing only the `result` field receive a tool error describing that expected structure.\" This is an input-to-output rule. A hand-written check, a schema validator, or a serde struct with `deny_unknown_fields` would all give the same tool error, so the text does not prescribe a library, type, signature or named interface. (2) \"The model can resubmit in the same conversation.\" This is conversation-lifecycle behavior. Any harness that keeps the conversation open meets it, and the text names no structure that must hold it open. (3) \"Decoding the field's value into `R` follows {cite}`requirements.sdk.graph.agent-calls.judge.submission.decoding`.\" This is a citation that supplies context. The decoding rules, such as decoding directly as `R`, belong to that cited requirement and are judged against its own text, not this one. No clause fixes how the implementation is built, and there are no review roots. No structural obligation needs implementation evidence here."
       }
     },
     "behavioral": {
@@ -128,7 +124,7 @@
             },
             {
               "scheme": "habeas-input-v1",
-              "value": "fad93bccc42cacb016251988038a4a5cb52547399141fa9b0622cef7b65929dd"
+              "value": "b68fc23e2c2b7669e931647be983ea791f1e2f374d402d825aacd94df34bf965"
             }
           ]
         },
@@ -145,7 +141,7 @@
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "f1b5fb0a21031fe3f1e440b4dd9bf4dd751ca4f09fbdd071480abb4fa6cd0a42"
+              "value": "3496b410e2347c03b97e0e047ab6debb692dbd6ce9f2d0bf113baf77b55dc363"
             }
           ]
         },
@@ -186,7 +182,7 @@
       ],
       "output": {
         "status": "success",
-        "rationale": "Obligations in `requirements.sdk.graph.agent-harness.submission.invalid`:\n1. Arguments that are not an object containing only `result` get a tool error describing the expected structure.\n2. The model can resubmit in the same conversation.\n3. Decoding the field's value follows the cited `requirements.sdk.graph.agent-calls.judge.submission.decoding`.\n\nCoverage:\n- Obligation 1, envelope shapes: `crates/trust-but-verify/src/agent/tools.rs#mod[submission_tests]/fn[submission_envelopes_require_one_result_field]` checks `submitted_value` against null, array, string, bool, `{}`, `{\"other\":true}` and `{\"result\":true,\"extra\":false}`. For each it asserts the exact error text, \"Resubmit with exactly one field named `result` containing the answer.\" It also checks that valid envelopes return the inner value unchanged, including null, array, object and false.\n- Obligation 1, through the harness: `crates/trust-but-verify/src/agent/tests.rs#fn[malformed_submissions_receive_feedback_and_can_be_corrected]` sends `{}`, `{\"other\":true}` and `{\"result\":{},\"extra\":true}` through the real agent loop. It asserts the follow-up tool result has `is_error` set and contains \"exactly one field named `result`\" and \"Resubmit\".\n- Obligation 2: the same test scripts a second, valid submission after each bad one. It asserts the final answer is `Decision::No` and that vetting ran exactly once, so the same conversation continues and vetting only sees the decoded answer.\n- Obligation 3: the same test also covers decoding failures (missing field, string-wrapped JSON, inner syntax error, unknown variant, wrong type). That test carries the `{test}` marker for the cited decoding requirement. Decoding itself is the cited requirement's own scope, so it needs no separate assessment here.\n\nThe harness-level test does not send non-object arguments such as null, an array or a string. The unit test covers them directly, and `submitted_value` is the single envelope check used by the harness, so I found no gap. Both tests carry `{test}` markers for the subject."
+        "rationale": "The obligations are: (1) arguments that are not an object containing only `result` get a tool error describing the expected structure; (2) the model can resubmit in the same conversation; (3) decoding the `result` value is governed by the cited `requirements.sdk.graph.agent-calls.judge.submission.decoding`, so it needs no separate test here.\n\nThe tests cover these as follows:\n- `crates/trust-but-verify/src/agent/tests.rs#fn[malformed_submissions_receive_feedback_and_can_be_corrected]` drives the full agent loop with `{}`, `{\"other\":true}` and `{\"result\":{},\"extra\":true}`. Those are the missing-field, wrong-field and extra-field cases. For each one it asserts that the follow-up request carries a tool result with `is_error` set. It asserts that the feedback names \"exactly one field named `result`\". It then scripts a corrected second submission and asserts that it is accepted. The accepted answer is `Decision::No` and the vetting callback runs once, which shows the conversation stayed open for resubmission.\n- `crates/trust-but-verify/src/agent/tools.rs#mod[submission_tests]/fn[submission_envelopes_require_one_result_field]` checks the envelope validator `submitted_value` directly. It covers non-object arguments (null, array, string, bool) and the empty, wrong-field and extra-field objects. It asserts the exact error message. It also asserts that valid `{\"result\": x}` envelopes pass the value through unchanged.\n\nThe non-object argument classes are tested only at the unit level, not through the agent loop. A search showed `submitted_value` is the function that validates the envelope. The loop test shows its error reaches the model as a tool error, so no separate loop-level test is needed. The decoding cases (missing field, wrong type, unknown variant, non-JSON string) are also exercised in the loop test, and they belong to the cited decoding requirement. I found no gap."
       }
     }
   },
@@ -222,7 +218,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "fad93bccc42cacb016251988038a4a5cb52547399141fa9b0622cef7b65929dd"
+          "value": "b68fc23e2c2b7669e931647be983ea791f1e2f374d402d825aacd94df34bf965"
         }
       ]
     },
@@ -239,7 +235,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "f1b5fb0a21031fe3f1e440b4dd9bf4dd751ca4f09fbdd071480abb4fa6cd0a42"
+          "value": "3496b410e2347c03b97e0e047ab6debb692dbd6ce9f2d0bf113baf77b55dc363"
         }
       ]
     },

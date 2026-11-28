@@ -1,8 +1,8 @@
 {
   "requirement": "Decode the submitted `result` directly as `R` and invoke vetting callbacks only\nfor successfully decoded answers. If decoding fails, return the decoding error\nand guidance on the expected `result` to the model as a tool error. Keep the\nconversation open for a corrected submission.",
   "determination": true,
-  "rationale": "structural: The requirement has no structural obligation that needs implementation evidence. I checked each clause against a behavior-preserving alternative.\n\n- \"Decode the submitted `result` directly as `R`\": this fixes which value is decoded and into what type. An implementation could first parse into a `serde_json::Value` and then convert that value to `R`. It would accept and reject the same inputs and produce the same decoding errors. The text names no library, signature, or type beyond the answer type `R`, so how decoding is built is discretionary.\n- \"invoke vetting callbacks only for successfully decoded answers\": this is an ordering and conditional behavior. Any code structure that calls the callbacks only after a successful decode gives the same observable result.\n- \"return the decoding error and guidance on the expected `result` to the model as a tool error\": this is an output the model sees. The text does not prescribe which function builds it.\n- \"Keep the conversation open for a corrected submission\": this is a runtime behavior, a retry instead of termination.\n\nThe requirement has no implementation edges and no review roots were supplied. I looked at `crates/trust-but-verify/src/agent.rs#fn[converse]`. It calls `submit_result`, and a decoding failure leads to `Submission::Retry`. Tests such as `refreshing_missing_evidence_accounts_for_accepted_and_corrected_answers` submit an invalid answer and then a corrected one. Whether those tests are adequate is for the behavioral criterion to judge.\n\nbehavioral: The requirement has four testable obligations. The two marked tests cover all of them.\n\n1. **Decode `result` directly as `R`.**\n   - `string_answers_preserve_json_text` submits `{\"result\": \"{\\\"decision\\\":\\\"Yes\\\"}\"}` for `ask::<String>()`. It asserts that the JSON text comes back unchanged. A decoder that re-parsed string results would fail this.\n   - In `malformed_submissions_receive_feedback_and_can_be_corrected`, the case `{\"result\":\"{\\\"decision\\\":\\\"Yes\\\"}\"}` for `Answer` must fail with `invalid type: string`. That shows the string is not decoded a second time.\n   - The same test accepts a well-formed object `{\"result\":{\"decision\":\"No\"}}` and decodes it as `Answer`.\n\n2. **Vetting callbacks run only for decoded answers.**\n   - In every iteration, the `vet_answer` closure increments `vetted`. The test asserts `vetted == 1` after a malformed submission followed by a valid one. The callback therefore ran only for the decoded answer and never for the malformed one.\n   - The malformed inputs cover missing fields, wrong types, an unknown variant, a non-object value and invalid JSON text.\n\n3. **Decoding failure returns the error and guidance as a tool error.**\n   - For each malformed input, the test inspects the second request's last chat message. It asserts that it is a `ToolResult` with `is_error` true.\n   - It asserts that the serialized feedback contains the specific decoding diagnostic: `missing field `decision``, `invalid type: string`, `unknown variant `Maybe``, or `invalid type`.\n   - It also asserts that the feedback contains the guidance text. The guidance is `submit_result tool schema in the `result` field` for decode errors, and `exactly one field named `result`` for envelope errors.\n\n4. **The conversation stays open for a corrected submission.** Each iteration scripts a second turn with a valid submission. The test asserts that `ask` returns `Decision::No` successfully, so the agent loop continued after the failure.\n\nI found no obligation without a test, and no assertion that contradicts the requirement.",
-  "references": "390ad295689600d63e95e46a014eb105a3b49cb8c1c2fc66e467abcb32e40401",
+  "rationale": "structural: The structural obligations are: (1) \"Decode the submitted `result` directly as `R`\", (2) \"invoke vetting callbacks only for successfully decoded answers\", and (3) on failure \"return the decoding error and guidance ... as a tool error\" and \"keep the conversation open\". The root `crates/trust-but-verify/src/procedure.rs#impl[Ask<'a, 'd, D, R, P>]#2/fn[execute]` meets all three in its `finish` closure.\n\n- The closure calls `serde_json::from_value::<R>(value)`. An alternative that decoded into an intermediate type or a generic Value wrapper first would violate \"directly as `R`\".\n- The vetting loop over `callbacks` comes after the decode succeeds. A decode error returns early, so no callback sees an undecoded value.\n- A decode error returns `Submission::Retry(\"Invalid `result`: {error}. Resubmit with the JSON value described by the submit_result tool schema...\")`. This message carries both the error and guidance on the expected `result`.\n- `Submission::Retry` keeps the conversation open. `agent.rs#fn[converse]` handles it by recording the message as a tool result and pushing it into the chat history for another turn.\n\nThe root has the `{impl}` marker for this requirement, and no other root is needed.\n\nbehavioral: Both marked tests are in `crates/trust-but-verify/src/agent/tests.rs`. Together they cover each obligation in `requirements.sdk.graph.agent-calls.judge.submission.decoding`. I did not read the implementation or the `Script`/`ToolAgent` helpers.\n\n- **Direct decoding as `R`.** In `string_answers_preserve_json_text`, `ask::<String>()` returns the JSON-looking text unchanged, so the `result` value is decoded as `R` and not re-parsed. In `malformed_submissions_receive_feedback_and_can_be_corrected`, `Answer` receives a string containing JSON. The test expects `invalid type: string`, so the string is not parsed as JSON for a non-string `R`. A well-formed object `{\"result\":{\"decision\":\"No\"}}` decodes successfully.\n- **Decoding failures return the error and guidance as a tool error.** The test runs several malformed inputs. These are a missing field, an unknown enum variant, a wrong JSON type (`42`), a malformed string, and bad envelope shapes (`{}`, an unknown key, an extra key). For each, it inspects the next request's last message. It asserts that the message is a `ToolResult` with `is_error` set. It also asserts that the serialized feedback contains the specific serde diagnostic and the guidance text (the `submit_result` tool schema, or the single-`result`-field envelope).\n- **Vetting callbacks run only for successfully decoded answers.** The `vet_answer` closure increments a counter, and each iteration asserts `vetted == 1`. The malformed first submission therefore never reaches the callback. Only the corrected submission does.\n- **The conversation stays open for a corrected submission.** Each iteration scripts a bad submission followed by a valid one. The test asserts that `ask` returns the corrected `Answer` (`Decision::No`) and that a second request was made.",
+  "references": "843b7cc025cbf3341efc6f742c317b64757307e1cb9449b4852123e25db1314c",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.agent-calls.judge.submission.decoding",
@@ -17,6 +17,16 @@
         "conversation open for a corrected submission.",
         ":::"
       ]
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]",
+      "hash": "13819c4675914551da6e0dde0cc498d09495c2f2124f3f03e353ca0cdfef866a"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent.rs",
+      "item": "fn[converse]",
+      "hash": "55becd8ddcdf0ba7ba8ee7111d2ed87a3574922747be6c914fb5f8f80cd1e64c"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -40,7 +50,7 @@
             },
             {
               "scheme": "habeas-reference-set-v1",
-              "value": "390ad295689600d63e95e46a014eb105a3b49cb8c1c2fc66e467abcb32e40401"
+              "value": "843b7cc025cbf3341efc6f742c317b64757307e1cb9449b4852123e25db1314c"
             }
           ]
         },
@@ -56,21 +66,43 @@
           ]
         },
         {
-          "OutgoingEdges": [
+          "Node": [
             {
-              "Requirement": "requirements.sdk.graph.agent-calls.judge.submission.decoding"
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]"
+              }
             },
-            "Implements",
             {
-              "scheme": "node-path-set-sha256-v1",
-              "value": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "13819c4675914551da6e0dde0cc498d09495c2f2124f3f03e353ca0cdfef866a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent.rs"
+                },
+                "selector": "fn[converse]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "55becd8ddcdf0ba7ba8ee7111d2ed87a3574922747be6c914fb5f8f80cd1e64c"
             }
           ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "The requirement has no structural obligation that needs implementation evidence. I checked each clause against a behavior-preserving alternative.\n\n- \"Decode the submitted `result` directly as `R`\": this fixes which value is decoded and into what type. An implementation could first parse into a `serde_json::Value` and then convert that value to `R`. It would accept and reject the same inputs and produce the same decoding errors. The text names no library, signature, or type beyond the answer type `R`, so how decoding is built is discretionary.\n- \"invoke vetting callbacks only for successfully decoded answers\": this is an ordering and conditional behavior. Any code structure that calls the callbacks only after a successful decode gives the same observable result.\n- \"return the decoding error and guidance on the expected `result` to the model as a tool error\": this is an output the model sees. The text does not prescribe which function builds it.\n- \"Keep the conversation open for a corrected submission\": this is a runtime behavior, a retry instead of termination.\n\nThe requirement has no implementation edges and no review roots were supplied. I looked at `crates/trust-but-verify/src/agent.rs#fn[converse]`. It calls `submit_result`, and a decoding failure leads to `Submission::Retry`. Tests such as `refreshing_missing_evidence_accounts_for_accepted_and_corrected_answers` submit an invalid answer and then a corrected one. Whether those tests are adequate is for the behavioral criterion to judge."
+        "rationale": "The structural obligations are: (1) \"Decode the submitted `result` directly as `R`\", (2) \"invoke vetting callbacks only for successfully decoded answers\", and (3) on failure \"return the decoding error and guidance ... as a tool error\" and \"keep the conversation open\". The root `crates/trust-but-verify/src/procedure.rs#impl[Ask<'a, 'd, D, R, P>]#2/fn[execute]` meets all three in its `finish` closure.\n\n- The closure calls `serde_json::from_value::<R>(value)`. An alternative that decoded into an intermediate type or a generic Value wrapper first would violate \"directly as `R`\".\n- The vetting loop over `callbacks` comes after the decode succeeds. A decode error returns early, so no callback sees an undecoded value.\n- A decode error returns `Submission::Retry(\"Invalid `result`: {error}. Resubmit with the JSON value described by the submit_result tool schema...\")`. This message carries both the error and guidance on the expected `result`.\n- `Submission::Retry` keeps the conversation open. `agent.rs#fn[converse]` handles it by recording the message as a tool result and pushing it into the chat history for another turn.\n\nThe root has the `{impl}` marker for this requirement, and no other root is needed."
       }
     },
     "behavioral": {
@@ -83,7 +115,7 @@
             },
             {
               "scheme": "habeas-reference-set-v1",
-              "value": "390ad295689600d63e95e46a014eb105a3b49cb8c1c2fc66e467abcb32e40401"
+              "value": "843b7cc025cbf3341efc6f742c317b64757307e1cb9449b4852123e25db1314c"
             }
           ]
         },
@@ -135,7 +167,7 @@
       ],
       "output": {
         "status": "success",
-        "rationale": "The requirement has four testable obligations. The two marked tests cover all of them.\n\n1. **Decode `result` directly as `R`.**\n   - `string_answers_preserve_json_text` submits `{\"result\": \"{\\\"decision\\\":\\\"Yes\\\"}\"}` for `ask::<String>()`. It asserts that the JSON text comes back unchanged. A decoder that re-parsed string results would fail this.\n   - In `malformed_submissions_receive_feedback_and_can_be_corrected`, the case `{\"result\":\"{\\\"decision\\\":\\\"Yes\\\"}\"}` for `Answer` must fail with `invalid type: string`. That shows the string is not decoded a second time.\n   - The same test accepts a well-formed object `{\"result\":{\"decision\":\"No\"}}` and decodes it as `Answer`.\n\n2. **Vetting callbacks run only for decoded answers.**\n   - In every iteration, the `vet_answer` closure increments `vetted`. The test asserts `vetted == 1` after a malformed submission followed by a valid one. The callback therefore ran only for the decoded answer and never for the malformed one.\n   - The malformed inputs cover missing fields, wrong types, an unknown variant, a non-object value and invalid JSON text.\n\n3. **Decoding failure returns the error and guidance as a tool error.**\n   - For each malformed input, the test inspects the second request's last chat message. It asserts that it is a `ToolResult` with `is_error` true.\n   - It asserts that the serialized feedback contains the specific decoding diagnostic: `missing field `decision``, `invalid type: string`, `unknown variant `Maybe``, or `invalid type`.\n   - It also asserts that the feedback contains the guidance text. The guidance is `submit_result tool schema in the `result` field` for decode errors, and `exactly one field named `result`` for envelope errors.\n\n4. **The conversation stays open for a corrected submission.** Each iteration scripts a second turn with a valid submission. The test asserts that `ask` returns `Decision::No` successfully, so the agent loop continued after the failure.\n\nI found no obligation without a test, and no assertion that contradicts the requirement."
+        "rationale": "Both marked tests are in `crates/trust-but-verify/src/agent/tests.rs`. Together they cover each obligation in `requirements.sdk.graph.agent-calls.judge.submission.decoding`. I did not read the implementation or the `Script`/`ToolAgent` helpers.\n\n- **Direct decoding as `R`.** In `string_answers_preserve_json_text`, `ask::<String>()` returns the JSON-looking text unchanged, so the `result` value is decoded as `R` and not re-parsed. In `malformed_submissions_receive_feedback_and_can_be_corrected`, `Answer` receives a string containing JSON. The test expects `invalid type: string`, so the string is not parsed as JSON for a non-string `R`. A well-formed object `{\"result\":{\"decision\":\"No\"}}` decodes successfully.\n- **Decoding failures return the error and guidance as a tool error.** The test runs several malformed inputs. These are a missing field, an unknown enum variant, a wrong JSON type (`42`), a malformed string, and bad envelope shapes (`{}`, an unknown key, an extra key). For each, it inspects the next request's last message. It asserts that the message is a `ToolResult` with `is_error` set. It also asserts that the serialized feedback contains the specific serde diagnostic and the guidance text (the `submit_result` tool schema, or the single-`result`-field envelope).\n- **Vetting callbacks run only for successfully decoded answers.** The `vet_answer` closure increments a counter, and each iteration asserts `vetted == 1`. The malformed first submission therefore never reaches the callback. Only the corrected submission does.\n- **The conversation stays open for a corrected submission.** Each iteration scripts a bad submission followed by a valid one. The test asserts that `ask` returns the corrected `Answer` (`Decision::No`) and that a second request was made."
       }
     }
   },
@@ -149,7 +181,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "390ad295689600d63e95e46a014eb105a3b49cb8c1c2fc66e467abcb32e40401"
+          "value": "843b7cc025cbf3341efc6f742c317b64757307e1cb9449b4852123e25db1314c"
         }
       ]
     },
@@ -165,14 +197,36 @@
       ]
     },
     {
-      "OutgoingEdges": [
+      "Node": [
         {
-          "Requirement": "requirements.sdk.graph.agent-calls.judge.submission.decoding"
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]"
+          }
         },
-        "Implements",
         {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "13819c4675914551da6e0dde0cc498d09495c2f2124f3f03e353ca0cdfef866a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent.rs"
+            },
+            "selector": "fn[converse]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "55becd8ddcdf0ba7ba8ee7111d2ed87a3574922747be6c914fb5f8f80cd1e64c"
         }
       ]
     },
