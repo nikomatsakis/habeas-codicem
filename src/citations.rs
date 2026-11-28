@@ -102,6 +102,7 @@ impl CitationItem {
     }
 }
 
+// {impl}`requirements.references.citation_review`
 /// `evidence/citations/<file>/<selector>.json`, with `/` and `%` in the
 /// selector percent-encoded and `_root` for the root node.
 pub(crate) fn review_path(file: &str, item: &str) -> String {
@@ -281,6 +282,7 @@ pub(crate) fn same_citations(recorded: &[Citation], current: &[Citation]) -> boo
     key(recorded) == key(current)
 }
 
+// {impl}`requirements.references.citation_review`
 /// Validates citation reviews: each current item needs a current, accepted
 /// review, and every review file must belong to a current item. `files` are
 /// the review files already listed with the rest of `evidence/`, so a listing

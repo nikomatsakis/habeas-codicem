@@ -44,6 +44,7 @@ pub(crate) fn profiles() -> [&'static crate::outline_engine::language::Profile; 
     ]
 }
 
+// {impl}`requirements.sdk.outlines.language_provider`
 macro_rules! language {
     ($name:ident, $profile:path) => {
         /// Bundled, cheaply cloneable outline language.

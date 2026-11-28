@@ -867,6 +867,7 @@ fn criterion_prompt(sources: &AssessmentSources, kind: ReviewKind) -> io::Result
     initial_prompt_with_inputs(sources, kind, &sources.inputs_for(kind)?)
 }
 
+// {impl}`requirements.references.citation_review`
 // {impl}`requirements.authoring.prompt_parts`
 fn initial_prompt_with_inputs(
     sources: &AssessmentSources,
@@ -974,6 +975,7 @@ fn site_submission(arguments: &Value) -> io::Result<(Judgment, String, bool)> {
     Ok((judgment, rationale, applies))
 }
 
+// {impl}`requirements.references.citation_review`
 fn record(
     sources: &AssessmentSources,
     judgment: &Judgment,

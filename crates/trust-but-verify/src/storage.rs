@@ -37,6 +37,7 @@ pub struct FileEvidenceStorage {
 }
 
 impl FileEvidenceStorage {
+    // {impl}`requirements.sdk.filesystem-storage.interface`
     // {impl}`requirements.sdk.filesystem-storage.FileEvidenceStorage`
     // {cite}`habeas:util`
     pub fn new(root: impl Into<PathBuf>) -> Self {

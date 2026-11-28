@@ -56,6 +56,7 @@ impl<D: Domain> std::hash::Hash for NodeId<D> {
     }
 }
 
+// {impl}`requirements.sdk.validation-cache.shared_node_ids`
 // {impl}`requirements.sdk.graph.search.source_identity`
 // {impl}`requirements.sdk.validation-cache.ValidationCache`
 /// Shared node identities, source snapshots, and agent configuration for a domain.
@@ -81,6 +82,7 @@ pub(crate) struct CachedFile {
 
 // {impl}`requirements.sdk.validation-cache.ValidationCache`
 impl<D: Domain> Clone for ValidationCache<D> {
+    // {impl}`requirements.sdk.validation-cache.shared_node_ids`
     fn clone(&self) -> Self {
         Self {
             usage: self.usage.clone(),
@@ -95,6 +97,7 @@ impl<D: Domain> Clone for ValidationCache<D> {
 
 // {impl}`requirements.sdk.validation-cache.ValidationCache`
 impl<D: Domain> Default for ValidationCache<D> {
+    // {impl}`requirements.sdk.validation-cache.shared_node_ids`
     fn default() -> Self {
         Self {
             usage: Default::default(),

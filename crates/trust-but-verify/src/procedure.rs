@@ -314,6 +314,7 @@ impl<D: Domain> ValidationContext<'_, D>
 where
     D::Error: From<crate::sources::SourceError>,
 {
+    // {impl}`requirements.sdk.graph.validation-context.read_source.inputs`
     // {impl}`requirements.sdk.graph.validation-context.ValidationContext.read_source`
     // {impl}`requirements.sdk.graph.validation-context.read_source.behavior`
     // {impl}`requirements.sdk.sources.provider_observations`

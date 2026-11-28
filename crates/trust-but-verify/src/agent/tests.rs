@@ -1001,6 +1001,7 @@ async fn typed_submission_references_resolve() {
     );
 }
 
+// {test}`requirements.sdk.graph.agent-harness.submission.acceptance`
 // {test}`requirements.sdk.graph.agent-calls.judge.submission.decoding`
 // {test}`requirements.sdk.graph.agent-harness.submission.invalid`
 // {test}`requirements.sdk.graph.agent-harness.submission_count`

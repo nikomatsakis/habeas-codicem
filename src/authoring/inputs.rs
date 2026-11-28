@@ -336,6 +336,7 @@ impl AssessmentSources {
         })
     }
 
+    // {impl}`requirements.references.citation_review`
     /// Prepares a citation review of a source item or opted-in book passage. Its
     /// mandatory inputs are the item's outline node, each cited declaration
     /// or built-in text, and the terminology they use; the citations and

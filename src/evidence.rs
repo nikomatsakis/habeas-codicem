@@ -625,6 +625,7 @@ pub(crate) fn files_with_extension(
     files
 }
 
+// {impl}`requirements.ci.schema`
 // A malformed evidence file is one failed check reporting its first parse
 // problem; every well-formed record reports each failed field check.
 fn validate_evidence_file(
