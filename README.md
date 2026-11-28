@@ -195,8 +195,9 @@ doctests. In this repository use `cargo habeas coverage`.
 The generated test calls `habeas::validate()`. In every project, including
 this repository, the evidence scan runs in a release-mode process outside test
 coverage. `habeas coverage` reuses its own release CLI when it matches the
-dependency. Plain `cargo test` builds the CLI from the Habeas dependency on
-first use and reuses the project's Cargo target directory on subsequent runs.
+dependency. For a crates.io dev-dependency, `cargo test` can reuse an installed
+`habeas` on `PATH` whose `--version` matches exactly. Otherwise Cargo builds
+the CLI from the dependency source and caches it in the project's target directory.
 
 Coverage conversion runs one attempt per available CPU, with each LLVM
 subprocess using one thread.

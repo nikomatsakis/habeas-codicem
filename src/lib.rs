@@ -51,18 +51,47 @@ pub use refactor::{RefactorError, refactor};
 pub(crate) const VALIDATOR_SOURCE: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "@", env!("CARGO_PKG_VERSION"));
 
+// {impl}`requirements.integration.validate.installed`
+fn installed_validator() -> Option<std::process::Command> {
+    use std::process::Command;
+
+    // An ambiguous package ID (e.g. a workspace using two sources at the
+    // same version) also takes the dependency build path.
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let package = concat!("habeas@", env!("CARGO_PKG_VERSION"));
+    let id = Command::new(cargo)
+        .args(["pkgid", "--frozen", package])
+        .output()
+        .ok()?;
+    if !id.status.success()
+        || std::str::from_utf8(&id.stdout).ok()?.trim_end()
+            != format!("registry+https://github.com/rust-lang/crates.io-index#{package}")
+    {
+        return None;
+    }
+
+    let version = Command::new("habeas").arg("--version").output().ok()?;
+    (version.status.success()
+        && std::str::from_utf8(&version.stdout).ok()?.trim_end()
+            == concat!("habeas ", env!("CARGO_PKG_VERSION")))
+    .then(|| Command::new("habeas"))
+}
+
 /// Run optimized evidence validation for the current Cargo and mdBook project.
 /// Panics with the validator's diagnostics if validation fails.
 #[track_caller]
 pub fn validate() {
     // {impl}`requirements.integration.validate`
     // {impl}`requirements.integration.validate.optimized`
+    // {impl}`requirements.integration.validate.installed`
     use std::process::Command;
 
     let validator = std::env::var_os("HABEAS_RELEASE_VALIDATOR")
         .filter(|_| std::env::var("HABEAS_VALIDATOR_SOURCE").as_deref() == Ok(VALIDATOR_SOURCE));
     let mut command = if let Some(validator) = validator {
         Command::new(validator)
+    } else if let Some(installed) = installed_validator() {
+        installed
     } else {
         let cwd = std::env::current_dir().expect("cannot determine current directory");
         let root = cwd

@@ -8,7 +8,7 @@ mod hook;
 mod setup;
 
 #[derive(Parser)]
-#[command(name = "habeas")]
+#[command(name = "habeas", version)]
 // {impl}`requirements.cli.clap`
 struct Cli {
     #[command(subcommand)]

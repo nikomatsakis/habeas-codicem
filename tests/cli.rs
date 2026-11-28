@@ -1,5 +1,19 @@
 use std::process::Command;
 
+// {test}`requirements.integration.validate.installed`
+#[test]
+fn cli_reports_its_package_version() {
+    let version = Command::new(env!("CARGO_BIN_EXE_habeas"))
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert!(version.status.success());
+    assert_eq!(
+        version.stdout,
+        concat!("habeas ", env!("CARGO_PKG_VERSION"), "\n").as_bytes()
+    );
+}
+
 // {test}`requirements.cli.invocation`
 #[test]
 fn renderer_support_and_invalid_setup_option() {
