@@ -4,7 +4,7 @@
 use crate::domain::NodeId;
 use rig_core::{
     completion::{CompletionRequest, CompletionResponse, FinishReason, ToolDefinition},
-    message::{Message, ToolResultContent, turn_failure},
+    message::{Message, ToolCall, ToolResult, ToolResultContent, turn_failure},
 };
 use serde_json::Value;
 use std::{future::Future, io, time::Duration};
@@ -161,6 +161,14 @@ impl<D: crate::domain::Domain> Drop for ProviderAttempt<'_, '_, D> {
     }
 }
 
+// {cite}`habeas:util`
+fn tool_error(call: &ToolCall, text: impl Into<String>) -> ToolResult {
+    ToolResult {
+        is_error: true,
+        ..call.result(vec![ToolResultContent::text(text)])
+    }
+}
+
 // {impl}`requirements.sdk.graph.agent-calls.judge.submission`
 // {impl}`requirements.sdk.graph.agent-harness.submission.acceptance`
 // {impl}`requirements.sdk.graph.agent-harness.submission.reminder`
@@ -188,7 +196,11 @@ where
     D::Error: std::fmt::Display,
 {
     let submit = "submit_result";
-    request.tools = session.tools(Some(tools::submission_tool(result_schema)))?;
+    request.tools = session
+        .tools(Some(tools::submission_tool(result_schema)))?
+        .into_iter()
+        .map(Into::into)
+        .collect();
     // Only names from the configured tool list belong in usage records.
     // Record entry before dispatch so cancellation retains the invocation.
     let begin_tool = |name: &str| {
@@ -266,9 +278,12 @@ where
             let limit = provider.output_limit().ok_or_else(|| io::Error::other(
                 "the model's response was incomplete: it reached an output limit the configuration does not set"))?;
             continued = true;
-            request
-                .chat_history
-                .extend(session.cut_off(&response, limit));
+            request.chat_history.extend(
+                session
+                    .cut_off(&response, limit)
+                    .into_iter()
+                    .map(std::sync::Arc::new),
+            );
             continue;
         }
         if let Some(error) = turn_failure(
@@ -291,21 +306,21 @@ where
                 )).into());
             }
             reminded = true;
-            request.chat_history.extend(response.message());
+            request
+                .chat_history
+                .extend(response.message().map(std::sync::Arc::new));
             if !calls.is_empty() {
                 let results = calls
                     .iter()
-                    .map(|call| {
-                        call.error_result(vec![ToolResultContent::text(format!(
-                            "not run: invoke {submit} exactly once"
-                        ))])
-                    })
+                    .map(|call| tool_error(call, format!("not run: invoke {submit} exactly once")))
                     .collect();
-                request.chat_history.push(Message::tool_results(results));
+                request
+                    .chat_history
+                    .push(Message::tool_results(results).into());
             }
             let reminder =
                 format!("Reminder: you MUST invoke {submit} exactly once to submit your result.");
-            request.chat_history.push(Message::user(reminder));
+            request.chat_history.push(Message::user(reminder).into());
             continue;
         }
         // {impl}`requirements.authoring.submission.searches.line_numbers`
@@ -331,7 +346,8 @@ where
                     request.chat_history.push(
                         response
                             .message()
-                            .ok_or_else(|| io::Error::other("model returned an empty response"))?,
+                            .ok_or_else(|| io::Error::other("model returned an empty response"))?
+                            .into(),
                     );
                     let results = calls
                         .iter()
@@ -341,10 +357,12 @@ where
                             } else {
                                 "not run: the response also made a submission".to_owned()
                             };
-                            call.error_result(vec![ToolResultContent::text(text)])
+                            tool_error(call, text)
                         })
                         .collect();
-                    request.chat_history.push(Message::tool_results(results));
+                    request
+                        .chat_history
+                        .push(Message::tool_results(results).into());
                     continue;
                 }
             }
@@ -352,7 +370,8 @@ where
         request.chat_history.push(
             response
                 .message()
-                .ok_or_else(|| io::Error::other("model returned an empty response"))?,
+                .ok_or_else(|| io::Error::other("model returned an empty response"))?
+                .into(),
         );
         let mut results = Vec::new();
         for call in calls {
@@ -382,12 +401,14 @@ where
                     if known {
                         record_result(name, &text);
                     }
-                    call.error_result(vec![ToolResultContent::text(text)])
+                    tool_error(&call, text)
                 }
             };
             results.push(result);
         }
-        request.chat_history.push(Message::tool_results(results));
+        request
+            .chat_history
+            .push(Message::tool_results(results).into());
     }
 }
 

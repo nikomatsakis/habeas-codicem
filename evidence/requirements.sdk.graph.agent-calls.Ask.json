@@ -1,7 +1,7 @@
 {
   "requirement": "Builds a typed agent request. `context` is available in the context phase. Adding graph contents enters the node phase. Awaiting a request returns the decoded answer or a validation error.\n\n```rust,ignore\npub struct Ask<'a, 'd, D: Domain, R, P> { /* private fields */ }\n\nimpl<'a, 'd, D: Domain, R> Ask<'a, 'd, D, R, ContextPhase> {\n    pub fn context(self, value: impl Context) -> Self;\n}\n\nimpl<'a, 'd, D: Domain, R, P> Ask<'a, 'd, D, R, P> {\n    pub fn vet_answer(\n        self,\n        vet: impl FnMut(&R) -> Result<VetResult, D::Error> + Send + 'a,\n    ) -> Self;\n    pub fn message(self, text: impl Into<String>) -> Self;\n    pub fn contents_of_node(self, node: NodeId<D>) -> Ask<'a, 'd, D, R, NodePhase>;\n    pub fn contents_of_current_node(self) -> Ask<'a, 'd, D, R, NodePhase>;\n    pub fn contents_of_successors(\n        self,\n        label: D::EdgeLabel,\n    ) -> Ask<'a, 'd, D, R, NodePhase>\n    where\n        D::EdgeLabel: PartialEq;\n}\n```\n\nTrait implementations\n\n```rust,ignore\nimpl<'a, 'd, D: Domain, R> IntoFuture for Ask<'a, 'd, D, R, ContextPhase> where R: DeserializeOwned + JsonSchema + Send + 'a, D::Error: Display, D::EdgeLabel: DeserializeOwned + JsonSchema + PartialEq, 'd: 'a {\n    type Output = Result<R, ValidationError<<D as Domain>::Error>>;\n    type IntoFuture = Pin<Box<dyn Future<Output = <Ask<'a, 'd, D, R, ContextPhase> as IntoFuture>::Output> + Send + 'a>>;\n}\nimpl<'a, 'd, D: Domain, R> IntoFuture for Ask<'a, 'd, D, R, NodePhase> where R: DeserializeOwned + JsonSchema + Send + 'a, D::Error: Display, D::EdgeLabel: DeserializeOwned + JsonSchema + PartialEq, 'd: 'a {\n    type Output = Result<R, ValidationError<<D as Domain>::Error>>;\n    type IntoFuture = Pin<Box<dyn Future<Output = <Ask<'a, 'd, D, R, NodePhase> as IntoFuture>::Output> + Send + 'a>>;\n}\n```",
   "determination": true,
-  "rationale": "The tests adequately check `requirements.sdk.graph.agent-calls.Ask`.\n\n**Obligations derived from the text**\n- `context` is available in the context phase.\n- Adding graph contents enters the node phase. The three entry points are `contents_of_node`, `contents_of_current_node` and `contents_of_successors`.\n- Awaiting an `Ask` in either phase returns the decoded answer.\n- Awaiting an `Ask` in either phase returns a validation error on failure.\n- `message` and the type signatures are part of the interface.\n\n**Test mapping**\n- `validation_tests.rs#fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]` calls `.context(String)` and then chains `contents_of_current_node`, `contents_of_successors(7)` and `contents_of_current_node`. It awaits the node-phase future through `into_future` and checks that the future is `Send`. It asserts the decoded `answer.n == 7`, the context prefix, the inputs and their order, the JSON schema, and the reads and dependencies. This covers node-phase `IntoFuture`, `contents_of_current_node`, `contents_of_successors`, and the decoded answer.\n- `validation_tests.rs#fn[task_messages_share_a_prefix_and_can_queue_another_node]` annotates the type as `Ask<..., NodePhase>` after `context`, `message` and `contents_of_node`. It then calls `message` and awaits. It asserts the shared context prefix, the selected node's input, and the message and dependency results. This covers `contents_of_node`, `message`, and the phase transition.\n- `validation_tests.rs#fn[invalid_typed_submission_is_an_agent_error]` awaits `ctx.ask::<Answer>()` directly. This is the context-phase `IntoFuture`, and it asserts `ValidationError::Agent` for an invalid typed submission.\n- `validation_tests.rs#fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]` asserts that a queued `Ask` does nothing until awaited. It asserts `ValidationError::Graph` for read, edge and render failures. It also covers empty and non-matching successor selections.\n- `validation_tests.rs#fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]` asserts that `NoAgentConfigured` is returned without storing a record. It also covers a callback that asks again.\n- `tests/public_api.rs#fn[public_exports_match_the_appendix]` checks the exported API inventory.\n\n**Delegated**\n`vet_answer` behavior has its own requirement, `requirements.sdk.graph.agent-calls.vet_answer`. That requirement has tests in `agent/tests.rs`, so it needs no test here.\n\nThe context-phase restriction on `context` is enforced by the type system, so it needs no runtime test. I found no unaddressed obligation.",
+  "rationale": "The reviewed tests cover each obligation in `requirements.sdk.graph.agent-calls.Ask`.\n\n- **Context phase.** In `validation_tests.rs`, `explicit_insertions_preserve_order_repetition_and_selection_snapshots` calls `context(String)` and asserts the request prefix is \"question\". `task_messages_share_a_prefix_and_can_queue_another_node` does the same with `context(\"shared\")` and asserts the prefix and its fingerprint.\n- **Compile-time restriction.** `context` exists only on `ContextPhase`. That is a type-level property, and `public_exports_match_the_appendix` plus the type-annotated `Ask<..., NodePhase>` binding in the task-messages test check the signatures.\n- **Entering the node phase.** The same tests exercise `contents_of_current_node`, `contents_of_node` and `contents_of_successors(label)`. The asserted results are:\n  - the order and repetition of the inputs, `[1,3,2,3,1]`;\n  - the successor-edge filtering by label 7, which excludes the (8, 99) edge;\n  - the recorded dependencies;\n  - the JSON schema of the answer type, `properties.n.type == integer`.\n  \n  `queued_reads_selection_and_rendering_fail_before_agent_invocation` covers empty and non-matching successor sets. It also checks that merely queuing contents makes no agent call.\n- **`message`.** `task_messages_share_a_prefix_and_can_queue_another_node` asserts that the messages \"assess\" and \"verify\" are delivered, and that the shared prefix and the node inputs are unchanged.\n- **Awaiting returns the decoded answer.** `answer.n == 7` is asserted for the node phase. The context-phase future is awaited in `runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls`, where the intermediate ask completes, and in `invalid_typed_submission_is_an_agent_error`.\n- **Awaiting returns a validation error.** These errors are asserted:\n  - `ValidationError::Agent` for an invalid typed submission;\n  - `Graph(\"read\")`, `Graph(\"edges\")` and `Graph(\"render\")` for failures before agent invocation;\n  - `NoAgentConfigured`.\n- **`vet_answer`.** Its behavior belongs to its own requirement, `requirements.sdk.graph.agent-calls.vet_answer`. `agent/tests.rs` tests that behavior in `vetting_collects_corrections_and_rechecks_every_callback`, `vetting_preserves_domain_errors_and_skips_later_callbacks` and `typed_submission_references_resolve_and_invalid_results_are_agent_errors`. It needs no separate test here.\n\nI found no unacknowledged gaps and no marking gaps.",
   "references": "6d84ec3ae51b566d17de2fbe5c38a1295667e1a0a8226e89f2b1bfac4a787bdb",
   "inputs": [
     {
@@ -86,12 +86,12 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[typed_submission_references_resolve_and_invalid_results_are_agent_errors]",
-      "hash": "344a5e130451f6de2e1bdbb6259870eca27cf41875ed2259472d30db7f95e2bf"
+      "hash": "ddd3b03441ab9cd50df733d7f1ff28bdd5a224fa49a2ea82050a34f03a1d4f2e"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[vetting_collects_corrections_and_rechecks_every_callback]",
-      "hash": "e88c96902d01bc2e659752ee679fd7b56415df82b5e52d0118ab950a51ce192e"
+      "hash": "30f88cee1195dae51f3714edd10e56befa327279906ab4532bace0b71bbcf75b"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -251,7 +251,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "344a5e130451f6de2e1bdbb6259870eca27cf41875ed2259472d30db7f95e2bf"
+          "value": "ddd3b03441ab9cd50df733d7f1ff28bdd5a224fa49a2ea82050a34f03a1d4f2e"
         }
       ]
     },
@@ -268,7 +268,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "2ee516f70fb0fb6f29685217f9b66920166e1220c64246a11e44139d86f7844f"
+          "value": "ecc9d1dffa3ee4c89b0d255fefce86f1022e0720cc1a6cb2d2dc67d314489cf2"
         }
       ]
     },
@@ -286,18 +286,6 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "eed232332253f47c8c0b3d1c76436ef5db72ec8347c49068aa9ea3706feeadc7"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.agent-calls.Ask"
-        },
-        "Tests",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "56aeb4cde2f67977aaa4549ebfc1efa0c36633a8a22358a164d0c555b304981c"
         }
       ]
     }

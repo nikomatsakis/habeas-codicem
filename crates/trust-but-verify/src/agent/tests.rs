@@ -229,7 +229,7 @@ impl CompletionProvider for Script {
 // {cite}`habeas:util`
 fn returned_node_page(request: &CompletionRequest) -> uuid::Uuid {
     for message in request.chat_history.iter().rev() {
-        if let Message::User { content } = message {
+        if let Message::User { content } = message.as_ref() {
             for item in content {
                 if let UserContent::ToolResult(result) = item {
                     if result.name.as_str() == "read_node" {
@@ -296,7 +296,7 @@ async fn default_tool_accepts_scalar_results_and_keeps_the_exact_prefix() {
         next_page.parameters,
         json!({"type":"object","required":["uuid"],"properties":{"uuid":{"type":"string","format":"uuid"}}})
     );
-    assert_eq!(requests[0].chat_history[0], Message::system("Question é"));
+    assert_eq!(*requests[0].chat_history[0], Message::system("Question é"));
     assert!(
         serde_json::to_string(&requests[0].chat_history[1])
             .unwrap()
@@ -330,11 +330,11 @@ struct ParallelConversations {
 impl CompletionProvider for ParallelConversations {
     // {cite}`habeas:util`
     async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
-        let alpha = request.chat_history[0] == Message::system("alpha");
+        let alpha = *request.chat_history[0] == Message::system("alpha");
         let (prefix, contents, other, node) = if alpha {
             ("alpha", "ALPHA-CONTENTS", "BETA-CONTENTS", 1)
         } else {
-            assert_eq!(request.chat_history[0], Message::system("beta"));
+            assert_eq!(*request.chat_history[0], Message::system("beta"));
             ("beta", "BETA-CONTENTS", "ALPHA-CONTENTS", 2)
         };
         let turn = {
@@ -796,7 +796,7 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
         )]
     );
     let requests = agent.provider.requests.lock().unwrap();
-    let Message::User { content } = requests[1].chat_history.last().unwrap() else {
+    let Message::User { content } = requests[1].chat_history.last().unwrap().as_ref() else {
         panic!("expected edge tool delivery");
     };
     let [UserContent::ToolResult(result)] = content.as_slice() else {
@@ -832,7 +832,7 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
     assert!(ctx.dependencies().is_empty());
     assert_eq!(graph.lookups.load(Ordering::SeqCst), 0);
     let requests = agent.provider.requests.lock().unwrap();
-    let Message::User { content } = requests[1].chat_history.last().unwrap() else {
+    let Message::User { content } = requests[1].chat_history.last().unwrap().as_ref() else {
         panic!("expected rejected path result");
     };
     let [UserContent::ToolResult(result)] = content.as_slice() else {
@@ -886,7 +886,7 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
         ]
     );
     let requests = agent.provider.requests.lock().unwrap();
-    let Message::User { content } = requests[1].chat_history.last().unwrap() else {
+    let Message::User { content } = requests[1].chat_history.last().unwrap().as_ref() else {
         panic!("expected second label's edge delivery");
     };
     let [UserContent::ToolResult(result)] = content.as_slice() else {
@@ -910,6 +910,7 @@ enum Decision {
     No,
 }
 
+// {test}`requirements.sdk.graph.agent-harness.submission.acceptance`
 // {test}`requirements.sdk.graph.agent-calls.judge.submission`
 // {test}`requirements.sdk.graph.agent-calls.judge.submission.decoding`
 // {test}`requirements.sdk.graph.agent-harness.submission`
@@ -934,7 +935,7 @@ async fn typed_submission_references_resolve_and_invalid_results_are_agent_error
         .find(|tool| tool.name == "submit_result")
         .unwrap()
         .parameters;
-    assert!(matches!(requests[0].chat_history[0], Message::User { .. }));
+    assert!(matches!(*requests[0].chat_history[0], Message::User { .. }));
     assert!(schema["$defs"]["Decision"].is_object());
     assert_eq!(schema["required"], json!(["result"]));
     assert_eq!(schema["additionalProperties"], false);
@@ -1012,10 +1013,10 @@ async fn vetting_collects_corrections_and_rechecks_every_callback() {
             .starts_with(&requests[0].chat_history)
     );
     assert!(matches!(
-        &requests[1].chat_history[requests[0].chat_history.len()],
+        requests[1].chat_history[requests[0].chat_history.len()].as_ref(),
         Message::Assistant { .. }
     ));
-    let Some(Message::User { content }) = requests[1].chat_history.last() else {
+    let Some(Message::User { content }) = requests[1].chat_history.last().map(AsRef::as_ref) else {
         panic!("expected a tool response with the corrections");
     };
     assert_eq!(content.len(), 1);
@@ -1066,7 +1067,7 @@ async fn read_node_accepts_a_domain_id_first_supplied_by_the_agent() {
     let ctx = ValidationContext::with_agent(&graph, graph.cache().intern_node(Node(1)), &agent);
     assert!(ctx.ask::<bool>().await.unwrap());
     let requests = agent.provider.requests.lock().unwrap();
-    let Message::User { content } = requests[1].chat_history.last().unwrap() else {
+    let Message::User { content } = requests[1].chat_history.last().unwrap().as_ref() else {
         panic!("expected a read_node response");
     };
     let [UserContent::ToolResult(result)] = content.as_slice() else {
@@ -1287,7 +1288,9 @@ async fn source_reads_track_optional_dependencies_and_empty_searches_remain_disc
                     "text":["observed source"]}),
             ),
         ] {
-            let Message::User { content, .. } = requests[turn].chat_history.last().unwrap() else {
+            let Message::User { content, .. } =
+                requests[turn].chat_history.last().unwrap().as_ref()
+            else {
                 panic!("expected a delivered tool result");
             };
             let [UserContent::ToolResult(result)] = content.as_slice() else {
@@ -1460,7 +1463,7 @@ async fn count_is_checked_before_arguments_and_one_reminder_allows_recovery() {
     let requests = agent.provider.requests.lock().unwrap();
     assert_eq!(requests.len(), 3);
     let history = &requests[2].chat_history;
-    let Message::User { content } = &history[history.len() - 2] else {
+    let Message::User { content } = history[history.len() - 2].as_ref() else {
         panic!("expected skipped tool errors before reminder");
     };
     assert_eq!(content.len(), 3);
@@ -2074,7 +2077,7 @@ async fn node_preparation_tool_errors_allow_recovery_without_recording_undeliver
     assert!(ctx.dependencies().is_empty());
     let requests = agent.provider.requests.lock().unwrap();
     assert_eq!(requests.len(), 2);
-    let Message::User { content } = requests[1].chat_history.last().unwrap() else {
+    let Message::User { content } = requests[1].chat_history.last().unwrap().as_ref() else {
         panic!("expected the tool error to be delivered to the agent");
     };
     let [UserContent::ToolResult(result)] = content.as_slice() else {
@@ -2502,7 +2505,7 @@ async fn behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprin
     let requests = agent.provider.requests.lock().unwrap();
     assert_eq!(requests.len(), 1);
     assert_eq!(
-        requests[0].chat_history[0],
+        *requests[0].chat_history[0],
         Message::system(
             "Review test adequacy.\n\nCheck whether these tests cover the requirement's behavior and edge cases."
         )
@@ -2604,7 +2607,7 @@ async fn test_review_example_combines_instructions_before_requirement_and_test_c
             .all(|r| r.chat_history == requests[0].chat_history)
     );
     assert_eq!(
-        requests[0].chat_history[0],
+        *requests[0].chat_history[0],
         Message::system(
             "Review policy\n\nProject conventions\n\nDo tests cover all behavior and edge cases?"
         )
@@ -2729,7 +2732,7 @@ async fn application_tools_preserve_graph_tools_in_the_same_conversation() {
     let deliveries: Vec<Vec<String>> = requests[1..]
         .iter()
         .map(|request| {
-            let Message::User { content } = request.chat_history.last().unwrap() else {
+            let Message::User { content } = request.chat_history.last().unwrap().as_ref() else {
                 panic!("expected tool results");
             };
             content
@@ -2786,7 +2789,7 @@ async fn a_complete_node_read_has_text_and_no_continuation() {
     let ctx = ValidationContext::with_agent(&graph, graph.cache().intern_node(Node(1)), &agent);
     assert!(ctx.ask::<bool>().await.unwrap());
     let requests = agent.provider.requests.lock().unwrap();
-    let Message::User { content } = requests[1].chat_history.last().unwrap() else {
+    let Message::User { content } = requests[1].chat_history.last().unwrap().as_ref() else {
         panic!("expected read_node response")
     };
     let [UserContent::ToolResult(reply)] = content.as_slice() else {
@@ -2840,7 +2843,7 @@ async fn graph_read_pages_retain_the_prepared_snapshot_after_contents_change() {
     let requests = agent.provider.script.requests.lock().unwrap();
     let mut retained = String::new();
     for (index, request) in requests[1..].iter().enumerate() {
-        let Message::User { content } = request.chat_history.last().unwrap() else {
+        let Message::User { content } = request.chat_history.last().unwrap().as_ref() else {
             panic!("expected tool response")
         };
         let [UserContent::ToolResult(result)] = content.as_slice() else {
@@ -2947,7 +2950,8 @@ async fn graph_page_ids_from_a_populated_peer_conversation_are_rejected() {
                     ("get_next_page", json!({"uuid":foreign.to_string()}))
                 }
                 4 => {
-                    let Message::User { content } = request.chat_history.last().unwrap() else {
+                    let Message::User { content } = request.chat_history.last().unwrap().as_ref()
+                    else {
                         panic!("expected foreign-page error");
                     };
                     let [UserContent::ToolResult(result)] = content.as_slice() else {

@@ -407,11 +407,7 @@ where
     fn cut_off(&mut self, response: &CompletionResponse, limit: u64) -> Vec<Message> {
         let results = response
             .tool_calls()
-            .map(|call| {
-                call.error_result(vec![ToolResultContent::text(
-                    "not run: the call was cut off at the output limit",
-                )])
-            })
+            .map(|call| tool_error(call, "not run: the call was cut off at the output limit"))
             .collect();
         let mut messages: Vec<Message> = response.message().into_iter().collect();
         messages.push(Message::tool_results(results));
