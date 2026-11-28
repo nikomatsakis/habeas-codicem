@@ -1154,9 +1154,9 @@ mod tests {
                 "missing {criterion:?} in:\n{prompt}"
             );
         }
-        // The testing criteria follow the requirement task.
         assert!(prompt.contains(&format!(
-            "{}\n{}",
+            "{}\n\n{}\n{}",
+            approved_text("behavioral_review", 0),
             approved_text("requirement_task", 0),
             approved_text("testing_bar", 0)
         )));
@@ -2372,6 +2372,22 @@ mod tests {
                 .contains(approved_text("habeas_background", 1))
         );
         assert!(!prompt.joined().contains("{{"), "{}", prompt.joined());
+        let chapter = project.path().join("md/requirements.md");
+        let mut text = fs::read_to_string(&chapter).unwrap();
+        text.push_str(&crate::sites::tests::RULE.replace("{req} rule", "{req} other"));
+        fs::write(chapter, text).unwrap();
+        let other = AssessmentSources::prepare(project.path(), "requirements.other").unwrap();
+        let other = initial_prompt(&other).unwrap();
+        assert_eq!(prompt.system, other.system);
+        assert!(
+            other
+                .subject
+                .contains("Subject: requirement requirements.other")
+        );
+        assert!(other.subject.contains(&task));
+        for subject in ["requirements.rule", "requirements.other"] {
+            assert!(!other.system.contains(subject));
+        }
     }
 
     /// Every system prompt is the same for two subjects of its kind, and
@@ -3149,6 +3165,7 @@ no_match:
     // {test}`requirements.authoring.behavioral_review`
     // {test}`requirements.authoring.structural_inputs`
     // {test}`requirements.ci.reference_set`
+    // {test}`requirements.authoring.prompt_parts`
     #[test]
     fn removing_either_root_changes_the_evidence_but_keeps_both_checks() {
         let project = inputs::tests::project();
@@ -3298,6 +3315,57 @@ no_match:
                 .0
                 .contains("behavioral criterion cannot propose a {impl} marker")
         );
+        for (role, label) in [("test", "structural"), ("impl", "behavioral")] {
+            let mut turns = Vec::new();
+            if label == "behavioral" {
+                turns.push(judgment(json!(true), "No structural obligations."));
+            }
+            turns.extend([misplaced(role), misplaced(role)]);
+            let provider = RecordingProvider::script(turns, true);
+            let error = assess(&provider, &mut sources, &mut usage)
+                .await
+                .unwrap_err();
+            let expected = format!("{label} criterion cannot propose a {{{role}}} marker");
+            assert!(error.to_string().contains(&expected), "{error}");
+            assert!(provider.prompts().last().unwrap().0.contains(&expected));
+        }
+    }
+
+    // {test}`requirements.authoring.submission`
+    #[tokio::test]
+    async fn combined_judgment_retains_both_criteria_and_prioritizes_failures() {
+        let root = inputs::tests::project();
+        let state = tempfile::tempdir().unwrap();
+        let structural_gap = json!({"FIXME":["Structural gap"]});
+        let behavioral_gap = json!({"FIXME":["Behavioral gap"]});
+        for (structural, behavioral, expected) in [
+            (structural_gap.clone(), json!(false), json!(false)),
+            (structural_gap.clone(), json!(true), structural_gap.clone()),
+            (
+                structural_gap,
+                behavioral_gap,
+                json!({"FIXME":["Structural gap", "Behavioral gap"]}),
+            ),
+            (json!(false), json!(true), json!(false)),
+        ] {
+            let first = judgment(structural, "Structural assessment.");
+            let second = judgment(behavioral, "Behavioral assessment.");
+            let provider = RecordingProvider::script(vec![first.clone(), second.clone()], true);
+            let mut sources =
+                AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+            let mut usage =
+                UsageLog::start(state.path(), root.path(), "requirements.ready").unwrap();
+            let assessment = assess(&provider, &mut sources, &mut usage).await.unwrap();
+            assert_eq!(assessment.record["determination"], expected);
+            assert_eq!(
+                assessment.record["criteria"]["structural"]["output"],
+                first.1["result"]
+            );
+            assert_eq!(
+                assessment.record["criteria"]["behavioral"]["output"],
+                second.1["result"]
+            );
+        }
     }
 
     // {test}`requirements.authoring.submission`
@@ -3311,10 +3379,11 @@ no_match:
     #[tokio::test]
     async fn structural_assessments_and_confirmation_use_the_same_structural_contract() {
         let root = inputs::tests::project();
+        fs::write(root.path().join("md/requirements.md"), ":::{req} ready\nThe project MUST be ready. {cite}`requirements.context`\n:::\n:::{req} context\nReadiness is shared by both callers.\n:::\n").unwrap();
         let role = inputs::tests::role("impl", "requirements.ready");
         fs::write(
             root.path().join("src/lib.rs"),
-            format!("// {role}\n// :::{{fixme}} requirements.ready\n// The remaining structural gap.\n// :::\npub fn api() {{}}\n"),
+            format!("// {role}\n// :::{{fixme}} requirements.ready\n// The remaining structural gap.\n// :::\npub fn api() {{}}\n// {{test}}`requirements.ready`\n#[test]\nfn checks_ready() {{}}\n"),
         )
         .unwrap();
         let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
@@ -3419,6 +3488,13 @@ no_match:
             assert_eq!(
                 prompt.contains("Inspect the supplied implementation roots"),
                 structural
+            );
+            assert!(prompt.contains("The project MUST be ready."));
+            assert!(prompt.contains("Readiness is shared by both callers."));
+            assert_eq!(prompt.contains("fn checks_ready()"), !structural);
+            assert_eq!(
+                prompt.contains(approved_text("behavioral_review", 0)),
+                !structural
             );
             assert_eq!(prompt.contains("pub fn api()"), structural);
             assert_eq!(prompt.contains("Testing criteria:"), !structural);

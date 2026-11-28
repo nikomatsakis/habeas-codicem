@@ -126,12 +126,22 @@ pub(crate) fn comments(source: &str) -> Vec<Range<usize>> {
     ranges
 }
 
-/// A test attribute: `#[test]`, or one whose path ends in `test`, such as
-/// `#[tokio::test]`.
-static TEST_ATTRIBUTE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"^#\[\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*test\s*[\](]")
-        .expect("test attribute pattern")
-});
+/// Recognize the final path segment of the outer attribute attached to this function.
+fn is_test_attribute(source: &str) -> bool {
+    use syn::ext::IdentExt;
+    use syn::parse::Parser;
+
+    syn::Attribute::parse_outer
+        .parse_str(source)
+        .is_ok_and(|attrs| {
+            attrs.iter().any(|attr| {
+                attr.path()
+                    .segments
+                    .last()
+                    .is_some_and(|segment| segment.ident.unraw() == "test")
+            })
+        })
+}
 
 /// Test functions of a Rust source without a `{test}` annotation, as
 /// `(node, line, name)`.
@@ -170,7 +180,7 @@ fn untested_tests(
                 && !tested[*index]
                 && item.attachments.iter().any(|attachment| {
                     attachment.kind == AttachmentKind::Annotation
-                        && TEST_ATTRIBUTE.is_match(&source[attachment.span])
+                        && is_test_attribute(&source[attachment.span])
                 })
         })
         .filter_map(|(index, item)| {

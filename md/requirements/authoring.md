@@ -1433,8 +1433,8 @@ where it does not, the stop MUST be treated as reaching the output limit.
 Each assessment conversation MUST send its prompt as a system prompt followed by
 one user message, the subject message, filled from the first and second text
 blocks of the prompt requirement for the assessment's kind. The kinds are
-distributed requirement, non-distributed requirement, example, citation review, site
-review. A system prompt MUST be the same for
+structural requirement review, behavioral requirement review, distributed
+requirement review, example, citation review, and site review. A system prompt MUST be the same for
 every assessment of its kind, so every placeholder whose value depends on the
 subject MUST be in the subject message.
 :::

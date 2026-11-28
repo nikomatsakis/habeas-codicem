@@ -115,6 +115,36 @@ fn a_test_annotation_counts_even_when_its_target_has_a_finding() {
     assert!(!errors.contains("has no {test}"), "{errors}");
 }
 
+// {test}`requirements.references.coverage.tests`
+// {test}`requirements.integration.validate.test_annotations`
+#[test]
+fn test_annotations_follow_the_attribute_path_and_the_comment_owner() {
+    let project = project();
+    fs::write(
+        project.path().join("src/lib.rs"),
+        concat!(
+            "#[::essais::r#test]\nfn first() {}\n",
+            "#[équipe /* namespaced macro */ :: test(options)]\nfn second() {}\n",
+            "// {test}`rules.ready`\n#[::essais::test]\nfn marked() {}\n",
+            "#[cfg_attr(test, ignore)]\nfn helper() {}\n",
+        ),
+    )
+    .unwrap();
+    let errors = habeas::validate_repository(project.path()).unwrap().errors;
+    let findings: Vec<_> = errors
+        .iter()
+        .filter(|error| error.contains("has no {test}"))
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        findings,
+        [
+            "src/lib.rs:2: test function first has no {test} annotation",
+            "src/lib.rs:4: test function second has no {test} annotation"
+        ]
+    );
+}
+
 // {test}`requirements.cli.status.test_annotations`
 #[test]
 fn status_reports_an_unmarked_test_and_exits_successfully() {
