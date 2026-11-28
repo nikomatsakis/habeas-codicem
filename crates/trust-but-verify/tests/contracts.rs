@@ -340,6 +340,7 @@ async fn persist<O: Serialize + serde::de::DeserializeOwned + Send>(
     value
 }
 
+// {test}`requirements.sdk.graph.evidence.record`
 // {test}`requirements.sdk.domain`
 // {test}`requirements.sdk.errors`
 // {test}`requirements.sdk.graph.domain_types`

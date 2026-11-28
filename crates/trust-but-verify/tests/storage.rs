@@ -33,6 +33,25 @@ fn record(id: &str) -> Record<String> {
     )
 }
 
+// {test}`requirements.sdk.graph.evidence.record`
+#[test]
+fn records_support_clone_and_debug_with_independent_bounds() {
+    fn clone_record<N: Clone, L: Clone>(record: &Record<N, L>) -> Record<N, L> {
+        record.clone()
+    }
+    fn debug_record<N: std::fmt::Debug, L: std::fmt::Debug>(record: &Record<N, L>) -> String {
+        format!("{record:?}")
+    }
+
+    let original = record("clone-test");
+    let cloned = clone_record(&original);
+    assert_eq!(cloned.version, original.version);
+    assert_eq!(cloned.dependencies, original.dependencies);
+    assert_eq!(cloned.output, original.output);
+    assert!(debug_record(&original).contains("clone-test"));
+}
+
+// {test}`requirements.sdk.graph.evidence.record`
 // {test}`requirements.sdk.graph.evidence.recorded_criterion_version`
 // {test}`requirements.sdk.graph.criteria.criterion_version`
 #[test]
