@@ -9,7 +9,7 @@ NOT invoke authoring itself. {cite}`requirements.authoring.batch`
 :::
 
 :::{req} self_test
-The Habeas crate MUST have a Cargo integration test that invokes `habeas::validate()` against its own project, so its own requirements and evidence are checked recursively by `cargo test`.
+The Habeas crate MUST have a Cargo integration test that invokes `habeas::validate()` against its own project, so its own requirements and evidence are checked recursively by `cargo test`. The test MUST run that validation in an optimized process outside the test suite’s coverage instrumentation, including when run through `habeas coverage`.
 :::
 
 :::{req} live_bedrock_test

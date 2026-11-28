@@ -18,6 +18,8 @@ struct Cli {
 #[derive(Subcommand)]
 // {impl}`requirements.authoring.reporting`
 enum Command {
+    /// Check saved requirement and review evidence for the current project.
+    Validate,
     /// Run nextest with independent LLVM coverage for each test process.
     Coverage {
         #[arg(last = true)]
@@ -151,6 +153,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         } | Command::Setup { .. }
             | Command::Coverage { .. }
             | Command::CoverageCheck
+            | Command::Validate
             | Command::Test
             | Command::CoverageProcess { .. }
             | Command::Hook { .. }
@@ -160,6 +163,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         habeas::config::load_workspace_evidence(&std::env::current_dir()?)?;
     }
     match cli.command {
+        Command::Validate => {
+            habeas::validate();
+            Ok(())
+        }
         Command::Coverage { args } => {
             std::process::exit(habeas::execution_coverage::run(
                 &setup::project_root()?,
