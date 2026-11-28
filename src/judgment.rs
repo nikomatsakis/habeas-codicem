@@ -9,6 +9,7 @@ pub enum Judgment {
 }
 
 impl Judgment {
+    // {impl}`requirements.ci.outcomes`
     // {cite}`habeas:util`
     pub fn from_value(value: &Value) -> Result<Self, String> {
         match value {
@@ -38,6 +39,7 @@ impl Judgment {
         }
     }
 
+    // {impl}`requirements.ci.outcomes`
     pub fn to_value(&self) -> Value {
         match self {
             Self::True => Value::Bool(true),

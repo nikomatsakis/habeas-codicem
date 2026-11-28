@@ -3362,6 +3362,11 @@ no_match:
         let structural_gap = json!({"FIXME":["Structural gap"]});
         let behavioral_gap = json!({"FIXME":["Behavioral gap"]});
         for (structural, behavioral, expected) in [
+            (json!(true), json!(true), json!(true)),
+            (json!(true), behavioral_gap.clone(), behavioral_gap.clone()),
+            (json!(true), json!(false), json!(false)),
+            (json!(false), behavioral_gap.clone(), json!(false)),
+            (json!(false), json!(false), json!(false)),
             (structural_gap.clone(), json!(false), json!(false)),
             (structural_gap.clone(), json!(true), structural_gap.clone()),
             (
