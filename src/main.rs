@@ -7,16 +7,15 @@ use std::path::PathBuf;
 mod hook;
 mod setup;
 
+// {impl}`requirements.cli.clap`
 #[derive(Parser)]
 #[command(name = "habeas", version)]
-// {impl}`requirements.cli.clap`
 struct Cli {
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Subcommand)]
-// {impl}`requirements.authoring.reporting`
 enum Command {
     /// Check saved requirement and review evidence for the current project.
     Validate,
@@ -26,10 +25,8 @@ enum Command {
         args: Vec<String>,
     },
     /// Check saved file and function coverage, without running tests or a model.
-    // {impl}`requirements.test-coverage.check`
     CoverageCheck,
     /// Collect coverage for the full workspace, then check its coverage policy.
-    // {impl}`requirements.test-coverage.test`
     Test,
     #[command(hide = true)]
     CoverageProcess {
@@ -58,12 +55,10 @@ enum Command {
         selection: String,
     },
     // The single-subject syntax, its alias, and the `--all` exclusions.
-    // {impl}`requirements.authoring.invocation`
     // `--config <name>` selects a configuration for this invocation.
     // `--missing` and `--force` choose which selected subjects are assessed;
     // `--stdout` implies `--force`, so it excludes `--missing`.
     // `--policy <name>` selects the assessment policy for every form.
-    // {impl}`requirements.authoring.policy`
     #[command(alias = "author-evidence", group(ArgGroup::new("author_target").required(true).multiple(false).args(["subject", "all"])))]
     Author {
         subject: Option<String>,
@@ -120,9 +115,8 @@ enum HookCommand {
     SessionStart,
 }
 
-// {impl}`requirements.authoring.read_denial.mandatory`
-// {impl}`requirements.test-coverage.run`
-// {impl}`requirements.test-coverage.processes`
+// {impl}`requirements.authoring.concurrency`
+// {impl}`requirements.cli.clap`
 fn main() -> Result<(), Box<dyn Error>> {
     if std::env::current_exe()?
         .file_stem()
@@ -132,20 +126,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             &std::env::args_os().skip(1).collect::<Vec<_>>(),
         )?);
     }
-    // {impl}`requirements.cli.clap`
     let cli = Cli::parse();
-    // {impl}`requirements.configuration.workspace_location`
-    // {impl}`requirements.configuration.workspace_structure`
-    // {impl}`requirements.configuration.loading`
     // Commands other than `author` load only the evidence settings, so status
     // and book rendering never need authoring configuration or credentials.
-    // {impl}`requirements.authoring.deterministic_validation`
     // Only commands that resolve evidence inputs use the workspace evidence
     // path policy; setup, the session-start hook, and support queries do not.
     // `status` and `info` render the validation report, which records an
     // invalid workspace file as one finding and still runs the other checks,
     // so they must not stop here.
-    // {impl}`requirements.ci.errors`
     if !matches!(
         cli.command,
         Command::Mdbook {
@@ -170,20 +158,17 @@ fn main() -> Result<(), Box<dyn Error>> {
                 &args,
             )?);
         }
-        // {impl}`requirements.test-coverage.check`
         Command::CoverageCheck => {
             let report = habeas::execution_coverage::check(&setup::project_root()?)?;
             print!("{}", report.text);
             std::process::exit(i32::from(!report.passed));
         }
-        // {impl}`requirements.test-coverage.test`
         Command::Test => {
             std::process::exit(habeas::execution_coverage::test(&setup::project_root()?)?);
         }
         Command::CoverageProcess { args } => {
             std::process::exit(habeas::execution_coverage::collect_process(&args)?);
         }
-        // {impl}`requirements.cli.mdbook`
         Command::Mdbook { command: None } => {
             let (context, mut book) = mdbook_preprocessor::parse_input(io::stdin())?;
             habeas::preprocess_book(&mut book, &context.root)?;
@@ -198,7 +183,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             habeas::rustdocs::render(context)?;
             Ok(())
         }
-        // {impl}`requirements.cli.invocation`
         Command::Mdbook {
             command: Some(MdbookCommand::Supports { renderer }),
         } => {
@@ -208,12 +192,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 std::process::exit(1)
             }
         }
-        // {impl}`requirements.cli.setup`
-        // {impl}`requirements.cli.setup_local_path`
         Command::Setup { path } => setup::run(path.as_deref()),
-        // {impl}`requirements.cli.status`
-        // {impl}`requirements.cli.fixme_summary`
-        // {impl}`requirements.cli.fixme_issues`
         Command::Status {
             all,
             selection,
@@ -232,8 +211,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             )?;
             Ok(())
         }
-        // {impl}`requirements.refactor.command`
-        // {impl}`requirements.refactor.invalid_mappings`
         Command::Refactor { mappings, dry_run } => {
             let root = setup::project_root()?;
             match habeas::refactor(&root, &mappings, dry_run) {
@@ -250,7 +227,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 Err(habeas::RefactorError::Io(error)) => Err(error.into()),
             }
         }
-        // {impl}`requirements.cli.info`
         Command::Info { selection } => {
             let root = setup::project_root()?;
             io::stdout()
@@ -258,15 +234,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .write_all(habeas::info_markdown(&root, &selection)?.as_bytes())?;
             Ok(())
         }
-        // {impl}`requirements.authoring.invocation`
-        // {impl}`requirements.authoring.batch`
-        // {impl}`requirements.authoring.concurrency`
-        // {impl}`requirements.authoring.reporting`
-        // {impl}`requirements.authoring.read_denial`
-        // {impl}`requirements.authoring.configuration_precedence`
-        // {impl}`requirements.authoring.confirmation`
-        // {impl}`requirements.authoring.refresh`
-        // {impl}`requirements.authoring.policy`
         Command::Author {
             subject,
             all,
@@ -282,7 +249,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             let runtime = tokio::runtime::Runtime::new()?;
             // `sites:<full-name>` without a site authors every site review of
             // the requirement, as a batch.
-            // {impl}`requirements.references.site_review`
             let sites_of = subject
                 .as_deref()
                 .and_then(|subject| subject.strip_prefix("sites:"))
@@ -384,7 +350,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             Ok(())
         }
-        // {impl}`requirements.integration.symposium_setup_hook`
         Command::Hook {
             command: HookCommand::SessionStart,
         } => hook::session_start(),

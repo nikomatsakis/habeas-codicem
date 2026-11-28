@@ -193,7 +193,9 @@ several):
 
 1. A test designed to verify it gets `{test}`. Helpers the test calls need
    nothing; setup a test happens to exercise does not count.
-2. Otherwise a root gets `{impl}`. Leave what it reaches unmarked.
+2. Mark roots for stated structural obligations with `{impl}`. You can add a
+   marker when writing the code or when a structural reviewer recommends it.
+   Leave what a marked root reaches unmarked.
 3. Otherwise, code that should be re-checked when the requirement changes gets
    `{cite}`.
 4. Otherwise, leave it unmarked. An optional
@@ -209,8 +211,9 @@ Edge cases:
 - A requirement that refines another's obligation can `{impl}` it.
 - A site of a distributed requirement needs no reference to it, but a site that
   is a root of another requirement gets `{impl}` of that one.
-- If a behavior follows only from several requirements together, mark each with
-  `{impl}` where it applies and add fenced commentary saying how they combine.
+- If a test verifies behavior that follows from several requirements together,
+  mark it `{test}` for each obligation it checks and add fenced commentary
+  saying how they combine.
   For example, `^C` quits because one requirement maps `^C` to `q` and another
   says q stops managed forwards; a reference alone would not say why `^C` is
   accepted.
@@ -237,14 +240,11 @@ use `{fixme}` as the habeas-evidence skill's `references/fixme.md` describes.
 
 ## What the review checks
 
-The intended review checks stated structure and behavior independently:
+The review checks stated structure and behavior independently:
 implementation roots support signatures, relationships, ownership, and required
 delegation; tests support behavioral obligations. Missing implementation or
 test edges must not hide an obligation needing that evidence.
-The current harness selects structural assessment for requirements with
-implementation roots and no test edges, and test adequacy otherwise. Issue #51
-tracks the remaining independent-check and regression-test gaps, acknowledged
-by fenced `{fixme}` references. Examples and distributed requirements retain
+Examples and distributed requirements retain
 their existing review tasks.
 
 Before running `habeas author`, check the change against what each

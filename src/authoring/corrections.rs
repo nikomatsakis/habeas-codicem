@@ -24,6 +24,7 @@ impl Role {
     }
 }
 
+// {impl}`requirements.authoring.corrections.rationale`
 // {impl}`requirements.authoring.corrections`
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -40,7 +41,6 @@ pub(crate) enum Correction {
     },
 }
 
-// {impl}`requirements.authoring.corrections.rationale`
 impl Correction {
     fn action(&self) -> String {
         match self {
@@ -83,7 +83,8 @@ pub(crate) enum AssessmentResult {
     },
 }
 impl AssessmentResult {
-    // {impl}`requirements.authoring.persistence.corrections`
+    // {impl}`requirements.authoring.corrections`
+    // {impl}`requirements.authoring.corrections.rationale`
     pub(crate) fn evidence(&self) -> io::Result<(Judgment, String)> {
         let valid = |s: &str| !s.trim().is_empty();
         match self {
@@ -123,13 +124,51 @@ impl AssessmentResult {
     }
 }
 
+/// Compute the requirement judgment from the two independently submitted results.
+pub(crate) fn combine_criteria(criteria: &serde_json::Value) -> io::Result<AssessmentResult> {
+    let mut explanations = Vec::new();
+    let mut corrections = Vec::new();
+    let mut entries = Vec::new();
+    if criteria.as_object().map(|o| o.len()) != Some(2) {
+        return Err(io::Error::other(
+            "expected structural and behavioral criteria",
+        ));
+    }
+    for name in ["structural", "behavioral"] {
+        let record: trust_but_verify::graph::Record<HabeasNode, HabeasEdgeLabel> =
+            serde_json::from_value(criteria[name].clone())?;
+        let result: AssessmentResult = serde_json::from_value(record.output)?;
+        let (_, rationale) = result.evidence()?;
+        explanations.push(format!("{name}: {rationale}"));
+        match result {
+            AssessmentResult::Success { .. } => (),
+            AssessmentResult::Failed { corrections: found } => corrections.extend(found),
+            AssessmentResult::AcknowledgedGap { entries: found, .. } => {
+                for entry in found {
+                    if !entries.contains(&entry) {
+                        entries.push(entry);
+                    }
+                }
+            }
+        }
+    }
+    let rationale = explanations.join("\n\n");
+    let result = if !corrections.is_empty() {
+        AssessmentResult::Failed { corrections }
+    } else if !entries.is_empty() {
+        AssessmentResult::AcknowledgedGap { entries, rationale }
+    } else {
+        AssessmentResult::Success { rationale }
+    };
+    Ok(result)
+}
+
 #[derive(Debug)]
 pub(super) struct Finding {
     correction: Correction,
     fingerprint: Option<Fingerprint>,
 }
 impl Finding {
-    // {impl}`requirements.authoring.corrections.apply`
     pub(super) fn capture(
         correction: Correction,
         dependencies: &[Dependency<HabeasNode, HabeasEdgeLabel>],
@@ -197,7 +236,6 @@ pub(super) struct Repairs {
     pub outstanding: Vec<(String, String)>,
 }
 
-// {impl}`requirements.authoring.corrections.apply`
 pub(super) async fn apply(
     inspection: &crate::evidence::RepositoryInspection,
     edits: &[ReferenceEdit],
@@ -294,7 +332,6 @@ pub(super) async fn apply(
 
 /// Stage the replacement before locking. Recheck the path and bytes on the
 /// locked original immediately before publishing the staged file.
-// {impl}`requirements.authoring.corrections.apply`
 async fn replace_source(p: &ParsedSource, source: &str) -> io::Result<()> {
     let mut tmp = tempfile::NamedTempFile::new_in(p.path.parent().unwrap())?;
     tmp.write_all(source.as_bytes())?;
@@ -319,7 +356,6 @@ async fn replace_source(p: &ParsedSource, source: &str) -> io::Result<()> {
     Ok(())
 }
 
-// {impl}`requirements.references.outline_comments`
 fn attached(
     cache: &OutlineCache,
     source: &ParsedSource,
@@ -338,7 +374,6 @@ fn attached(
                 }) == owner
         })
 }
-// {impl}`requirements.authoring.corrections.apply`
 fn plan(
     inspection: &crate::evidence::RepositoryInspection,
     cache: &OutlineCache,
@@ -398,7 +433,6 @@ fn plan(
     Ok(Some((offset, line)))
 }
 
-// {impl}`requirements.authoring.corrections.apply`
 fn marker_insertion(
     p: &ParsedSource,
     index: usize,

@@ -1,7 +1,17 @@
 # References and Rust items
 
+:::{definition} source_item
+:phrase: source item
+
+A node in a project file’s outline, identified by the project-relative path
+and an outline selector. For example, `src/auth.rs#fn[check_token]` identifies
+a Rust function. The root node represents the whole file. A reference in a
+comment belongs to the item that owns the comment under
+{cite}`requirements.references.outline_comments`.
+:::
+
 :::{req} roles
-Project text files MAY use the `{impl}`, `{cite}`, and `{test}` roles with a backtick-delimited full requirement or example name, or with a built-in name under {cite}`requirements.references.builtin_definitions`, and MAY use the `{fixme}` role in fenced form. A reference MAY instead be written in fenced form, `:::{role} name` on one line, a body, and a closing fence, following the fence rules of {cite}`requirements.ci.span` and {cite}`requirements.ci.fence_lengths`; the fenced form is the same edge with attached commentary, and the inline form carries none. In a source comment, fence lines MUST be recognized after removing each line's comment delimiters within one comment run under {cite}`requirements.references.outline_comments`, and a fence that does not close within its comment run MUST be a validation error. Each reference is a directed edge between its source and the named definition. A source is a project source item or a requirement or example declaration. The roles MUST mean:
+Project text files MAY use the `{impl}`, `{cite}`, and `{test}` roles with a backtick-delimited full requirement or example name, or with a built-in name under {cite}`requirements.references.builtin_definitions`, and MAY use the `{fixme}` role in fenced form. A reference MAY instead be written in fenced form, `:::{role} name` on one line, a body, and a closing fence, following the fence rules of {cite}`requirements.ci.span` and {cite}`requirements.ci.fence_lengths`; the fenced form is the same edge with attached commentary, and the inline form carries none. In a source comment, fence lines MUST be recognized after removing each line's comment delimiters within one comment run under {cite}`requirements.references.outline_comments`, and a fence that does not close within its comment run MUST be a validation error. Each reference is a directed edge between its source and the named definition. A source is a {term}`requirements.references.source_item` or a requirement or example declaration. The roles MUST mean:
 
 - `{cite}`: the source relies on, supports, or refers to the definition. It is an
   edge from the source to the definition.
@@ -67,23 +77,16 @@ helpers need no annotation merely because they serve other code.
 :::{req} procedure
 :impl: assets/skills/habeas-requirements/SKILL.md
 :impl: assets/skills/habeas-bootstrap-requirements/SKILL.md
-A source item MUST choose its references under {cite}`requirements.references.roles`
+A {term}`requirements.references.source_item` MUST choose its references under {cite}`requirements.references.roles`
 for each candidate definition by this procedure, and MAY carry several:
 
-1. If the item is a test designed to verify the definition, it MUST use
-   `{test}`. A test helper a reviewer reaches by following such a test needs no
-   reference to the definition.
-2. Otherwise, if the item is a root of the definition's implementation, it
-   MUST use `{impl}`. Code or a type carries out part of a definition when it
-   makes a decision, performs a check, produces an output, or handles a case
-   the definition specifies, or when the definition constrains its shape:
-   fields, variants, serialized form, or validation. A root is such an item
-   that no other item marked `{impl}` for the definition reaches, where an item
-   reaches what it calls, the types it uses, and the implementations of trait
-   methods it calls, and what those reach in turn. An item reached from a root
-   needs no reference to the definition. An item that is a site of a distributed definition
-   under {cite}`requirements.references.distributed` needs no reference to it;
-   its site review covers it.
+1. For tests, apply {cite}`requirements.references.coverage.tests` and use
+   `{test}` for each definition the test is designed to verify. A helper reached
+   from a marked test needs no separate reference.
+2. For source items demonstrating a requirement’s structural obligations, follow
+   {cite}`requirements.references.structural_markers`. An item that is a site of
+   a distributed definition under {cite}`requirements.references.distributed`
+   needs no reference to it solely for being a site.
 3. Otherwise, if the item should be re-checked or kept in sync when the
    definition changes, it MUST use `{cite}`.
 
@@ -93,6 +96,19 @@ merely to account for their existence. Reviewers still inspect relevant helpers
 when judging tests under {cite}`requirements.ci.review_criteria`.
 
 A `{fixme}` reference is added independently of this procedure.
+:::
+
+:::{req} structural_markers
+:impl: assets/skills/habeas-requirements/SKILL.md
+:impl: assets/skills/habeas-bootstrap-requirements/SKILL.md
+The bundled skills MUST give authors the following guidance. A
+{term}`requirements.references.source_item` that demonstrates a stated structural
+obligation SHOULD carry an `{impl}` annotation for the requirement. Mark the
+roots from which a reviewer can verify the obligation by following calls, types,
+and trait implementations. Helpers reachable from those roots need no separate
+marker. Authors MAY add a marker when writing the code or when a structural
+reviewer recommends it under {cite}`requirements.authoring.structural_prompt`
+and {cite}`requirements.authoring.corrections`.
 :::
 
 :::{req} discovery
@@ -122,24 +138,38 @@ count anywhere.
 :::
 
 :::{req} builtin_definitions
-Habeas provides built-in definitions named `habeas:<name>`, available in
-every project without a declaration. Each built-in has fixed text, which
-states its obligations and is documented in Habeas's reference documentation,
-and states which reference roles may use it. References resolve built-in
-names alongside project definitions. So that every book stands alone, a
-built-in reference displayed under {cite}`requirements.references.book_badges`
-uses a badge without a link whose hover text gives the built-in's full text.
-Built-ins themselves neither require nor permit definition evidence files and
-do not appear as definitions in the requirements index, `habeas status`, or the
-missing-evidence check of
-{cite}`requirements.ci.coverage`. Per-source citation reviews under
-{cite}`requirements.references.citation_review` may be required for references
-to a built-in. A project definition cannot use a full name beginning with
-`habeas:`; validation reports one,
-and the `:` character already makes such names invalid under
-{cite}`requirements.ci.identifiers`. Validation reports a reference to a
-built-in in a role the built-in does not permit, or that breaks the built-in's
-stated form.
+Habeas MUST resolve built-in names of the form `habeas:<name>` alongside project
+definitions in every project without a project declaration. Each built-in MUST
+specify its permitted reference roles and have fixed text stating its obligations.
+Habeas's reference documentation MUST include that text.
+:::
+
+:::{req} builtin_definitions.reserved_names
+Project definitions MUST NOT use a full name beginning with `habeas:`.
+Validation MUST report a project definition that uses the reserved prefix under
+{cite}`requirements.ci.identifiers`.
+:::
+
+:::{req} builtin_definitions.reference_validation
+Validation MUST report a reference that uses a role the built-in does not permit
+or violates the built-in's stated form.
+:::
+
+:::{req} builtin_definitions.book_badge
+A built-in reference displayed under {cite}`requirements.references.book_badges`
+MUST render as an unlinked badge whose hover text gives the built-in's full text.
+:::
+
+:::{req} builtin_definitions.evidence
+Built-ins MUST neither require nor permit definition evidence files.
+The missing-evidence check under {cite}`requirements.ci.coverage` MUST exclude
+built-ins. References to a built-in remain subject to the per-source citation
+review rules under {cite}`requirements.references.citation_review`.
+:::
+
+:::{req} builtin_definitions.listings
+The requirements index and `habeas status` MUST omit built-ins from their lists
+of definitions.
 :::
 
 :::{req} citation_review
@@ -337,13 +367,19 @@ file among the sources reference discovery considers under
 skipping the file.
 :::
 
+:::{definition} test_source_item
+:phrase: test source item
+
+A {term}`requirements.references.source_item` recognized as a test by Habeas.
+In first-party Rust sources under {cite}`requirements.references.rust_item_coverage.parsing`,
+this is a function with `#[test]` or an attribute whose path ends in `test`,
+such as `#[tokio::test]`. This includes functions in Cargo integration-test targets.
+:::
+
 :::{req} coverage.tests
-Every Rust function carrying a test attribute, `#[test]` or an attribute whose
-path ends in `test` such as `#[tokio::test]`, including those in Cargo
-integration-test targets, MUST carry a `{test}` reference to a requirement or
-named example under {cite}`requirements.references.roles`, in a comment
-attached to it or within its body. A test function without one MUST be a
-validation error naming its file, line, and name.
+Every {term}`requirements.references.test_source_item` MUST carry one or more
+`{test}` annotations in comments belonging to that item under
+{cite}`requirements.references.outline_comments`.
 :::
 
 :::{req} coverage.examples

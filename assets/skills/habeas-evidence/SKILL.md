@@ -56,24 +56,15 @@ the policy.
 ## Judgments
 
 `habeas author` records, for each requirement and example, a model's judgment
-of whether the reviewed tests adequately check it, or, for structural assessment
-of a requirement with implementation roots and no test edges, whether its stated
-structure is supported by those implementations; `habeas coverage` validates
-those records without calling a model. A judgment is one of three outcomes:
+of its supporting evidence. Non-distributed requirements receive both structural
+and behavioral checks. A judgment is one of three outcomes:
 
-- `true`: the reviewed tests adequately check the definition, or its
-  implementations support its structural obligations, with no gap under the
-  assessment's criteria. Runtime obligations still require test evidence.
+- `true`: every applicable structural and behavioral obligation is supported.
+  Examples and distributed requirements follow their own review tasks.
 - `false`: there is a gap that no `{fixme}` reference acknowledges; the
   rationale names it.
 - FIXME: `{fixme}` references acknowledge every remaining gap; validation
   accepts it while each named issue is open.
-
-The intended requirement review checks structure and behavior independently.
-The current choice of one assessment, including its incomplete handling of
-mixed requirements and absent edge kinds, is the accepted gap tracked by issue
-#51. Keep its fenced `{fixme}` acknowledgments until the independent checks
-and their regression tests are implemented.
 
 ## Rules
 

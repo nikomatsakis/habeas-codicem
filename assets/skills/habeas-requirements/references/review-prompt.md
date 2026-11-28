@@ -31,13 +31,10 @@ They must describe the same composition and boundaries. Keep contract-specific
 introductions inside the requirement, and use `{term}` in assessed text when
 relying on a shared definition.
 
-Each requirement gets its own model assessment. The intended contract checks
+Each requirement gets its own model assessment. For a non-distributed requirement, the assessment checks
 structure through implementation roots and behavior through tests independently;
 without one kind of edge, establish that no obligation needs it, applying the
-existing refining-declaration rules and testing exemptions. The current harness
-chooses structural assessment only for requirements with implementation roots
-and no test edges, and test adequacy otherwise. Issue #51 tracks this accepted
-temporary gap; fenced `{fixme}` references acknowledge it.
+existing refining-declaration rules and testing exemptions.
 Examples and distributed requirements retain their existing tasks. Editing a requirement makes
 its evidence stale. So a requirement should
 be as small as it can be while still standing on its own: it costs less to

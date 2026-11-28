@@ -12,6 +12,8 @@ use trust_but_verify::{
     sources::Sources,
 };
 
+// {impl}`requirements.authoring.source_tools`
+// {impl}`requirements.authoring.read_denial`
 pub(super) fn configure(
     domain: &mut HabeasDomain,
     backend: &config::BackendConfig,
@@ -40,7 +42,6 @@ struct Lookup {
     selection: Option<String>,
 }
 struct LookupRequirements;
-// {impl}`requirements.authoring.reference_index`
 impl Tool<HabeasDomain, Lookup, Value> for LookupRequirements {
     fn name(&self) -> &str {
         "lookup_requirements"
@@ -82,7 +83,6 @@ struct Query {
     query: String,
 }
 struct RunNamedQuery;
-// {impl}`requirements.authoring.structural_search`
 impl Tool<HabeasDomain, Query, Value> for RunNamedQuery {
     fn name(&self) -> &str {
         "run_named_query"
@@ -135,6 +135,7 @@ struct Issue {
     issue: String,
 }
 struct Github(crate::github::GithubIssues);
+// {impl}`requirements.authoring.github_reads`
 impl Tool<HabeasDomain, Issue, Value> for Github {
     fn name(&self) -> &str {
         "github"

@@ -1,8 +1,8 @@
 {
   "requirement": "For each citation assessment, Habeas MUST vet\n`answer.rationale` with {cite}`requirements.sdk.graph.agent-calls.vet_answer`.\nIf the rationale contains no source line citation as defined by\n{cite}`requirements.authoring.line_numbers.detection`, the line-number callback\nMUST return `Ok(VetResult::Accept)`. The first time a rationale cites a line\nnumber, the callback MUST return `Ok(VetResult::CorrectAndTryAgain(message))`.\nThe message MUST quote the offending text and ask for the file and outline\nselector under {cite}`requirements.authoring.judgment_rules`. If a later\nsubmission still cites a line number, the callback MUST end the review by returning a domain error under\n{cite}`requirements.sdk.graph.agent-calls.vet_answer`.",
   "determination": true,
-  "rationale": "The reviewed tests cover every obligation in `requirements.authoring.line_numbers.citation`. The implementation was read only to see how the callback is wired, in `src/authoring/sdk.rs#impl[Review<'_>]/fn[ask]`. Expected behavior comes from the requirement text.\n\n- **No line citation returns Accept.**\n  - In `src/authoring/mod.rs#mod[tests]/fn[citation_reviews_are_confirmed_with_fresh_targeted_conversations]`, the rationales without line numbers (the corrected first review and the second review) are accepted without further correction (3 prompts in total), and the record keeps the corrected rationale.\n  - `src/authoring/mod.rs#mod[tests]/fn[disagreeing_citation_assessments_record_both_explanations]` also accepts rationales with no line numbers on the first try (2 prompts).\n- **The first line-number citation returns CorrectAndTryAgain with a quoting message.** In `citation_reviews_are_confirmed_with_fresh_targeted_conversations`, the first rationale cites a file path followed by a colon and a digit. The test inspects the last message sent in the second request. It asserts that the message contains the sentence announcing a cited line number and quoting the offending text. It also asserts that the message contains \"file and outline selector\", which is the required request. It then checks that the retry's corrected rationale is the one recorded.\n- **A later submission that still cites a line number ends the review with an error.** In `src/authoring/mod.rs#mod[tests]/fn[a_citation_review_fails_when_the_revised_rationale_still_uses_line_numbers]`, both responses cite a path-and-line.\n  - The test asserts that the result is an error, that exactly 2 prompts were sent, and that no evidence file was written.\n  - If the callback had accepted or kept correcting, the flow would have sent a further prompt or recorded evidence.\n  - It does not assert the error's text. The requirement only asks for a domain error, and the 2-prompt count and missing evidence tie the failure to the callback.\n- **State persists across submissions in a conversation.** The corrected-then-accepted flow and the corrected-then-fail flow both depend on this, and the two tests above exercise both.\n- **Each citation assessment is vetted.** The vetting applies to the citation assessments in all three tests. `citation_reviews_are_confirmed_with_fresh_targeted_conversations` also shows that a second confirmation conversation is fresh: its prompt does not contain the first rationale, and the usage logs have distinct run IDs.\n\nWhat counts as a line-number citation belongs to `requirements.authoring.line_numbers.detection`, and the `{{judgment_rules}}` text belongs to `requirements.authoring.judgment_rules`. Both are cited context and not assessed here. How `vet_answer` callbacks are invoked belongs to `requirements.sdk.graph.agent-calls.vet_answer`, which is also not reassessed.\n\nI found no unacknowledged gaps and no marking gaps.",
-  "references": "8eddd17574a53e4d25ad87082c9646520a96f03f63968b64d2f5fc2b19eee238",
+  "rationale": "structural: The only structural obligation in `requirements.authoring.line_numbers.citation` is the clause \"Habeas MUST vet `answer.rationale` with `requirements.sdk.graph.agent-calls.vet_answer`\". The text also says the check is a \"line-number callback\" that returns `Ok(VetResult::Accept)`, `Ok(VetResult::CorrectAndTryAgain(message))` or a domain error. An alternative that checked the rationale after the `Ask` returned would give similar observable text. It would not end the conversation through the harness's callback mechanism, so it would violate the clause.\n\n`src/authoring/sdk.rs#impl[Review<'_>]/fn[ask]` meets this obligation. It builds the request with `cx.ask::<R>()...vet_answer(|answer| { ... })`, so the check is an `FnMut` callback that keeps state in the `corrected` flag across submissions. For a citation review (`citation_review`), the callback reads `value[\"rationale\"]` and calls `line_numbers::cited`. It then behaves as follows:\n- If no line citation is found, it returns `Ok(VetResult::Accept)`.\n- On the first citation, it sets `corrected` and returns `Ok(VetResult::CorrectAndTryAgain(...))`. The message includes the offending text (`{citation:?}`) and `location_guidance()`, which asks for the file and outline selector.\n- If the revised rationale still cites a line, it returns `Err(io::Error::other(...))`. That is the domain error that `vet_answer` turns into `ValidationError::Graph`, ending the review.\n\nThe remaining clauses specify observable behavior only:\n- What counts as a citation is defined by `requirements.authoring.line_numbers.detection`.\n- The message wording is governed by `requirements.authoring.judgment_rules`.\n- How the harness handles an `Err` is governed by `requirements.sdk.graph.agent-calls.vet_answer`.\n\nThe root carries the `{impl}` marker for this requirement, and I found no unmet structural obligation.\n\nbehavioral: The subject's behavioral obligations are covered by the three marked tests in `src/authoring/mod.rs`.\n\n- **Accept when no line citation (`Ok(VetResult::Accept)`).** `mod[tests]/fn[citation_reviews_are_confirmed_with_fresh_targeted_conversations]` accepts the corrected rationale and the second assessment's rationale, and asserts the recorded rationale. `mod[tests]/fn[disagreeing_citation_assessments_record_both_explanations]` accepts rationales with no line numbers without any correction. It asserts that exactly two prompts were sent.\n- **First line citation gives `CorrectAndTryAgain(message)`.** In `citation_reviews_are_confirmed_with_fresh_targeted_conversations`, the first submission cites a path with a colon and a digit. The test inspects the last message of the second request. It asserts that the message quotes the offending text and asks for the file and outline selector.\n- **Later line citation ends the review with a domain error.** `mod[tests]/fn[a_citation_review_fails_when_the_revised_rationale_still_uses_line_numbers]` submits two rationales that both cite line numbers. It asserts that the result is an error, that only two prompts were sent (so the conversation ended right away), and that no evidence record was written. The test only checks `is_err()` and does not check the error's type. The conversion to `ValidationError::Graph` is governed by the cited `requirements.sdk.graph.agent-calls.vet_answer`.\n- **Per-assessment vetting and per-conversation state.** `citation_reviews_are_confirmed_with_fresh_targeted_conversations` runs two confirmation assessments. The first needs a correction, and the second, in a fresh conversation, is accepted with no correction. This shows the callback state is not shared between assessments.\n\nThe detection forms belong to the cited `requirements.authoring.line_numbers.detection`, and the selector wording belongs to the cited `requirements.authoring.judgment_rules`. Neither needs a test here. I found no gap.",
+  "references": "0440a53aab88fbc078b2c4887ea4aecc7151b343f4410fba883ca196f1d57833",
   "inputs": [
     {
       "requirements": "requirements.authoring.line_numbers.citation",
@@ -130,6 +130,11 @@
       ]
     },
     {
+      "file": "src/authoring/sdk.rs",
+      "item": "impl[Review<'_>]/fn[ask]",
+      "hash": "32507915bbdf34cceed6158eed7a7c886345541c1bd82e7c4ffba9f4019ab471"
+    },
+    {
       "file": "src/authoring/mod.rs",
       "item": "mod[tests]/fn[citation_reviews_are_confirmed_with_fresh_targeted_conversations]",
       "hash": "bea41be3a9c3c1c2ae71d2b0d67226ea65d2fba5547ee59b4d93e7e053a9921c"
@@ -145,12 +150,215 @@
       "hash": "20172549688a0a9cb41629fa58bf3caff5286f863c126515de32ae8d287ace82"
     },
     {
-      "file": "src/authoring/sdk.rs",
-      "item": "impl[Review<'_>]/fn[ask]",
-      "hash": "29c6166a5ed55d61a9b1baf8de3c49f26c092d1955c56e078a5b079e598128da"
+      "file": "src/authoring/line_numbers.rs",
+      "item": "fn[cited]",
+      "hash": "f0547266aef5a225344d681af8dd0a8c53d7449ff3b2cc366f33b68386f01622"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[location_guidance]",
+      "hash": "b902656b8d648a41d9007473ab770e9e2cb016a284c85a4eca6ce02eceaf5043"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.authoring.line_numbers.citation"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "0440a53aab88fbc078b2c4887ea4aecc7151b343f4410fba883ca196f1d57833"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.authoring.line_numbers.citation"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "ddba0fdf578772c89ad55e21644364032d83d9972406a72779b0e870d640252a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-calls.vet_answer"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "573b1ff5c36bddb0961b2cae0d7c453d5715c521a1de0cbe798345e7795cb04d"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.authoring.line_numbers.detection"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "007dc1295f1ac07ee24f404fd191da32115cccb1e5ea424d7f98c43502169100"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.authoring.judgment_rules"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "6f9506192f27eec1e6cbc673663b5825e679430e46bf1996003ac56e3c3b83be"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/authoring/sdk.rs"
+                },
+                "selector": "impl[Review<'_>]/fn[ask]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "32507915bbdf34cceed6158eed7a7c886345541c1bd82e7c4ffba9f4019ab471"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The only structural obligation in `requirements.authoring.line_numbers.citation` is the clause \"Habeas MUST vet `answer.rationale` with `requirements.sdk.graph.agent-calls.vet_answer`\". The text also says the check is a \"line-number callback\" that returns `Ok(VetResult::Accept)`, `Ok(VetResult::CorrectAndTryAgain(message))` or a domain error. An alternative that checked the rationale after the `Ask` returned would give similar observable text. It would not end the conversation through the harness's callback mechanism, so it would violate the clause.\n\n`src/authoring/sdk.rs#impl[Review<'_>]/fn[ask]` meets this obligation. It builds the request with `cx.ask::<R>()...vet_answer(|answer| { ... })`, so the check is an `FnMut` callback that keeps state in the `corrected` flag across submissions. For a citation review (`citation_review`), the callback reads `value[\"rationale\"]` and calls `line_numbers::cited`. It then behaves as follows:\n- If no line citation is found, it returns `Ok(VetResult::Accept)`.\n- On the first citation, it sets `corrected` and returns `Ok(VetResult::CorrectAndTryAgain(...))`. The message includes the offending text (`{citation:?}`) and `location_guidance()`, which asks for the file and outline selector.\n- If the revised rationale still cites a line, it returns `Err(io::Error::other(...))`. That is the domain error that `vet_answer` turns into `ValidationError::Graph`, ending the review.\n\nThe remaining clauses specify observable behavior only:\n- What counts as a citation is defined by `requirements.authoring.line_numbers.detection`.\n- The message wording is governed by `requirements.authoring.judgment_rules`.\n- How the harness handles an `Err` is governed by `requirements.sdk.graph.agent-calls.vet_answer`.\n\nThe root carries the `{impl}` marker for this requirement, and I found no unmet structural obligation."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.authoring.line_numbers.citation"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "0440a53aab88fbc078b2c4887ea4aecc7151b343f4410fba883ca196f1d57833"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.authoring.line_numbers.citation"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "ddba0fdf578772c89ad55e21644364032d83d9972406a72779b0e870d640252a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-calls.vet_answer"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "573b1ff5c36bddb0961b2cae0d7c453d5715c521a1de0cbe798345e7795cb04d"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.authoring.line_numbers.detection"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "007dc1295f1ac07ee24f404fd191da32115cccb1e5ea424d7f98c43502169100"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.authoring.judgment_rules"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "6f9506192f27eec1e6cbc673663b5825e679430e46bf1996003ac56e3c3b83be"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/authoring/mod.rs"
+                },
+                "selector": "mod[tests]/fn[citation_reviews_are_confirmed_with_fresh_targeted_conversations]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "bea41be3a9c3c1c2ae71d2b0d67226ea65d2fba5547ee59b4d93e7e053a9921c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/authoring/mod.rs"
+                },
+                "selector": "mod[tests]/fn[a_citation_review_fails_when_the_revised_rationale_still_uses_line_numbers]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "d77daf0c862aca2620c029339487f9dc1481bf946743ec5c08a3f356702371d6"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/authoring/mod.rs"
+                },
+                "selector": "mod[tests]/fn[disagreeing_citation_assessments_record_both_explanations]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "20172549688a0a9cb41629fa58bf3caff5286f863c126515de32ae8d287ace82"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The subject's behavioral obligations are covered by the three marked tests in `src/authoring/mod.rs`.\n\n- **Accept when no line citation (`Ok(VetResult::Accept)`).** `mod[tests]/fn[citation_reviews_are_confirmed_with_fresh_targeted_conversations]` accepts the corrected rationale and the second assessment's rationale, and asserts the recorded rationale. `mod[tests]/fn[disagreeing_citation_assessments_record_both_explanations]` accepts rationales with no line numbers without any correction. It asserts that exactly two prompts were sent.\n- **First line citation gives `CorrectAndTryAgain(message)`.** In `citation_reviews_are_confirmed_with_fresh_targeted_conversations`, the first submission cites a path with a colon and a digit. The test inspects the last message of the second request. It asserts that the message quotes the offending text and asks for the file and outline selector.\n- **Later line citation ends the review with a domain error.** `mod[tests]/fn[a_citation_review_fails_when_the_revised_rationale_still_uses_line_numbers]` submits two rationales that both cite line numbers. It asserts that the result is an error, that only two prompts were sent (so the conversation ended right away), and that no evidence record was written. The test only checks `is_err()` and does not check the error's type. The conversion to `ValidationError::Graph` is governed by the cited `requirements.sdk.graph.agent-calls.vet_answer`.\n- **Per-assessment vetting and per-conversation state.** `citation_reviews_are_confirmed_with_fresh_targeted_conversations` runs two confirmation assessments. The first needs a correction, and the second, in a fresh conversation, is accepted with no correction. This shows the callback state is not shared between assessments.\n\nThe detection forms belong to the cited `requirements.authoring.line_numbers.detection`, and the selector wording belongs to the cited `requirements.authoring.judgment_rules`. Neither needs a test here. I found no gap."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -160,19 +368,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "8eddd17574a53e4d25ad87082c9646520a96f03f63968b64d2f5fc2b19eee238"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.authoring.line_numbers.citation"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "830dc35cea970a0560c828c8ef9c83808b80fb6fa1bb45956d7c9fe51583e3b0"
+          "value": "0440a53aab88fbc078b2c4887ea4aecc7151b343f4410fba883ca196f1d57833"
         }
       ]
     },
@@ -217,6 +413,23 @@
         {
           "scheme": "habeas-input-v1",
           "value": "6f9506192f27eec1e6cbc673663b5825e679430e46bf1996003ac56e3c3b83be"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/sdk.rs"
+            },
+            "selector": "impl[Review<'_>]/fn[ask]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "32507915bbdf34cceed6158eed7a7c886345541c1bd82e7c4ffba9f4019ab471"
         }
       ]
     },
@@ -272,14 +485,19 @@
       ]
     },
     {
-      "OutgoingEdges": [
+      "Node": [
         {
-          "Requirement": "requirements.authoring.line_numbers.citation"
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/line_numbers.rs"
+            },
+            "selector": "fn[cited]"
+          }
         },
-        "Implements",
         {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "24f2845cc4b9673a6cae8e8d56d300f1ca528ace0be8812342e298750b92d1e6"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "f0547266aef5a225344d681af8dd0a8c53d7449ff3b2cc366f33b68386f01622"
         }
       ]
     },
@@ -289,14 +507,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "src/authoring/sdk.rs"
+              "location": "src/authoring/mod.rs"
             },
-            "selector": "impl[Review<'_>]/fn[ask]"
+            "selector": "fn[location_guidance]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "29c6166a5ed55d61a9b1baf8de3c49f26c092d1955c56e078a5b079e598128da"
+          "value": "b902656b8d648a41d9007473ab770e9e2cb016a284c85a4eca6ce02eceaf5043"
         }
       ]
     }

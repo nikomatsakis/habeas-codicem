@@ -128,6 +128,8 @@ flowchart TD
     Interpret --> Save["HC storage: persist SDK record and application review fields"]
 ```
 
+For a non-distributed requirement HC executes separate `behavioral` and `structural` SDK criteria. Each has its own request history, result, and observed dependencies. Both SDK records are stored under `criteria` in the requirement evidence file.
+
 For behavioral adequacy, the HC criterion inserts the requirement and its test
 nodes. Implementation source is available through the SDK's tools when a
 specific question requires it. For structural assessment, HC selects the

@@ -20,9 +20,7 @@ const KINDS: &[KindRule] = &[
     KindRule::new("class_definition", "class", NameRule::Field("name")),
 ];
 
-// {impl}`requirements.references.outline_comments`
-// {impl}`requirements.references.structural_hash`
-// {impl}`requirements.sdk.sources.python.attachments`
+// {impl}`requirements.references.outlines`
 pub static PROFILE: Profile = Profile {
     name: "python",
     fingerprint_scheme: "python-structural-v1",

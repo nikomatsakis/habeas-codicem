@@ -1,8 +1,8 @@
 {
   "requirement": "Separate validators can verify the same source node and criterion concurrently on the same domain. Each execution has its own dependency trace and agent conversation. Each validator counts only its own executions.",
   "determination": true,
-  "rationale": "The subject has three obligations. Separate validators can verify the same node and criterion concurrently on one domain. Each execution has its own dependency trace and agent conversation. Each validator counts only its own executions. The two reviewed tests cover all three.\n\n**Concurrency and conversations:** `crates/trust-but-verify/src/agent/tests.rs#fn[agent_executions_isolate_conversations_and_dependency_traces]`\n- It runs two validators on the same `Memory` domain, with the same node and the same criterion path. It drives them with `futures::join!` inside a 2-second timeout.\n- The provider's `Barrier(2)` forces both conversations to be in flight at once. A serialized implementation would time out.\n- The provider `ParallelConversations` asserts that each conversation's history has the expected length. It also asserts that the history contains its own page contents and never the other's. For later turns, it asserts the same of the last delivered page, even though both calls use the same tool call ID.\n- `calls[\"alpha\"]` and `calls[\"beta\"]` are each 3.\n\n**Per-execution dependency traces:** the same test\n- It stores each result and loads the record back. The alpha record's dependencies equal exactly `[Node(1) content]`. The beta record's dependencies equal exactly `[OutgoingEdges(Node(1)), Node(2) content]`. Neither trace leaks into the other.\n- `crates/trust-but-verify/tests/contracts.rs#fn[concurrent_same_criterion_executions_keep_complete_independent_records]` adds a second check. Two same-criterion executions run behind a barrier. The stored record is complete and internally consistent. Its output, its version and its dependencies all come from one execution, with none mixed from the other.\n- That test also checks that nothing is stored before `store_evidence`. It checks that `executions == 2` and `writes == 2`.\n\n**Per-validator counts:** `agent_executions_isolate_conversations_and_dependency_traces`\n- Each validator's `usage().attempts` is 3, and the shared cache's attempts are 6.\n- Per-tool call counts are 1 for each validator and 2 in the cache totals, for `read_node`, `get_next_page` and `submit_result`.\n- The cache's `result_bytes` per tool equal the sum of the two validators' bytes.\n- Each validator's `result_bytes` is positive for the read tools. This would fail if a validator counted the other's executions or if one validator's counts were lost.\n\nBoth tests carry `{test}` references to the subject. I found no unmarked relevant tests and no unacknowledged gaps.",
-  "references": "355510d2e25efe0a7da73575e42fe29f4d6d98446dc79037e9ff59b6013ab898",
+  "rationale": "structural: `requirements.sdk.graph.running-criteria.verify.concurrent` states only observable behavior. It names no library, algorithm, signature, type, field, or interface that must be used. I checked each clause for a structural reading.\n\n- \"Separate validators can verify the same source node and criterion concurrently on the same domain.\" This is a capability. An implementation holds it if concurrent runs complete correctly, however the code is organized.\n- \"Each execution has its own dependency trace and agent conversation.\" Any implementation that mixed traces or conversations between executions would change the recorded dependencies and the agent messages. Per-call locals, a task-local context, or a per-execution object would all satisfy the clause. It does not prescribe the mechanism.\n- \"Each validator counts only its own executions.\" This is an observable property of each validator's usage totals. A single shared counter would be wrong because the counts it reports would be wrong, not because of how it is built. Any per-validator accounting satisfies the clause.\n\nNo structural obligation needs implementation evidence, and there are no review roots, so no `{impl}` marker is missing. Tests are outside this assessment. The existing test `crates/trust-but-verify/src/agent/tests.rs#fn[agent_executions_isolate_conversations_and_dependency_traces]` already cites this requirement.\n\nbehavioral: The requirement has three obligations. The two marked tests cover all three.\n\n1. **Concurrency of separate validators on the same node and criterion.**\n   - `crates/trust-but-verify/src/agent/tests.rs#fn[agent_executions_isolate_conversations_and_dependency_traces]` runs two separate `Validator`s with `futures::join!` on the same domain. Both use `Node(1)` and the same criterion path, which the test asserts.\n   - A barrier of 2 in the `ParallelConversations` provider, together with a 2-second timeout, means the test only passes if the executions really overlap.\n   - `crates/trust-but-verify/tests/contracts.rs#fn[concurrent_same_criterion_executions_keep_complete_independent_records]` does the same with a 2-party barrier and a 5-second timeout. It also asserts that both executions run, with `executions == 2` and `writes == 2`.\n\n2. **Each execution has its own dependency trace.**\n   - In the agent test, alpha's stored record has only the `Node(1)` dependency. Beta's record has the `OutgoingEdges` dependency plus the `Node(2)` dependency. Both are asserted exactly after each is stored.\n   - In the contracts test, the first execution reads `Node(2)` and the second reads `Node(3)`. The surviving record's dependencies and version are asserted to match its own execution, with no mixing.\n\n3. **Each execution has its own agent conversation.**\n   - The `ParallelConversations` provider asserts that each history starts with its own system message. It asserts the history length grows per turn. It asserts the history contains its own page contents and never the other conversation's. It also checks the last delivered page, even though both conversations use the same tool call ID.\n   - The test asserts the per-prefix call counts, `calls[\"alpha\"] == 3` and `calls[\"beta\"] == 3`. It also asserts the outputs are \"alpha\" and \"beta\".\n\n4. **Each validator counts only its own executions.**\n   - The agent test asserts `alpha_validator.usage().attempts` and `beta_validator.usage().attempts` are each 3, and the cache total is 6.\n   - It asserts the per-tool call counts are 1 for each validator and 2 in the cache total.\n   - It asserts the total result bytes equal the sum of the two validators' bytes.\n   - It asserts the cache usage was empty before the run.\n\nI found no gap.",
+  "references": "d8f3d5fdf421f03adcb92d1b426dd01228a03fb3772fb88568c6a61f1d01328c",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.running-criteria.verify.concurrent",
@@ -35,19 +35,153 @@
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "impl[ParallelConversations/CompletionProvider]/fn[complete]",
       "hash": "e8c05b39afe598f15c87559c2b72724d15d74184962907b8c67383d4a9a497d6"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "struct[Validator]",
-      "hash": "d90727e1b0872aad81bb82e69b079f8a1c110387ba7e0fd7b3f7e9057d44543e"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "impl[Validator<'d,%20D>]/fn[usage]",
-      "hash": "7a17b4f210316b9881a095d948aa987882257b06cc1b3cfd6e121a789d6f8d45"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.running-criteria.verify.concurrent"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "d8f3d5fdf421f03adcb92d1b426dd01228a03fb3772fb88568c6a61f1d01328c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.running-criteria.verify.concurrent"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "42939b28fec992ce752562013dff2888ee7558a6668fdc5a610ad0730da1aee3"
+            }
+          ]
+        },
+        {
+          "OutgoingEdges": [
+            {
+              "Requirement": "requirements.sdk.graph.running-criteria.verify.concurrent"
+            },
+            "Implements",
+            {
+              "scheme": "node-path-set-sha256-v1",
+              "value": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "`requirements.sdk.graph.running-criteria.verify.concurrent` states only observable behavior. It names no library, algorithm, signature, type, field, or interface that must be used. I checked each clause for a structural reading.\n\n- \"Separate validators can verify the same source node and criterion concurrently on the same domain.\" This is a capability. An implementation holds it if concurrent runs complete correctly, however the code is organized.\n- \"Each execution has its own dependency trace and agent conversation.\" Any implementation that mixed traces or conversations between executions would change the recorded dependencies and the agent messages. Per-call locals, a task-local context, or a per-execution object would all satisfy the clause. It does not prescribe the mechanism.\n- \"Each validator counts only its own executions.\" This is an observable property of each validator's usage totals. A single shared counter would be wrong because the counts it reports would be wrong, not because of how it is built. Any per-validator accounting satisfies the clause.\n\nNo structural obligation needs implementation evidence, and there are no review roots, so no `{impl}` marker is missing. Tests are outside this assessment. The existing test `crates/trust-but-verify/src/agent/tests.rs#fn[agent_executions_isolate_conversations_and_dependency_traces]` already cites this requirement."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.running-criteria.verify.concurrent"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "d8f3d5fdf421f03adcb92d1b426dd01228a03fb3772fb88568c6a61f1d01328c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.running-criteria.verify.concurrent"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "42939b28fec992ce752562013dff2888ee7558a6668fdc5a610ad0730da1aee3"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[agent_executions_isolate_conversations_and_dependency_traces]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "056d0e24c13d4598d0ca252b07b88f5943e47267f99859790a84f3575cf78f38"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[concurrent_same_criterion_executions_keep_complete_independent_records]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "70754a4e4c0dca2f9b977cedc23fb77732e752f36e72e309fe495e2ee218931a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "impl[ParallelConversations/CompletionProvider]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "4834ca846b7bbb3784a3d321935941b19e9a1cffca8caf0d60b18f777a53eb44"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "impl[ParallelConversations/CompletionProvider]/fn[complete]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "e8c05b39afe598f15c87559c2b72724d15d74184962907b8c67383d4a9a497d6"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The requirement has three obligations. The two marked tests cover all three.\n\n1. **Concurrency of separate validators on the same node and criterion.**\n   - `crates/trust-but-verify/src/agent/tests.rs#fn[agent_executions_isolate_conversations_and_dependency_traces]` runs two separate `Validator`s with `futures::join!` on the same domain. Both use `Node(1)` and the same criterion path, which the test asserts.\n   - A barrier of 2 in the `ParallelConversations` provider, together with a 2-second timeout, means the test only passes if the executions really overlap.\n   - `crates/trust-but-verify/tests/contracts.rs#fn[concurrent_same_criterion_executions_keep_complete_independent_records]` does the same with a 2-party barrier and a 5-second timeout. It also asserts that both executions run, with `executions == 2` and `writes == 2`.\n\n2. **Each execution has its own dependency trace.**\n   - In the agent test, alpha's stored record has only the `Node(1)` dependency. Beta's record has the `OutgoingEdges` dependency plus the `Node(2)` dependency. Both are asserted exactly after each is stored.\n   - In the contracts test, the first execution reads `Node(2)` and the second reads `Node(3)`. The surviving record's dependencies and version are asserted to match its own execution, with no mixing.\n\n3. **Each execution has its own agent conversation.**\n   - The `ParallelConversations` provider asserts that each history starts with its own system message. It asserts the history length grows per turn. It asserts the history contains its own page contents and never the other conversation's. It also checks the last delivered page, even though both conversations use the same tool call ID.\n   - The test asserts the per-prefix call counts, `calls[\"alpha\"] == 3` and `calls[\"beta\"] == 3`. It also asserts the outputs are \"alpha\" and \"beta\".\n\n4. **Each validator counts only its own executions.**\n   - The agent test asserts `alpha_validator.usage().attempts` and `beta_validator.usage().attempts` are each 3, and the cache total is 6.\n   - It asserts the per-tool call counts are 1 for each validator and 2 in the cache total.\n   - It asserts the total result bytes equal the sum of the two validators' bytes.\n   - It asserts the cache usage was empty before the run.\n\nI found no gap."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -57,19 +191,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "355510d2e25efe0a7da73575e42fe29f4d6d98446dc79037e9ff59b6013ab898"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.running-criteria.verify.concurrent"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "be86eb4c327951fd32c853880688ba6d8f97ada555f9b6f00a836b66e6df8a91"
+          "value": "d8f3d5fdf421f03adcb92d1b426dd01228a03fb3772fb88568c6a61f1d01328c"
         }
       ]
     },
@@ -81,6 +203,18 @@
         {
           "scheme": "habeas-input-v1",
           "value": "42939b28fec992ce752562013dff2888ee7558a6668fdc5a610ad0730da1aee3"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.sdk.graph.running-criteria.verify.concurrent"
+        },
+        "Implements",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
         }
       ]
     },
@@ -149,40 +283,6 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "e8c05b39afe598f15c87559c2b72724d15d74184962907b8c67383d4a9a497d6"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
-            },
-            "selector": "struct[Validator]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "d90727e1b0872aad81bb82e69b079f8a1c110387ba7e0fd7b3f7e9057d44543e"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
-            },
-            "selector": "impl[Validator<'d,%20D>]/fn[usage]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "7a17b4f210316b9881a095d948aa987882257b06cc1b3cfd6e121a789d6f8d45"
         }
       ]
     }

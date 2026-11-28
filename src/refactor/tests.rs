@@ -247,6 +247,12 @@ fn opening_fences_map_their_short_names_back() {
 #[test]
 fn rationales_rewrite_addresses_of_nodes_in_mapped_files() {
     let map = mappings(&[("path", "src/old", "src/new")]);
+    let (single, mentions) = rewrite_rationale(
+        &mappings(&[("path", "src/a.rs", "src/b.rs")]),
+        "`src/a.rs#fn[f]` and `src/a.rs#mod[m]/fn[g]`",
+    );
+    assert_eq!(single, "`src/b.rs#fn[f]` and `src/b.rs#mod[m]/fn[g]`");
+    assert!(mentions.is_empty());
     let (rewritten, mentions) = rewrite_rationale(
         &map,
         "`src/old/x.rs#fn[f]` and `src/old/x.rs#mod[m]/fn[g]` do it.",

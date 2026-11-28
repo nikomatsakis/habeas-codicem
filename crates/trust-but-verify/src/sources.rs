@@ -14,16 +14,12 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-// {impl}`requirements.sdk.sources.provider_results.parse_snapshot`
 pub struct ParsedSource {
     pub resource: ResourceId,
     pub source: SourceFile,
     pub outline: LegacyOutline,
 }
 
-// {impl}`requirements.sdk.sources.provider`
-// {impl}`requirements.sdk.sources.provider.errors`
-// {impl}`requirements.sdk.sources.provider_defaults`
 pub trait SourceProvider: Send + Sync {
     type Error: From<SourceError> + Send;
 
@@ -43,7 +39,6 @@ pub trait SourceProvider: Send + Sync {
     ) -> impl Future<Output = Result<ParsedSource, Self::Error>> + Send {
         defaults::parse(self, id, languages)
     }
-    // {impl}`requirements.sdk.graph.search.search_text.fn`
     fn search_text(
         &self,
         query: &TextQuery,
@@ -60,6 +55,7 @@ pub trait SourceProvider: Send + Sync {
     }
 }
 
+// {impl}`requirements.sdk.sources.provider_results.parse_snapshot`
 /// Interpret bytes from one observation without refetching the resource.
 pub fn parse_snapshot(
     id: &ResourceId,
@@ -98,7 +94,6 @@ pub(crate) fn project_resource(path: &Path) -> Result<ResourceId, SourceError> {
 pub mod defaults {
     use super::*;
 
-    // {impl}`requirements.sdk.sources.provider_defaults.composition`
     pub async fn parse<P: SourceProvider + ?Sized>(
         provider: &P,
         id: &ResourceId,
@@ -167,6 +162,7 @@ pub mod defaults {
         search_structure_with(provider, query, languages, |found, _, _| found).await
     }
 
+    // {impl}`requirements.sdk.sources.provider_results.parse_snapshot`
     pub(crate) async fn search_structure_with<P: SourceProvider + ?Sized, T>(
         provider: &P,
         query: &StructuralQuery,
@@ -227,7 +223,6 @@ pub mod defaults {
     }
 }
 
-// {impl}`requirements.sdk.sources.local_provider`
 pub struct LocalSources {
     root: PathBuf,
 }
@@ -460,13 +455,6 @@ impl<P: SourceProvider> SourceAnalysis<P> {
             provider,
             languages,
         }
-    }
-    // {cite}`habeas:util`
-    // {impl}`requirements.sdk.graph.validation-context.read_source.fn`
-    // {impl}`requirements.sdk.graph.validation-context.outline_source.fn`
-    #[cfg(test)]
-    pub async fn parse(&self, id: &ResourceId) -> Result<ParsedSource, P::Error> {
-        self.provider.parse(id, &self.languages).await
     }
     // {cite}`habeas:util`
     // {impl}`requirements.sdk.graph.search.search_structure.fn`

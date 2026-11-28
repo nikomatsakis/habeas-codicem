@@ -7,7 +7,6 @@ use crate::outline_engine::language::Profile;
 use crate::outline_engine::language::kind_is_comment;
 use crate::outline_engine::language::never;
 
-// {impl}`requirements.sdk.sources.typescript.attachments.decorators`
 fn attachment_target(node: tree_sitter::Node<'_>) -> Option<AttachmentTarget> {
     if node.kind() != "decorator" {
         return None;
@@ -52,9 +51,6 @@ const KINDS: &[KindRule] = &[
     KindRule::new("module", "namespace", NameRule::Field("name")).when(|node| node.is_named()),
 ];
 
-// {impl}`requirements.references.outline_comments`
-// {impl}`requirements.sdk.sources.typescript.attachments`
-// {impl}`requirements.sdk.sources.typescript.attachments.comments`
 const TYPESCRIPT: Profile = Profile {
     name: "typescript",
     fingerprint_scheme: "typescript-structural-v2",
@@ -70,10 +66,10 @@ const TYPESCRIPT: Profile = Profile {
     attachment_target,
 };
 
+// {impl}`requirements.references.outlines`
 pub static PROFILE: Profile = TYPESCRIPT;
 
-// {impl}`requirements.references.outline_comments`
-// {impl}`requirements.references.structural_hash`
+// {impl}`requirements.references.outlines`
 pub static TSX_PROFILE: Profile = Profile {
     name: "tsx",
     fingerprint_scheme: "tsx-structural-v2",

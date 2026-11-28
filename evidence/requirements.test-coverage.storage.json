@@ -1,8 +1,8 @@
 {
   "requirement": "Execution coverage is stored as disposable build artifacts under\n`habeas/coverage/` in the project's Cargo target directory\n(`target/habeas/coverage/` with default Cargo settings). A SQLite database is\nthe primary store for current test results, processed measurements, and the\nmetadata identifying their collection invocation. Raw LLVM profiles and\ncaptured source may remain separate files referenced by those results.\n\nThe invocation metadata identifies the invocation, capture time, command,\nselected tests, and, when available, the source revision and whether the source\nhad uncommitted changes.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation in `requirements.test-coverage.storage`.\n\n**Location.**\n- `tests/execution_coverage.rs#fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]` reads results through `runs`, which opens `target/habeas/coverage`.\n- `tests/execution_coverage.rs#fn[no_arguments_selects_all_workspace_members_with_configured_parallelism_and_git_metadata]` sets `build.target-dir = 'custom-target'`. It asserts that `target/habeas/coverage` does not exist and that results are in `custom-target/habeas/coverage`. This covers the 'Cargo target directory' wording and not just the default path.\n\n**SQLite as primary store.**\n- The helpers `runs_in` and `attempts` open `current.sqlite` read-only. They query the `invocations` table, which holds the invocation metadata, and the `tests` table, which holds per-test metadata and measurements.\n- Every test assertion on results and metadata goes through those SQLite reads. The first test also asserts that `run.json` does not exist.\n\n**Raw profiles as separate files.**\n- `assert_profiles_present` checks that each attempt's `.profraw` files exist on disk and are referenced from the stored results.\n- `maps.json` is asserted present.\n- Captured source appears in `sources`.\n\n**Invocation metadata.** The first test asserts each of these:\n- identity: `id` equals the run directory name\n- capture time: `started` is greater than 0\n- command: `command[0]` is `cargo nextest run` and contains `--workspace`\n- selected tests: `selection` equals the exact five binary and test identities\n\nThe other tests assert `selection` for configured filters, `--exact`, package/binary/ignored selections, and partitions.\n\n**Revision and dirty flag.**\n- With git, the third test asserts the commit id in `revision` and `dirty == true` with modified source. After restoring the source it asserts `dirty == false`.\n- Without git, the first test asserts both fields are null. This covers the 'when available' alternative.\n\nNo requirement-violating behaviour for these obligations would pass the assertions. The `{test}` markers for `requirements.test-coverage.storage` are present on all four tests.",
-  "references": "2a0686532347ec6f7bc9097656171e021c57e1f1905ce09da5d58c0a7af4a211",
+  "rationale": "structural: Structural obligations and their roots:\n- Location: \"stored ... under `habeas/coverage/` in the project's Cargo target directory\". An implementation could put the store in another directory and behave the same, so this is a structural clause. `src/execution_coverage/runner.rs#fn[run]` resolves the target directory from `--target-dir` or `cargo metadata`'s `target_directory`. It then joins `habeas/coverage` and passes that path to `Store::open`. Per-run raw artifacts (profraw, maps, binaries.json) go under that same directory.\n- SQLite as the primary store: \"A SQLite database is the primary store for current test results, processed measurements, and the metadata\". `src/execution_coverage/store.rs#impl[Store]/fn[open]` opens a rusqlite `Connection` on the database file in the storage directory. It creates the `invocations`, `state` and `tests` tables. The `tests` table has `metadata` and `measurements` columns. `Store::replace` and `Store::record_empty` write the serialized `Run` into `invocations` (seen in search results). Separate raw profiles are allowed (\"may remain separate files\"), which matches the per-run directory.\n- Invocation metadata fields: \"identifies the invocation, capture time, command, selected tests, and, when available, the source revision and whether the source had uncommitted changes\". `src/execution_coverage.rs#struct[Run]` has `id`, `started`, `command` and `selection`. It has `revision: Option<String>` and `dirty: Option<bool>` for the optional fields. `fn[run]` fills these from `git rev-parse HEAD` and `git status --porcelain`, and each becomes `None` when git fails. The struct derives Serialize, so it is the form persisted into the `invocations` table.\n\nI found no unmapped structural obligation among the supplied roots. How the `tests` table rows are written, and the cleanup of disposable artifacts, are behavioral and outside this structural check.\n\nbehavioral: The four marked tests, together with their helpers, check every observable obligation in `requirements.test-coverage.storage`.\n\n**Location**\n- `tests/execution_coverage.rs#fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]` reads results through `runs`. That helper opens `target/habeas/coverage/current.sqlite`, the default-settings location.\n- `no_arguments_selects_all_workspace_members_with_configured_parallelism_and_git_metadata` sets a custom Cargo `target-dir`. It asserts the results land in `custom-target/habeas/coverage` and that `target/habeas/coverage` does not exist.\n- Another assertion in the first test checks that a `build.build-dir` override does not create a separate directory.\n\n**SQLite as the primary store**\n- The `runs_in` helper reads the `invocations` table of `current.sqlite`. The `attempts` helper reads the `tests` table, which holds per-test metadata and processed measurements.\n- Every assertion on stored runs and attempts goes through these queries, so the tests verify that results and metadata live in SQLite.\n- The first test asserts that no `run.json` exists.\n\n**Separate files**\n- `assert_profiles_present` and the profile loop check that raw `.profraw` files exist, are non-empty and are referenced from the SQLite measurements.\n- The first test also asserts that `maps.json` exists and that the captured sources are stored (`sources[\"src/lib.rs\"]`).\n\n**Invocation metadata**\n- The first test asserts the invocation id (it matches the directory name), the capture time (`started > 0`), the command (`cargo nextest run` plus `--workspace`), and the exact `selection` list.\n- Revision and dirty state are tested where available. In the git fixture, `revision` equals the commit id, `dirty` is true with modified source, and `dirty` is false after the source is restored.\n- Revision and dirty state are tested where unavailable, in a fixture with no git repository: both are null.\n\n**Other marked tests**\n- The remaining marked tests (`configured_retries_filters_profiles_and_libtest_arguments_are_preserved` and `package_binary_partition_and_ignored_selection_replace_only_their_actual_test_identities`) also read results from SQLite. They check that the stored selection and measurements match the tests actually run.\n\n**\"Disposable\"**\nThe word \"disposable\" has no independent observable obligation. The tests do show that the stored results are rebuilt and dropped on a configuration change.",
+  "references": "23574e219aba382038cf97cea675fd321eb3beea17ff5317ce8561040689419d",
   "inputs": [
     {
       "requirements": "requirements.test-coverage.storage",
@@ -25,6 +25,31 @@
       ]
     },
     {
+      "file": "src/execution_coverage/runner.rs",
+      "item": "fn[run]",
+      "hash": "6f7b49212d5756b245550399f3a6895dd432fa803419f541915029d484855462"
+    },
+    {
+      "file": "src/execution_coverage/store.rs",
+      "item": "impl[Store]/fn[open]",
+      "hash": "5592192cf45293e202adcb15a426bb54ac8e2c6a694ac7ef947f1c4c802a7cda"
+    },
+    {
+      "file": "src/execution_coverage.rs",
+      "item": "struct[Run]",
+      "hash": "b984eea718068c136030085a061e2fbf38180a0031fbadbcab65cbecb4e6c6a0"
+    },
+    {
+      "file": "src/execution_coverage/store.rs",
+      "item": "impl[Store]/fn[replace]",
+      "hash": "2e8c8d6fad07af2b86a11df76256686ccddb56e79cc1b4c51ee3b4f926af5f52"
+    },
+    {
+      "file": "src/execution_coverage/store.rs",
+      "item": "impl[Store]/fn[record_empty]",
+      "hash": "5ea43b2f3fd31965fc2d34edb1adf80ead4462cbd17876619d7c0d5eeb888619"
+    },
+    {
       "file": "tests/execution_coverage.rs",
       "item": "fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]",
       "hash": "19e2b1e61d5027ab192843ceed1beb865e8669c2d0aed71d8b68d8c31680c076"
@@ -37,7 +62,7 @@
     {
       "file": "tests/execution_coverage.rs",
       "item": "fn[package_binary_partition_and_ignored_selection_replace_only_their_actual_test_identities]",
-      "hash": "7f57ef552fb8c54136c7f67f354c218be78aaa3f4709ae037415d5e5b8f48cec"
+      "hash": "b8cb2c1186f7c5f47e5931d3374efe75325a4424913ce3a2231286f8cea0afaa"
     },
     {
       "file": "tests/execution_coverage.rs",
@@ -63,19 +88,294 @@
       "file": "tests/execution_coverage.rs",
       "item": "fn[assert_profiles_present]",
       "hash": "5463f294bdc8d6b57492767dc404663361d9b0aadf90f5e4eaea4af9e5361abf"
-    },
-    {
-      "file": "tests/execution_coverage.rs",
-      "item": "fn[fixture]",
-      "hash": "7dbf98dba6a8063e2c5377bda40073716abbac163a14eaca3b5bdf8cc33ef278"
-    },
-    {
-      "file": "tests/execution_coverage.rs",
-      "item": "fn[coverage]",
-      "hash": "c212f73ace1654dafdce6f10659c4b39d76dfff4ee4c30e56f10b30130b3862f"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.test-coverage.storage"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "23574e219aba382038cf97cea675fd321eb3beea17ff5317ce8561040689419d"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.test-coverage.storage"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "a0eaffb8646753d9f46277130078051d192da746dadedf614b0106da6a22c340"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/execution_coverage/runner.rs"
+                },
+                "selector": "fn[run]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "6f7b49212d5756b245550399f3a6895dd432fa803419f541915029d484855462"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/execution_coverage/store.rs"
+                },
+                "selector": "impl[Store]/fn[open]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "5592192cf45293e202adcb15a426bb54ac8e2c6a694ac7ef947f1c4c802a7cda"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/execution_coverage.rs"
+                },
+                "selector": "struct[Run]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "b984eea718068c136030085a061e2fbf38180a0031fbadbcab65cbecb4e6c6a0"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/execution_coverage/store.rs"
+                },
+                "selector": "impl[Store]/fn[replace]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "2e8c8d6fad07af2b86a11df76256686ccddb56e79cc1b4c51ee3b4f926af5f52"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/execution_coverage/store.rs"
+                },
+                "selector": "impl[Store]/fn[record_empty]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "5ea43b2f3fd31965fc2d34edb1adf80ead4462cbd17876619d7c0d5eeb888619"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "Structural obligations and their roots:\n- Location: \"stored ... under `habeas/coverage/` in the project's Cargo target directory\". An implementation could put the store in another directory and behave the same, so this is a structural clause. `src/execution_coverage/runner.rs#fn[run]` resolves the target directory from `--target-dir` or `cargo metadata`'s `target_directory`. It then joins `habeas/coverage` and passes that path to `Store::open`. Per-run raw artifacts (profraw, maps, binaries.json) go under that same directory.\n- SQLite as the primary store: \"A SQLite database is the primary store for current test results, processed measurements, and the metadata\". `src/execution_coverage/store.rs#impl[Store]/fn[open]` opens a rusqlite `Connection` on the database file in the storage directory. It creates the `invocations`, `state` and `tests` tables. The `tests` table has `metadata` and `measurements` columns. `Store::replace` and `Store::record_empty` write the serialized `Run` into `invocations` (seen in search results). Separate raw profiles are allowed (\"may remain separate files\"), which matches the per-run directory.\n- Invocation metadata fields: \"identifies the invocation, capture time, command, selected tests, and, when available, the source revision and whether the source had uncommitted changes\". `src/execution_coverage.rs#struct[Run]` has `id`, `started`, `command` and `selection`. It has `revision: Option<String>` and `dirty: Option<bool>` for the optional fields. `fn[run]` fills these from `git rev-parse HEAD` and `git status --porcelain`, and each becomes `None` when git fails. The struct derives Serialize, so it is the form persisted into the `invocations` table.\n\nI found no unmapped structural obligation among the supplied roots. How the `tests` table rows are written, and the cleanup of disposable artifacts, are behavioral and outside this structural check."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.test-coverage.storage"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "23574e219aba382038cf97cea675fd321eb3beea17ff5317ce8561040689419d"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.test-coverage.storage"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "a0eaffb8646753d9f46277130078051d192da746dadedf614b0106da6a22c340"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/execution_coverage.rs"
+                },
+                "selector": "fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "19e2b1e61d5027ab192843ceed1beb865e8669c2d0aed71d8b68d8c31680c076"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/execution_coverage.rs"
+                },
+                "selector": "fn[configured_retries_filters_profiles_and_libtest_arguments_are_preserved]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "0332de3ce8dedcbd02dcab2e6f99bffe12063534d0c6d93bb2cc13f240673b7e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/execution_coverage.rs"
+                },
+                "selector": "fn[package_binary_partition_and_ignored_selection_replace_only_their_actual_test_identities]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "b8cb2c1186f7c5f47e5931d3374efe75325a4424913ce3a2231286f8cea0afaa"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/execution_coverage.rs"
+                },
+                "selector": "fn[no_arguments_selects_all_workspace_members_with_configured_parallelism_and_git_metadata]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "8a94cbb74d1ed64b7c5bfe1242a055eaf285756ee484565f3005a4a2f7f4370e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/execution_coverage.rs"
+                },
+                "selector": "fn[runs_in]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "584cc0ecf51b828c3a788db332147e16c17194cee5dd57b70d9cdfec31393713"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/execution_coverage.rs"
+                },
+                "selector": "fn[runs]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "b44bc87f1b8c2e9f21d0c7fbaf1c94a7bc0f65ba36f58be4f517d641ff88c68c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/execution_coverage.rs"
+                },
+                "selector": "fn[attempts]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "287d036691b714af306b7235158a2b421f50a3a93d821a3c353529fe015e2abb"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/execution_coverage.rs"
+                },
+                "selector": "fn[assert_profiles_present]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "5463f294bdc8d6b57492767dc404663361d9b0aadf90f5e4eaea4af9e5361abf"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The four marked tests, together with their helpers, check every observable obligation in `requirements.test-coverage.storage`.\n\n**Location**\n- `tests/execution_coverage.rs#fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]` reads results through `runs`. That helper opens `target/habeas/coverage/current.sqlite`, the default-settings location.\n- `no_arguments_selects_all_workspace_members_with_configured_parallelism_and_git_metadata` sets a custom Cargo `target-dir`. It asserts the results land in `custom-target/habeas/coverage` and that `target/habeas/coverage` does not exist.\n- Another assertion in the first test checks that a `build.build-dir` override does not create a separate directory.\n\n**SQLite as the primary store**\n- The `runs_in` helper reads the `invocations` table of `current.sqlite`. The `attempts` helper reads the `tests` table, which holds per-test metadata and processed measurements.\n- Every assertion on stored runs and attempts goes through these queries, so the tests verify that results and metadata live in SQLite.\n- The first test asserts that no `run.json` exists.\n\n**Separate files**\n- `assert_profiles_present` and the profile loop check that raw `.profraw` files exist, are non-empty and are referenced from the SQLite measurements.\n- The first test also asserts that `maps.json` exists and that the captured sources are stored (`sources[\"src/lib.rs\"]`).\n\n**Invocation metadata**\n- The first test asserts the invocation id (it matches the directory name), the capture time (`started > 0`), the command (`cargo nextest run` plus `--workspace`), and the exact `selection` list.\n- Revision and dirty state are tested where available. In the git fixture, `revision` equals the commit id, `dirty` is true with modified source, and `dirty` is false after the source is restored.\n- Revision and dirty state are tested where unavailable, in a fixture with no git repository: both are null.\n\n**Other marked tests**\n- The remaining marked tests (`configured_retries_filters_profiles_and_libtest_arguments_are_preserved` and `package_binary_partition_and_ignored_selection_replace_only_their_actual_test_identities`) also read results from SQLite. They check that the stored selection and measurements match the tests actually run.\n\n**\"Disposable\"**\nThe word \"disposable\" has no independent observable obligation. The tests do show that the stored results are rebuilt and dropped on a configuration change."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -85,19 +385,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "2a0686532347ec6f7bc9097656171e021c57e1f1905ce09da5d58c0a7af4a211"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.test-coverage.storage"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "79fb13cb7e63981d7dff02c3f1d21fc55b3262a169e6f5b33a6d5e0a5ad20ea5"
+          "value": "23574e219aba382038cf97cea675fd321eb3beea17ff5317ce8561040689419d"
         }
       ]
     },
@@ -109,6 +397,91 @@
         {
           "scheme": "habeas-input-v1",
           "value": "a0eaffb8646753d9f46277130078051d192da746dadedf614b0106da6a22c340"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/runner.rs"
+            },
+            "selector": "fn[run]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "6f7b49212d5756b245550399f3a6895dd432fa803419f541915029d484855462"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/store.rs"
+            },
+            "selector": "impl[Store]/fn[open]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "5592192cf45293e202adcb15a426bb54ac8e2c6a694ac7ef947f1c4c802a7cda"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage.rs"
+            },
+            "selector": "struct[Run]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b984eea718068c136030085a061e2fbf38180a0031fbadbcab65cbecb4e6c6a0"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/store.rs"
+            },
+            "selector": "impl[Store]/fn[replace]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "2e8c8d6fad07af2b86a11df76256686ccddb56e79cc1b4c51ee3b4f926af5f52"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/store.rs"
+            },
+            "selector": "impl[Store]/fn[record_empty]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "5ea43b2f3fd31965fc2d34edb1adf80ead4462cbd17876619d7c0d5eeb888619"
         }
       ]
     },
@@ -159,7 +532,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "7f57ef552fb8c54136c7f67f354c218be78aaa3f4709ae037415d5e5b8f48cec"
+          "value": "b8cb2c1186f7c5f47e5931d3374efe75325a4424913ce3a2231286f8cea0afaa"
         }
       ]
     },
@@ -245,40 +618,6 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "5463f294bdc8d6b57492767dc404663361d9b0aadf90f5e4eaea4af9e5361abf"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "tests/execution_coverage.rs"
-            },
-            "selector": "fn[fixture]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "7dbf98dba6a8063e2c5377bda40073716abbac163a14eaca3b5bdf8cc33ef278"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "tests/execution_coverage.rs"
-            },
-            "selector": "fn[coverage]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "c212f73ace1654dafdce6f10659c4b39d76dfff4ee4c30e56f10b30130b3862f"
         }
       ]
     }

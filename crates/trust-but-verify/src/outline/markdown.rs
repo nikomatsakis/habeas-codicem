@@ -58,7 +58,6 @@ impl View {
 /// The block grammar makes setext headings leaf blocks. Give its section
 /// parser an ATX view of those headings while retaining every original byte
 /// boundary, including the underline in the section's source span.
-// {impl}`requirements.sdk.sources.markdown.sections`
 fn setext_sections(view: &View, root: Node<'_>) -> Option<View> {
     let mut pending = vec![root];
     let mut headings = Vec::new();
@@ -165,10 +164,6 @@ struct Builder<'a> {
     diagnostic: Option<OutlineError>,
 }
 
-// {impl}`requirements.sdk.sources.markdown.paragraphs`
-// {impl}`requirements.sdk.sources.markdown.fenced_blocks`
-// {impl}`requirements.sdk.sources.markdown.fenced_blocks.contents`
-// {impl}`requirements.sdk.sources.markdown.fence_precedence`
 pub(super) fn parse(
     profile: &'static Profile,
     grammar: fn() -> tree_sitter::Language,

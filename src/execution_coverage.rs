@@ -20,13 +20,9 @@ pub use check::{CheckReport, check, test};
 pub use configuration::{configure, validate_setup, workspace_root};
 pub use runner::{collect_process, compile_process, run};
 
-// {impl}`requirements.test-coverage.check.guidance`
-// {impl}`requirements.test-coverage.check.exceptions.setup`
 pub(crate) const GUIDANCE: &str = "Collect Rust unit and integration test coverage with `habeas coverage`.\nFor focused runs, forward nextest arguments with `habeas coverage -- -E 'test(name)'`.\nRun doctests separately with `cargo test --doc --workspace`.\n\nFor full verification, `habeas test` collects coverage for the whole workspace,\nthen checks it. In CI, run `habeas coverage -- --workspace` and, after it succeeds,\nrun `habeas coverage-check` as a separate step. Checking saved coverage runs no\ntests and calls no model; the static validation test needs no prior coverage.\n\nEvery first-party Rust file needs 80% instrumented-line coverage. Every function\nwith zero execution or no measurement needs an accepted explanation, including\nfunctions excluded by features or platform. Ordinary partly covered functions\nneed no exception when their file meets its target.\n\nUse a standard `habeas:coverage` citation with a substantive prose justification\nin fenced commentary or a Rust doc comment. A file-root citation excuses only\nthe file threshold; a function citation excuses only that function. Author its\nindependent citation review with `habeas author`; only a current accepted review\npermits an exception. No project declaration or special configuration is needed.\nCitations remain applicable across build configurations and can remain after\ncoverage improves. Exceptions never increase measured percentages.\n\nCoverage is disposable build output in the Cargo target directory. SQLite stores\none current result per test. Full workspace runs clear the set; filtered runs\nreplace selected tests before execution and preserve unselected results. Retries\nreplace earlier attempts. The CLI check reads the current set; source changes\ninvalidate its contribution. Profiles and captured source remain available until\nthe result is replaced.\n\nThe book browses documented coverage gaps from source annotations and their last\nrecorded reviews. Expand a file to read its explanations. Building the book does\nnot load execution measurements or check whether reviews are current and accepted;\nuse `habeas status`, `habeas author`, and `habeas coverage-check` for those checks.\n";
 
 // {impl}`requirements.test-coverage.storage`
-// {impl}`requirements.test-coverage.storage.provenance`
-// {impl}`requirements.test-coverage.storage.configuration`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Run {
     schema: u32,
@@ -45,8 +41,6 @@ struct Run {
     diagnostics: Vec<String>,
 }
 
-// {impl}`requirements.test-coverage.processes`
-// {impl}`requirements.test-coverage.storage.outcomes`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Attempt {
     id: String,
@@ -61,7 +55,6 @@ struct Attempt {
     diagnostics: Vec<String>,
 }
 
-// {impl}`requirements.test-coverage.processes.reports`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Process {
     pid: u32,
@@ -73,8 +66,6 @@ struct Process {
     diagnostic: Option<String>,
 }
 
-// {impl}`requirements.test-coverage.check.functions`
-// {impl}`requirements.test-coverage.check.measurement`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct FunctionExecution {
     file: String,
@@ -241,7 +232,6 @@ fn cargo_derived_environment(name: &str) -> bool {
     .any(|prefix| name.starts_with(prefix))
 }
 
-// {impl}`requirements.test-coverage.storage.provenance`
 fn fresh(run: &Run, root: &Path, target: &Path) -> io::Result<bool> {
     if run.schema != 1 {
         return Ok(false);

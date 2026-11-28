@@ -31,7 +31,6 @@ pub struct Redaction {
 
 impl Redaction {
     /// Locate recognized credentials using the SDK's fixed rules.
-    // {impl}`requirements.sdk.sources.redaction`
     // {cite}`habeas:util`
     pub fn of_text(source: &str) -> Self {
         Self::merge(secret_regions(source))
@@ -65,7 +64,6 @@ impl Redaction {
     /// to every slice it overlaps, so slices of adjacent ranges concatenate
     /// to the redacted form of their union.
     // {cite}`habeas:util`
-    // {impl}`requirements.authoring.redaction_notice`
     pub fn slice<'a>(&self, source: &'a str, range: Range<usize>) -> Cow<'a, str> {
         let first = self
             .regions

@@ -14,9 +14,7 @@ const KINDS: &[KindRule] = &[
     KindRule::new("pair", "pair", NameRule::FirstChild(KEYS)),
 ];
 
-// {impl}`requirements.references.outline_comments`
-// {impl}`requirements.references.structural_hash`
-// {impl}`requirements.sdk.sources.toml.attachments`
+// {impl}`requirements.references.outlines`
 pub static PROFILE: Profile = Profile {
     name: "toml",
     fingerprint_scheme: "toml-structural-v1",

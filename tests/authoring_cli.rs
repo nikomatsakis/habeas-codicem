@@ -64,19 +64,41 @@ struct Server {
 }
 
 impl Server {
+    /// Script structural turns, then a successful behavioral verdict for each completed review.
+    fn structural(turns: Vec<Value>) -> Self {
+        let mut responses = Vec::new();
+        for turn in turns {
+            let submitted = turn
+                .pointer("/message/tool_calls/0/function/name")
+                .is_some_and(|name| name == "submit_result");
+            responses.push(turn);
+            if submitted {
+                responses.push(successful_review());
+            }
+        }
+        Self::script(responses, true, || {})
+    }
     // {cite}`habeas:util`
     fn start(responses: Vec<Value>) -> Self {
         Self::start_with(responses, || {})
     }
 
     // {test}`requirements.authoring.persistence`
-    fn start_with(responses: Vec<Value>, mut before_reply: impl FnMut() + Send + 'static) -> Self {
+    fn start_with(responses: Vec<Value>, before_reply: impl FnMut() + Send + 'static) -> Self {
+        Self::script(responses, false, before_reply)
+    }
+    fn script(
+        responses: Vec<Value>,
+        both: bool,
+        mut before_reply: impl FnMut() + Send + 'static,
+    ) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         listener.set_nonblocking(true).unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let thread = thread::spawn(move || {
             let mut requests = Vec::new();
-            for response in responses {
+            let mut responses = responses.into_iter().peekable();
+            while responses.peek().is_some() {
                 let deadline = Instant::now() + Duration::from_secs(15);
                 let mut stream = loop {
                     match listener.accept() {
@@ -117,9 +139,23 @@ impl Server {
                     .expect("request has content length");
                 let mut bytes = vec![0; length];
                 reader.read_exact(&mut bytes).unwrap();
+                let request: Value = serde_json::from_slice(&bytes).unwrap();
+                // These transport scripts drive the behavioral review. Answer its independent structural peer separately.
+                if !both && request.to_string().contains("Assess whether implementation roots support the requirement's stated structural obligations.") {
+                    let args = json!({"result":{"status":"success","rationale":"Structural review complete."}});
+                    let response = if request.get("system").is_some() {
+                        json!({"output":{"message":{"role":"assistant","content":[{"toolUse":{"toolUseId":"structure","name":"submit_result","input":args}}]}},"stopReason":"tool_use","usage":{"inputTokens":0,"outputTokens":0,"totalTokens":0},"metrics":{"latencyMs":1}})
+                    } else if request.get("input").is_some() {
+                        json!({"id":"resp_structure","object":"response","status":"completed","model":"fixture","output":[{"type":"function_call","id":"fc_structure","call_id":"structure","name":"submit_result","arguments":args.to_string(),"status":"completed"}],"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}})
+                    } else { let mut reply = reply(vec![call("structure", "submit_result", args)]); reply["prompt_eval_count"]=json!(0); reply["eval_count"]=json!(0); reply };
+                    let body = response.to_string();
+                    write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+                    continue;
+                }
+                let response = responses.next().unwrap();
                 requests.push(Request {
                     headers,
-                    body: serde_json::from_slice(&bytes).unwrap(),
+                    body: request,
                 });
                 before_reply();
                 let mut response = response;
@@ -330,7 +366,9 @@ impl Fixture {
 // {cite}`habeas:util`
 fn definition_result(determination: Value, rationale: &str) -> Value {
     match determination {
-        Value::Bool(true) => json!({"status":"success","rationale":rationale}),
+        Value::Bool(true) => {
+            json!({"status":"success","rationale":rationale})
+        }
         Value::Bool(false) => {
             json!({"status":"failed","corrections":[{"kind":"manual","instruction":"Fix the reported gap.","rationale":rationale}]})
         }
@@ -345,6 +383,14 @@ fn call(id: &str, name: &str, arguments: Value) -> Value {
 }
 
 // {cite}`habeas:util`
+fn successful_review() -> Value {
+    reply(vec![call(
+        "done",
+        "submit_result",
+        json!({"result":{"status":"success","rationale":"The criterion is satisfied."}}),
+    )])
+}
+
 fn reply(calls: Vec<Value>) -> Value {
     json!({"model":MODEL,"created_at":"2026-01-01T00:00:00Z",
         "message":{"role":"assistant","content":"review complete","tool_calls":calls},
@@ -358,7 +404,7 @@ fn reply(calls: Vec<Value>) -> Value {
 // {test}`requirements.authoring.complete_initial_bundle`
 #[test]
 // {test}`requirements.authoring.no_line_numbers`
-fn implementation_discovery_has_no_text_or_evidence_until_the_model_requests_a_read() {
+fn behavioral_review_discovers_implementation_locations_without_receiving_their_bodies() {
     let server = Server::start(vec![
         reply(vec![call(
             "locate",
@@ -511,7 +557,7 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     }
     let prompt = prompt_text(&requests[0].body);
     for text in [
-        "Assess whether a project's tests adequately check one requirement.",
+        "Assess only the requirement's observable behavioral obligations.",
         REQUIREMENT,
         "SECRET_DEFINITION_TEXT",
         "fn ready_test()",
@@ -588,7 +634,7 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
         json!({"FIXME":["example/app#125"]})
     );
     assert_eq!(
-        evidence["rationale"],
+        evidence["criteria"]["behavioral"]["output"]["rationale"],
         "SECRET_RATIONALE: `src/lib.rs#fn[ready]` documents the gap."
     );
     assert_eq!(evidence["requirement"], REQUIREMENT);
@@ -606,8 +652,7 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
             "{input}"
         );
     }
-    // The acknowledgment reaches the model as metadata, without the
-    // containing implementation. Its body is protected by the reference set.
+    // The acknowledgment has its own metadata alongside the implementation root.
     assert!(prompt.contains(":github: example/app#125"));
     assert!(prompt.contains("One acknowledged gap."));
     // GitHub is unreachable, so the issue is supplied as open, but the state
@@ -620,7 +665,7 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     assert!(!evidence.to_string().contains("github_issues"));
     assert!(!fixture.usage().to_string().contains("github_issues"));
     assert!(
-        !inputs
+        inputs
             .iter()
             .any(|input| input["file"] == "src/lib.rs" && input["item"] == "fn[ready]"),
         "{inputs:#?}"
@@ -680,7 +725,7 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     assert_eq!(usage["outcome"], "completed");
     assert_eq!(usage["determination"], "FIXME");
     assert_eq!(usage["evidence_written"], true);
-    assert_eq!(usage["provider_usage"]["attempts"], 3);
+    assert_eq!(usage["provider_usage"]["attempts"], 4);
     assert_eq!(usage["provider_usage"]["tools"]["read_node"]["calls"], 3);
 
     // The directory listing counts as a tool call but is not an input.
@@ -706,7 +751,7 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
         .unwrap();
     assert_eq!(
         usage_stats["prepared_inputs"],
-        initial.len() + result_json(1)["matches"].as_array().unwrap().len() + 2
+        3 + initial.len() + result_json(1)["matches"].as_array().unwrap().len() + 2
     );
     let finished = requests[2].body["messages"]
         .as_array()
@@ -740,7 +785,7 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     }
     assert_eq!(
         tools["submit_result"],
-        json!({"calls": 1, "result_bytes": 0})
+        json!({"calls": 2, "result_bytes": 0})
     );
     assert_eq!(usage["provider_usage"]["input_tokens"]["reported"], 33);
     assert_eq!(usage["provider_usage"]["output_tokens"]["reported"], 21);
@@ -811,7 +856,10 @@ fn acknowledged_empty_input_boundary_is_explained_and_accepted() {
         record["determination"],
         json!({"FIXME":["example/app#125"]})
     );
-    assert_eq!(record["rationale"], rationale);
+    assert_eq!(
+        record["criteria"]["behavioral"]["output"]["rationale"],
+        rationale
+    );
     assert!(
         record["inputs"]
             .as_array()
@@ -820,7 +868,7 @@ fn acknowledged_empty_input_boundary_is_explained_and_accepted() {
             .any(|input| input["file"] == "src/lib.rs" && input["item"] == "fn[ready_test]")
     );
     assert!(
-        !record["inputs"]
+        record["inputs"]
             .as_array()
             .unwrap()
             .iter()
@@ -1094,7 +1142,7 @@ fn explicit_ignored_reads_return_an_error_and_the_assessment_continues() {
     assert!(!evidence.contains("untracked"), "{tool}: {evidence}");
     let usage = fixture.usage();
     assert_eq!(usage["outcome"], "completed", "{tool}: {usage}");
-    assert_eq!(usage["provider_usage"]["attempts"], 4, "{tool}: {usage}");
+    assert_eq!(usage["provider_usage"]["attempts"], 5, "{tool}: {usage}");
 }
 
 // {test}`requirements.authoring.read_denial`
@@ -1493,16 +1541,17 @@ fn approved_text(name: &str, index: usize) -> &'static str {
 // {test}`requirements.authoring.invocation`
 #[test]
 fn initial_prompt_substitutes_subject_and_mandatory_inputs_into_the_template() {
-    let template = approved_text("initial_prompt", 0);
-    let subject_template = approved_text("initial_prompt", 1);
-    for (subject, kind) in [
-        (SUBJECT, "requirement"),
-        ("requirements.ready_case", "example"),
+    for (subject, kind, template) in [
+        (SUBJECT, "requirement", "initial_prompt"),
+        ("requirements.ready_case", "example", "initial_prompt"),
     ] {
+        let subject_template = approved_text(template, 1);
+        let template = approved_text(template, 0);
+        let result = json!({"status":"success","rationale":"covered"});
         let server = Server::start(vec![reply(vec![call(
             "submit",
             "submit_result",
-            json!({"result":{"status":"success","rationale":"covered"}}),
+            json!({"result":result}),
         )])]);
         let fixture = Fixture::new(&server.endpoint);
         fs::write(
@@ -1557,7 +1606,8 @@ fn initial_prompt_substitutes_subject_and_mandatory_inputs_into_the_template() {
 
         let task = if kind == "requirement" {
             format!(
-                "{}\n{}",
+                "{}\n\n{}\n{}",
+                approved_text("behavioral_review", 0),
                 approved_text("requirement_task", 0),
                 approved_text("testing_bar", 0)
             )
@@ -1603,7 +1653,12 @@ fn initial_prompt_substitutes_subject_and_mandatory_inputs_into_the_template() {
         }
         let (before, after) = subject_template.split_once("{{mandatory_inputs}}").unwrap();
         // The subject is not distributed, so its distributed task is empty.
+        let roots = prompt
+            .split_once("# Review roots\n\n")
+            .and_then(|(_, tail)| tail.split_once("\n\n# Acknowledgments"))
+            .map_or("", |(roots, _)| roots);
         let before = before
+            .replace("{{review_roots}}", roots)
             .replace("{{subject_kind}}", kind)
             .replace("{{subject_name}}", subject)
             .replace("{{distributed_task}}", "")
@@ -1744,7 +1799,7 @@ fn usage_record_identifies_its_run_and_unusable_state_is_reported() {
     }
     let evidence: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
     assert_eq!(
-        evidence["rationale"], "covered",
+        evidence["criteria"]["behavioral"]["output"]["rationale"], "covered",
         "failed runs preserved the evidence"
     );
 }
@@ -1931,6 +1986,7 @@ fn stdout_emits_only_evidence_json_without_changing_project_files() {
                 .filter(|key| key != "corrections")
                 .collect::<Vec<_>>(),
             [
+                "criteria",
                 "dependencies",
                 "determination",
                 "format_version",
@@ -1941,7 +1997,7 @@ fn stdout_emits_only_evidence_json_without_changing_project_files() {
                 "review_version"
             ]
         );
-        assert_eq!(evidence["format_version"], 1);
+        assert_eq!(evidence["format_version"], 2);
         assert_ne!(evidence["review_version"], "*");
         assert!(!evidence["review_version"].as_str().unwrap().is_empty());
         assert!(evidence["dependencies"].as_array().unwrap().len() >= inputs.len());
@@ -2028,7 +2084,10 @@ fn keeping_a_rejected_rationale_waits_for_search_and_preserves_the_original_verd
     );
     let record: Value = serde_json::from_slice(&fs::read(fixture.evidence).unwrap()).unwrap();
     assert_eq!(record["determination"], true);
-    assert_eq!(record["rationale"], original);
+    assert_eq!(
+        record["criteria"]["behavioral"]["output"]["rationale"],
+        original
+    );
     let correction = requests[1].body["messages"]
         .as_array()
         .unwrap()
@@ -2083,9 +2142,9 @@ fn a_successful_retry_reports_partial_token_measurements() {
     assert_eq!(fs::read(path).unwrap(), before);
     let log = fixture.usage();
     let stats = &log["provider_usage"];
-    assert_eq!(stats["prepared_inputs"], count);
-    assert_eq!(stats["delivered_inputs"], count);
-    assert_eq!(stats["attempts"], 2);
+    assert_eq!(stats["prepared_inputs"], count + 3);
+    assert_eq!(stats["delivered_inputs"], count + 3);
+    assert_eq!(stats["attempts"], 3);
     assert_eq!(stats["failed_attempts"], 1);
     assert_eq!(stats["retries"], 1);
     assert_eq!(
@@ -2119,12 +2178,12 @@ fn terminal_provider_failure_retains_the_retry_and_undelivered_inputs() {
     let stats = &log["provider_usage"];
     assert_eq!(log["outcome"], "failed");
     assert!(log["elapsed_ms"].as_u64().unwrap() > 0);
-    assert_eq!(stats["attempts"], 2);
+    assert_eq!(stats["attempts"], 3);
     assert_eq!(stats["failed_attempts"], 2);
     assert_eq!(stats["retries"], 1);
     assert_eq!(stats["input_tokens"]["missing_attempts"], 2);
     assert!(stats["prepared_inputs"].as_u64().unwrap() > 0);
-    assert_eq!(stats["delivered_inputs"], 0);
+    assert_eq!(stats["delivered_inputs"], 3);
 }
 
 // {test}`requirements.sdk.graph.agent-harness.submission.acceptance`
@@ -2407,8 +2466,8 @@ fn each_edge_result_counts_once_and_a_failed_lookup_only_charges_tool_usage() {
     assert!(replies[0].contains("targets"));
     assert!(replies[2].contains("invalid definition glob"));
     let stats = &fixture.usage()["provider_usage"];
-    assert_eq!(stats["prepared_inputs"], count + 2);
-    assert_eq!(stats["delivered_inputs"], count + 2);
+    assert_eq!(stats["prepared_inputs"], count + 3 + 2);
+    assert_eq!(stats["delivered_inputs"], count + 3 + 2);
     assert_eq!(
         stats["tools"]["outgoing_edges"],
         json!({"calls":2,"result_bytes":replies[0].len()+replies[1].len()})
@@ -2603,7 +2662,7 @@ fn listing_charges_result_bytes_while_only_the_explicit_read_adds_an_input() {
             replies.push(reply(vec![call(
                 "read",
                 "read_node",
-                json!({"path":"src/lib.rs", "location":"fn[ready]"}),
+                json!({"path":"extra.txt"}),
             )]));
         }
         replies.push(reply(vec![call(
@@ -2637,7 +2696,7 @@ fn listing_charges_result_bytes_while_only_the_explicit_read_adds_an_input() {
         }
         let evidence: Value =
             serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
-        let expected = habeas::outline_input(&fixture.project, "src/lib.rs", "fn[ready]").unwrap();
+        let expected = habeas::outline_input(&fixture.project, "extra.txt", "").unwrap();
         assert_eq!(
             evidence["inputs"].as_array().unwrap().contains(&expected),
             step == 2
@@ -2713,7 +2772,7 @@ fn paged_reads_and_searches_charge_only_the_delivered_pages_and_excerpts() {
         })
         .collect();
     assert!(pages.iter().all(|text| text.len() > text.chars().count()));
-    let mut inputs = mandatory + 2; // one input for each read page
+    let mut inputs = 3 + mandatory + 2; // one input for each read page
     for page in &pages[2..] {
         let search: Value = serde_json::from_str(page).unwrap();
         let matches = search["matches"].as_array().unwrap();
@@ -2804,10 +2863,10 @@ fn outstanding_search_preserves_the_rationale_correction_attempt() {
     );
     let usage = fixture.usage();
     assert_eq!(usage["determination"], "true");
-    assert_eq!(usage["provider_usage"]["attempts"], 5);
+    assert_eq!(usage["provider_usage"]["attempts"], 6);
     assert_eq!(
         usage["provider_usage"]["tools"]["submit_result"]["calls"],
-        3
+        4
     );
 }
 
@@ -2850,14 +2909,22 @@ fn missing_duplicate_and_invalid_submissions_preserve_existing_evidence() {
             json!({"result":{"status":"acknowledged_gap","entries":[],"rationale":"No gap identified."}}),
         )],
     ].into_iter().chain([
+        json!({"result":{"status":"success","rationale":"Double wrapper."}}),
         json!({"status":"success","rationale":"  "}),
         json!({"status":"acknowledged_gap","entries":["One acknowledged gap."],"rationale":""}),
         json!({"status":"acknowledged_gap","entries":["One acknowledged gap."],"rationale":"  "}),
         json!({"status":"acknowledged_gap","entries":["  "],"rationale":"An acknowledged gap."}),
     ].map(|result| vec![call("blank", "submit_result", json!({"result": result}))])) {
         for stdout in [false, true] {
-            let count = if calls.len() == 1 { 1 } else { 2 };
-            let server = Server::start(vec![reply(calls.clone()); count]);
+            let mut turns = vec![reply(calls.clone())];
+            if calls.len() == 1 {
+                // A malformed verdict gets another turn. End the fixture with a provider failure.
+                turns.push(json!({"__http_status":400,"error":"end of fixture"}));
+            } else {
+                turns.push(reply(calls.clone()));
+            }
+            let count = turns.len();
+            let server = Server::start(turns);
             let fixture = Fixture::new(&server.endpoint);
             let mut args = vec!["author-evidence", SUBJECT];
             if stdout {
@@ -2884,7 +2951,7 @@ fn missing_duplicate_and_invalid_submissions_preserve_existing_evidence() {
             // A response without a submission is reminded once.
             assert_eq!(
                 usage["provider_usage"]["attempts"],
-                if calls.len() == 1 { 1 } else { 2 }
+                count + 1
             );
             assert!(usage["determination"].is_null());
         }
@@ -3181,7 +3248,7 @@ fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {
         assert_eq!(body["additionalModelRequestFields"], json!({"top_k":12}));
         let prompt = prompt_text(body);
         assert!(
-            prompt.contains("Assess whether a project's tests adequately check")
+            prompt.contains("Assess only the requirement's observable behavioral obligations")
                 && prompt.contains(REQUIREMENT)
         );
         let tool_specs = body["toolConfig"]["tools"].as_array().unwrap();
@@ -3215,6 +3282,7 @@ fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {
             submit["toolSpec"]["inputSchema"]["json"]["required"],
             json!(["result"])
         );
+        assert!(submit["toolSpec"]["inputSchema"]["json"]["properties"]["result"].is_object());
         let mut tools = tool_specs
             .iter()
             .map(|tool| tool["toolSpec"]["name"].as_str().unwrap())
@@ -3257,11 +3325,11 @@ fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {
         assert_eq!(usage["model"], "fixture-bedrock-model");
         assert_eq!(usage["provider_usage"]["input_tokens"]["reported"], 38);
         assert_eq!(usage["provider_usage"]["output_tokens"]["reported"], 10);
-        assert_eq!(usage["provider_usage"]["attempts"], 2);
+        assert_eq!(usage["provider_usage"]["attempts"], 3);
         assert_eq!(usage["provider_usage"]["tools"]["read_node"]["calls"], 1);
         assert_eq!(
             usage["provider_usage"]["tools"]["submit_result"]["calls"],
-            1
+            2
         );
         assert_eq!(usage["outcome"], "completed");
     }
@@ -3531,7 +3599,7 @@ fn a_configured_bedrock_limit_controls_requests_and_the_continuation_note() {
         note["content"][1]["text"],
         LIMIT_NOTE.replace("16384", "321")
     );
-    assert_eq!(usage["provider_usage"]["attempts"], 2);
+    assert_eq!(usage["provider_usage"]["attempts"], 3);
     assert_eq!(usage["outcome"], "completed");
 }
 
@@ -3591,11 +3659,11 @@ fn a_response_cut_off_at_the_output_limit_is_continued_once() {
     );
     assert_eq!(content[2]["text"], LIMIT_NOTE);
     // Both requests are recorded, and the cut-off call never ran.
-    assert_eq!(usage["provider_usage"]["attempts"], 2);
+    assert_eq!(usage["provider_usage"]["attempts"], 3);
 
     assert_eq!(
         usage["provider_usage"]["tools"]["submit_result"]["calls"],
-        1
+        2
     );
 
     assert_eq!(usage["outcome"], "completed");
@@ -3620,7 +3688,7 @@ fn a_second_response_at_the_output_limit_fails_the_assessment() {
         .unwrap()
         .clone();
     assert_eq!(last["content"][1]["text"], LIMIT_NOTE);
-    assert_eq!(usage["provider_usage"]["attempts"], 2);
+    assert_eq!(usage["provider_usage"]["attempts"], 3);
 
     assert_eq!(usage["outcome"], "failed");
 }
@@ -3635,7 +3703,7 @@ fn a_context_window_overflow_fails_without_a_continuation() {
     assert!(!output.status.success(), "{stderr}");
     assert!(stderr.contains("context window"), "{stderr}");
     assert_eq!(bodies.len(), 1);
-    assert_eq!(usage["provider_usage"]["attempts"], 1);
+    assert_eq!(usage["provider_usage"]["attempts"], 2);
     assert_eq!(usage["outcome"], "failed");
 }
 
@@ -3672,7 +3740,7 @@ fn a_stop_at_an_output_limit_that_is_not_known_fails_the_assessment() {
         fixture.original
     );
     let usage = fixture.usage();
-    assert_eq!(usage["provider_usage"]["attempts"], 1);
+    assert_eq!(usage["provider_usage"]["attempts"], 2);
     assert_eq!(usage["outcome"], "failed");
 }
 
@@ -3740,7 +3808,7 @@ fn failed_evidence_write_keeps_the_accepted_judgment_in_usage() {
     assert_eq!(usage["outcome"], "failed");
     assert_eq!(usage["determination"], "FIXME");
     assert_eq!(usage["evidence_written"], false);
-    assert_eq!(usage["provider_usage"]["attempts"], 1);
+    assert_eq!(usage["provider_usage"]["attempts"], 2);
 }
 
 /// Answers one request with an HTTP error status and returns its JSON body.
@@ -4000,7 +4068,10 @@ fn all_adapters_preserve_prompt_tools_and_evidence_with_default_connections() {
     assert_eq!(ollama.1.len(), 12);
     assert_eq!(ollama_evidence["requirement"], REQUIREMENT);
     assert_eq!(ollama_evidence["determination"], true);
-    assert_eq!(ollama_evidence["rationale"], submit["rationale"]);
+    assert_eq!(
+        ollama_evidence["criteria"]["behavioral"]["output"]["rationale"],
+        submit["rationale"]
+    );
     assert_eq!(ollama_evidence, bedrock_evidence);
     assert_eq!(ollama_evidence, openai_evidence);
 }
@@ -5932,6 +6003,7 @@ fn the_review_prompt_gives_a_report_template() {
         &section(review_prompt(), "## Report"),
         &[
             "### Revised text",
+            "every requirement in the group",
             "as complete directives ready to paste, including new split requirements",
             "### Edits outside the group",
             "revised text of other requirements your changes make stale",
@@ -6132,6 +6204,7 @@ fn bundled_skills_limit_anchors_to_files_whose_items_cannot_carry_references() {
 // {test}`requirements.cli.internal_detail_guidance`
 // {test}`requirements.cli.behavior_review_guidance`
 // {test}`requirements.references.procedure`
+// {test}`requirements.references.structural_markers`
 #[test]
 fn bundled_skills_direct_the_reference_procedure_and_allow_unmarked_helpers() {
     // habeas-requirements is the home of the reference procedure; its steps
@@ -6143,7 +6216,8 @@ fn bundled_skills_direct_the_reference_procedure_and_allow_unmarked_helpers() {
             "a type does when the requirement constrains its fields, variants, serialized form, or validation",
             "For each requirement or example an item could reference",
             "1. A test designed to verify it gets `{test}`",
-            "2. Otherwise a root gets `{impl}`",
+            "Mark roots for stated structural obligations with `{impl}`",
+            "when writing the code or when a structural reviewer recommends it",
             "3. Otherwise, code that should be re-checked when the requirement changes gets `{cite}`",
             "4. Otherwise, leave it unmarked",
             "An optional `` // {cite}`habeas:util` `` can explain that an item serves other code; it is not required bookkeeping",
@@ -6164,6 +6238,7 @@ fn bundled_skills_direct_the_reference_procedure_and_allow_unmarked_helpers() {
         "habeas-bootstrap-requirements",
         &[
             "\"Choosing references\" in the habeas-requirements skill",
+            "during the inventory or when a structural reviewer recommends it",
             "write a requirement for the invariant they check",
             "An item that neither carries out a requirement nor serves other code goes on the gap list: it needs a requirement or is not needed",
         ],
@@ -6205,7 +6280,7 @@ fn bundled_skills_direct_behavior_review_against_requirements() {
         "habeas-evidence",
         &[
             "A judgment is one of three outcomes",
-            "`true`: the reviewed tests adequately check the definition, or its implementations support its structural obligations, with no gap under",
+            "`true`: every applicable structural and behavioral obligation is supported",
             "`false`: there is a gap that no `{fixme}` reference acknowledges",
             "FIXME: `{fixme}` references acknowledge every remaining gap",
         ],
@@ -6234,15 +6309,13 @@ fn bundled_skills_direct_behavior_review_against_requirements() {
         "what the review checks",
         &section(skill_md("habeas-requirements"), "## What the review checks"),
         &[
-            "The intended review checks stated structure and behavior independently",
+            "The review checks stated structure and behavior independently",
             "implementation roots support signatures, relationships, ownership, and required",
             "delegation; tests support behavioral obligations",
             "Missing implementation or",
             "test edges must not hide an obligation needing that evidence",
             "Examples and distributed requirements retain",
             "their existing review tasks",
-            "Issue #51",
-            "remaining independent-check and regression-test gaps",
             "assertions whose expected results contradict the requirement",
             "too weak to rule out plausible requirement-violating behavior",
             "an applicable recommendation with inadequate tests",
@@ -6288,7 +6361,7 @@ fn bundled_skills_direct_behavior_review_against_requirements() {
         &section(skill_md("habeas-requirements"), "## Choosing references"),
         &[
             "1. A test designed to verify it gets `{test}`",
-            "2. Otherwise a root gets `{impl}`. Leave what it reaches unmarked",
+            "Mark roots for stated structural obligations with `{impl}`",
             "`{cite}` implements nothing. For source items outside the book, citation reviews check project citations' roles and built-ins' stated criteria",
             "fence outside a requirement or example opts a book passage into concordance review",
             "its claims must be supported by the cited declarations",
@@ -6297,20 +6370,20 @@ fn bundled_skills_direct_behavior_review_against_requirements() {
     );
     assert_phrases(
         "habeas-bootstrap-requirements",
-        &["`{test}` on tests and `{impl}` on roots; code a root or test reaches needs none"],
+        &["`{test}` on tests and `{impl}` on roots for stated structural obligations"],
     );
     // Interacting requirements, and a citation alone is not an explanation.
     assert_phrases(
         "habeas-requirements",
         &[
-            "If a behavior follows only from several requirements together, mark each with `{impl}` where it applies and add fenced commentary saying how they combine",
+            "If a test verifies behavior that follows from several requirements together, mark it `{test}` for each obligation it checks and add fenced commentary saying how they combine",
             "a reference alone would not say why `^C` is accepted",
         ],
     );
     assert_phrases(
         "habeas-bootstrap-requirements",
         &[
-            "Where one behavior follows from several requirements, mark each with `{impl}` where it applies and explain how they combine",
+            "Where one test verifies several requirements, mark each with `{test}` and explain how they combine",
         ],
     );
 }
@@ -6318,6 +6391,7 @@ fn bundled_skills_direct_behavior_review_against_requirements() {
 // {test}`requirements.cli.behavior_review_guidance`
 // {test}`requirements.cli.internal_detail_guidance`
 // {test}`requirements.references.procedure`
+// {test}`requirements.references.structural_markers`
 #[test]
 fn bundled_skills_mark_roots_without_requiring_helper_bookkeeping() {
     const ROOT: &str = "A *root* is an item that carries out part of a requirement and that no other `{impl}` item for it reaches";
@@ -6331,7 +6405,7 @@ fn bundled_skills_mark_roots_without_requiring_helper_bookkeeping() {
             ROOT,
             "Roots are per requirement",
             "Helpers the test calls need nothing",
-            "Leave what it reaches unmarked",
+            "Leave what a marked root reaches unmarked",
             "Don't remove an existing `{impl}` from code a root reaches unless the user asks",
         ],
     );
@@ -6820,7 +6894,7 @@ fn openai_responses_replays_tool_calls_and_records_usage() {
     let usage = fixture.usage();
     assert_eq!(usage["backend"], "openai");
     assert_eq!(usage["outcome"], "completed");
-    assert_eq!(usage["provider_usage"]["attempts"], 2);
+    assert_eq!(usage["provider_usage"]["attempts"], 3);
     assert_eq!(usage["provider_usage"]["input_tokens"]["reported"], 22);
     assert_eq!(usage["provider_usage"]["output_tokens"]["reported"], 14);
     assert_eq!(
@@ -6946,7 +7020,7 @@ fn adaptive_routes_fresh_assessments_and_records_each_model() {
         ),
         (
             false,
-            json!({"bad":"submission"}),
+            Value::Null,
             "",
             vec!["gpt-5.4-mini", "gpt-6.1-sol"],
             Some("mini_assessment_failed"),
@@ -6966,7 +7040,19 @@ fn adaptive_routes_fresh_assessments_and_records_each_model() {
             None,
         ),
     ] {
-        let mut replies = vec![response(first)];
+        let exhaust_reminder = first.is_null();
+        let mut replies = if exhaust_reminder {
+            // Two prose-only responses exhaust the submission reminder.
+            vec![
+                json!({"id":"refused","object":"response","status":"completed","model":"mock",
+                "output":[{"type":"message","id":"msg","role":"assistant","status":"completed",
+                           "content":[{"type":"output_text","text":"Cannot assess.","annotations":[]}]}],
+                "usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}});
+                2
+            ]
+        } else {
+            vec![response(first)]
+        };
         if expected_models.len() == 2 {
             replies.push(response(json!({"status":"success","rationale":"Good."})));
         }
@@ -6983,7 +7069,12 @@ fn adaptive_routes_fresh_assessments_and_records_each_model() {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        let requests = server.finish();
+        let mut requests = server.finish();
+        if exhaust_reminder {
+            let reminder = requests.remove(1);
+            assert_eq!(reminder.body["model"], "gpt-5.4-mini");
+            assert!(reminder.body["input"].to_string().contains("exactly once"));
+        }
         assert_eq!(
             requests
                 .iter()
@@ -7016,7 +7107,10 @@ fn adaptive_routes_fresh_assessments_and_records_each_model() {
             serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
         assert_eq!(evidence["determination"], true);
         if !policy.is_empty() {
-            assert_eq!(evidence["rationale"], "FIRST_AGREEMENT_RATIONALE");
+            assert_eq!(
+                evidence["criteria"]["behavioral"]["output"]["rationale"],
+                "FIRST_AGREEMENT_RATIONALE"
+            );
         }
         let logs: Vec<Value> = fs::read_dir(fixture.state.join("habeas/authoring/usage"))
             .unwrap()
@@ -7056,9 +7150,15 @@ fn adaptive_routes_fresh_assessments_and_records_each_model() {
             );
         }
         for model in expected_models {
+            let attempts = if exhaust_reminder && model == "gpt-5.4-mini" {
+                3
+            } else {
+                2
+            };
             assert!(
                 logs.iter()
-                    .any(|log| log["model"] == model && log["provider_usage"]["attempts"] == 1)
+                    .any(|log| log["model"] == model
+                        && log["provider_usage"]["attempts"] == attempts)
             );
         }
     }
@@ -7544,8 +7644,13 @@ fn corrections_replay_reference_only_mixed_and_regression_findings() {
             0,
         ),
     ] {
-        let count = responses.len();
-        let server = Server::start(responses);
+        let structural = matches!(case, "file root" | "implementation");
+        let count = responses.len() + if structural { 2 } else { 0 };
+        let server = if structural {
+            Server::structural(responses)
+        } else {
+            Server::start(responses)
+        };
         let fixture = Fixture::new(&server.endpoint);
         common::coverage_setup(&fixture.project);
         let path = fixture.project.join("src/lib.rs");
@@ -7812,16 +7917,17 @@ fn only_delivered_item_contents_or_retained_search_excerpts_qualify_reference_ed
             "submit_result",
             json!({"result":{"status":"failed","corrections":[finding]}}),
         )]));
-        if qualifies {
+        let adds_marker = qualifies && kind != "mandatory";
+        if adds_marker {
             steps.push(reply(vec![call("done", "submit_result", json!({"result":{"status":"success","rationale":"The selected item is now linked."}}))]));
         }
-        let count = steps.len();
-        let server = Server::start(steps);
+        let count = steps.len() + if adds_marker { 2 } else { 1 };
+        let server = Server::structural(steps);
         let fixture = Fixture::new(&server.endpoint);
         let path = fixture.project.join(file);
         fs::write(&path, source).unwrap();
         let anchor = if kind == "mandatory" {
-            format!(":test: {file}#{target}\n")
+            format!(":impl: {file}#{target}\n")
         } else {
             String::new()
         };
@@ -7831,7 +7937,7 @@ fn only_delivered_item_contents_or_retained_search_excerpts_qualify_reference_ed
         assert!(output.status.success(), "{kind}: {stderr}");
         let requests = server.finish();
         assert_eq!(requests.len(), count);
-        let expected = if qualifies {
+        let expected = if adds_marker {
             format!("// {{impl}}`{SUBJECT}`\n{source}")
         } else {
             source.to_owned()
@@ -7847,7 +7953,7 @@ fn only_delivered_item_contents_or_retained_search_excerpts_qualify_reference_ed
             "{kind}: {stderr}"
         );
         let record: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
-        assert_eq!(record["determination"], qualifies, "{kind}");
+        assert_eq!(record["determination"], adds_marker, "{kind}");
         if !qualifies {
             assert_eq!(record["corrections"], json!([finding]));
             assert!(
@@ -7900,19 +8006,25 @@ fn one_round_inserts_markers_at_multiple_items_and_the_root_of_the_same_file() {
         )
     });
     let additions = targets.map(|(selector, role)| json!({"kind":"add_reference","role":role,"file":"src/lib.rs","selector":selector,"rationale":"The selected item supports readiness."}));
-    let server = Server::start(vec![
-        reply(reads.to_vec()),
+    let failed = |items: Vec<Value>| {
         reply(vec![call(
             "add",
             "submit_result",
-            json!({"result":{"status":"failed","corrections":additions}}),
-        )]),
-        reply(vec![call(
-            "done",
-            "submit_result",
-            json!({"result":{"status":"success","rationale":"All required items are linked."}}),
-        )]),
-    ]);
+            json!({"result":{"status":"failed","corrections":items}}),
+        )])
+    };
+    let server = Server::script(
+        vec![
+            reply(vec![reads[1].clone()]),
+            failed(vec![additions[1].clone()]),
+            reply(vec![reads[0].clone(), reads[2].clone()]),
+            failed(vec![additions[0].clone(), additions[2].clone()]),
+            successful_review(),
+            successful_review(),
+        ],
+        true,
+        || {},
+    );
     let fixture = Fixture::new(&server.endpoint);
     let file = fixture.project.join("src/lib.rs");
     let first = "fn first() { assert!(ready()); }\n";
@@ -7928,7 +8040,7 @@ fn one_round_inserts_markers_at_multiple_items_and_the_root_of_the_same_file() {
         format!("{marker}{first}{middle}{marker}{second}// {{impl}}`{SUBJECT}`\n")
     );
     assert_eq!(stderr.matches("(applied)").count(), 3, "{stderr}");
-    assert_eq!(server.finish().len(), 3);
+    assert_eq!(server.finish().len(), 6);
 }
 
 // {test}`requirements.authoring.corrections.apply`
@@ -7940,23 +8052,32 @@ fn reference_deduplication_distinguishes_roles_and_definitions_for_the_same_item
     let function = "fn check() { assert!(ready()); }\n";
     let add = |role| json!({"kind":"add_reference","role":role,"file":"src/lib.rs","selector":"fn[check]","rationale":"Check verifies the readiness invariant."});
     for existing in ["", test.as_str(), other.as_str()] {
-        let server = Server::start(vec![
+        let read = || {
             reply(vec![call(
                 "read",
                 "read_node",
                 json!({"path":"src/lib.rs","location":"fn[check]"}),
-            )]),
+            )])
+        };
+        let fail = |items: Vec<Value>| {
             reply(vec![call(
                 "add",
                 "submit_result",
-                json!({"result":{"status":"failed","corrections":[add("test"), add("impl"), add("test")]}}),
-            )]),
-            reply(vec![call(
-                "done",
-                "submit_result",
-                json!({"result":{"status":"success","rationale":"Both roles are linked."}}),
-            )]),
-        ]);
+                json!({"result":{"status":"failed","corrections":items}}),
+            )])
+        };
+        let server = Server::script(
+            vec![
+                read(),
+                fail(vec![add("impl")]),
+                read(),
+                fail(vec![add("test"), add("test")]),
+                successful_review(),
+                successful_review(),
+            ],
+            true,
+            || {},
+        );
         let fixture = Fixture::new(&server.endpoint);
         let requirements = fixture.project.join("md/requirements.md");
         let mut book = fs::read_to_string(&requirements).unwrap();
@@ -7985,7 +8106,7 @@ fn reference_deduplication_distinguishes_roles_and_definitions_for_the_same_item
             stderr.matches("(applied)").count(),
             if existing == test { 1 } else { 2 }
         );
-        assert_eq!(server.finish().len(), 3);
+        assert_eq!(server.finish().len(), 6);
     }
 }
 
@@ -8164,7 +8285,7 @@ fn an_applied_reference_keeps_the_original_read_and_reassessment_records_the_edi
 // {test}`requirements.authoring.corrections.rationale`
 #[test]
 // {test}`requirements.authoring.submission`
-fn malformed_definition_corrections_preserve_existing_evidence() {
+fn malformed_definition_corrections_can_be_repaired_before_writing_evidence() {
     for corrections in [
         json!([]),
         json!([{"kind":"manual","instruction":" \t","rationale":"The boundary is untested."}]),
@@ -8182,22 +8303,26 @@ fn malformed_definition_corrections_preserve_existing_evidence() {
         json!([{"kind":"add_reference","role":"impl","file":" ","selector":"fn[ready]","rationale":"This function implements readiness."}]),
         json!([{"kind":"manual","rationale":"Coverage is missing."}]),
     ] {
-        let server = Server::start(vec![reply(vec![call(
-            "invalid",
-            "submit_result",
-            json!({"result":{"status":"failed","corrections":corrections}}),
-        )])]);
+        let server = Server::start(vec![
+            reply(vec![call(
+                "invalid",
+                "submit_result",
+                json!({"result":{"status":"failed","corrections":corrections}}),
+            )]),
+            successful_review(),
+        ]);
         let fixture = Fixture::new(&server.endpoint);
         assert!(
-            !fixture.run(&["author", SUBJECT]).status.success(),
+            fixture.run(&["author", SUBJECT]).status.success(),
             "{corrections}"
         );
-        assert_eq!(fixture.usage()["outcome"], "failed");
-        assert_eq!(server.finish().len(), 1);
-        assert_eq!(
-            fs::read_to_string(&fixture.evidence).unwrap(),
-            fixture.original
-        );
+        assert_eq!(fixture.usage()["outcome"], "completed");
+        let requests = server.finish();
+        assert_eq!(requests.len(), 2);
+        let messages = requests[1].body["messages"].as_array().unwrap();
+        assert_eq!(messages.last().unwrap()["role"], "tool");
+        let record: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
+        assert_eq!(record["determination"], true);
     }
 }
 
@@ -8222,7 +8347,7 @@ fn unreachable_reference_targets_are_reported_without_writing_or_retrying() {
         ("src/lib.rs", "fn[ambiguous]", "is ambiguous"),
     ] {
         let correction = json!({"kind":"add_reference","role":"impl","file":file,"selector":selector,"rationale":"The selected item implements readiness."});
-        let server = Server::start(vec![reply(vec![call(
+        let server = Server::structural(vec![reply(vec![call(
             "invalid-target",
             "submit_result",
             json!({"result":{"status":"failed","corrections":[correction]}}),
@@ -8249,7 +8374,7 @@ fn unreachable_reference_targets_are_reported_without_writing_or_retrying() {
                 && message.contains(reason),
             "{message}"
         );
-        assert_eq!(server.finish().len(), 1);
+        assert_eq!(server.finish().len(), 2);
         assert_eq!(
             fs::read(fixture.project.join("src/lib.rs")).unwrap(),
             before

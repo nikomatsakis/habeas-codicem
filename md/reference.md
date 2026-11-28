@@ -39,8 +39,10 @@ example. Each requirement or example evidence file records five fields:
 | `references` | A SHA-256 digest of the definition's reference set: each incoming `{impl}` or `{test}` reference's role, file, and the outline node it belongs to, with the words of a fenced reference's commentary in a source outside the book, plus its `:impl:` and `:test:` anchors. `{cite}` references do not contribute. Adding, removing, or re-roling a reference or anchor, editing its commentary, or moving a reference to another node makes the evidence stale even when no input changed; moving one within its node does not. {cite}`requirements.ci.reference_set` |
 | `inputs` | Sources supporting it. Inputs select an outline node of a file, a definition selection, or a terminology definition. |
 
-For a requirement, the model reviews whether the tests adequately check its
-stated obligations. It derives expected behavior from the requirement and maps
+For each non-distributed requirement, `criteria.structural` and `criteria.behavioral` record the results of separate model conversations. The first checks whether implementation roots
+support its stated structural properties. The second checks whether tests adequately check its
+behavioral obligations. With either kind of edge absent, it explains why no
+evidence of that kind is needed or reports the gap. It derives expected behavior from the requirement and maps
 obligations to concrete test inputs and assertions, including relevant boundaries
 and failure cases. For an alleged gap, it explains what requirement-violating
 behavior the tests would accept, or which asserted expectation contradicts the
@@ -55,13 +57,10 @@ the named subject, using referenced requirements and definitions as context.
 {cite}`requirements.ci.review_criteria` {cite}`requirements.examples.evidence`
 
 The initial request supplies the requirement or example, its context, and the
-source text of its marked tests and test anchors. An implementation reference
-alone does not put its source in that request. The model can discover
-implementation locations with `references({selection: "...", roles: ["impl"]})`
-and request source with `habeas`; a discovery listing contains no requirement or
-source text and creates no evidence input. A source read records its selector
-and hash. A passing assessment supports test adequacy, and does not establish
-implementation correctness.
+source text of its marked tests and test anchors. A non-distributed requirement also receives its implementation
+roots, identified separately from its tests. The reviewer follows relevant
+helpers with `outgoing_edges` and `read_node`. Reading a source records its
+selector and hash.
 {cite}`requirements.references.authoring_inputs`
 {cite}`requirements.authoring.reference_index`
 
@@ -464,7 +463,7 @@ metadata is kept under `$XDG_STATE_HOME/habeas/authoring/usage`, falling back to
 `%LOCALAPPDATA%/habeas/state/authoring/usage`. Ordinary CI validation, status, and
 book rendering remain deterministic and do not require model configuration or
 credentials. {cite}`requirements.authoring.usage_storage`
-{cite}`requirements.authoring.deterministic_validation`
+{cite}`requirements.authoring.deterministic_validation` {impl}`requirements.configuration.state_location`
 
 `habeas author` and `habeas status` read GitHub issues, authenticating with
 `GITHUB_TOKEN` when it is set, through a cache in the `github` directory of the
@@ -478,7 +477,7 @@ read from, the Unix time it was `fetched` in seconds, and its `state` (`open`,
 Deleting the directory only forces fresh reads. When the state root cannot be
 determined or lies inside the project repository, issues are read without a
 cache, so nothing is written there.
-{cite}`requirements.authoring.github_reads`
+{cite}`requirements.authoring.github_reads` {impl}`requirements.configuration.state_location`
 
 {impl}`requirements.configuration.state_location`
 
@@ -586,8 +585,8 @@ Habeas builds its reference graph from the files currently in the project direct
 
 For each definition a source item could reference, choose by this procedure. An item may carry several references.
 
-1. If the item is a test designed to verify the definition, use `{test}`. Helpers reached from that test need no reference of their own.
-2. Otherwise, if the item is an implementation root for the definition, use `{impl}`. For code, this means it makes a decision, performs a check, produces an output, or handles a case the definition specifies. For a type, it means the definition constrains its shape: its fields, variants, serialized form, or validation. A root is such an item that no other `{impl}` item for the definition reaches through calls or types it uses; helpers reached from it need no individual annotation.
+1. If the item is a test designed to verify the definition, use `{test}`. Every test source item needs at least one `{test}` annotation of its own. Helpers reached from that test need no reference of their own. {cite}`requirements.references.coverage.tests`
+2. A root demonstrating a stated structural obligation should carry `{impl}`. You can add it while writing the code or when a structural reviewer recommends it. A reviewer follows calls, types, and trait implementations from the marked roots. Helpers reached that way need no separate marker. {cite}`requirements.references.structural_markers`
 3. Otherwise, if the item should be re-checked or kept in sync when the definition changes, use `{cite}`.
 
 Other source items need no annotation or recorded assessment read merely to
@@ -635,7 +634,17 @@ For an `{impl}` or `{test}` reference in a source outside the book, the words of
 
 ### Built-in definitions
 
-Built-in definitions are named `habeas:<name>` and are available in every project without a declaration. Each has fixed text and permits only certain roles. Built-ins have no evidence files and do not appear in the requirements index or `habeas status`. Project definitions cannot use names beginning with `habeas:`. In the book, a reference to a built-in renders as a badge without a link; hovering over it shows the built-in's text.
+Built-in definitions are named `habeas:<name>` and are available in every project without a declaration. Each has fixed text and permits only certain roles. Validation reports references that violate the built-in's role or form. Project definitions cannot use names beginning with `habeas:`.
+{cite}`requirements.references.builtin_definitions` {cite}`requirements.references.builtin_definitions.reference_validation` {cite}`requirements.references.builtin_definitions.reserved_names`
+
+Built-ins have no definition evidence files and do not appear in the requirements index or `habeas status`. In the book, a reference to a built-in renders as an unlinked badge whose hover text gives the built-in's full text.
+{cite}`requirements.references.builtin_definitions.evidence` {cite}`requirements.references.builtin_definitions.listings` {cite}`requirements.references.builtin_definitions.book_badge`
+
+The built-in `habeas:validate` has this text
+
+> The project’s Cargo integration test must call `habeas::validate()` to check its requirements and evidence.
+
+`habeas setup` places `` // {test}`habeas:validate` `` on the generated integration test. Rerun setup to annotate an unchanged test from an earlier version. If you customized the test, add the annotation to the function that calls `habeas::validate()`. {cite}`requirements.cli.setup.validation_test`
 
 The built-in `habeas:util` has this text:
 

@@ -42,6 +42,7 @@ mod sites;
 mod structural;
 mod terms;
 
+// {impl}`requirements.integration.report_api`
 pub use evidence::{EvidenceReport, reference_set_digest_for, validate_repository};
 pub use github::GithubIssues;
 pub use inputs::{outline_input, outline_inputs_for_lines};
@@ -77,13 +78,13 @@ fn installed_validator() -> Option<std::process::Command> {
     .then(|| Command::new("habeas"))
 }
 
+// {impl}`requirements.integration.validate`
+// {impl}`requirements.integration.validate.optimized`
+// {impl}`requirements.integration.validate.installed`
 /// Run optimized evidence validation for the current Cargo and mdBook project.
 /// Panics with the validator's diagnostics if validation fails.
 #[track_caller]
 pub fn validate() {
-    // {impl}`requirements.integration.validate`
-    // {impl}`requirements.integration.validate.optimized`
-    // {impl}`requirements.integration.validate.installed`
     use std::process::Command;
 
     let validator = std::env::var_os("HABEAS_RELEASE_VALIDATOR")
@@ -138,7 +139,6 @@ pub fn validate() {
     );
 }
 
-// {impl}`requirements.examples.definition`
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DefinitionKind {
     Requirement,
@@ -147,7 +147,6 @@ pub(crate) enum DefinitionKind {
 }
 
 impl DefinitionKind {
-    // {impl}`requirements.examples.evidence`
     pub(crate) fn noun(self) -> &'static str {
         match self {
             Self::Requirement => "requirement",
@@ -156,7 +155,6 @@ impl DefinitionKind {
         }
     }
 
-    // {impl}`requirements.examples.index`
     pub(crate) fn badge(self) -> &'static str {
         match self {
             Self::Requirement => "req",
@@ -165,8 +163,6 @@ impl DefinitionKind {
         }
     }
 
-    // {impl}`requirements.examples.index`
-    // {impl}`requirements.index.navigation`
     pub(crate) fn anchor(self, name: &str) -> String {
         format!("habeas-{}-{name}", self.badge())
     }
@@ -216,7 +212,6 @@ pub(crate) enum ReferenceKind {
     Fixme,
 }
 
-// {impl}`requirements.references.book_badges`
 impl ReferenceKind {
     // {cite}`habeas:util`
     pub(crate) fn label(self) -> &'static str {
@@ -249,15 +244,6 @@ pub(crate) struct ReferenceMatch<'a> {
     pub(crate) kind: ReferenceKind,
 }
 
-// {impl}`requirements.examples.definition`
-// {impl}`requirements.definitions.declaration`
-// {impl}`requirements.definitions.references`
-// {impl}`requirements.definitions.selection`
-// {impl}`requirements.index.detail_pages`
-// {impl}`requirements.references.anchors`
-// {impl}`requirements.ci.identifiers`
-// {impl}`requirements.references.builtin_definitions`
-// {impl}`requirements.index.render_only`
 pub fn preprocess_book(book: &mut Book, root: &Path) -> io::Result<()> {
     let mut definitions = BTreeMap::new();
     let mut order = Vec::new();
@@ -317,7 +303,6 @@ pub fn preprocess_book(book: &mut Book, root: &Path) -> io::Result<()> {
     plan.populate(book, root, &evidence_definitions)?;
     execution_coverage::populate(book, root, plan.index_path())?;
 
-    // {impl}`requirements.index.source_links`
     book.for_each_chapter_mut(|chapter| {
         if chapter.source_path.is_none()
             || chapter
@@ -354,7 +339,6 @@ pub fn preprocess_book(book: &mut Book, root: &Path) -> io::Result<()> {
 
 /// Render review annotations separately from their prose. Collect from the
 /// original source, including metadata later omitted from chapter presentation.
-// {impl}`requirements.references.citation_review.book_commentary.display`
 fn replace_reviewed_citation_passages(
     content: &str,
     namespace: &str,
@@ -470,7 +454,6 @@ fn replace_reviewed_citation_passages(
 
 /// Hide citation metadata only in authored chapter presentation. Definitions,
 /// detail pages, discovery, and authoring keep the original source.
-// {impl}`requirements.references.book_badges`
 fn omit_fenced_citation_paragraphs(
     content: &str,
     namespace: &str,
@@ -639,11 +622,6 @@ fn chapter_namespace(path: &Path) -> String {
     parts.join(".")
 }
 
-// {impl}`requirements.index.navigation`
-// {impl}`requirements.index.declaration_sections`
-// {impl}`requirements.references.book_badges`
-// {impl}`requirements.examples.definition`
-// {impl}`requirements.examples.index`
 fn replace_definitions(
     content: &str,
     namespace: &str,
@@ -665,7 +643,6 @@ fn replace_definitions(
         let full_name = full_requirement_name(namespace, &block.name);
         // Valid names contain no HTML-special characters, so this escaping
         // only guards the inserted HTML against future name rules.
-        // {impl}`requirements.references.safe_badges`
         let escaped_name = escape_html(&full_name);
         if block.kind == DefinitionKind::Term {
             if let Ok((phrase, body)) =
@@ -725,7 +702,6 @@ fn replace_definitions(
 /// Renders each query directive in a requirement body as a badge naming its
 /// kind and name, followed by its code block. Directives in code blocks
 /// stay literal.
-// {impl}`requirements.references.distributed`
 fn replace_query_directives(body: &str) -> String {
     let code = code_block_ranges(body);
     let mut result = String::with_capacity(body.len());
@@ -760,8 +736,6 @@ fn replace_query_directives(body: &str) -> String {
 /// Renders fenced references as their badge followed by their body, and
 /// inline references as badges. A fenced reference inside a definition needs
 /// a longer outer fence, so its closing fence does not end the definition.
-// {impl}`requirements.references.book_badges`
-// {impl}`requirements.references.builtin_definitions`
 fn replace_references(
     content: &str,
     current_path: &Path,
@@ -801,9 +775,6 @@ fn replace_references(
 /// The badge for a valid `{impl}`, `{cite}`, or `{test}` reference: a link to
 /// a project definition, or an unlinked badge whose hover text gives a
 /// built-in's text. Returns `None` for a reference that must remain literal.
-// {impl}`requirements.references.safe_badges`
-// {impl}`requirements.index.navigation`
-// {impl}`requirements.examples.index`
 fn reference_badge(
     kind: ReferenceKind,
     name: &str,
@@ -838,8 +809,6 @@ fn reference_badge(
     ))
 }
 
-// {impl}`requirements.index.navigation`
-// {impl}`requirements.examples.index`
 fn replace_inline_references(
     content: &str,
     current_path: &Path,
@@ -883,7 +852,7 @@ fn replace_inline_references(
     result
 }
 
-// {impl}`requirements.index.detail_format`
+// {impl}`requirements.references.book_badges`
 pub(crate) fn shield_badge(label: &str, message: &str, color: &str) -> String {
     let url = format!(
         "https://img.shields.io/badge/{}-{}-{color}?style=flat-square&labelColor=555",
@@ -913,7 +882,6 @@ fn shield_path_component(value: &str) -> String {
     encoded
 }
 
-// {impl}`requirements.index.navigation`
 // Relative chapter links, including `../` from nested chapters.
 pub(crate) fn chapter_href(current: &Path, target: &Path, anchor: Option<&str>) -> String {
     let current_dir = current
@@ -960,8 +928,6 @@ fn full_requirement_name(namespace: &str, name: &str) -> String {
     }
 }
 
-// {impl}`requirements.examples.definition`
-// {impl}`requirements.ci.fence_lengths`
 pub(crate) fn definition_blocks(content: &str) -> Vec<DefinitionBlock> {
     let code_ranges = code_block_ranges(content);
     let mut lines = Vec::new();
@@ -1051,8 +1017,6 @@ pub(crate) fn definition_blocks(content: &str) -> Vec<DefinitionBlock> {
     blocks
 }
 
-// {impl}`requirements.ci.requirement_text`
-// {impl}`requirements.examples.definition`
 /// Parse an option line of the form `:name: value`.
 pub(crate) fn option_line(line: &str) -> Option<(&str, &str)> {
     let rest = line.trim_start_matches(' ').strip_prefix(':')?;
@@ -1279,7 +1243,7 @@ mod tests {
 
     // {test}`requirements.references.book_badges`
     // {test}`requirements.references.citation_review.book_commentary.display`
-    // {test}`requirements.references.builtin_definitions`
+    // {test}`requirements.references.builtin_definitions.book_badge`
     // {test}`requirements.index.navigation`
     // {test}`requirements.examples.authoring_inputs`
     #[test]
@@ -1618,7 +1582,7 @@ mod tests {
     }
 
     // {test}`requirements.references.book_badges`
-    // {test}`requirements.references.builtin_definitions`
+    // {test}`requirements.references.builtin_definitions.book_badge`
     // {test}`requirements.test-coverage.check.exceptions.anchor`
     #[test]
     fn fenced_references_render_their_badge_and_body_and_built_ins_are_unlinked() {

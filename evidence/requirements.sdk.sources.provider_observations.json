@@ -1,8 +1,8 @@
 {
   "requirement": "The tracked source-read operation resolves the selected `OutlineData` through\nthe application's source-node mapping and reads that node through `Domain`.\nSuccessful reads delivered to the caller record that node's identity and the\nfingerprint of its supplied contents.\n\nThe graph's recording and freshness contracts apply under\n{cite}`requirements.sdk.graph.evidence.node_inputs` and\n{cite}`requirements.sdk.graph.evidence.checking_records`.",
   "determination": true,
-  "rationale": "I judged this from the supplied test source and did not read any implementation source.\n\nObligations derived from `requirements.sdk.sources.provider_observations`:\n1. The tracked read resolves the selected `OutlineData` through the application's source-node mapping.\n2. It reads the mapped node through `Domain`.\n3. A successful read delivered to the caller records the node identity and the fingerprint of the contents supplied.\n4. Reads that are not delivered or that fail record nothing. This comes from the cited `requirements.sdk.graph.evidence.node_inputs`, which says a failed read returns an error without inventing an observation.\n\nTest coverage:\n- `crates/trust-but-verify/src/agent/project_sources.rs#mod[tests]/fn[direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns]` covers the direct path.\n  - Mapping: two unmapped addresses (unknown file, unknown selector) return an \"unsupported source item\" error. The test asserts no dependencies, zero domain reads, and no read nodes.\n  - Domain read: a domain read failure returns the error and records no dependency. A successful read returns the content, and the domain is asked to read the mapped node `source-node` (`read_nodes` is `[\"source-node\", \"source-node\"]`).\n  - Recording: the single recorded dependency is `Dependency::Node(source-node, returned.fingerprint())`, which ties the identity and the supplied-content fingerprint together.\n  - Freshness: the finished record is current, then not current after the domain text changes. This shows the fingerprint tracks the supplied contents.\n- `crates/trust-but-verify/src/agent/tests.rs#fn[source_discovery_and_its_pages_do_not_register_reads]` covers the \"delivered to the caller\" limit. Listing, search and outline results and their pages deliver no dependencies, and the observation callback is never invoked.\n- `crates/trust-but-verify/src/agent/tests.rs#fn[source_tools_keep_search_discovery_separate_from_delivered_source_reads]` covers the model-tool path. A search followed by a `read_source` records exactly one observation, with the mapped node and the exact delivered text as its fingerprint.\n- `crates/trust-but-verify/src/agent/tests.rs#fn[cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input]` covers selected-item contents and failures on the tool path. A selected item's exact contents are fingerprinted. A missing selector adds no input, so the dependencies hold only one entry.\n- `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` is an end-to-end test through the real `Domain` mapping.\n  - The expected dependencies are node 8 and node 9, each carrying the fingerprint of the exact source contents. The test also checks the nodes the domain was asked to read.\n  - Rejected reads and listings add no inputs.\n  - The mapped node read returns the domain snapshot, not the disk contents.\n\nThe graph recording and freshness contracts cited from `requirements.sdk.graph.evidence.node_inputs` and `requirements.sdk.graph.evidence.checking_records` are applied in the tests above through the failure, no-record and `is_current` assertions. I found no unacknowledged gap.",
-  "references": "9e95a92eaf3e1dc37560a9fc47756dfd3b1cbfafc4381cbf0b946b628a4e7f3d",
+  "rationale": "structural: The structural obligations in `requirements.sdk.sources.provider_observations` are that the tracked source read (a) resolves the `OutlineData` through the application's source-node mapping, (b) reads the resolved node through `Domain`, and (c) records the node identity and the fingerprint of the supplied contents for successful reads delivered to the caller.\n\nThe root `crates/trust-but-verify/src/procedure.rs#impl[ValidationContext<'_, D>]/fn[read_source]` does all three:\n- (a) It calls `self.graph.source_node(item)?`. That is `Domain::source_node` (`crates/trust-but-verify/src/domain.rs#trait[Domain]/fn[source_node]`), the application's mapping. A mapping error returns through `?`, so no node is read or recorded. An alternative that built node identities from paths itself would violate the clause, so the clause is a real structural obligation.\n- (b) It interns the node with `cache().intern_source` and calls `self.read`. `read` calls `read_snapshot`, then `prepare_read`, then `self.graph.node_content(node)`, which is `Domain::node_content`. The read therefore goes through `Domain`.\n- (c) `read_snapshot` fingerprints the content that `prepare_read` returned. It then calls `record_read(*node, snapshot.fingerprint.clone())`, but only after `prepare_read` has succeeded. `record_read` pushes `Dependency::Node(node, fingerprint)` and skips an identical existing observation. A failed read records nothing, and a different fingerprint for the same node is kept as a separate observation. The same fingerprint that is recorded is delivered to the caller.\n\nThe two cited requirements, `requirements.sdk.graph.evidence.node_inputs` and `requirements.sdk.graph.evidence.checking_records`, supply context only. This text does not require any further implementation structure.\n\nAll reachable helpers are covered by this root's call chain, so no further roots need markers.\n\nbehavioral: The requirement has three behavioral obligations. Each is checked by a test marked `requirements.sdk.sources.provider_observations`.\n\n1. **Mapping and reading through `Domain`.**\n   - `crates/trust-but-verify/src/agent/project_sources.rs#mod[tests]/fn[direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns]` reads a supported `OutlineData` (`source.txt`). It asserts that the Domain read list is exactly `[\"source-node\", \"source-node\"]`, so the address was resolved through the application's mapping to the mapped node.\n   - The same test checks the unmapped cases (`unknown.txt`, and `source.txt` with `line[unknown]`). They return an \"unsupported source item\" error, and no Domain read occurs (`reads == 0`, `read_nodes` empty).\n\n2. **Successful reads record the node identity and the fingerprint of the supplied contents.**\n   - The successful read in `direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns` asserts `dependencies() == [Dependency::Node(intern(\"source-node\"), returned.fingerprint())]`. It also asserts the returned contents are \"prepared contents\".\n   - It then finishes a record and checks `is_current`, which is true. After the Domain text changes, `is_current` is false. This shows the recorded fingerprint reflects the supplied contents.\n   - `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` covers the model-tool path. It computes the expected fingerprints independently, from `OutlineContent::from_source(...).at_offset(0).fingerprint()`. It asserts the exact dependency list, with node identities for the delivered `alpha.txt` and `beta.txt` excerpts. It also asserts that the mapped read returns \"a source snapshot\" rather than the disk contents.\n   - Listings, rejected calls and a repeated `finish_search` supply no inputs. The `prepared_inputs` and `delivered_inputs` counts of 6 check this.\n\n3. **Only successful returns are recorded.**\n   - Both mapping errors and a Domain read failure (`fail_read`, error \"prepared source read failed\") leave `dependencies()` empty.\n   - The `node_inputs` and `checking_records` requirements are cited as context. The tests exercise how they apply here: failed reads record nothing, and freshness is checked against the recorded fingerprint. I did not reassess those requirements themselves.\n\nI found no obligation without a test, and no test assertion that contradicts the requirement.",
+  "references": "24830ab362501b72f97fcbc186d8fb44a3b80d661b8b8ceb531056becc27c06d",
   "inputs": [
     {
       "requirements": "requirements.sdk.sources.provider_observations",
@@ -63,6 +63,41 @@
       ]
     },
     {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'_,%20D>]/fn[read_source]",
+      "hash": "629b640874f77578a312dd7f8f8b643adfda5c1595bb1d46cf3c8edcf1f39ae5"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#2/fn[read]",
+      "hash": "e3ce3269bf63c716627e418fc7d922f77e8d482ef21246ed76dc35c70b71140a"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#2/fn[record_read]",
+      "hash": "1dc587db0a3a4a600591a2e6a625b750dfea2e58dd92e4513a94ace96580c7b7"
+    },
+    {
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "trait[Domain]/fn[source_node]",
+      "hash": "031f3f125568c5a7d2071ed6c1cc478759e21d01d4c85e80588c27d04004f2ed"
+    },
+    {
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "impl[ValidationCache<D>]/fn[intern_source]",
+      "hash": "9d4c19223216a4598c5fb534d60e10da08d4c47d5500af608244e7b014a53c9f"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#2/fn[read_snapshot]",
+      "hash": "5e3efe54a48c8f95e29eb184caacad03019678d83ccf4910bcd1f67c52801b00"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#2/fn[prepare_read]",
+      "hash": "fbcf18f9d49e19cd802b06c9e7f7c44e95e1a92cbfe433f6f876632ce008b54a"
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]",
       "hash": "1a1a252964872efc8573135d5fb391176e8a78b08c0d975f77b8072c6591f9e8"
@@ -73,22 +108,273 @@
       "hash": "f7c969d81571787c36b6000c09b1e32924d46fe93e2af58df04353b3ae951f11"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "fn[source_tools_keep_search_discovery_separate_from_delivered_source_reads]",
-      "hash": "411c8669624d7fe886a79621b1640c28fb2bebdf8254b18443bf5ab806c33f41"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "fn[source_discovery_and_its_pages_do_not_register_reads]",
-      "hash": "ca5a127c91951ffd9b1607d51bd9e2c15ae04953017e3934ea02d345a4ad8fd6"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "fn[cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input]",
-      "hash": "71a7f1deb43f63a69839e99242ab5dc5644e3eff6ac2f4b7ce3ced2210249c1d"
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "trait[Domain]/fn[node_content]",
+      "hash": "a0359b21a50961012f41d6dd5f946335b93b9a8b71856de60360c5b97993b5b8"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.sources.provider_observations"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "24830ab362501b72f97fcbc186d8fb44a3b80d661b8b8ceb531056becc27c06d"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.sources.provider_observations"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "2240a48b0777fb8d67068d91a5e6135f17d9b5dca8756acee8b8061837852fec"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.evidence.node_inputs"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "9752b8662b43a4a86d2b91ce206009bb135d4ea545a37e3be5aacba644042c9d"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.evidence.checking_records"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "0a77f4260213558db8817a69ca2aa3ffc409ed823e4c689bb9e894919e267f36"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[ValidationContext<'_,%20D>]/fn[read_source]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "629b640874f77578a312dd7f8f8b643adfda5c1595bb1d46cf3c8edcf1f39ae5"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[ValidationContext<'d,%20D>]#2/fn[read]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "e3ce3269bf63c716627e418fc7d922f77e8d482ef21246ed76dc35c70b71140a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[ValidationContext<'d,%20D>]#2/fn[record_read]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "1dc587db0a3a4a600591a2e6a625b750dfea2e58dd92e4513a94ace96580c7b7"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/domain.rs"
+                },
+                "selector": "trait[Domain]/fn[source_node]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "031f3f125568c5a7d2071ed6c1cc478759e21d01d4c85e80588c27d04004f2ed"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/domain.rs"
+                },
+                "selector": "impl[ValidationCache<D>]/fn[intern_source]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "9d4c19223216a4598c5fb534d60e10da08d4c47d5500af608244e7b014a53c9f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[ValidationContext<'d,%20D>]#2/fn[read_snapshot]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "5e3efe54a48c8f95e29eb184caacad03019678d83ccf4910bcd1f67c52801b00"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[ValidationContext<'d,%20D>]#2/fn[prepare_read]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "fbcf18f9d49e19cd802b06c9e7f7c44e95e1a92cbfe433f6f876632ce008b54a"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The structural obligations in `requirements.sdk.sources.provider_observations` are that the tracked source read (a) resolves the `OutlineData` through the application's source-node mapping, (b) reads the resolved node through `Domain`, and (c) records the node identity and the fingerprint of the supplied contents for successful reads delivered to the caller.\n\nThe root `crates/trust-but-verify/src/procedure.rs#impl[ValidationContext<'_, D>]/fn[read_source]` does all three:\n- (a) It calls `self.graph.source_node(item)?`. That is `Domain::source_node` (`crates/trust-but-verify/src/domain.rs#trait[Domain]/fn[source_node]`), the application's mapping. A mapping error returns through `?`, so no node is read or recorded. An alternative that built node identities from paths itself would violate the clause, so the clause is a real structural obligation.\n- (b) It interns the node with `cache().intern_source` and calls `self.read`. `read` calls `read_snapshot`, then `prepare_read`, then `self.graph.node_content(node)`, which is `Domain::node_content`. The read therefore goes through `Domain`.\n- (c) `read_snapshot` fingerprints the content that `prepare_read` returned. It then calls `record_read(*node, snapshot.fingerprint.clone())`, but only after `prepare_read` has succeeded. `record_read` pushes `Dependency::Node(node, fingerprint)` and skips an identical existing observation. A failed read records nothing, and a different fingerprint for the same node is kept as a separate observation. The same fingerprint that is recorded is delivered to the caller.\n\nThe two cited requirements, `requirements.sdk.graph.evidence.node_inputs` and `requirements.sdk.graph.evidence.checking_records`, supply context only. This text does not require any further implementation structure.\n\nAll reachable helpers are covered by this root's call chain, so no further roots need markers."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.sources.provider_observations"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "24830ab362501b72f97fcbc186d8fb44a3b80d661b8b8ceb531056becc27c06d"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.sources.provider_observations"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "2240a48b0777fb8d67068d91a5e6135f17d9b5dca8756acee8b8061837852fec"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.evidence.node_inputs"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "9752b8662b43a4a86d2b91ce206009bb135d4ea545a37e3be5aacba644042c9d"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.evidence.checking_records"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "0a77f4260213558db8817a69ca2aa3ffc409ed823e4c689bb9e894919e267f36"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/configured.rs"
+                },
+                "selector": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f9d8fbc31acd81ef8aa636e21fe02910790b3ec81c15b618e8fdb2b93a7a50de"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+                },
+                "selector": "mod[tests]/fn[direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f7c969d81571787c36b6000c09b1e32924d46fe93e2af58df04353b3ae951f11"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The requirement has three behavioral obligations. Each is checked by a test marked `requirements.sdk.sources.provider_observations`.\n\n1. **Mapping and reading through `Domain`.**\n   - `crates/trust-but-verify/src/agent/project_sources.rs#mod[tests]/fn[direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns]` reads a supported `OutlineData` (`source.txt`). It asserts that the Domain read list is exactly `[\"source-node\", \"source-node\"]`, so the address was resolved through the application's mapping to the mapped node.\n   - The same test checks the unmapped cases (`unknown.txt`, and `source.txt` with `line[unknown]`). They return an \"unsupported source item\" error, and no Domain read occurs (`reads == 0`, `read_nodes` empty).\n\n2. **Successful reads record the node identity and the fingerprint of the supplied contents.**\n   - The successful read in `direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns` asserts `dependencies() == [Dependency::Node(intern(\"source-node\"), returned.fingerprint())]`. It also asserts the returned contents are \"prepared contents\".\n   - It then finishes a record and checks `is_current`, which is true. After the Domain text changes, `is_current` is false. This shows the recorded fingerprint reflects the supplied contents.\n   - `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` covers the model-tool path. It computes the expected fingerprints independently, from `OutlineContent::from_source(...).at_offset(0).fingerprint()`. It asserts the exact dependency list, with node identities for the delivered `alpha.txt` and `beta.txt` excerpts. It also asserts that the mapped read returns \"a source snapshot\" rather than the disk contents.\n   - Listings, rejected calls and a repeated `finish_search` supply no inputs. The `prepared_inputs` and `delivered_inputs` counts of 6 check this.\n\n3. **Only successful returns are recorded.**\n   - Both mapping errors and a Domain read failure (`fail_read`, error \"prepared source read failed\") leave `dependencies()` empty.\n   - The `node_inputs` and `checking_records` requirements are cited as context. The tests exercise how they apply here: failed reads record nothing, and freshness is checked against the recorded fingerprint. I did not reassess those requirements themselves.\n\nI found no obligation without a test, and no test assertion that contradicts the requirement."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -98,19 +384,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "9e95a92eaf3e1dc37560a9fc47756dfd3b1cbfafc4381cbf0b946b628a4e7f3d"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.sources.provider_observations"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "be3d38f4353f0d4487accf4ce1ec45cd21be851b578062208734534e67d94cc4"
+          "value": "24830ab362501b72f97fcbc186d8fb44a3b80d661b8b8ceb531056becc27c06d"
         }
       ]
     },
@@ -144,6 +418,125 @@
         {
           "scheme": "habeas-input-v1",
           "value": "0a77f4260213558db8817a69ca2aa3ffc409ed823e4c689bb9e894919e267f36"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'_,%20D>]/fn[read_source]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "629b640874f77578a312dd7f8f8b643adfda5c1595bb1d46cf3c8edcf1f39ae5"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[read]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "e3ce3269bf63c716627e418fc7d922f77e8d482ef21246ed76dc35c70b71140a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[record_read]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "1dc587db0a3a4a600591a2e6a625b750dfea2e58dd92e4513a94ace96580c7b7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "trait[Domain]/fn[source_node]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "031f3f125568c5a7d2071ed6c1cc478759e21d01d4c85e80588c27d04004f2ed"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "impl[ValidationCache<D>]/fn[intern_source]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "9d4c19223216a4598c5fb534d60e10da08d4c47d5500af608244e7b014a53c9f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[read_snapshot]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "5e3efe54a48c8f95e29eb184caacad03019678d83ccf4910bcd1f67c52801b00"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[prepare_read]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "fbcf18f9d49e19cd802b06c9e7f7c44e95e1a92cbfe433f6f876632ce008b54a"
         }
       ]
     },
@@ -187,48 +580,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
+              "location": "crates/trust-but-verify/src/domain.rs"
             },
-            "selector": "fn[source_tools_keep_search_discovery_separate_from_delivered_source_reads]"
+            "selector": "trait[Domain]/fn[node_content]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "411c8669624d7fe886a79621b1640c28fb2bebdf8254b18443bf5ab806c33f41"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "fn[source_discovery_and_its_pages_do_not_register_reads]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "ca5a127c91951ffd9b1607d51bd9e2c15ae04953017e3934ea02d345a4ad8fd6"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "fn[cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "71a7f1deb43f63a69839e99242ab5dc5644e3eff6ac2f4b7ce3ced2210249c1d"
+          "value": "a0359b21a50961012f41d6dd5f946335b93b9a8b71856de60360c5b97993b5b8"
         }
       ]
     }

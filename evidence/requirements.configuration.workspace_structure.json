@@ -1,8 +1,8 @@
 {
   "requirement": "{impl}`requirements.configuration.feature_sections`\n`habeas.toml` MUST serialize WorkspaceConfig as UTF-8 TOML with `version = 1`.\nIts supported feature tables are `[authoring]` and\n`[evidence]`; each MAY be absent. Unknown keys, unsupported versions, and invalid field types MUST produce\na diagnostic identifying the file and setting. Invalid TOML, including content\nthat is not UTF-8, MUST produce a diagnostic identifying the file, with the line\nand column of a syntax error.\nFeatures MUST define their own data structures and loading rules under\n{cite}`requirements.configuration.feature_sections`. A file containing only\n`version = 1` MUST be valid. Habeas settings MUST NOT require a `[habeas]` table\ninside `book.toml`.",
   "determination": true,
-  "rationale": "I found no test-adequacy gap for `requirements.configuration.workspace_structure`. Each obligation maps to tests with assertions, as follows.\n\n- **`version = 1` and UTF-8 TOML serialization.**\n  - `tests/configuration.rs#fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]` serializes a loaded config with `to_toml` and parses it back to an equal `WorkspaceConfig`. This works only if the output carries a valid `version = 1`.\n  - The same test asserts that absent `configs` stay absent in the output.\n  - The test does not assert the literal text `version = 1` in the output. I treated the round trip through the version-1-only parser as adequate.\n- **Supported `[authoring]` and `[evidence]` tables, each optional.**\n  - `tests/configuration.rs#fn[feature_sections_are_scoped_and_absent_sections_use_defaults]` asserts that both fields are `None` for `version = 1` alone.\n  - It also asserts that an absent or empty `[evidence]` table gives empty allow and disallow lists.\n  - `tests/configuration.rs#fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]` covers files with only some tables.\n- **Diagnostics for unknown keys, unsupported versions and invalid field types.**\n  - `tests/configuration.rs#fn[workspace_diagnostics_identify_the_file_and_setting]` runs a table of cases through `load_workspace_config` and `WorkspaceConfig::parse`. The cases are a wrong-type `version`, `version = 2`, an unknown top-level key, a wrong-type `authoring.default`, an unknown `authoring` key, a bad `authoring.configs.cloud`, a wrong-type `evidence.disallow`, an unknown `evidence` key and an empty `evidence.allow[0]`.\n  - It asserts that each error starts with `<file>: <setting>`.\n  - It also checks the evidence-only loader, and the obsolete `[coverage]` table.\n  - `tests/coverage.rs#fn[obsolete_coverage_history_table_is_rejected_by_all_workspace_loaders]` adds the `[coverage]` case across all three loaders.\n  - `tests/configuration.rs#fn[evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials]` covers the same kinds of error and asserts that the file path appears in them.\n- **Invalid TOML and non-UTF-8 input.**\n  - `tests/configuration.rs#fn[workspace_diagnostics_identify_the_file_and_setting]` writes invalid bytes (`\\xff`) and asserts that the error names the file.\n  - It also writes a syntax error and asserts that the error starts with the file path and contains `invalid TOML syntax at line 2, column`.\n  - `tests/configuration.rs#fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]`, `tests/authoring_cli.rs` and `tests/commands.rs#fn[status_loads_nearest_workspace_file_without_validating_authoring]` also check that the file path appears in the diagnostic.\n  - `tests/evidence_boundaries.rs#fn[validation_checks_workspace_common_config_without_loading_unused_authoring_settings]` does the same for `version = [`.\n  - I read `src/config.rs#fn[parse_document]`. It is the shared parser that adds the line and column, so the evidence-only loader and validation do not need their own line-and-column assertions.\n- **Features own their data structures (the citation of `requirements.configuration.feature_sections`).**\n  - `tests/configuration.rs#fn[feature_sections_are_scoped_and_absent_sections_use_defaults]` rejects `allow` or `default` at the top level or inside the wrong table.\n  - It also rejects an `options` key that tries to replace the `model` setting.\n  - It checks that evidence loading ignores unused authoring settings.\n  - It checks that a wrong version is rejected whichever feature table follows it.\n- **A file with only `version = 1` is valid.**\n  - `tests/configuration.rs#fn[feature_sections_are_scoped_and_absent_sections_use_defaults]` covers it, and the evidence loader accepts it.\n  - `tests/configuration.rs#fn[absent_and_minimal_configuration_are_distinct_and_read_only]` covers the minimal user file.\n  - `tests/evidence_boundaries.rs#fn[validation_checks_workspace_common_config_without_loading_unused_authoring_settings]` shows that validation is clean for a file whose only other content is an unused `[authoring]` section.\n- **No `[habeas]` table required in `book.toml`.**\n  - `tests/configuration.rs#fn[absent_and_minimal_configuration_are_distinct_and_read_only]` asserts that a `book.toml` without `[habeas]` yields `None`, not an error.\n  - The workspace-file tests run with no `book.toml` settings at all, and `tests/authoring_cli.rs#fn[authoring_uses_nearest_workspace_configuration_without_a_user_file]` runs authoring successfully from a workspace file alone.\n\nAll reviewed tests carry `{test}` references to the subject.",
-  "references": "703f7bedeb9179c8d6a3523b65640627bdc6092188db5a3985a2a2c5e376edf6",
+  "rationale": "structural: The requirement has one structural obligation. The other clauses describe observable behavior.\n\n**Structural obligation.** The text says \"`habeas.toml` MUST serialize WorkspaceConfig as UTF-8 TOML with `version = 1`. Its supported feature tables are `[authoring]` and `[evidence]`; each MAY be absent.\" This names a `WorkspaceConfig` type with a version field and two optional feature-table fields. An alternative could keep the same behavior but use a free-form `toml::Table`. Or it could use a type with a different shape, such as a required `[evidence]` table or a `[habeas]` wrapper. Either would violate the clause, so it is structural.\n\n- `src/config.rs#struct[WorkspaceConfig]` is marked `{impl}`. It declares `version: u32`, `authoring: Option<WorkspaceAuthoringConfig>` and `evidence: Option<EvidenceConfig>`.\n- The optional fields use `#[serde(default, skip_serializing_if = \"Option::is_none\")]`, so each table MAY be absent.\n- `deny_unknown_fields` rejects other top-level keys.\n- A file with only `version = 1` therefore deserializes.\n- `src/config.rs#impl[WorkspaceConfig]/fn[to_toml]` is marked `{impl}`. It calls `validate` and then `toml::to_string_pretty`, so it produces the TOML serialization of the type.\n\nI looked for other code that would need an `{impl}` marker and found none.\n\n- The same text requires the following. I treat all of it as observable behavior, which tests verify and which needs no `{impl}` marker:\n  - diagnostics naming the file and setting for unknown keys, unsupported versions and invalid types;\n  - diagnostics with line and column for TOML syntax errors and non-UTF-8 content;\n  - a `version`-only file being valid;\n  - no `[habeas]` table being required in `book.toml`.\n- `WorkspaceConfig::parse`, `WorkspaceConfig::validate` and `load_workspace_config` produce that behavior. They are reached from the marked struct or are behavioral code, and the text does not prescribe how they are built.\n- Version 1 enforcement lives in `validate`, and the text states it only as a behavior.\n- \"Features MUST define their own data structures and loading rules under `requirements.configuration.feature_sections`\" is a `{cite}`. It delegates feature structure to `requirements.configuration.feature_sections`, so it needs no implementation root here. The `{impl}` that `workspace_structure` carries on `feature_sections` is a declaration-side reference. It does not create an obligation on source here.\n\nNo structural gap remains.\n\nbehavioral: The reviewed tests cover each behavioral obligation in `requirements.configuration.workspace_structure`. I did not request any implementation source.\n\n- **Serialization as TOML with the supported version.** `tests/configuration.rs#fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]` calls `config.to_toml()`. It asserts that the output omits the empty `configs` table. It also asserts that `WorkspaceConfig::parse` reads the output back as an equal value. `parse` rejects any unsupported version, so the round trip shows the serialized text carries the supported version. The test does not assert the literal version line.\n- **Supported tables `[authoring]` and `[evidence]`, each optional.**\n  - `tests/configuration.rs#fn[feature_sections_are_scoped_and_absent_sections_use_defaults]` parses a version-only file and asserts both `authoring` and `evidence` are `None`. It also loads an absent or empty `[evidence]` table.\n  - `tests/configuration.rs#fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]` loads a file with both tables, and also files with only some of them.\n- **Unknown keys, unsupported versions and invalid field types give a diagnostic naming the file and setting.** `tests/configuration.rs#fn[workspace_diagnostics_identify_the_file_and_setting]` drives a table of cases through `load_workspace_config` and `WorkspaceConfig::parse`. Each error must start with the file path followed by the setting.\n  - Version errors: a string-typed version and an unsupported version, both with setting `version`.\n  - Unknown keys: top-level `unknown`, `authoring.bogus` and `evidence.unknown`.\n  - Invalid types: `authoring.default` given a number, `evidence.disallow` given a number inside an array, an empty-string `evidence.allow` entry, and a bad `model` in `authoring.configs.cloud`.\n  - The same test checks the evidence loader's diagnostics for `evidence.disallow` and `evidence.unknown`.\n  - `tests/evidence_boundaries.rs#fn[validation_checks_workspace_common_config_without_loading_unused_authoring_settings]` and `tests/commands.rs#fn[status_loads_nearest_workspace_file_without_validating_authoring]` check the end-to-end reports. They assert that the `habeas.toml` version diagnostic appears.\n  - `tests/coverage.rs#fn[obsolete_coverage_history_table_is_rejected_by_all_workspace_loaders]` shows an unknown `[coverage]` table is rejected by all three loaders. `tests/configuration.rs#fn[evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials]` runs the evidence loader on bad versions, unknown keys and bad types, and the error must contain the file path.\n- **Invalid TOML, including non-UTF-8, gives a diagnostic naming the file, with line and column for syntax errors.** `tests/configuration.rs#fn[workspace_diagnostics_identify_the_file_and_setting]` writes bytes that are not UTF-8 and asserts the error contains the file. It writes a syntactically broken `[evidence` table and asserts the error starts with the file path and contains the invalid-TOML-syntax message with a line and column. `tests/configuration.rs#fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]` also checks the file path and `invalid TOML`.\n- **A file containing only the version setting is valid.** `tests/configuration.rs#fn[feature_sections_are_scoped_and_absent_sections_use_defaults]` does this for both `WorkspaceConfig::parse` and `load_workspace_evidence`. `tests/evidence_boundaries.rs#fn[validation_checks_workspace_common_config_without_loading_unused_authoring_settings]` and `tests/authoring_cli.rs#fn[authoring_uses_nearest_workspace_configuration_without_a_user_file]` cover valid workspace files end to end.\n- **No `[habeas]` table required in `book.toml`.** The workspace-file tests run in directories whose configuration lives only in `habeas.toml`. They load and use that configuration, as in `tests/authoring_cli.rs#fn[authoring_uses_nearest_workspace_configuration_without_a_user_file]`, and none adds a `[habeas]` table. `tests/configuration.rs#fn[absent_and_minimal_configuration_are_distinct_and_read_only]` shows a `book.toml` without `[habeas]` is not an error.\n- **Feature-owned structures and loading rules.** `requirements.configuration.feature_sections` is cited, so the feature-specific rules are not reassessed here. The scoping tests in `tests/configuration.rs#fn[feature_sections_are_scoped_and_absent_sections_use_defaults]` still apply. They reject keys placed in the wrong feature table and check that the evidence loader ignores unused authoring settings.\n\nI found no obligation without a test, and no assertion that contradicts the requirement.",
+  "references": "2d75addcdace8d74b673d938d99809e9e8ecfa1c3388aa7396e3dc1ea783904a",
   "inputs": [
     {
       "requirements": "requirements.configuration.workspace_structure",
@@ -45,6 +45,31 @@
         "document that boundary and how those options are validated.",
         ":::"
       ]
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[WorkspaceConfig]",
+      "hash": "94705e5df970944d7b9c1500dff4f2f0771e6db9aa270cdc793ac478829746f9"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[WorkspaceConfig]/fn[to_toml]",
+      "hash": "90931b0fb7efeb0751e2ec660cb700a9b6f9ea3645be8c98af56dbcfd542d623"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[WorkspaceConfig]/fn[parse]",
+      "hash": "0d1dde6c94fd769210f74efe7a0ac56f7ec04d95e9d77c62583ffecd2596a938"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[WorkspaceConfig]/fn[validate]",
+      "hash": "a497a4e48183dff5acdbd3f09d76ab0620724da13007a9b282f5a479d98a040f"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[load_workspace_config]",
+      "hash": "cc41d6285b024f38c2b6da100f7160de89bd4ff5d702e9e6dc214778121e7872"
     },
     {
       "file": "tests/authoring_cli.rs",
@@ -98,11 +123,352 @@
     },
     {
       "file": "src/config.rs",
-      "item": "fn[parse_document]",
-      "hash": "0287b1717cba7e77c7d4c3f8b5264f202094f1b27303f52f763c36a782efbc70"
+      "item": "impl[WorkspaceConfig]",
+      "hash": "ba35cec3e9b3681e15a3081d504e47c86578d9a2b7ef210d3b32c3c62c1e4456"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.configuration.workspace_structure"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "2d75addcdace8d74b673d938d99809e9e8ecfa1c3388aa7396e3dc1ea783904a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.configuration.workspace_structure"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "fc6936f195e0704379084b2218b919d26c22db510c2778ed38332748e36e9932"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.configuration.feature_sections"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "7e69cd13d68cdef91d4070b00f619c3aa6b96110bbea2599b4f86cb71e33d355"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/config.rs"
+                },
+                "selector": "struct[WorkspaceConfig]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "94705e5df970944d7b9c1500dff4f2f0771e6db9aa270cdc793ac478829746f9"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/config.rs"
+                },
+                "selector": "impl[WorkspaceConfig]/fn[to_toml]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "90931b0fb7efeb0751e2ec660cb700a9b6f9ea3645be8c98af56dbcfd542d623"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/config.rs"
+                },
+                "selector": "impl[WorkspaceConfig]/fn[parse]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "0d1dde6c94fd769210f74efe7a0ac56f7ec04d95e9d77c62583ffecd2596a938"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/config.rs"
+                },
+                "selector": "impl[WorkspaceConfig]/fn[validate]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "a497a4e48183dff5acdbd3f09d76ab0620724da13007a9b282f5a479d98a040f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/config.rs"
+                },
+                "selector": "fn[load_workspace_config]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "cc41d6285b024f38c2b6da100f7160de89bd4ff5d702e9e6dc214778121e7872"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The requirement has one structural obligation. The other clauses describe observable behavior.\n\n**Structural obligation.** The text says \"`habeas.toml` MUST serialize WorkspaceConfig as UTF-8 TOML with `version = 1`. Its supported feature tables are `[authoring]` and `[evidence]`; each MAY be absent.\" This names a `WorkspaceConfig` type with a version field and two optional feature-table fields. An alternative could keep the same behavior but use a free-form `toml::Table`. Or it could use a type with a different shape, such as a required `[evidence]` table or a `[habeas]` wrapper. Either would violate the clause, so it is structural.\n\n- `src/config.rs#struct[WorkspaceConfig]` is marked `{impl}`. It declares `version: u32`, `authoring: Option<WorkspaceAuthoringConfig>` and `evidence: Option<EvidenceConfig>`.\n- The optional fields use `#[serde(default, skip_serializing_if = \"Option::is_none\")]`, so each table MAY be absent.\n- `deny_unknown_fields` rejects other top-level keys.\n- A file with only `version = 1` therefore deserializes.\n- `src/config.rs#impl[WorkspaceConfig]/fn[to_toml]` is marked `{impl}`. It calls `validate` and then `toml::to_string_pretty`, so it produces the TOML serialization of the type.\n\nI looked for other code that would need an `{impl}` marker and found none.\n\n- The same text requires the following. I treat all of it as observable behavior, which tests verify and which needs no `{impl}` marker:\n  - diagnostics naming the file and setting for unknown keys, unsupported versions and invalid types;\n  - diagnostics with line and column for TOML syntax errors and non-UTF-8 content;\n  - a `version`-only file being valid;\n  - no `[habeas]` table being required in `book.toml`.\n- `WorkspaceConfig::parse`, `WorkspaceConfig::validate` and `load_workspace_config` produce that behavior. They are reached from the marked struct or are behavioral code, and the text does not prescribe how they are built.\n- Version 1 enforcement lives in `validate`, and the text states it only as a behavior.\n- \"Features MUST define their own data structures and loading rules under `requirements.configuration.feature_sections`\" is a `{cite}`. It delegates feature structure to `requirements.configuration.feature_sections`, so it needs no implementation root here. The `{impl}` that `workspace_structure` carries on `feature_sections` is a declaration-side reference. It does not create an obligation on source here.\n\nNo structural gap remains."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.configuration.workspace_structure"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "2d75addcdace8d74b673d938d99809e9e8ecfa1c3388aa7396e3dc1ea783904a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.configuration.workspace_structure"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "fc6936f195e0704379084b2218b919d26c22db510c2778ed38332748e36e9932"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.configuration.feature_sections"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "7e69cd13d68cdef91d4070b00f619c3aa6b96110bbea2599b4f86cb71e33d355"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/authoring_cli.rs"
+                },
+                "selector": "fn[authoring_uses_nearest_workspace_configuration_without_a_user_file]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "599844a416a230f2787be5f7bcc0f15ac75515226f990834fd478404c5448e33"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/commands.rs"
+                },
+                "selector": "fn[status_loads_nearest_workspace_file_without_validating_authoring]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "6fdea34aa32cce85dde294c79c50ba924c6478ed6812d2d0e04c90d806ff46ec"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/configuration.rs"
+                },
+                "selector": "fn[absent_and_minimal_configuration_are_distinct_and_read_only]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "50e38245e583a19219aaf9451debb865bdfb2c20326d1a551f5d0b99a0ab66cf"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/configuration.rs"
+                },
+                "selector": "fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "06855a151f60a8e45251fe6367c705453ace2142bd09f869e86c3bd12e4c49d0"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/configuration.rs"
+                },
+                "selector": "fn[evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "1c52e2de8994a9792a83f6f9e2c6f2861d432ea65327adca6a9ec5dd4c477f1e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/configuration.rs"
+                },
+                "selector": "fn[workspace_defaults_and_configs_combine_with_existing_user_selections]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "20892c1c9a1110b4f7497fa11602cf685966ec8a59edd86ccdc43d1dc70af7f1"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/configuration.rs"
+                },
+                "selector": "fn[workspace_diagnostics_identify_the_file_and_setting]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "064021034328e5e1b52faeff99693263b935ea8a24057e2d9abfa33afd35458d"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/configuration.rs"
+                },
+                "selector": "fn[feature_sections_are_scoped_and_absent_sections_use_defaults]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "d84f40c8c0d842619615d9b885ab05397856bc343bdd9b95209c724f63c93ca5"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/coverage.rs"
+                },
+                "selector": "fn[obsolete_coverage_history_table_is_rejected_by_all_workspace_loaders]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "3451ee46862308aaab07c06d80019bd86e7c92f2af4a8faa89f417e36860d460"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/evidence_boundaries.rs"
+                },
+                "selector": "fn[validation_checks_workspace_common_config_without_loading_unused_authoring_settings]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "ef6d907936f39ecf4c5d86b96a84c9519988f9370c0b695ec10d690c785f4a98"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The reviewed tests cover each behavioral obligation in `requirements.configuration.workspace_structure`. I did not request any implementation source.\n\n- **Serialization as TOML with the supported version.** `tests/configuration.rs#fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]` calls `config.to_toml()`. It asserts that the output omits the empty `configs` table. It also asserts that `WorkspaceConfig::parse` reads the output back as an equal value. `parse` rejects any unsupported version, so the round trip shows the serialized text carries the supported version. The test does not assert the literal version line.\n- **Supported tables `[authoring]` and `[evidence]`, each optional.**\n  - `tests/configuration.rs#fn[feature_sections_are_scoped_and_absent_sections_use_defaults]` parses a version-only file and asserts both `authoring` and `evidence` are `None`. It also loads an absent or empty `[evidence]` table.\n  - `tests/configuration.rs#fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]` loads a file with both tables, and also files with only some of them.\n- **Unknown keys, unsupported versions and invalid field types give a diagnostic naming the file and setting.** `tests/configuration.rs#fn[workspace_diagnostics_identify_the_file_and_setting]` drives a table of cases through `load_workspace_config` and `WorkspaceConfig::parse`. Each error must start with the file path followed by the setting.\n  - Version errors: a string-typed version and an unsupported version, both with setting `version`.\n  - Unknown keys: top-level `unknown`, `authoring.bogus` and `evidence.unknown`.\n  - Invalid types: `authoring.default` given a number, `evidence.disallow` given a number inside an array, an empty-string `evidence.allow` entry, and a bad `model` in `authoring.configs.cloud`.\n  - The same test checks the evidence loader's diagnostics for `evidence.disallow` and `evidence.unknown`.\n  - `tests/evidence_boundaries.rs#fn[validation_checks_workspace_common_config_without_loading_unused_authoring_settings]` and `tests/commands.rs#fn[status_loads_nearest_workspace_file_without_validating_authoring]` check the end-to-end reports. They assert that the `habeas.toml` version diagnostic appears.\n  - `tests/coverage.rs#fn[obsolete_coverage_history_table_is_rejected_by_all_workspace_loaders]` shows an unknown `[coverage]` table is rejected by all three loaders. `tests/configuration.rs#fn[evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials]` runs the evidence loader on bad versions, unknown keys and bad types, and the error must contain the file path.\n- **Invalid TOML, including non-UTF-8, gives a diagnostic naming the file, with line and column for syntax errors.** `tests/configuration.rs#fn[workspace_diagnostics_identify_the_file_and_setting]` writes bytes that are not UTF-8 and asserts the error contains the file. It writes a syntactically broken `[evidence` table and asserts the error starts with the file path and contains the invalid-TOML-syntax message with a line and column. `tests/configuration.rs#fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]` also checks the file path and `invalid TOML`.\n- **A file containing only the version setting is valid.** `tests/configuration.rs#fn[feature_sections_are_scoped_and_absent_sections_use_defaults]` does this for both `WorkspaceConfig::parse` and `load_workspace_evidence`. `tests/evidence_boundaries.rs#fn[validation_checks_workspace_common_config_without_loading_unused_authoring_settings]` and `tests/authoring_cli.rs#fn[authoring_uses_nearest_workspace_configuration_without_a_user_file]` cover valid workspace files end to end.\n- **No `[habeas]` table required in `book.toml`.** The workspace-file tests run in directories whose configuration lives only in `habeas.toml`. They load and use that configuration, as in `tests/authoring_cli.rs#fn[authoring_uses_nearest_workspace_configuration_without_a_user_file]`, and none adds a `[habeas]` table. `tests/configuration.rs#fn[absent_and_minimal_configuration_are_distinct_and_read_only]` shows a `book.toml` without `[habeas]` is not an error.\n- **Feature-owned structures and loading rules.** `requirements.configuration.feature_sections` is cited, so the feature-specific rules are not reassessed here. The scoping tests in `tests/configuration.rs#fn[feature_sections_are_scoped_and_absent_sections_use_defaults]` still apply. They reject keys placed in the wrong feature table and check that the evidence loader ignores unused authoring settings.\n\nI found no obligation without a test, and no assertion that contradicts the requirement."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -112,19 +478,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "703f7bedeb9179c8d6a3523b65640627bdc6092188db5a3985a2a2c5e376edf6"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.configuration.workspace_structure"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "bfbd9662626f5285ccf2d5b55a5500812c06428a3ac85220b6dde8da95609bad"
+          "value": "2d75addcdace8d74b673d938d99809e9e8ecfa1c3388aa7396e3dc1ea783904a"
         }
       ]
     },
@@ -147,6 +501,91 @@
         {
           "scheme": "habeas-input-v1",
           "value": "7e69cd13d68cdef91d4070b00f619c3aa6b96110bbea2599b4f86cb71e33d355"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/config.rs"
+            },
+            "selector": "struct[WorkspaceConfig]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "94705e5df970944d7b9c1500dff4f2f0771e6db9aa270cdc793ac478829746f9"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/config.rs"
+            },
+            "selector": "impl[WorkspaceConfig]/fn[to_toml]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "90931b0fb7efeb0751e2ec660cb700a9b6f9ea3645be8c98af56dbcfd542d623"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/config.rs"
+            },
+            "selector": "impl[WorkspaceConfig]/fn[parse]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "0d1dde6c94fd769210f74efe7a0ac56f7ec04d95e9d77c62583ffecd2596a938"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/config.rs"
+            },
+            "selector": "impl[WorkspaceConfig]/fn[validate]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "a497a4e48183dff5acdbd3f09d76ab0620724da13007a9b282f5a479d98a040f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/config.rs"
+            },
+            "selector": "fn[load_workspace_config]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "cc41d6285b024f38c2b6da100f7160de89bd4ff5d702e9e6dc214778121e7872"
         }
       ]
     },
@@ -321,6 +760,18 @@
       ]
     },
     {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.configuration.workspace_structure"
+        },
+        "Implements",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "790cf5190ffa450eb1aa3c5f4cb30f4de5004bcaae608f8cbcc9b3b0e69833a8"
+        }
+      ]
+    },
+    {
       "Node": [
         {
           "Source": {
@@ -328,12 +779,12 @@
               "scheme": "repo",
               "location": "src/config.rs"
             },
-            "selector": "fn[parse_document]"
+            "selector": "impl[WorkspaceConfig]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "0287b1717cba7e77c7d4c3f8b5264f202094f1b27303f52f763c36a782efbc70"
+          "value": "e5abe9c739947c6903459c6f7c38b03344b66391cf2a281c151d128bdd4dca72"
         }
       ]
     }

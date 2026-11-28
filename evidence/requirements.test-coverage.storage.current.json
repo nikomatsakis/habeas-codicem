@@ -1,8 +1,8 @@
 {
   "requirement": "The coverage set contains at most one current entry for each pair of nextest\nbinary identity and test name, within one active instrumented build\nconfiguration under {cite}`requirements.test-coverage.storage.configuration`.\nAn entry represents either a test awaiting execution or its current attempt.\nReplacing an entry removes its previous measurements from the current set.\n\nMetadata and files shared by remaining current entries stay available. The\nstore does not accumulate completed historical runs or retry attempts.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation of `requirements.test-coverage.storage.current`. I did not request implementation source.\n\n**At most one current entry per (binary, test name).**\n- `src/execution_coverage/store.rs#mod[tests]/fn[focused_replacement_preserves_unselected_results_and_shared_artifacts]` uses `lib::same` and `integration::same`, which share a test name. Replacing only `lib::same` leaves exactly 3 tests in the snapshot. It asserts that the replaced entry is a single entry and that the other-binary entry with the same name is untouched.\n- `concurrent_writers_preserve_each_tests_state_and_measurements` uses 64 binaries that all share the name `same_name`. It asserts exactly 64 tests, with one entry per binary and the correct per-entry measurements.\n- `tests/execution_coverage.rs#fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]` checks the real nextest case. Five selected tests produce 5 attempt records and 5 attempt directories. Two tests named `same_name` appear, one per binary. The retried test `retries` has a single record with attempt \"2\".\n\n**An entry is either pending or its current attempt.**\n- The unit test asserts the replaced entry has outcome `pending` and no measurements.\n- The concurrent test asserts outcome `success` with the current attempt's id.\n- The integration test checks the retry's final attempt and a failed attempt.\n\n**Replacing an entry removes its previous measurements.**\n- The unit test asserts the old attempt directory is gone and the replaced entry's measurements are `None`.\n- The integration test asserts the superseded `second` attempt is removed after a filtered rerun and that the attempt count drops from 5 to 4.\n- It also asserts that retained failure profiles are removed once a later attempt replaces them. Retry profiles are not combined, and the attempts directory holds exactly 5 entries.\n\n**Shared metadata and files stay available for remaining entries.**\n- The unit test asserts `maps.json` still exists and the run's `sources` are unchanged. It asserts the preserved entries keep their measurements and their `1.profraw` files.\n- The integration test asserts the first run's other attempts remain (4, then 3) after filtered reruns.\n\n**No accumulation of historical runs or retry attempts.**\n- The unit test replaces everything with a full run. It then asserts the snapshot has 1 test and the old run directory is gone. A replacement with an empty selection yields an empty snapshot.\n- The integration test asserts the retry leaves one record with one process. It also asserts that the earlier run directories are removed.\n\n**Within one active build configuration** (context from `requirements.test-coverage.storage.configuration`).\n- A nextest profile change (`--profile focused`) keeps the configuration, and the entries are replaced in place.\n- Changing features (`--features alpha -Fbeta`) is an incompatible configuration and leaves exactly 1 run. The first run's directory is removed.\n- `--no-run`, a compile failure and an empty selection leave the store unchanged.\n\nAll three tests carry `{test}` references to the subject. I found no unmet obligation, assertion gap or marking gap.",
-  "references": "2a3d646e0aee40de148b1c315483e3876563168634e243558e1c1d8283d3905e",
+  "rationale": "structural: `requirements.test-coverage.storage.current` states only observable properties of the coverage set. It has no named library, algorithm, signature, type, field or interface that the code must use.\n\n- \"at most one current entry for each pair of nextest binary identity and test name, within one active instrumented build configuration\": this is a uniqueness invariant on the stored data. An implementation could key a map, enforce a database unique constraint, or deduplicate on write. The observable set would be the same, so the choice of mechanism is discretionary.\n- \"An entry represents either a test awaiting execution or its current attempt\": this describes what an entry means, not how it is typed. A tagged enum, a status field or two separate tables would all satisfy it.\n- \"Replacing an entry removes its previous measurements from the current set\" and \"Metadata and files shared by remaining current entries stay available\": these describe the results of replacement. Any internal reference-counting or copy-on-write scheme could produce them.\n- \"The store does not accumulate completed historical runs or retry attempts\": this is a behavioral limit on what is kept.\n\nThe requirement has test edges, to nodes 2268, 2260 and 2201, and no implementation edges. No review roots were supplied. The cited `requirements.test-coverage.storage.configuration` is context only. Its obligations are about which settings a record identifies, which is also observable behavior. Because every clause is behavioral, no implementation evidence is needed here. Tests supply the evidence, and their adequacy belongs to the behavioral criterion.\n\nbehavioral: I found no test-adequacy gap for `requirements.test-coverage.storage.current`. I judged this from the supplied test sources only and did not request implementation source.\n\nThe obligations are each covered as follows:\n\n1. **At most one current entry per (binary identity, test name), with the same name in different binaries kept distinct.**\n   - `src/execution_coverage/store.rs#mod[tests]/fn[focused_replacement_preserves_unselected_results_and_shared_artifacts]` registers `lib::same`, `integration::same` and `lib::removed`. After replacing `lib::same`, it asserts `snapshot.tests.len() == 3`. A duplicate entry for `lib::same` would make that count 4.\n   - `src/execution_coverage/store.rs#mod[tests]/fn[concurrent_writers_preserve_each_tests_state_and_measurements]` creates 64 binaries that all use the test name `same_name`. After concurrent completion it asserts exactly 64 entries. Each entry has its own attempt id, a single process, and its own line count.\n   - `tests/execution_coverage.rs#fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]` asserts that the two binaries' `same_name` tests are separate records, with 5 attempt records in total.\n\n2. **An entry is either pending or its current attempt.**\n   - The focused-replacement test asserts the replaced entry has outcome `pending` and `measurements.is_none()`.\n   - The concurrent-writer test asserts each completed entry carries the attempt id, a `success` outcome and its measurements.\n\n3. **Replacing an entry removes its previous measurements from the current set.**\n   - The focused-replacement test asserts the replaced `lib::same` entry has no measurements. It also asserts the old attempt directory no longer exists after `cleanup`.\n   - The integration test covers reruns through the CLI. A filtered rerun of `second` reduces the first run's attempts from 5 to 4 and deletes the old attempt directory. A retried test's superseded profiles are removed.\n   - The integration test also checks that a later successful attempt replaces the failed run's retained profiles.\n\n4. **Metadata and files shared by remaining entries stay available.**\n   - The focused-replacement test asserts the unselected entries keep their run id, their measurements (`contains('7')`) and their `1.profraw` files. It also asserts `runs[&first.id].sources` and `maps.json` are still present.\n   - It then replaces the remaining entry in a full run. It asserts the old run directory is removed once no entry references it, and that an empty selection leaves an empty snapshot.\n   - The integration test checks that the original run's attempts are retained (4, then 3) while other runs are replaced.\n\n5. **No accumulation of historical runs or retry attempts.**\n   - The integration test asserts the retry record is attempt `\"2\"` with exactly one process, so attempts are not combined. It asserts `attempts` has 5 entries after retries.\n   - It also asserts the run count stays at 2 after the focused reruns. A failed run is dropped once a later success replaces it. An incompatible configuration leaves only 1 run.\n\nThe cited `requirements.test-coverage.storage.configuration` is applied. A different `--features` set drops every previous result. A different nextest `--profile` keeps the same configuration and leaves entries in place. Empty selections, `--no-run` and build failures leave the stored set unchanged.\n\nThe tests assert the outcomes, not just execution, and all three carry `{test}` markers for the subject.",
+  "references": "7e84699dc68b4ccb99f4d65849a5fa61f2015c3db39bfbdf4ce88681d934a3e0",
   "inputs": [
     {
       "requirements": "requirements.test-coverage.storage.current",
@@ -53,7 +53,168 @@
       "hash": "19e2b1e61d5027ab192843ceed1beb865e8669c2d0aed71d8b68d8c31680c076"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.test-coverage.storage.current"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "7e84699dc68b4ccb99f4d65849a5fa61f2015c3db39bfbdf4ce88681d934a3e0"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.test-coverage.storage.current"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "43d4bc056f0e089167ed153d03af58cff498f5d1b7956987dc34214f4a08e44e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.test-coverage.storage.configuration"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "3f9556e297d5ee8c963d32bf0d6e934212a38202fcd30d678006c29b4cb0d2e1"
+            }
+          ]
+        },
+        {
+          "OutgoingEdges": [
+            {
+              "Requirement": "requirements.test-coverage.storage.current"
+            },
+            "Implements",
+            {
+              "scheme": "node-path-set-sha256-v1",
+              "value": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+            }
+          ]
+        },
+        {
+          "OutgoingEdges": [
+            {
+              "Requirement": "requirements.test-coverage.storage.current"
+            },
+            "Tests",
+            {
+              "scheme": "node-path-set-sha256-v1",
+              "value": "09f3e13266fa59d0d38c99bfaa907bd9aa8c30eb55c77453044db63fd1132956"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "`requirements.test-coverage.storage.current` states only observable properties of the coverage set. It has no named library, algorithm, signature, type, field or interface that the code must use.\n\n- \"at most one current entry for each pair of nextest binary identity and test name, within one active instrumented build configuration\": this is a uniqueness invariant on the stored data. An implementation could key a map, enforce a database unique constraint, or deduplicate on write. The observable set would be the same, so the choice of mechanism is discretionary.\n- \"An entry represents either a test awaiting execution or its current attempt\": this describes what an entry means, not how it is typed. A tagged enum, a status field or two separate tables would all satisfy it.\n- \"Replacing an entry removes its previous measurements from the current set\" and \"Metadata and files shared by remaining current entries stay available\": these describe the results of replacement. Any internal reference-counting or copy-on-write scheme could produce them.\n- \"The store does not accumulate completed historical runs or retry attempts\": this is a behavioral limit on what is kept.\n\nThe requirement has test edges, to nodes 2268, 2260 and 2201, and no implementation edges. No review roots were supplied. The cited `requirements.test-coverage.storage.configuration` is context only. Its obligations are about which settings a record identifies, which is also observable behavior. Because every clause is behavioral, no implementation evidence is needed here. Tests supply the evidence, and their adequacy belongs to the behavioral criterion."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.test-coverage.storage.current"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "7e84699dc68b4ccb99f4d65849a5fa61f2015c3db39bfbdf4ce88681d934a3e0"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.test-coverage.storage.current"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "43d4bc056f0e089167ed153d03af58cff498f5d1b7956987dc34214f4a08e44e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.test-coverage.storage.configuration"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "3f9556e297d5ee8c963d32bf0d6e934212a38202fcd30d678006c29b4cb0d2e1"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/execution_coverage/store.rs"
+                },
+                "selector": "mod[tests]/fn[concurrent_writers_preserve_each_tests_state_and_measurements]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "d770869c8f4d8c257c96e0831ef4553634833903b6bdb7ec9aad4f6a21c0668e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/execution_coverage/store.rs"
+                },
+                "selector": "mod[tests]/fn[focused_replacement_preserves_unselected_results_and_shared_artifacts]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "87e03d38d9f6783d0fd0e812bb47d412518d663fa4b7da506041434ea4b39881"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/execution_coverage.rs"
+                },
+                "selector": "fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "19e2b1e61d5027ab192843ceed1beb865e8669c2d0aed71d8b68d8c31680c076"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "I found no test-adequacy gap for `requirements.test-coverage.storage.current`. I judged this from the supplied test sources only and did not request implementation source.\n\nThe obligations are each covered as follows:\n\n1. **At most one current entry per (binary identity, test name), with the same name in different binaries kept distinct.**\n   - `src/execution_coverage/store.rs#mod[tests]/fn[focused_replacement_preserves_unselected_results_and_shared_artifacts]` registers `lib::same`, `integration::same` and `lib::removed`. After replacing `lib::same`, it asserts `snapshot.tests.len() == 3`. A duplicate entry for `lib::same` would make that count 4.\n   - `src/execution_coverage/store.rs#mod[tests]/fn[concurrent_writers_preserve_each_tests_state_and_measurements]` creates 64 binaries that all use the test name `same_name`. After concurrent completion it asserts exactly 64 entries. Each entry has its own attempt id, a single process, and its own line count.\n   - `tests/execution_coverage.rs#fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]` asserts that the two binaries' `same_name` tests are separate records, with 5 attempt records in total.\n\n2. **An entry is either pending or its current attempt.**\n   - The focused-replacement test asserts the replaced entry has outcome `pending` and `measurements.is_none()`.\n   - The concurrent-writer test asserts each completed entry carries the attempt id, a `success` outcome and its measurements.\n\n3. **Replacing an entry removes its previous measurements from the current set.**\n   - The focused-replacement test asserts the replaced `lib::same` entry has no measurements. It also asserts the old attempt directory no longer exists after `cleanup`.\n   - The integration test covers reruns through the CLI. A filtered rerun of `second` reduces the first run's attempts from 5 to 4 and deletes the old attempt directory. A retried test's superseded profiles are removed.\n   - The integration test also checks that a later successful attempt replaces the failed run's retained profiles.\n\n4. **Metadata and files shared by remaining entries stay available.**\n   - The focused-replacement test asserts the unselected entries keep their run id, their measurements (`contains('7')`) and their `1.profraw` files. It also asserts `runs[&first.id].sources` and `maps.json` are still present.\n   - It then replaces the remaining entry in a full run. It asserts the old run directory is removed once no entry references it, and that an empty selection leaves an empty snapshot.\n   - The integration test checks that the original run's attempts are retained (4, then 3) while other runs are replaced.\n\n5. **No accumulation of historical runs or retry attempts.**\n   - The integration test asserts the retry record is attempt `\"2\"` with exactly one process, so attempts are not combined. It asserts `attempts` has 5 entries after retries.\n   - It also asserts the run count stays at 2 after the focused reruns. A failed run is dropped once a later success replaces it. An incompatible configuration leaves only 1 run.\n\nThe cited `requirements.test-coverage.storage.configuration` is applied. A different `--features` set drops every previous result. A different nextest `--profile` keeps the same configuration and leaves entries in place. Empty selections, `--no-run` and build failures leave the stored set unchanged.\n\nThe tests assert the outcomes, not just execution, and all three carry `{test}` markers for the subject."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -63,19 +224,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "2a3d646e0aee40de148b1c315483e3876563168634e243558e1c1d8283d3905e"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.test-coverage.storage.current"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "84d12330595c1a0c4fc983c9370342f57ddbc8e22a6462b86121f2935d1ddc11"
+          "value": "7e84699dc68b4ccb99f4d65849a5fa61f2015c3db39bfbdf4ce88681d934a3e0"
         }
       ]
     },
@@ -98,6 +247,30 @@
         {
           "scheme": "habeas-input-v1",
           "value": "3f9556e297d5ee8c963d32bf0d6e934212a38202fcd30d678006c29b4cb0d2e1"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.test-coverage.storage.current"
+        },
+        "Implements",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.test-coverage.storage.current"
+        },
+        "Tests",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "09f3e13266fa59d0d38c99bfaa907bd9aa8c30eb55c77453044db63fd1132956"
         }
       ]
     },

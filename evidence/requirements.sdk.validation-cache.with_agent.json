@@ -1,8 +1,8 @@
 {
   "requirement": "`ValidationCache::with_agent` accepts either a plain `AgentConfig` or an agent\nconfigured with tools under {cite}`requirements.sdk.graph.agent-harness.with_tool`.\nIt creates an empty cache. Requests through the cache and its clones run that\nagent with its registered tools. The SDK defers backend setup until a criterion\nawaits an agent request.\n\n```rust,ignore\nimpl<D: Domain> ValidationCache<D> {\n    pub fn with_agent(config: impl AgentSettings<D>) -> Self\n    where\n        D::NodeData: Serialize + DeserializeOwned + JsonSchema,\n        D::EdgeLabel: DeserializeOwned + JsonSchema + PartialEq,\n        D::Error: Display;\n}\n```",
   "determination": true,
-  "rationale": "I derived four obligations from `requirements.sdk.validation-cache.with_agent`. Each is covered by one of the three supplied tests, all of which carry a `{test}` reference to the subject.\n\n1. **Accepts a plain `AgentConfig` or a configured agent with tools.**\n   - `bedrock_configuration_attaches_to_a_cache_without_being_persisted` and `configured_agents_initialize_only_when_asked_and_report_setup_errors` pass plain `AgentConfig` values (Bedrock and OpenAi).\n   - `registered_tools_use_the_current_context_and_ordinary_node_ids` passes `AgentWithTools` built with `.with_tool(...)`.\n\n2. **Creates an empty cache.**\n   - The Bedrock test asserts that `outlines` is empty and `sources` is `None`.\n   - It also asserts that the saved cache has no `backend` field and no profile or model strings.\n   - The tools test asserts that `usage().tools` is empty before any request.\n\n3. **Requests through the cache and its clones run that agent with its registered tools.**\n   - The Bedrock test asserts that `domain.clone()` shares the same agent through `Arc::ptr_eq`.\n   - The tools test runs `cx.ask::<bool>()` through a clone (`peer`).\n   - It checks that every request offers the built-in tools plus `lookup_requirements` and `inspect`, in that order.\n   - It checks that the tools are actually dispatched and recorded in usage stats.\n   - A second cache built with a different tool set (`other`) offers only its own tool. This confirms the configured agent is what runs.\n   - The OpenAi test shows the configured plain `AgentConfig` is the one used: the error names its `api_key_env`.\n\n4. **Backend setup is deferred until a criterion awaits an agent request.**\n   - The OpenAi test builds the cache with a deliberately missing credential.\n   - A deterministic `refresh_evidence` (`Question(false, ..)`) still succeeds. It returns output `false` with one dependency, so setup is not run eagerly.\n   - The awaited agent question (`Question(true, ..)`) then fails with `ValidationError::Provider`, and the message contains the missing environment variable name.\n   - The Bedrock test also runs a deterministic refresh on an agent-bearing cache without error.\n\nI found no obligation without a test.\n\nObligations that belong to the cited `requirements.sdk.graph.agent-harness.with_tool` need no assessment here. Its tool registration, independence and name collisions are context. They are covered by that requirement's own tests.",
-  "references": "cae251f32ef8e83a6b8256f7c24dd158db509f14fb50f3e771ac8fa7d6da9998",
+  "rationale": "structural: The only structural obligation in the text is the prescribed signature: `with_agent(config: impl AgentSettings<D>) -> Self`, in `impl<D: Domain> ValidationCache<D>`, with the three `where` bounds on `D::NodeData`, `D::EdgeLabel` and `D::Error`. An alternative that took a concrete `AgentConfig`, or dropped the `AgentSettings` bound, would not accept both a plain and a tool-configured agent. That makes the signature a real obligation.\n\n`crates/trust-but-verify/src/domain.rs#impl[ValidationCache<D>]/fn[with_agent]` declares exactly that signature and those bounds. It builds the cache with `Self::new()` and configures it through `set_agent`, so the cache starts empty. It is the only supplied root and carries the `{impl}` marker.\n\n`set_agent` is reached from `with_agent` and needs no marker of its own. It splits the settings with `config.into_parts()` into backend and tools. It stores them in a shared `Arc<CachedAgent>`, so clones see the same agent and its tools. It also creates the runner with `ConfiguredAgent::default()` instead of setting up the backend there. I did not open `ConfiguredAgent` itself.\n\nThe remaining clauses state observable behavior and are not structural obligations:\n- Requests run the agent with its registered tools.\n- Backend setup is deferred until a criterion awaits an agent request.\n- Name collisions fail the ask.\n\nThe tests cover these. No implementation gap remains.\n\nbehavioral: The three marked tests together cover each obligation in `requirements.sdk.validation-cache.with_agent`.\n\n- **Accepts a plain `AgentConfig`, and the cache starts empty.** In `mod[tests]/fn[bedrock_configuration_attaches_to_a_cache_without_being_persisted]` in `crates/trust-but-verify/src/agent/configured.rs`, `with_agent(AgentConfig::Bedrock(..))` produces a cache with the config as its agent backend. The test asserts `outlines` is empty and `sources` is `None`. It also asserts the backend settings are absent from the saved state.\n- **Accepts an agent configured with tools.** `fn[registered_tools_use_the_current_context_and_ordinary_node_ids]` passes `backend.with_tool(..).with_tool(..)` to `with_agent`.\n- **Requests through the cache and its clones run that agent with its registered tools.**\n  - In the Bedrock test, the clone `peer` shares the same agent `Arc` as the original cache.\n  - In the tools test, the question is asked through `peer`, a clone of `domain`. The tests assert the tool names in the backend requests, the tool outputs fed back to the model, and usage stats read from `domain`'s cache. Together these show the clone ran the configured agent with its registered tools.\n  - A second cache built with different tools (`other`) offers only its own tools. So each cache runs its own agent.\n  - For a plain config, `fn[configured_agents_initialize_only_when_asked_and_report_setup_errors]` shows the awaited ask uses the supplied config. The error message names the credential env var set in that config.\n- **Backend setup is deferred until a criterion awaits an agent request.** In the same test, `with_agent` on a config with a missing credential does not fail at construction. A deterministic question (`Question(false, ..)`) then completes with output `false` and one dependency. Only the awaited agent question (`Question(true, ..)`) fails, with a provider error naming the missing credential.\n\nThe assertions enforce each expected outcome. The name-collision behavior belongs to the cited `requirements.sdk.graph.agent-harness.with_tool`, so it needs no test here.",
+  "references": "f457ecf4fb3720a364c3c687da5dc0577781df694a18fcd22ced9e5c2debe953",
   "inputs": [
     {
       "requirements": "requirements.sdk.validation-cache.with_agent",
@@ -60,6 +60,28 @@
       ]
     },
     {
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "impl[ValidationCache<D>]/fn[with_agent]",
+      "hash": "654bf1cca4a8cc3a9bc0e5c2a8114a0b6105241d653cf8839406d341c547d2f3"
+    },
+    {
+      "definition": "requirements.sdk.graph.agent-harness.domain_tool",
+      "text": [
+        ":::{definition} domain_tool",
+        ":phrase: domain tool",
+        "",
+        "A *domain tool* is an operation an application makes available to the model",
+        "under a name. Its Rust implementation receives typed arguments and the",
+        "criterion's `ValidationContext` and returns a typed result.",
+        ":::"
+      ]
+    },
+    {
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "impl[ValidationCache<D>]/fn[set_agent]",
+      "hash": "c24af682081698445d804eb550f11420dc08425cb83664e9cf1391e6b2a5b8dd"
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[configured_agents_initialize_only_when_asked_and_report_setup_errors]",
       "hash": "ccbff871c211d01d5e62ddd6ede9cc44dde94a6fa9f41aa090b3fef8ac7d8b9b"
@@ -73,21 +95,202 @@
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[registered_tools_use_the_current_context_and_ordinary_node_ids]",
       "hash": "1bf97cc8cd53fefba38eba8a9c2426fe72f0fd8d8f2f957083dc512fc16577cb"
-    },
-    {
-      "definition": "requirements.sdk.graph.agent-harness.domain_tool",
-      "text": [
-        ":::{definition} domain_tool",
-        ":phrase: domain tool",
-        "",
-        "A *domain tool* is an operation an application makes available to the model",
-        "under a name. Its Rust implementation receives typed arguments and the",
-        "criterion's `ValidationContext` and returns a typed result.",
-        ":::"
-      ]
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.validation-cache.with_agent"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "f457ecf4fb3720a364c3c687da5dc0577781df694a18fcd22ced9e5c2debe953"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.validation-cache.with_agent"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "dbdc714c9734a0e8467977954beb1e254271d3f943c5723ba64a9e2c4b406159"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-harness.with_tool"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "7487ff89c41fd9c84c20b73ca2022f9c3922948f52fc2a800db2797dda6a8185"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/domain.rs"
+                },
+                "selector": "impl[ValidationCache<D>]/fn[with_agent]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "654bf1cca4a8cc3a9bc0e5c2a8114a0b6105241d653cf8839406d341c547d2f3"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Definition": "requirements.sdk.graph.agent-harness.domain_tool"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "75a24ce6c34939bdf28c1694fa593f26b4a37901157b1dbc2de8456173d7cd2a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/domain.rs"
+                },
+                "selector": "impl[ValidationCache<D>]/fn[set_agent]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "c24af682081698445d804eb550f11420dc08425cb83664e9cf1391e6b2a5b8dd"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The only structural obligation in the text is the prescribed signature: `with_agent(config: impl AgentSettings<D>) -> Self`, in `impl<D: Domain> ValidationCache<D>`, with the three `where` bounds on `D::NodeData`, `D::EdgeLabel` and `D::Error`. An alternative that took a concrete `AgentConfig`, or dropped the `AgentSettings` bound, would not accept both a plain and a tool-configured agent. That makes the signature a real obligation.\n\n`crates/trust-but-verify/src/domain.rs#impl[ValidationCache<D>]/fn[with_agent]` declares exactly that signature and those bounds. It builds the cache with `Self::new()` and configures it through `set_agent`, so the cache starts empty. It is the only supplied root and carries the `{impl}` marker.\n\n`set_agent` is reached from `with_agent` and needs no marker of its own. It splits the settings with `config.into_parts()` into backend and tools. It stores them in a shared `Arc<CachedAgent>`, so clones see the same agent and its tools. It also creates the runner with `ConfiguredAgent::default()` instead of setting up the backend there. I did not open `ConfiguredAgent` itself.\n\nThe remaining clauses state observable behavior and are not structural obligations:\n- Requests run the agent with its registered tools.\n- Backend setup is deferred until a criterion awaits an agent request.\n- Name collisions fail the ask.\n\nThe tests cover these. No implementation gap remains."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.validation-cache.with_agent"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "f457ecf4fb3720a364c3c687da5dc0577781df694a18fcd22ced9e5c2debe953"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.validation-cache.with_agent"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "dbdc714c9734a0e8467977954beb1e254271d3f943c5723ba64a9e2c4b406159"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-harness.with_tool"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "7487ff89c41fd9c84c20b73ca2022f9c3922948f52fc2a800db2797dda6a8185"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/configured.rs"
+                },
+                "selector": "mod[tests]/fn[configured_agents_initialize_only_when_asked_and_report_setup_errors]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "ccbff871c211d01d5e62ddd6ede9cc44dde94a6fa9f41aa090b3fef8ac7d8b9b"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/configured.rs"
+                },
+                "selector": "mod[tests]/fn[bedrock_configuration_attaches_to_a_cache_without_being_persisted]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "0a39a68deecf0d56dd35ef5aee04aa1825e3a2ee749ac8bf99f8829f597cfa5e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/configured.rs"
+                },
+                "selector": "mod[tests]/fn[registered_tools_use_the_current_context_and_ordinary_node_ids]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "2a2cd72d471bf2cf18e6987128b2d9c2c22deeaa2d3e269118486369534f0a29"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Definition": "requirements.sdk.graph.agent-harness.domain_tool"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "75a24ce6c34939bdf28c1694fa593f26b4a37901157b1dbc2de8456173d7cd2a"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The three marked tests together cover each obligation in `requirements.sdk.validation-cache.with_agent`.\n\n- **Accepts a plain `AgentConfig`, and the cache starts empty.** In `mod[tests]/fn[bedrock_configuration_attaches_to_a_cache_without_being_persisted]` in `crates/trust-but-verify/src/agent/configured.rs`, `with_agent(AgentConfig::Bedrock(..))` produces a cache with the config as its agent backend. The test asserts `outlines` is empty and `sources` is `None`. It also asserts the backend settings are absent from the saved state.\n- **Accepts an agent configured with tools.** `fn[registered_tools_use_the_current_context_and_ordinary_node_ids]` passes `backend.with_tool(..).with_tool(..)` to `with_agent`.\n- **Requests through the cache and its clones run that agent with its registered tools.**\n  - In the Bedrock test, the clone `peer` shares the same agent `Arc` as the original cache.\n  - In the tools test, the question is asked through `peer`, a clone of `domain`. The tests assert the tool names in the backend requests, the tool outputs fed back to the model, and usage stats read from `domain`'s cache. Together these show the clone ran the configured agent with its registered tools.\n  - A second cache built with different tools (`other`) offers only its own tools. So each cache runs its own agent.\n  - For a plain config, `fn[configured_agents_initialize_only_when_asked_and_report_setup_errors]` shows the awaited ask uses the supplied config. The error message names the credential env var set in that config.\n- **Backend setup is deferred until a criterion awaits an agent request.** In the same test, `with_agent` on a config with a missing credential does not fail at construction. A deterministic question (`Question(false, ..)`) then completes with output `false` and one dependency. Only the awaited agent question (`Question(true, ..)`) fails, with a provider error naming the missing credential.\n\nThe assertions enforce each expected outcome. The name-collision behavior belongs to the cited `requirements.sdk.graph.agent-harness.with_tool`, so it needs no test here."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -97,19 +300,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "cae251f32ef8e83a6b8256f7c24dd158db509f14fb50f3e771ac8fa7d6da9998"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.validation-cache.with_agent"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "73f3769824dd7f981bf3f4330069fbb1eab1c2e1948f94c2bbbcacf188c4f929"
+          "value": "f457ecf4fb3720a364c3c687da5dc0577781df694a18fcd22ced9e5c2debe953"
         }
       ]
     },
@@ -132,6 +323,51 @@
         {
           "scheme": "habeas-input-v1",
           "value": "7487ff89c41fd9c84c20b73ca2022f9c3922948f52fc2a800db2797dda6a8185"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "impl[ValidationCache<D>]/fn[with_agent]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "654bf1cca4a8cc3a9bc0e5c2a8114a0b6105241d653cf8839406d341c547d2f3"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Definition": "requirements.sdk.graph.agent-harness.domain_tool"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "75a24ce6c34939bdf28c1694fa593f26b4a37901157b1dbc2de8456173d7cd2a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "impl[ValidationCache<D>]/fn[set_agent]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "c24af682081698445d804eb550f11420dc08425cb83664e9cf1391e6b2a5b8dd"
         }
       ]
     },
@@ -183,17 +419,6 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "2a2cd72d471bf2cf18e6987128b2d9c2c22deeaa2d3e269118486369534f0a29"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Definition": "requirements.sdk.graph.agent-harness.domain_tool"
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "75a24ce6c34939bdf28c1694fa593f26b4a37901157b1dbc2de8456173d7cd2a"
         }
       ]
     }

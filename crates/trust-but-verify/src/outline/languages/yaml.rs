@@ -12,9 +12,7 @@ const KINDS: &[KindRule] = &[
     KindRule::new("block_sequence_item", "item", NameRule::Anonymous),
 ];
 
-// {impl}`requirements.references.outline_comments`
-// {impl}`requirements.references.structural_hash`
-// {impl}`requirements.sdk.sources.yaml.attachments`
+// {impl}`requirements.references.outlines`
 pub static PROFILE: Profile = Profile {
     name: "yaml",
     fingerprint_scheme: "yaml-structural-v1",

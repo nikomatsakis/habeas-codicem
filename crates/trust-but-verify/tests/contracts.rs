@@ -895,6 +895,8 @@ async fn dependency_resolution_failures_do_not_execute_or_replace_saved_answers(
     }
 }
 
+// {test}`requirements.sdk.graph.evidence.evidence_storage`
+// {test}`requirements.sdk.graph.criteria.criterion_trait.version`
 // {test}`requirements.sdk.graph.evidence.checking_records.version_match`
 // {test}`requirements.sdk.graph.evidence.check_node`
 // {test}`requirements.sdk.graph.criteria.criterion_path`
@@ -1601,7 +1603,12 @@ fn clones_interning_the_same_data_concurrently_get_one_handle() {
         serde_json::to_string(&ids[0]).unwrap()
     );
     assert_eq!(cache.node_data(ids[0]).as_deref(), Some(&Node(42)));
-    assert_ne!(cache.intern_node(Node(43)), ids[0]);
+    let other = cache.intern_node(Node(43));
+    assert_ne!(other, ids[0]);
+    assert_eq!(cache.node_data(other).as_deref(), Some(&Node(43)));
+    assert_eq!(cache.node_data(ids[0]).as_deref(), Some(&Node(42)));
+    let unknown = serde_json::from_value(serde_json::json!(100)).unwrap();
+    assert!(cache.node_data(unknown).is_none());
 }
 
 // {test}`requirements.sdk.graph.NodeData`

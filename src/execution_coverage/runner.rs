@@ -32,7 +32,6 @@ impl Drop for PreparationDirectory {
     }
 }
 
-// {impl}`requirements.test-coverage.storage.selection`
 fn nextest_args(args: &[OsString], prepared: bool, listing: bool) -> Vec<OsString> {
     let mut result = Vec::new();
     let mut index = 2; // cargo nextest run
@@ -129,7 +128,6 @@ fn nextest_args(args: &[OsString], prepared: bool, listing: bool) -> Vec<OsStrin
     result
 }
 
-// {impl}`requirements.test-coverage.storage.selection`
 fn selected_tests(value: &str) -> io::Result<Vec<TestIdentity>> {
     let value: serde_json::Value = serde_json::from_str(value)?;
     let suites = value["rust-suites"]
@@ -165,7 +163,6 @@ fn selected_tests(value: &str) -> io::Result<Vec<TestIdentity>> {
 }
 
 // Classify explicit selection, not nextest's native default filters.
-// {impl}`requirements.test-coverage.storage.replace`
 fn filtered(args: &[String]) -> bool {
     let mut index = 0;
     let mut after_separator = false;
@@ -430,7 +427,6 @@ fn has(args: &[String], flag: &str) -> bool {
         .any(|arg| arg == flag)
 }
 
-// {impl}`requirements.test-coverage.failures.prerequisites`
 fn tools(compiler: &str) -> io::Result<(PathBuf, PathBuf, String)> {
     let version = output(Command::new("cargo").args(["nextest", "--version"]))
         .map_err(|error| io::Error::other(format!("cargo nextest >= 0.9.116 is required; install with `cargo install cargo-nextest --locked`: {error}")))?;
@@ -480,8 +476,6 @@ fn tools(compiler: &str) -> io::Result<(PathBuf, PathBuf, String)> {
 }
 
 // Instruments workspace rustc invocations without replacing Cargo's resolved rustflags.
-// {impl}`requirements.test-coverage.run`
-// {impl}`requirements.test-coverage.storage.configuration`
 pub fn compile_process(args: &[OsString]) -> io::Result<i32> {
     let compiler = args
         .first()
@@ -526,7 +520,6 @@ pub fn compile_process(args: &[OsString]) -> io::Result<i32> {
     Ok(code(command.status()?))
 }
 
-// {impl}`requirements.test-coverage.run.configuration`
 fn verify_configuration(root: &Path, args: &[String]) -> io::Result<()> {
     for flag in [
         "--tool-config-file",
@@ -711,13 +704,8 @@ fn preparation_args(args: &[OsString]) -> Vec<OsString> {
 }
 
 // {impl}`requirements.test-coverage.run`
+// {impl}`requirements.test-coverage.storage.selection`
 // {impl}`requirements.test-coverage.storage`
-// {impl}`requirements.test-coverage.processes.reports`
-// {impl}`requirements.test-coverage.processes.progress.preparation`
-// {impl}`requirements.test-coverage.storage.provenance`
-// {impl}`requirements.test-coverage.storage.configuration`
-// {impl}`requirements.test-coverage.storage.outcomes`
-// {impl}`requirements.test-coverage.failures`
 pub fn run(project: &Path, supplied: &[String]) -> io::Result<i32> {
     let root = configuration::workspace_root(project)?;
     let invocation = std::env::current_dir()?;
@@ -1146,9 +1134,6 @@ pub fn run(project: &Path, supplied: &[String]) -> io::Result<i32> {
     }
 }
 
-// {impl}`requirements.test-coverage.processes`
-// {impl}`requirements.test-coverage.storage.outcomes`
-// {impl}`requirements.test-coverage.failures`
 pub fn collect_process(args: &[OsString]) -> io::Result<i32> {
     let executable = args
         .first()
@@ -1467,7 +1452,6 @@ struct Map {
 
 // Keep compact matching coverage maps as well as normalized reports, so an
 // interrupted run's raw profiles are still usable after a later rebuild.
-// {impl}`requirements.test-coverage.processes.reports`
 fn snapshot_maps(instrumented: &Path, dir: &Path, cov: &Path) -> io::Result<()> {
     let objcopy = cov.with_file_name(format!("llvm-objcopy{}", std::env::consts::EXE_SUFFIX));
     let readobj = cov.with_file_name(format!("llvm-readobj{}", std::env::consts::EXE_SUFFIX));
@@ -1503,8 +1487,6 @@ fn snapshot_maps(instrumented: &Path, dir: &Path, cov: &Path) -> io::Result<()> 
     save(&dir.join("maps.json"), &maps)
 }
 
-// {impl}`requirements.test-coverage.storage.provenance`
-// {impl}`requirements.test-coverage.processes.reports`
 fn capture_inputs(
     root: &Path,
     target: &Path,
@@ -1541,9 +1523,6 @@ fn capture_inputs(
     Ok(())
 }
 
-// {impl}`requirements.test-coverage.processes.reports`
-// {impl}`requirements.test-coverage.storage.provenance`
-// {impl}`requirements.test-coverage.processes.progress`
 fn finish(root: &Path, dir: &Path, cov: &Path, profdata: &Path, run: &mut Run) -> io::Result<()> {
     let maps: Vec<Map> = load(&dir.join("maps.json"))?;
     let mut store = Store::read(dir.parent().unwrap())?;
@@ -1738,7 +1717,6 @@ fn finish_attempt(
 // {cite}`habeas:util`
 type ProcessCoverage = (BTreeMap<String, BTreeMap<u32, u64>>, Vec<FunctionExecution>);
 
-// {impl}`requirements.test-coverage.check.functions`
 fn export(
     cov: &Path,
     profile: &Path,
@@ -1806,7 +1784,6 @@ fn export(
     Ok((lines, functions))
 }
 
-// {impl}`requirements.test-coverage.check.functions`
 fn function_counts(
     json: &str,
     root: &Path,

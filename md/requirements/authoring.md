@@ -143,7 +143,9 @@ The reference roles:
   implementing it. A requirement stating a convention for every output of a
   kind, such as every validation error, is implemented by the code that carries
   out the convention as a whole, not by each item that produces one such output.
-  Only a root needs the reference: an item that no other item marked {impl}
+  A source root demonstrating a stated structural obligation should carry
+  {impl}. Authors may add the marker up front or on a structural reviewer’s recommendation. Tests supply evidence for
+  behavioral obligations. Only a root needs the reference: an item that no other item marked {impl}
   for the same requirement reaches. Code a reviewer reaches by following a
   marked item, through what it calls, the types it uses, or the implementations
   of trait methods it calls, needs none; nor does a test helper reached from a
@@ -282,7 +284,7 @@ assess a built-in's stated citation criteria.
    the reference procedure in order: if the item is a
    test designed to verify the cited requirement or example, it calls for
    {test}; otherwise, if it is a root of the cited definition's
-   implementation as the reference roles describe, it calls for {impl};
+   implementation that needs an edge under the reference roles, it calls for {impl};
    otherwise the citation is right if a change to the cited text could
    require changing the item, as when the item relies on behavior the text
    specifies or must agree with a form or value it defines; read the item's
@@ -630,6 +632,8 @@ Each assessment MUST use the SDK’s `submit_result({"result": ...})` tool under
 - `Failed { corrections }` records `false` and MUST include a nonempty list under {cite}`requirements.authoring.corrections`.
 - `AcknowledgedGap { entries, rationale }` records `{"FIXME": entries}` when every real gap is acknowledged under {cite}`requirements.ci.outcomes`.
 
+For each non-distributed requirement, Habeas MUST evaluate separate `structural` and `behavioral` criteria in independent conversations. Each submits its own assessment result. The structural criterion may propose `{impl}` markers and the behavioral criterion may propose `{test}` markers. If a submission proposes a marker belonging to the other criterion, request a corrected verdict within scope and reject a repeated violation. Habeas MUST retain both results in `criteria` and compute the overall judgment: failure takes precedence over acknowledged gaps, and both criteria must succeed for success.
+
 Each rationale MUST be nonempty Markdown. Citation reviews submit a boolean `determination` and a rationale. Site reviews submit `determination`, `rationale`, and `applies` under {cite}`requirements.authoring.site_prompt`. The SDK handles submission under {cite}`requirements.sdk.graph.agent-harness.submission.acceptance`. Failure before acceptance MUST preserve existing evidence.
 :::
 
@@ -854,14 +858,13 @@ testing exemption or obligation delegated to a refining declaration under
 MUST be a gap. Incoming `{impl}` references or `:impl:` anchors MUST NOT skip
 this check. Considered references and anchors follow
 {cite}`requirements.references.discovery` and {cite}`requirements.references.anchors`.
-:::
+The behavioral criterion's task starts with this instruction before the test adequacy steps:
 
-The current harness selects structural assessment only for requirements with
-supported non-Markdown implementation roots and no test edges. Requirements with test edges receive
-test-adequacy assessment, including mixed requirements. Issue #51 tracks the
-independent checks specified above, including explicit checks when either kind
-of edge is absent. The implementation carries issue-linked `{fixme}`
-acknowledgments of this temporary gap.
+```text
+Assess only the requirement's observable behavioral obligations. Without test edges, establish that no behavioral obligation needs test evidence here, explaining any testing exemption or delegation. Report missing evidence for every remaining obligation. Prescribed libraries and other implementation choices belong to the structural criterion. If the requirement states only such choices, return success for behavior and explain that there is no independent observable obligation. A missing implementation marker cannot affect this verdict. Propose only test markers here.
+```
+
+:::
 
 :::{req} structural_inputs
 For every non-distributed requirement's structural check under
@@ -878,18 +881,12 @@ helpers are requested when needed, rather than supplied recursively.
 :::
 
 :::{req} structural_prompt
-A structural assessment MUST use the same tools, acknowledgments, judgment
-rules, confirmation policy, and submission contract as a test-adequacy
-assessment, with these system and subject blocks under
-{cite}`requirements.authoring.prompt_parts`. Placeholders MUST be filled as in
-{cite}`requirements.authoring.initial_prompt`.
+A non-distributed requirement's structural criterion MUST use the following system and subject messages under {impl}`requirements.ci.review_criteria`. Its behavioral criterion MUST use {cite}`requirements.authoring.initial_prompt` and {cite}`requirements.authoring.behavioral_review`. Each receives the shared declarations and acknowledgments, plus its own review roots. Neither receives the other conversation or its verdict.
 
 ```text
 # Task
 
-Assess whether a requirement's stated structural obligations are fulfilled by
-its implementations. Your determination should be the one any careful reviewer
-would reach from the same text and sources.
+Assess whether implementation roots support the requirement's stated structural obligations.
 
 # Background: Habeas terms
 
@@ -899,31 +896,9 @@ would reach from the same text and sources.
 
 # Your task
 
-The mandatory inputs contain the requirement, its cited declarations and
-terminology, its direct implementation sources, and declarations that refine
-it. Each {fixme} acknowledgment includes the state of the issues it names.
+Identify what the text requires about how the implementation is built. Include required libraries, algorithms, signatures, types, fields, ownership and delegation through named interfaces. For each candidate structural obligation, quote the clause and describe a concrete alternative implementation that preserves the observable behavior but violates that clause. For a prescribed signature or type, consider an alternative declaration that produces the same runtime results. If the alternative still satisfies the text, the implementation choice is discretionary. Finding the code that produces a required output does not by itself create a structural obligation. When every clause specifies only observable behavior, explain why and submit Success even if there are no implementation roots.
 
-1. Derive the stated structural obligations, including signatures, type and
-   field relationships, ownership, and required delegation through interfaces.
-   Do not substitute inferred runtime behavior for a structural obligation.
-2. Inspect the supplied implementation roots. Follow relevant calls, types,
-   trait implementations, and callbacks; request the helper source needed to
-   establish each obligation. Comments or reference edges alone are not proof.
-3. Map each obligation to the concrete source that fulfills it. Identify
-   obligations delegated to a refining declaration separately: assess that
-   declaration's text, not its implementation or tests. Cited declarations
-   supply context and do not become additional subjects to assess in full.
-4. A missing or conflicting structural element is a gap. Observable runtime
-   outcomes, boundaries, and failure cases require the independent behavioral
-   assessment; do not certify them from implementation alone. Missing or
-   inadequate test evidence is a testing gap. Discover relevant tests before
-   reporting missing evidence; a test designed to check the subject without
-   a {test} reference is a marking gap.
-5. Report ambiguities and unavailable information separately. A successful
-   structural check means every structural obligation assessed here is
-   supported. The requirement's judgment must also account for its independent
-   behavioral check. Do not assess unspecified behavior or general
-   implementation correctness.
+Without implementation edges, establish that no structural obligation needs implementation evidence here. Report a missing root when one is needed. Inspect the supplied implementation roots. Follow the calls, types, trait implementations and callbacks needed to map each structural obligation to concrete source. Comments and markers alone do not establish it. Assess obligations delegated to a refining declaration against that declaration's text. Cited declarations supply context. Explain any missing evidence or ambiguity. Leave test adequacy to the behavioral criterion.
 
 # How to judge
 
@@ -933,8 +908,13 @@ it. Each {fixme} acknowledgment includes the state of the issues it names.
 
 Submit Success when you find no gap, AcknowledgedGap with entries when every
 real gap is acknowledged, and Failed with corrections otherwise. For a missing
-{test} or {impl} marker, give the role, file and selector in AddReference and
-explain how that item supports the subject. For Manual, give the instruction
+{impl} marker, give the role, file and selector in AddReference. In each
+marker rationale, quote the clause, describe the behavior-preserving alternative
+that violates it, and identify what the reviewer can verify from this root
+that is not already covered by the supplied roots and the other proposed roots.
+Follow reachable helpers before proposing another marker. Separate callers can
+each need a marker when the clause prescribes how each delegates.
+For Manual, give the instruction
 and explain what gap it closes. Include both when both apply. Cover every
 unacknowledged gap. A manual instruction does not acknowledge a gap.
 Call submit_result with the chosen variant inside result until it is accepted.
@@ -948,7 +928,11 @@ reply text is not accepted.
 # Subject
 
 Subject: requirement {{subject_name}}
-Judge against: the subject's text, using structural assessment.
+Judge against: the subject's text.
+
+# Review roots
+
+{{review_roots}}
 
 # Acknowledgments
 
@@ -1032,7 +1016,7 @@ when those criteria are met.
 
 Submit Success when you find no gap, AcknowledgedGap with entries when every
 real gap is acknowledged, and Failed with corrections otherwise. For a missing
-{test} or {impl} marker, give the role, file and selector in AddReference and
+marker within the scope of this criterion, give the role, file and selector in AddReference and
 explain how that item supports the subject. For Manual, give the instruction
 and explain what gap it closes. Include both when both apply. Cover every
 unacknowledged gap. A manual instruction does not acknowledge a gap.
@@ -1449,8 +1433,8 @@ where it does not, the stop MUST be treated as reaching the output limit.
 Each assessment conversation MUST send its prompt as a system prompt followed by
 one user message, the subject message, filled from the first and second text
 blocks of the prompt requirement for the assessment's kind. The kinds are
-test-adequacy requirement, structural requirement, example, citation review, site
-review. A system prompt MUST be the same for
+structural requirement review, behavioral requirement review, distributed
+requirement review, example, citation review, and site review. A system prompt MUST be the same for
 every assessment of its kind, so every placeholder whose value depends on the
 subject MUST be in the subject message.
 :::

@@ -1,8 +1,8 @@
 {
   "requirement": "Each text or structural search page delivered to the agent opens a session-local\n`search_id` for accounting, even when there are no matches. Each match has a\nshort string `tag` unique within the page. Each new page receives a fresh UUID. The agent may fetch further pages\nwhile earlier pages are open. Replaying a page preserves its ID, tags, and\ncompletion state. Failed searches and undelivered pages create no obligation.\n\nBefore the harness accepts a submission, the agent MUST call `finish_search`\nfor every open page. `used` lists the tags of excerpts the agent relied on\ndirectly and may be empty. A valid call closes the page and returns its ID and\n`finished: true`. A later call for the same page can select additional tags.\nThe tool accepts exactly `search_id` and `used`. An invalid call, including an unknown ID or tag, returns a correctable tool error and preserves the page's completion state. A submission with open pages returns a tool error listing every outstanding UUID so the agent can close them and resubmit in the same conversation.",
   "determination": true,
-  "rationale": "The two reviewed tests cover the obligations of `requirements.sdk.graph.search.finish_search.behavior`.\n\n**Tests reviewed**\n- `crates/trust-but-verify/src/agent/project_sources.rs#mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]` (unit level, session tools)\n- `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]` (end to end through a mock model)\n\n**Page opening and tags**\n- An empty `search_text` page and an empty `search_structure` page each open an obligation. `outstanding_searches()` is asserted after each.\n- Tags are unique within a page: the tag set size equals the match count, and there is more than one match.\n- A page fetched with `get_next_page` has an ID different from the first page (`assert_ne!`).\n- A later page fetched by `get_next_page` can be finished while the earlier page is still open.\n\n**Replay**\n- Replaying `get_next_page` after the page was finished returns text identical to the first delivery, so the ID and tags are preserved.\n- `outstanding_searches()` is empty afterwards, so the replay did not reopen the page.\n\n**Failed and undelivered pages create no obligation**\n- An invalid regex `(` returns an error, and the later outstanding count of 2 excludes it.\n- `finish_search` with the undelivered `next` UUID returns an error.\n- A peer session cannot finish or fetch another session's page.\n\n**Closing and `used`**\n- `finish_search` returns exactly `{search_id, finished:true}` for `used:[]`, a single tag, and a repeat of the same call.\n- Dependencies are asserted for each selection.\n- Additional tags on a later call are covered in the end-to-end test. Alpha is selected first and beta later, and the final dependencies include both.\n\n**Invalid calls**\n- An unknown ID returns an error.\n- `[\"1\",\"unknown\"]` returns an error, and 2 pages are still outstanding afterwards.\n- The malformed argument sets `{}`, a missing `used`, a non-array `used`, a bad UUID and an unexpected extra field all return non-empty errors.\n- In the end-to-end test, `[unused, \"invalid\"]` returns \"unknown search tag\". The unused tag never appears in the final dependencies, which shows the invalid call left the page's state untouched.\n\n**Submission with open pages**\n- With two open empty searches, `submit_result` is rejected. The retry output contains \"Call finish_search for every open search_id\" and both distinct UUIDs.\n- After all pages are finished, the final `submit_result` is accepted.\n\n**Minor weakness, not a gap**\n- No test sends a submission after finishing only one of two pages. That is the `requirements.sdk.graph.search.recovery` example.\n- The submit code reads `outstanding_searches()` and lists exactly its result. The unit test asserts that helper's output after partial finishing: the capped page is closed and only the other page is listed. The partial case is therefore covered by composition.",
-  "references": "5de9ac95a98d6a5db5a7fe2e9e81bcb496d8dc140560a832fee9364ba0db3abb",
+  "rationale": "structural: I found no structural obligation in `requirements.sdk.graph.search.finish_search.behavior`. Every clause describes behavior that callers can observe, and the requirement has no implementation edges.\n\n- **Page IDs and tags:** \"opens a session-local `search_id`\", \"short string `tag` unique within the page\", \"fresh UUID\", and \"Replaying a page preserves its ID, tags, and completion state\". An implementation could generate IDs and tags in any way, such as a counter-based or random scheme, and store page state in any structure. It would still behave the same, so these clauses fix no library, type or algorithm.\n- **Completion before submission:** \"the agent MUST call `finish_search` for every open page\" and \"A submission with open pages returns a tool error listing every outstanding UUID\". These describe the tool's responses. They do not say how the harness must track open pages.\n- **Closing a page:** \"`used` lists the tags...\", \"A valid call closes the page and returns its ID and `finished: true`\", and \"A later call for the same page can select additional tags\". These are request and response behavior.\n- **Exact parameters:** \"The tool accepts exactly `search_id` and `used`.\" This could look like a prescribed signature. The alternative is a looser declaration that tolerates extra fields. That would change what callers see, because an invalid call would no longer return a tool error. A differently declared schema that rejects extra fields would be indistinguishable to callers. The clause therefore constrains observable input validation, not how the tool is built.\n- **Invalid calls:** \"An invalid call, including an unknown ID or tag, returns a correctable tool error and preserves the page's completion state.\" This is observable error behavior.\n\nNo structural obligation needs implementation evidence here, so the empty set of roots is appropriate. Whether tests cover this behavior is outside this assessment.\n\nbehavioral: The two marked tests cover every behavioral obligation in `requirements.sdk.graph.search.finish_search.behavior`.\n\n**Session-level test:** `crates/trust-but-verify/src/agent/project_sources.rs#mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]`\n- **A delivered page opens a `search_id`, even with no matches.** An empty `search_text` result and an empty `search_structure` result each show up in `outstanding_searches()`. This covers both text and structural searches.\n- **Tags are unique within a page.** A `BTreeSet` of the tags has the same length as the matches array.\n- **Each new page gets a fresh UUID.** `assert_ne!(first[\"search_id\"], second[\"search_id\"])`.\n- **Further pages can be fetched while earlier ones are open.** `get_next_page` runs while the first page is unfinished, and `outstanding_searches().len() == 2`.\n- **Replaying a page preserves its ID, tags and completion state.** A second `get_next_page` returns text identical to the earlier delivery, and the outstanding list is then empty. The replay did not reopen the finished page.\n- **Failed searches and undelivered pages create no obligation.** The invalid regex `(` returns an error, and `finish_search` on the undelivered `first[\"next\"]` errors. The session ends with an empty outstanding list.\n- **A valid call closes the page and returns `{search_id, finished:true}`.** This is asserted for an empty page and for a page with selected tags.\n- **A later call for the same page can select additional tags.** The selected-tag call is repeated twice with the same dependencies. The harness test below adds a different tag on a later call.\n- **The tool accepts exactly `search_id` and `used`.** Malformed calls are rejected: `{}`, a missing `used`, a non-array `used`, a bad UUID, and an extra property.\n- **Invalid calls return an error and keep the completion state.** An unknown tag, an unknown ID (the undelivered page, or a page belonging to another session) and the malformed calls above all error. `outstanding_searches().len()` is still 2 afterwards.\n\n**Harness-level test:** `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]`\n- **Submission with open pages is rejected.** With two empty searches open, `submit_result` returns a retry message that contains \"Call finish_search for every open search_id\" and both distinct UUIDs.\n- **The agent can recover in the same conversation.** It finishes both empty searches with `used:[]`, runs a new search, and closes it with `used` set to the alpha tag, then an invalid tag (error, no effect), then the beta tag. The final `submit_result` is accepted.\n- **Unused tags stay out of the result.** The dependencies include alpha and beta only. The unused tag is excluded because the invalid call changed nothing.\n- **`finish_search` is exposed as a tool.** It appears in the tool list.\n\n**Partial-finish case:** The recovery example expects a submission to name only the second UUID after the first is finished. No test submits in exactly that state. The submit path builds its error from `outstanding_searches()`, which is the same method the session test checks after a partial close. That test shows the list shrinks to the unfinished page. So the partial-finish list is covered indirectly, and I do not count it as a gap.\n\nNo `{fixme}` acknowledgments apply.",
+  "references": "45f07c05219eb85cb44724df191bfa3061a608c0bfeee87032120d543ca538cd",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.search.finish_search.behavior",
@@ -33,7 +33,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]",
-      "hash": "d50fc16c3dbbf946e0b67d84304739d14998f92261ecab2f9a492b0c4fd9dcbe"
+      "hash": "1ea8d7ead0738b7f1e1ef1bb9b9ca39fd38dbaa1fb143a2c725511477b6c7179"
     },
     {
       "requirements": "requirements.sdk.graph.search.recovery",
@@ -61,7 +61,162 @@
       "hash": "6be2e73d8b2560e2efa6af25790bb67d021a8ea434976896e26e4e88259aaed6"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.search.finish_search.behavior"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "45f07c05219eb85cb44724df191bfa3061a608c0bfeee87032120d543ca538cd"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.search.finish_search.behavior"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "f77d3c3ecc1364014d36fab00ddceec39b88d2c18e925eccdfc976102b2b41c5"
+            }
+          ]
+        },
+        {
+          "OutgoingEdges": [
+            {
+              "Requirement": "requirements.sdk.graph.search.finish_search.behavior"
+            },
+            "Implements",
+            {
+              "scheme": "node-path-set-sha256-v1",
+              "value": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "I found no structural obligation in `requirements.sdk.graph.search.finish_search.behavior`. Every clause describes behavior that callers can observe, and the requirement has no implementation edges.\n\n- **Page IDs and tags:** \"opens a session-local `search_id`\", \"short string `tag` unique within the page\", \"fresh UUID\", and \"Replaying a page preserves its ID, tags, and completion state\". An implementation could generate IDs and tags in any way, such as a counter-based or random scheme, and store page state in any structure. It would still behave the same, so these clauses fix no library, type or algorithm.\n- **Completion before submission:** \"the agent MUST call `finish_search` for every open page\" and \"A submission with open pages returns a tool error listing every outstanding UUID\". These describe the tool's responses. They do not say how the harness must track open pages.\n- **Closing a page:** \"`used` lists the tags...\", \"A valid call closes the page and returns its ID and `finished: true`\", and \"A later call for the same page can select additional tags\". These are request and response behavior.\n- **Exact parameters:** \"The tool accepts exactly `search_id` and `used`.\" This could look like a prescribed signature. The alternative is a looser declaration that tolerates extra fields. That would change what callers see, because an invalid call would no longer return a tool error. A differently declared schema that rejects extra fields would be indistinguishable to callers. The clause therefore constrains observable input validation, not how the tool is built.\n- **Invalid calls:** \"An invalid call, including an unknown ID or tag, returns a correctable tool error and preserves the page's completion state.\" This is observable error behavior.\n\nNo structural obligation needs implementation evidence here, so the empty set of roots is appropriate. Whether tests cover this behavior is outside this assessment."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.search.finish_search.behavior"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "45f07c05219eb85cb44724df191bfa3061a608c0bfeee87032120d543ca538cd"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.search.finish_search.behavior"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "f77d3c3ecc1364014d36fab00ddceec39b88d2c18e925eccdfc976102b2b41c5"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/configured.rs"
+                },
+                "selector": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f9d8fbc31acd81ef8aa636e21fe02910790b3ec81c15b618e8fdb2b93a7a50de"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+                },
+                "selector": "mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "1ea8d7ead0738b7f1e1ef1bb9b9ca39fd38dbaa1fb143a2c725511477b6c7179"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.search.recovery"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "e4762facc1d730050c5ae419764132fbb244d2a7033213b250f9c27f593ae1b7"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tools.rs"
+                },
+                "selector": "impl[SessionTools<'a,%20D>]/fn[outstanding_searches]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "fc29617c91ff1c26ccab8235eb9dcd93fbc85937e01b1f0fd0ca8eed1365e2cd"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tools.rs"
+                },
+                "selector": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[submit]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "6be2e73d8b2560e2efa6af25790bb67d021a8ea434976896e26e4e88259aaed6"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The two marked tests cover every behavioral obligation in `requirements.sdk.graph.search.finish_search.behavior`.\n\n**Session-level test:** `crates/trust-but-verify/src/agent/project_sources.rs#mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]`\n- **A delivered page opens a `search_id`, even with no matches.** An empty `search_text` result and an empty `search_structure` result each show up in `outstanding_searches()`. This covers both text and structural searches.\n- **Tags are unique within a page.** A `BTreeSet` of the tags has the same length as the matches array.\n- **Each new page gets a fresh UUID.** `assert_ne!(first[\"search_id\"], second[\"search_id\"])`.\n- **Further pages can be fetched while earlier ones are open.** `get_next_page` runs while the first page is unfinished, and `outstanding_searches().len() == 2`.\n- **Replaying a page preserves its ID, tags and completion state.** A second `get_next_page` returns text identical to the earlier delivery, and the outstanding list is then empty. The replay did not reopen the finished page.\n- **Failed searches and undelivered pages create no obligation.** The invalid regex `(` returns an error, and `finish_search` on the undelivered `first[\"next\"]` errors. The session ends with an empty outstanding list.\n- **A valid call closes the page and returns `{search_id, finished:true}`.** This is asserted for an empty page and for a page with selected tags.\n- **A later call for the same page can select additional tags.** The selected-tag call is repeated twice with the same dependencies. The harness test below adds a different tag on a later call.\n- **The tool accepts exactly `search_id` and `used`.** Malformed calls are rejected: `{}`, a missing `used`, a non-array `used`, a bad UUID, and an extra property.\n- **Invalid calls return an error and keep the completion state.** An unknown tag, an unknown ID (the undelivered page, or a page belonging to another session) and the malformed calls above all error. `outstanding_searches().len()` is still 2 afterwards.\n\n**Harness-level test:** `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]`\n- **Submission with open pages is rejected.** With two empty searches open, `submit_result` returns a retry message that contains \"Call finish_search for every open search_id\" and both distinct UUIDs.\n- **The agent can recover in the same conversation.** It finishes both empty searches with `used:[]`, runs a new search, and closes it with `used` set to the alpha tag, then an invalid tag (error, no effect), then the beta tag. The final `submit_result` is accepted.\n- **Unused tags stay out of the result.** The dependencies include alpha and beta only. The unused tag is excluded because the invalid call changed nothing.\n- **`finish_search` is exposed as a tool.** It appears in the tool list.\n\n**Partial-finish case:** The recovery example expects a submission to name only the second UUID after the first is finished. No test submits in exactly that state. The submit path builds its error from `outstanding_searches()`, which is the same method the session test checks after a partial close. That test shows the list shrinks to the unfinished page. So the partial-finish list is covered indirectly, and I do not count it as a gap.\n\nNo `{fixme}` acknowledgments apply."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -71,19 +226,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "5de9ac95a98d6a5db5a7fe2e9e81bcb496d8dc140560a832fee9364ba0db3abb"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.search.finish_search.behavior"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "e713338996edcc0fb160204d18b1ef8d13c7d7cc6efdf83b5e1e4c2fcdb47f5b"
+          "value": "45f07c05219eb85cb44724df191bfa3061a608c0bfeee87032120d543ca538cd"
         }
       ]
     },
@@ -95,6 +238,18 @@
         {
           "scheme": "habeas-input-v1",
           "value": "f77d3c3ecc1364014d36fab00ddceec39b88d2c18e925eccdfc976102b2b41c5"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.sdk.graph.search.finish_search.behavior"
+        },
+        "Implements",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
         }
       ]
     },
@@ -128,7 +283,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "d50fc16c3dbbf946e0b67d84304739d14998f92261ecab2f9a492b0c4fd9dcbe"
+          "value": "1ea8d7ead0738b7f1e1ef1bb9b9ca39fd38dbaa1fb143a2c725511477b6c7179"
         }
       ]
     },

@@ -1,8 +1,8 @@
 {
   "requirement": "A `sources::StructuralRule` is a structural query compiled for repeated searches\nof text supplied by the caller. `languages` lists the bundled grammar names\naccepted by `compile`. Compilation reports an unknown language or an invalid\nast-grep rule core, even when there is no source to search. `extensions` lists\nthe language's filename extensions without leading dots and contains at least one entry.\n\n`matches` searches the supplied UTF-8 text and returns distinct half-open byte\nspans ordered by start, then end. Offsets refer to that input on each call.\n`SourceProject::search_structure` uses the same matcher for project files.\n\n```rust,ignore\npub struct StructuralRule { /* private fields */ }\n\nimpl StructuralRule {\n    pub fn languages() -> Vec<&'static str>;\n    pub fn compile(\n        language: &str,\n        rule: &Map<String, Value>,\n    ) -> Result<Self, SourceError>;\n    pub fn extensions(&self) -> &[&str];\n    pub fn matches(&self, source: &str) -> Vec<Span>;\n}\n```",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation in `requirements.sdk.graph.search.StructuralRule`.\n\n- **`languages` matches what `compile` accepts.** `structural.rs#mod[tests]/fn[rules_compile_for_every_grammar_and_report_invalid_input]` compiles and runs a rule for each language. It then asserts `tested == StructuralRule::languages()`, so the list and the accepted grammars agree.\n- **Invalid input is reported at compile time.** The same test checks that `cobol` and `plain-text` fail with \"unknown structural search language\". It checks that a rule core with no `rule` key, an unexpected key, a bad node kind, and a bogus key each fail with the expected message. No source is supplied in any of these cases. `search.rs#fn[compile_once_and_search_supplied_source]` also asserts `SourceError::Invalid` for an unknown language and for an empty core.\n- **`extensions` is non-empty and has no leading dots.** The grammar test asserts `!rule.extensions().is_empty()`. For every extension it asserts the string is non-empty and does not start with `.`. `compile_once_and_search_supplied_source` also checks that `rs` is present for Rust.\n- **Spans are half-open byte ranges.** The tests slice the input with the returned spans and compare the text. `compile_once_and_search_supplied_source` uses a multibyte `é` input to show the offsets are byte offsets.\n- **Spans are ordered by start, then end.** The case `\"f(g())\", \"g()\", \"h()\"` checks ordering by start. The case `\"f()\", \"f()()\"` checks that two spans sharing a start are ordered by end.\n- **Spans are distinct.** `search.rs#fn[nodes_covering_the_same_source_produce_one_span]` uses `source_file` and `function_item` nodes that cover identical bytes. It asserts that exactly one `Span` comes back, for each of three rule shapes.\n- **Offsets refer to the input on each call.** One compiled rule is run against several different texts and an empty string. Each call's spans are asserted against its own text.\n- **`SourceProject::search_structure` uses the same matcher.** `project_sources.rs#mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]` compares `StructuralRule::compile(...).matches(file text)` with the spans returned by the project search, and the two are equal.\n\nI found no gaps and no unmarked relevant tests.",
-  "references": "1f3ec80c856fa9d5206f26a310902a46f2c87c956c66b136edf9c762a1c3866f",
+  "rationale": "structural: The structural obligations are: (1) a public `sources::StructuralRule` type with private fields and the listed signatures (`languages`, `compile`, `extensions`, `matches`); (2) `SourceProject::search_structure` \"uses the same matcher for project files\". The other clauses (error reporting, extensions non-empty, distinct ordered spans) are observable behavior.\n\nThe code supports both obligations. In `crates/trust-but-verify/src/sources/public.rs`, `struct[StructuralRule]` has a single private field `inner`. `impl[StructuralRule]` declares `languages() -> Vec<&'static str>`, `compile(&str, &Map<String, Value>) -> Result<Self, SourceError>`, `extensions(&self) -> &[&str]` and `matches(&self, &str) -> Vec<Span>`. These match the prescribed signatures. `compile` maps errors to `SourceError::Invalid`. `languages` delegates to `QueryLanguage::names()`. `extensions` delegates to the language profile's extensions. `matches` converts the inner byte ranges to `Span`.\n\nIn `crates/trust-but-verify/src/sources/hits.rs`, `impl[SourceProject<D>]/fn[search_structure]` compiles a `StructuralRule` with `StructuralRule::compile` and passes `rule.matches(text)` as the matcher to `find_hits`. That is the same public rule type and matcher used for project files. An alternative that used a different matcher for project files would violate the clause, and this code does not do that.\n\nBoth supplied roots carry `{impl}` markers and cover these obligations. No further roots are needed.\n\nbehavioral: I found no test-adequacy gap. I did not need to read implementation source.\n\n- **`languages` and `compile` agree.** `crates/trust-but-verify/src/structural.rs#mod[tests]/fn[rules_compile_for_every_grammar_and_report_invalid_input]` compiles a rule for each of 8 languages, searches sample text, and asserts the matched text. It then asserts `tested == StructuralRule::languages()`, so every listed language is accepted and the list has no untested entry.\n- **Compile errors.** The same test checks that unknown languages (`cobol`, `plain-text`) fail with \"unknown structural search language\". It also checks a missing `rule` key, an unexpected `fix` key, a nonexistent node kind and a bogus rule key. Each is asserted on the error message. `crates/trust-but-verify/tests/search.rs#fn[compile_once_and_search_supplied_source]` asserts `SourceError::Invalid` for an unknown language and for an empty core. Compilation takes no source, so this covers \"even when there is no source to search\".\n- **`extensions`.** For every grammar, the first test asserts that the list is non-empty, that no entry is empty and that none starts with a dot. `compile_once_and_search_supplied_source` asserts that Rust includes `rs`.\n- **Distinct spans.** `crates/trust-but-verify/tests/search.rs#fn[nodes_covering_the_same_source_produce_one_span]` matches `source_file`, `function_item` and both together over identical bytes. Each case asserts exactly one `Span`.\n- **Order by start, then end.** `compile_once_and_search_supplied_source` asserts `[\"f(g())\",\"g()\",\"h()\"]`. It also asserts `[\"f()\",\"f()()\"]`, where two spans share a start. A tree walk would visit the outer node first, so this case checks the end tiebreak.\n- **Offsets refer to the input on each call.** The test reuses one compiled rule over three different texts. One text contains `é`, so byte offsets are checked against slices of that input. The empty string returns no matches.\n- **`SourceProject::search_structure` uses the same matcher.** `crates/trust-but-verify/src/agent/project_sources.rs#mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]` compiles a `StructuralRule` and asserts that `rule.matches` on the file text equals the spans returned by `tools.search_structure`.",
+  "references": "8d589729bbe896b3399e5551247b96947318310081cfef2727a37e1329a57df5",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.search.StructuralRule",
@@ -38,9 +38,59 @@
       ]
     },
     {
+      "file": "crates/trust-but-verify/src/sources/hits.rs",
+      "item": "impl[SourceProject<D>]/fn[search_structure]",
+      "hash": "f041b48d441b23c4656e871797cecd541993e7397235c89612cbcb60162f89f5"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/public.rs",
+      "item": "impl[StructuralRule]",
+      "hash": "8585d2432a2fe5e1ed8fef68c50f270dc5a55ca95ad2dde0b1b027a502699c10"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/public.rs",
+      "item": "",
+      "hash": "895ac8512d3d6d55ac27e6823ecaf6b17f161f0bcf8c873b9feaa64cc0dc794b"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/public.rs",
+      "item": "struct[StructuralRule]",
+      "hash": "16740dec686b03505900ef782a1325e5077df605a2b15ab45e90c25b891ab069"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/public.rs",
+      "item": "impl[StructuralRule]/fn[languages]",
+      "hash": "17fed1beccc77d7df025cc12d090fd72e262bc1f6cff2d9535275b4538071668"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/public.rs",
+      "item": "impl[StructuralRule]/fn[compile]",
+      "hash": "58bdee79e78a0109686472e7abe7dd03fab043db519f190ee8fcc84c17bced0f"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/public.rs",
+      "item": "impl[StructuralRule]/fn[extensions]",
+      "hash": "5b0f6fa5fa87300195b0a53dc5cdb91d2d968b4ff3ac65fc59cdae93ec5c60b0"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/public.rs",
+      "item": "impl[StructuralRule]/fn[matches]",
+      "hash": "d842a1be5378832cf8ac5bb6fedc94b8b1cbf6c88ec23220f78580a2d3163d26"
+    },
+    {
+      "file": "crates/trust-but-verify/src/structural.rs",
+      "item": "impl[QueryLanguage]/fn[names]",
+      "hash": "f3b49e6f4c4348a96143457084545a42674f0f5d83a5a06b1f2260aa3862209c"
+    },
+    {
+      "file": "crates/trust-but-verify/src/structural.rs",
+      "item": "impl[QueryLanguage]/fn[extensions]",
+      "hash": "81ceba5df32f33cdab92a3f4f28e0bf988fabc9ddf89e4276075a6ec736c183e"
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]",
-      "hash": "51da68bc4a12b4ba257787791938819f709b3fe5b32fd8652f22127f9dce1f60"
+      "hash": "bba9cf6f0b10888a512bf213b967a0aa2bd218f6033032c613dd48d34fbcc43a"
     },
     {
       "file": "crates/trust-but-verify/src/structural.rs",
@@ -58,7 +108,309 @@
       "hash": "dfb871463b8059fec0de872e9ead02acb9681418ad22b822a1698361164e0227"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.search.StructuralRule"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "8d589729bbe896b3399e5551247b96947318310081cfef2727a37e1329a57df5"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.search.StructuralRule"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "e11749e8f979c968c6f98f75aa4d1690da93e1a51adfe069d6e68821885ff8b3"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/sources/hits.rs"
+                },
+                "selector": "impl[SourceProject<D>]/fn[search_structure]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f041b48d441b23c4656e871797cecd541993e7397235c89612cbcb60162f89f5"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/sources/public.rs"
+                },
+                "selector": "impl[StructuralRule]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "5ffe76bda7a1bde82c773f7ae9695032c462045fb527d81e016793f848310e8e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/sources/public.rs"
+                },
+                "selector": ""
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "195eafe199e7841201ffe12b8b6e83b1f2862993575799c3b2822f0498fe9613"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/sources/public.rs"
+                },
+                "selector": "struct[StructuralRule]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "16740dec686b03505900ef782a1325e5077df605a2b15ab45e90c25b891ab069"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/sources/public.rs"
+                },
+                "selector": "impl[StructuralRule]/fn[languages]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "17fed1beccc77d7df025cc12d090fd72e262bc1f6cff2d9535275b4538071668"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/sources/public.rs"
+                },
+                "selector": "impl[StructuralRule]/fn[compile]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "58bdee79e78a0109686472e7abe7dd03fab043db519f190ee8fcc84c17bced0f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/sources/public.rs"
+                },
+                "selector": "impl[StructuralRule]/fn[extensions]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "5b0f6fa5fa87300195b0a53dc5cdb91d2d968b4ff3ac65fc59cdae93ec5c60b0"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/sources/public.rs"
+                },
+                "selector": "impl[StructuralRule]/fn[matches]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "d842a1be5378832cf8ac5bb6fedc94b8b1cbf6c88ec23220f78580a2d3163d26"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/structural.rs"
+                },
+                "selector": "impl[QueryLanguage]/fn[names]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f3b49e6f4c4348a96143457084545a42674f0f5d83a5a06b1f2260aa3862209c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/structural.rs"
+                },
+                "selector": "impl[QueryLanguage]/fn[extensions]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "81ceba5df32f33cdab92a3f4f28e0bf988fabc9ddf89e4276075a6ec736c183e"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The structural obligations are: (1) a public `sources::StructuralRule` type with private fields and the listed signatures (`languages`, `compile`, `extensions`, `matches`); (2) `SourceProject::search_structure` \"uses the same matcher for project files\". The other clauses (error reporting, extensions non-empty, distinct ordered spans) are observable behavior.\n\nThe code supports both obligations. In `crates/trust-but-verify/src/sources/public.rs`, `struct[StructuralRule]` has a single private field `inner`. `impl[StructuralRule]` declares `languages() -> Vec<&'static str>`, `compile(&str, &Map<String, Value>) -> Result<Self, SourceError>`, `extensions(&self) -> &[&str]` and `matches(&self, &str) -> Vec<Span>`. These match the prescribed signatures. `compile` maps errors to `SourceError::Invalid`. `languages` delegates to `QueryLanguage::names()`. `extensions` delegates to the language profile's extensions. `matches` converts the inner byte ranges to `Span`.\n\nIn `crates/trust-but-verify/src/sources/hits.rs`, `impl[SourceProject<D>]/fn[search_structure]` compiles a `StructuralRule` with `StructuralRule::compile` and passes `rule.matches(text)` as the matcher to `find_hits`. That is the same public rule type and matcher used for project files. An alternative that used a different matcher for project files would violate the clause, and this code does not do that.\n\nBoth supplied roots carry `{impl}` markers and cover these obligations. No further roots are needed."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.search.StructuralRule"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "8d589729bbe896b3399e5551247b96947318310081cfef2727a37e1329a57df5"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.search.StructuralRule"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "e11749e8f979c968c6f98f75aa4d1690da93e1a51adfe069d6e68821885ff8b3"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+                },
+                "selector": "mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "bba9cf6f0b10888a512bf213b967a0aa2bd218f6033032c613dd48d34fbcc43a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/structural.rs"
+                },
+                "selector": "mod[tests]/fn[rules_compile_for_every_grammar_and_report_invalid_input]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "5c7d7f3d305b56999bf6bb7935691e140ce2472427d849ccaa5302e4ac47a2d1"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/search.rs"
+                },
+                "selector": "fn[compile_once_and_search_supplied_source]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f73d733a0ba60761a4d230752b3b22638147cebe4a233de265afa7a41189a054"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/search.rs"
+                },
+                "selector": "fn[nodes_covering_the_same_source_produce_one_span]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "b20c9a0de59d4bcfcbf837e4dc7e43cebe6eea40259b28b92dd4279d406a3568"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "I found no test-adequacy gap. I did not need to read implementation source.\n\n- **`languages` and `compile` agree.** `crates/trust-but-verify/src/structural.rs#mod[tests]/fn[rules_compile_for_every_grammar_and_report_invalid_input]` compiles a rule for each of 8 languages, searches sample text, and asserts the matched text. It then asserts `tested == StructuralRule::languages()`, so every listed language is accepted and the list has no untested entry.\n- **Compile errors.** The same test checks that unknown languages (`cobol`, `plain-text`) fail with \"unknown structural search language\". It also checks a missing `rule` key, an unexpected `fix` key, a nonexistent node kind and a bogus rule key. Each is asserted on the error message. `crates/trust-but-verify/tests/search.rs#fn[compile_once_and_search_supplied_source]` asserts `SourceError::Invalid` for an unknown language and for an empty core. Compilation takes no source, so this covers \"even when there is no source to search\".\n- **`extensions`.** For every grammar, the first test asserts that the list is non-empty, that no entry is empty and that none starts with a dot. `compile_once_and_search_supplied_source` asserts that Rust includes `rs`.\n- **Distinct spans.** `crates/trust-but-verify/tests/search.rs#fn[nodes_covering_the_same_source_produce_one_span]` matches `source_file`, `function_item` and both together over identical bytes. Each case asserts exactly one `Span`.\n- **Order by start, then end.** `compile_once_and_search_supplied_source` asserts `[\"f(g())\",\"g()\",\"h()\"]`. It also asserts `[\"f()\",\"f()()\"]`, where two spans share a start. A tree walk would visit the outer node first, so this case checks the end tiebreak.\n- **Offsets refer to the input on each call.** The test reuses one compiled rule over three different texts. One text contains `é`, so byte offsets are checked against slices of that input. The empty string returns no matches.\n- **`SourceProject::search_structure` uses the same matcher.** `crates/trust-but-verify/src/agent/project_sources.rs#mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]` compiles a `StructuralRule` and asserts that `rule.matches` on the file text equals the spans returned by `tools.search_structure`."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -68,19 +420,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "1f3ec80c856fa9d5206f26a310902a46f2c87c956c66b136edf9c762a1c3866f"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.search.StructuralRule"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "79bbdac849a74dea4cf66e3914129da8c7f202f3a1099d0e7c43a8c4cfe8f4e3"
+          "value": "8d589729bbe896b3399e5551247b96947318310081cfef2727a37e1329a57df5"
         }
       ]
     },
@@ -101,6 +441,176 @@
           "Source": {
             "resource": {
               "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/hits.rs"
+            },
+            "selector": "impl[SourceProject<D>]/fn[search_structure]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "f041b48d441b23c4656e871797cecd541993e7397235c89612cbcb60162f89f5"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/public.rs"
+            },
+            "selector": "impl[StructuralRule]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "5ffe76bda7a1bde82c773f7ae9695032c462045fb527d81e016793f848310e8e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/public.rs"
+            },
+            "selector": ""
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "195eafe199e7841201ffe12b8b6e83b1f2862993575799c3b2822f0498fe9613"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/public.rs"
+            },
+            "selector": "struct[StructuralRule]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "16740dec686b03505900ef782a1325e5077df605a2b15ab45e90c25b891ab069"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/public.rs"
+            },
+            "selector": "impl[StructuralRule]/fn[languages]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "17fed1beccc77d7df025cc12d090fd72e262bc1f6cff2d9535275b4538071668"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/public.rs"
+            },
+            "selector": "impl[StructuralRule]/fn[compile]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "58bdee79e78a0109686472e7abe7dd03fab043db519f190ee8fcc84c17bced0f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/public.rs"
+            },
+            "selector": "impl[StructuralRule]/fn[extensions]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "5b0f6fa5fa87300195b0a53dc5cdb91d2d968b4ff3ac65fc59cdae93ec5c60b0"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/public.rs"
+            },
+            "selector": "impl[StructuralRule]/fn[matches]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "d842a1be5378832cf8ac5bb6fedc94b8b1cbf6c88ec23220f78580a2d3163d26"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/structural.rs"
+            },
+            "selector": "impl[QueryLanguage]/fn[names]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "f3b49e6f4c4348a96143457084545a42674f0f5d83a5a06b1f2260aa3862209c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/structural.rs"
+            },
+            "selector": "impl[QueryLanguage]/fn[extensions]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "81ceba5df32f33cdab92a3f4f28e0bf988fabc9ddf89e4276075a6ec736c183e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/project_sources.rs"
             },
             "selector": "mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]"
@@ -108,7 +618,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "51da68bc4a12b4ba257787791938819f709b3fe5b32fd8652f22127f9dce1f60"
+          "value": "bba9cf6f0b10888a512bf213b967a0aa2bd218f6033032c613dd48d34fbcc43a"
         }
       ]
     },

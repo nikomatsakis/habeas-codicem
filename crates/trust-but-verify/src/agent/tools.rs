@@ -51,9 +51,7 @@ impl<'a, D: Domain> SessionTools<'a, D> {
         self.pages.outstanding()
     }
 
-    // {impl}`requirements.sdk.graph.validation-context.read_node.behavior`
-    // {impl}`requirements.sdk.graph.validation-context.read_node.inputs`
-    // {impl}`requirements.sdk.graph.validation-context.read_node.source_children`
+    // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
     pub(super) fn read_node(
         &mut self,
         inspection: &ValidationContext<'_, D>,
@@ -106,6 +104,7 @@ impl<'a, D: Domain> SessionTools<'a, D> {
         })
     }
 
+    // {impl}`requirements.sdk.graph.validation-context.pages.mcp`
     pub(super) async fn dispatch(
         &mut self,
         name: &str,
@@ -155,14 +154,12 @@ impl<D: Domain> ToolSession<D> for NoTools {
     }
 }
 
-// {impl}`requirements.sdk.graph.agent-harness.tool_agent`
 /// The default typed harness, with tracked graph tools and optional source tools.
 pub struct ToolAgent<P, T = NoTools> {
     pub provider: P,
     pub tools: T,
 }
 impl<P> ToolAgent<P> {
-    // {impl}`requirements.sdk.graph.agent-harness.tool_agent`
     /// Use this provider with graph tools and no extra application tools.
     pub fn new(provider: P) -> Self {
         Self {
@@ -172,7 +169,6 @@ impl<P> ToolAgent<P> {
     }
 }
 impl<P, T> ToolAgent<P, T> {
-    // {impl}`requirements.sdk.graph.agent-harness.tool_agent`
     /// Replace the extra-tool factory; every call creates a fresh tool session.
     pub fn with_tools<U>(self, tools: U) -> ToolAgent<P, U> {
         ToolAgent {
@@ -182,10 +178,6 @@ impl<P, T> ToolAgent<P, T> {
     }
 }
 
-// {impl}`requirements.sdk.graph.agent-calls.judge.submission`
-// {impl}`requirements.sdk.graph.agent-calls.judge.caching`
-// {impl}`requirements.sdk.graph.agent-calls.author_procedure`
-// {impl}`requirements.sdk.graph.agent-harness.tool_agent`
 impl<D, P, T> Agent<D> for ToolAgent<P, T>
 where
     D: Domain,
@@ -195,8 +187,6 @@ where
     P: CompletionProvider,
     T: ToolFactory<D>,
 {
-    // {impl}`requirements.sdk.graph.validation-context.shared_context`
-    // {impl}`requirements.sdk.graph.agent-harness.submission`
     fn run<'a>(
         &'a self,
         request: AgentRequest<'a, NodeId<D>, D::Error>,
@@ -207,6 +197,7 @@ where
 }
 
 impl<P: CompletionProvider, T> ToolAgent<P, T> {
+    // {impl}`requirements.sdk.graph.agent-harness.tool_agent`
     pub(super) async fn run_with_domain_tools<D>(
         &self,
         request: AgentRequest<'_, NodeId<D>, D::Error>,
@@ -255,7 +246,6 @@ impl<P: CompletionProvider, T> ToolAgent<P, T> {
 }
 
 // {cite}`habeas:util`
-// {impl}`requirements.sdk.graph.validation-context.shared_context`
 pub(super) struct GraphSession<'a, 'd, D: Domain> {
     inspection: &'a ValidationContext<'d, D>,
     domain_tools: &'a [std::sync::Arc<dyn crate::agent::RegisteredTool<D>>],
@@ -286,16 +276,13 @@ where
     D::Error: std::fmt::Display,
 {
     type Output = Value;
+    // {impl}`requirements.sdk.graph.validation-context.outgoing_edges.behavior`
     // {cite}`habeas:util`
-    // {impl}`requirements.sdk.graph.validation-context.read_node.mcp`
     // {impl}`requirements.sdk.graph.validation-context.read_node.mcp.description`
-    // {impl}`requirements.sdk.graph.validation-context.outgoing_edges.mcp`
     // {impl}`requirements.sdk.graph.validation-context.outgoing_edges.mcp.description`
-    // {impl}`requirements.sdk.graph.validation-context.pages.mcp`
     // {impl}`requirements.sdk.graph.validation-context.pages.mcp.description`
-    // {impl}`requirements.sdk.graph.agent-harness.submission.mcp`
     // {impl}`requirements.sdk.graph.agent-harness.submission.mcp.description`
-    // {impl}`requirements.sdk.graph.agent-harness.fixed_tools`
+    // {impl}`requirements.sdk.graph.validation-context.pages.mcp`
     fn tools(&self, submission: Option<ToolDefinition>) -> io::Result<Vec<ToolDefinition>> {
         let mut tools: Vec<ToolDefinition> = [
             json!({"name":"read_node","description":"Read a graph node by ID, source address, or node data. Returns text and, when more remains, a next UUID. A delivered page records its enclosing node.",
@@ -327,8 +314,6 @@ where
         Ok(tools)
     }
     // {cite}`habeas:util`
-    // {impl}`requirements.sdk.graph.agent-harness.submission.invalid`
-    // {impl}`requirements.sdk.graph.search.finish_search.behavior`
     fn submit(&mut self, _: &str, arguments: &Value) -> io::Result<Submission<Value>> {
         let outstanding = self.tools.outstanding_searches();
         if !outstanding.is_empty() {
@@ -339,15 +324,8 @@ where
         }
         Ok(Submission::Accepted(arguments.clone()))
     }
+    // {impl}`requirements.sdk.graph.agent-harness.fixed_tools`
     // {cite}`habeas:util`
-    // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
-    // {impl}`requirements.sdk.graph.validation-context.shared_context`
-    // {impl}`requirements.sdk.graph.validation-context.read_node.behavior`
-    // {impl}`requirements.sdk.graph.validation-context.read_node.inputs`
-    // {impl}`requirements.sdk.graph.validation-context.outgoing_edges.behavior`
-    // {impl}`requirements.sdk.graph.validation-context.outgoing_edges.inputs`
-    // {impl}`requirements.sdk.graph.validation-context.pages.behavior`
-    // {impl}`requirements.sdk.graph.validation-context.pages.inputs`
     async fn dispatch(&mut self, name: &str, arguments: &Value) -> io::Result<(String, usize)> {
         match name {
             "read_node" => {
@@ -373,7 +351,6 @@ where
                 Ok((json!({"targets":targets}).to_string(), 1))
             }
             _ => {
-                // {impl}`requirements.sdk.graph.agent-harness.domain_tool_inputs`
                 if let Some(tool) = self.domain_tools.iter().find(|tool| tool.name() == name) {
                     return tool
                         .call(self.inspection, arguments)
@@ -386,10 +363,6 @@ where
             }
         }
     }
-    // {impl}`requirements.sdk.graph.validation-context.shared_context`
-    // {impl}`requirements.sdk.graph.validation-context.read_node.inputs`
-    // {impl}`requirements.sdk.graph.validation-context.outgoing_edges.inputs`
-    // {impl}`requirements.sdk.graph.validation-context.pages.inputs`
     fn delivered(&mut self) -> io::Result<()> {
         for observation in self.pending.drain(..) {
             match observation {
@@ -416,6 +389,7 @@ where
     }
 }
 
+// {impl}`requirements.sdk.graph.agent-harness.submission.mcp`
 // {impl}`requirements.sdk.graph.agent-harness.submission.mcp.description`
 pub(super) fn submission_tool(mut schema: Value) -> ToolDefinition {
     let definitions = schema
@@ -433,12 +407,15 @@ pub(super) fn submission_tool(mut schema: Value) -> ToolDefinition {
     )
 }
 
-// {impl}`requirements.sdk.graph.agent-harness.submission.invalid`
 pub(super) fn submitted_value(arguments: &Value) -> io::Result<Value> {
     let object = arguments
         .as_object()
         .filter(|object| object.len() == 1 && object.contains_key("result"))
-        .ok_or_else(|| io::Error::other("submit_result requires exactly result"))?;
+        .ok_or_else(|| {
+            io::Error::other(
+                "Resubmit with exactly one field named `result` containing the answer.",
+            )
+        })?;
     Ok(object["result"].clone())
 }
 
@@ -460,7 +437,7 @@ mod submission_tests {
         ] {
             assert_eq!(
                 submitted_value(&invalid).unwrap_err().to_string(),
-                "submit_result requires exactly result"
+                "Resubmit with exactly one field named `result` containing the answer."
             );
         }
         for result in [Value::Null, json!([]), json!({"nested": 1}), json!(false)] {
@@ -469,8 +446,8 @@ mod submission_tests {
     }
 }
 
-// {impl}`requirements.sdk.graph.validation-context.node_reference`
 // {impl}`requirements.sdk.graph.validation-context.node_reference.consistency`
+// {impl}`requirements.sdk.graph.validation-context.node_reference`
 pub(super) fn node_argument<D: Domain>(
     domain: &D,
     project: Option<&crate::sources::SourceProject<D>>,

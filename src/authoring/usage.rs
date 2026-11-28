@@ -8,8 +8,9 @@ use serde::Serialize;
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+// {impl}`requirements.authoring.usage_storage`
+// {impl}`requirements.authoring.usage_requests`
 #[derive(Serialize)]
-// {impl}`requirements.authoring.credentials`
 pub(super) struct UsageRecord {
     version: u32,
     run_id: String,
@@ -23,7 +24,6 @@ pub(super) struct UsageRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub routing_reason: Option<&'static str>,
     /// The assessment policy, once a configuration is selected.
-    // {impl}`requirements.authoring.policy`
     pub policy: Option<&'static str>,
     start_time_ms: u128,
     end_time_ms: Option<u128>,
@@ -44,8 +44,6 @@ pub(super) struct UsageLog {
 }
 
 impl UsageLog {
-    // {impl}`requirements.authoring.usage_requests`
-    // {impl}`requirements.configuration.state_location`
     pub(super) fn start(state: &Path, root: &Path, subject: &str) -> io::Result<Self> {
         let start_time_ms = timestamp();
         let run_id = format!(
@@ -96,7 +94,6 @@ impl UsageLog {
         Ok(log)
     }
 
-    // {impl}`requirements.authoring.adaptive`
     pub(super) fn handoff_first_conversation(&mut self, next: &mut Self) {
         next.first_conversation_finished = self.first_conversation_finished.take();
     }
@@ -114,8 +111,6 @@ impl UsageLog {
         }
     }
 
-    // {impl}`requirements.configuration.state_location`
-    // {impl}`requirements.authoring.usage_requests`
     pub(super) fn finish(&mut self, outcome: &str) -> io::Result<()> {
         self.record.outcome = outcome.to_owned();
         self.record.end_time_ms = Some(timestamp());
@@ -123,7 +118,6 @@ impl UsageLog {
         self.save()
     }
 
-    // {impl}`requirements.configuration.state_location`
     pub(super) fn save(&self) -> io::Result<()> {
         let mut file = OpenOptions::new()
             .write(true)

@@ -1,4 +1,3 @@
-use super::sources::SourceTools;
 use crate::agent_runtime::*;
 use crate::domain::Domain;
 use crate::domain::NodeContents;
@@ -6,10 +5,7 @@ use crate::domain::NodeId;
 use crate::graph as validation;
 use crate::graph::*;
 use crate::request::Context;
-use crate::request::ValidationContext;
-use crate::resource::*;
-use crate::source_engine::*;
-use crate::sources::*;
+use crate::request::{ValidationContext, VetResult};
 use rig_core::{
     completion::{CompletionRequest, CompletionResponse, FinishReason, ToolDefinition, Usage},
     message::{
@@ -246,6 +242,67 @@ fn returned_node_page(request: &CompletionRequest) -> uuid::Uuid {
     panic!("expected a prepared node page in the conversation")
 }
 
+// {test}`requirements.sdk.graph.agent-calls.named_input`
+#[tokio::test]
+async fn named_input_delivers_the_selected_nodes_format_and_fingerprint() {
+    let mut graph = Memory::new("current".into());
+    graph
+        .node_contents
+        .lock()
+        .unwrap()
+        .insert(2, "selected".into());
+    graph.formatter = |_, content| Ok(format!("formatted {}", content.0));
+    let agent = ToolAgent::new(Script::new(vec![Some(vec![(
+        "submit_result",
+        json!({"result":true}),
+    )])]));
+    let selected = graph.cache().intern_node(Node(2));
+    let ctx = ValidationContext::with_agent(&graph, graph.cache().intern_node(Node(1)), &agent);
+    ctx.ask::<bool>().contents_of_node(selected).await.unwrap();
+    let requests = agent.provider.requests.lock().unwrap();
+    let text = serde_json::to_string(&requests[0].chat_history).unwrap();
+    assert!(text.contains("formatted selected"));
+    assert!(!text.contains("formatted current"));
+    assert!(
+        matches!(ctx.dependencies().as_slice(), [Dependency::Node(node, fingerprint)] if *node == selected && fingerprint.value == "selected")
+    );
+    assert_eq!(*graph.reads.lock().unwrap(), [2]);
+}
+
+// {test}`requirements.sdk.graph.validation-context.pages.mcp.description`
+// {test}`requirements.sdk.graph.validation-context.outgoing_edges.mcp.description`
+// {test}`requirements.sdk.graph.agent-harness.submission.mcp.description`
+#[tokio::test]
+async fn published_tool_descriptions_match_the_contract() {
+    let agent = ToolAgent::new(Script::new(vec![Some(vec![(
+        "submit_result",
+        json!({"result":true}),
+    )])]));
+    let graph = Memory::new("source".into());
+    let cx = ValidationContext::with_agent(&graph, graph.cache().intern_node(Node(1)), &agent);
+    cx.ask::<bool>().context("question").await.unwrap();
+    let requests = agent.provider.requests.lock().unwrap();
+    let definitions = &requests[0].tools;
+    for (name, expected) in [
+        (
+            "get_next_page",
+            "Pass the UUID from next to read the next page in the same format. When next is absent, this is the last page.",
+        ),
+        (
+            "outgoing_edges",
+            "Inspect a known node's outgoing targets for the requested label, making those targets available to read_node.",
+        ),
+        (
+            "submit_result",
+            "Finish by submitting your structured result in result. Exactly one accepted submission ends this call.",
+        ),
+    ] {
+        let tool = definitions.iter().find(|tool| tool.name == name).unwrap();
+        assert_eq!(tool.description, expected, "{name}");
+    }
+}
+
+// {test}`requirements.sdk.graph.validation-context.pages.mcp.description`
 // {test}`requirements.sdk.graph.agent-calls.judge.submission`
 // {test}`requirements.sdk.graph.agent-harness.submission`
 // {test}`requirements.sdk.graph.agent-harness.submission.mcp`
@@ -912,12 +969,10 @@ enum Decision {
 
 // {test}`requirements.sdk.graph.agent-harness.submission.acceptance`
 // {test}`requirements.sdk.graph.agent-calls.judge.submission`
-// {test}`requirements.sdk.graph.agent-calls.judge.submission.decoding`
 // {test}`requirements.sdk.graph.agent-harness.submission`
 // {test}`requirements.sdk.graph.agent-harness.submission.mcp`
-// {test}`requirements.sdk.graph.agent-harness.submission.invalid`
 #[tokio::test]
-async fn typed_submission_references_resolve_and_invalid_results_are_agent_errors() {
+async fn typed_submission_references_resolve() {
     let graph = Memory::new("source".into());
     let agent = ToolAgent::new(Script::new(vec![Some(vec![(
         "submit_result",
@@ -944,22 +999,83 @@ async fn typed_submission_references_resolve_and_invalid_results_are_agent_error
         schema["properties"]["result"]["properties"]["decision"]["$ref"],
         "#/$defs/Decision"
     );
-    drop(requests);
-    for calls in [
-        vec![("submit_result", json!({"result":"wrong"}))],
-        vec![("submit_result", json!({}))],
-        vec![("submit_result", json!({"other":true}))],
-        vec![("submit_result", json!({"result":true,"extra":true}))],
+}
+
+// {test}`requirements.sdk.graph.agent-harness.submission.acceptance`
+// {test}`requirements.sdk.graph.agent-calls.judge.submission.decoding`
+// {test}`requirements.sdk.graph.agent-harness.submission.invalid`
+// {test}`requirements.sdk.graph.agent-harness.submission_count`
+#[tokio::test]
+async fn malformed_submissions_receive_feedback_and_can_be_corrected() {
+    let graph = Memory::new("source".into());
+    let envelope = "exactly one field named `result`";
+    let schema_guidance = "submit_result tool schema in the `result` field";
+    for (arguments, diagnostic, guidance) in [
+        (json!({}), envelope, envelope),
+        (json!({"other":true}), envelope, envelope),
+        (json!({"result":{},"extra":true}), envelope, envelope),
+        (
+            json!({"result":{}}),
+            "missing field `decision`",
+            schema_guidance,
+        ),
+        (
+            json!({"result":r#"{"decision":"Yes"}"#}),
+            "invalid type: string",
+            schema_guidance,
+        ),
+        (
+            json!({"result":r#"{"decision":"Yes"oops"}"#}),
+            "invalid type: string",
+            schema_guidance,
+        ),
+        (
+            json!({"result":{"decision":"Maybe"}}),
+            "unknown variant `Maybe`",
+            schema_guidance,
+        ),
+        (json!({"result":42}), "invalid type", schema_guidance),
     ] {
-        let agent = ToolAgent::new(Script::new(vec![Some(calls)]));
+        let agent = ToolAgent::new(Script::new(vec![
+            Some(vec![("submit_result", arguments)]),
+            Some(vec![("submit_result", json!({"result":{"decision":"No"}}))]),
+        ]));
         let ctx = ValidationContext::with_agent(&graph, graph.cache().intern_node(Node(1)), &agent);
-        assert!(matches!(
-            ctx.ask::<bool>()
-                .vet_answer(|_| panic!("invalid submission reached vetting"))
-                .await,
-            Err(ValidationError::Agent(_))
-        ));
+        let mut vetted = 0;
+        let answer = ctx
+            .ask::<Answer>()
+            .vet_answer(|_| {
+                vetted += 1;
+                Ok(VetResult::Accept)
+            })
+            .await
+            .unwrap();
+        assert!(matches!(answer.decision, Decision::No));
+        assert_eq!(vetted, 1);
+        let requests = agent.provider.requests.lock().unwrap();
+        let Some(Message::User { content }) = requests[1].chat_history.last().map(AsRef::as_ref)
+        else {
+            panic!("expected tool feedback")
+        };
+        let UserContent::ToolResult(result) = &content[0] else {
+            panic!("expected tool feedback")
+        };
+        assert!(result.is_error);
+        let feedback = serde_json::to_string(result).unwrap();
+        assert!(feedback.contains(diagnostic), "{feedback}");
+        assert!(feedback.contains(guidance), "{feedback}");
     }
+}
+
+// {test}`requirements.sdk.graph.agent-calls.judge.submission.decoding`
+#[tokio::test]
+async fn string_answers_preserve_json_text() {
+    let graph = Memory::new("source".into());
+    let text = r#"{"decision":"Yes"}"#;
+    let turn = Some(vec![("submit_result", json!({"result":text}))]);
+    let agent = ToolAgent::new(Script::new(vec![turn]));
+    let ctx = ValidationContext::with_agent(&graph, graph.cache().intern_node(Node(1)), &agent);
+    assert_eq!(ctx.ask::<String>().await.unwrap(), text);
 }
 
 // {test}`requirements.sdk.graph.agent-calls.vet_answer`
@@ -1035,7 +1151,6 @@ async fn vetting_collects_corrections_and_rechecks_every_callback() {
 // {test}`requirements.sdk.graph.agent-calls.judge.submission`
 #[tokio::test]
 async fn vetting_preserves_domain_errors_and_skips_later_callbacks() {
-    use crate::request::VetResult;
     let graph = Memory::new("source".into());
     let agent = ToolAgent::new(Script::new(vec![Some(vec![(
         "submit_result",
@@ -1177,157 +1292,6 @@ async fn inputs_count_each_opening_insertion_and_each_repeated_node_read() {
     assert_eq!((stats.prepared_inputs, stats.delivered_inputs), (5, 2));
 }
 
-// {test}`requirements.sdk.sources.provider_observations`
-// {test}`requirements.sdk.sources.provider_defaults`
-// {test}`requirements.sdk.graph.validation-context.tracked_inspection`
-// {test}`requirements.sdk.graph.agent-harness.tool_agent`
-// {test}`requirements.sdk.graph.validation-context.read_source.behavior`
-// {test}`requirements.sdk.graph.validation-context.read_source.inputs`
-// {test}`requirements.sdk.graph.search.search_text.behavior`
-// {test}`requirements.sdk.graph.search.search_text.inputs`
-// {test}`requirements.sdk.graph.validation-context.ValidationContext`
-#[tokio::test]
-async fn source_tools_keep_search_discovery_separate_from_delivered_source_reads() {
-    let root = tempfile::tempdir().unwrap();
-    std::fs::write(root.path().join("note.txt"), "observed source\n").unwrap();
-    let graph = Memory::new("unrelated graph bytes".into());
-    let observed_node = graph.cache().intern_node(Node(7));
-    let factory = super::SourceTools::new(root.path(), |_: &OutlineId, parsed: &ParsedSource| {
-        Ok(Some(Dependency::Node(
-            observed_node,
-            Fingerprint {
-                scheme: "provided-snapshot".into(),
-                value: parsed.source.text().unwrap().into(),
-            },
-        )))
-    });
-    let agent = ToolAgent::new(Script::new(vec![
-        Some(vec![("search_text", json!({"pattern":"observed"}))]),
-        Some(vec![(
-            "read_source",
-            json!({"resource":{"scheme":"repo","location":"note.txt"},"selector":""}),
-        )]),
-        Some(vec![("submit_result", json!({"result":true}))]),
-    ]))
-    .with_tools(factory);
-    let ctx = ValidationContext::with_agent(&graph, graph.cache().intern_node(Node(1)), &agent);
-    assert!(ctx.ask::<bool>().await.unwrap());
-    let observations = ctx.dependencies();
-    assert_eq!(observations.len(), 1);
-    assert!(
-        matches!(&observations[0],Dependency::Node(observed,fingerprint) if *observed == observed_node && fingerprint.value == "observed source\n")
-    );
-}
-
-// {test}`requirements.sdk.graph.validation-context.read_source.behavior`
-// {test}`requirements.sdk.graph.validation-context.read_source.inputs`
-// {test}`requirements.sdk.graph.search.search_text.behavior`
-// {test}`requirements.sdk.graph.search.search_text.inputs`
-// {test}`requirements.sdk.graph.evidence.checking_records`
-#[tokio::test]
-async fn source_reads_track_optional_dependencies_and_empty_searches_remain_discovery() {
-    let root = tempfile::tempdir().unwrap();
-    let original = "observed source\n";
-    std::fs::write(root.path().join("note.txt"), original).unwrap();
-    for record_dependency in [false, true] {
-        let graph = Memory::new(original.into());
-        let observed = Arc::new(Mutex::new(0));
-        let count = observed.clone();
-        let observed_node = graph.cache().intern_node(Node(7));
-        let factory = SourceTools {
-            analysis: SourceAnalysis::new(
-                LocalSources::new(root.path()),
-                crate::outline_engine::language::Registry::new([]),
-            ),
-            observation: move |id: &OutlineId, parsed: &ParsedSource| {
-                assert_eq!(id.resource.location, "note.txt");
-                assert_eq!(id.selector, "");
-                *count.lock().unwrap() += 1;
-                Ok(record_dependency.then(|| {
-                    Dependency::Node(
-                        observed_node,
-                        Fingerprint {
-                            scheme: "content".into(),
-                            value: parsed.source.text().unwrap().into(),
-                        },
-                    )
-                }))
-            },
-        };
-        let ctx = ValidationContext::new(&graph, graph.cache().intern_node(Node(1)));
-        let parsed = factory
-            .analysis
-            .parse(&ResourceId {
-                scheme: "repo".into(),
-                location: "note.txt".into(),
-            })
-            .await
-            .unwrap();
-        assert_eq!(parsed.source.text().unwrap(), original);
-        assert!(ctx.dependencies().is_empty());
-        assert_eq!(*observed.lock().unwrap(), 0);
-
-        let agent = ToolAgent::new(Script::new(vec![
-            Some(vec![("search_text", json!({"pattern":"no such text"}))]),
-            Some(vec![(
-                "read_source",
-                json!({"resource":{"scheme":"repo","location":"note.txt"}}),
-            )]),
-            Some(vec![("submit_result", json!({"result":true}))]),
-        ]))
-        .with_tools(factory);
-        let ctx = ValidationContext::with_agent(&graph, graph.cache().intern_node(Node(1)), &agent);
-        assert!(ctx.ask::<bool>().await.unwrap());
-        assert_eq!(*observed.lock().unwrap(), 1);
-        let requests = agent.provider.requests.lock().unwrap();
-        for (turn, expected) in [
-            (1, json!({"complete":true,"matches":[]})),
-            (
-                2,
-                json!({"node":{"resource":{"scheme":"repo","location":"note.txt"},"selector":""},
-                    "text":["observed source"]}),
-            ),
-        ] {
-            let Message::User { content, .. } =
-                requests[turn].chat_history.last().unwrap().as_ref()
-            else {
-                panic!("expected a delivered tool result");
-            };
-            let [UserContent::ToolResult(result)] = content.as_slice() else {
-                panic!("expected one delivered result");
-            };
-            assert!(!result.is_error);
-            let [ToolResultContent::Text(text)] = result.content.as_slice() else {
-                panic!("expected result text");
-            };
-            assert_eq!(serde_json::from_str::<Value>(&text.text).unwrap(), expected);
-        }
-        drop(requests);
-
-        let record = ctx.finish(CriterionVersion::new("v1"), true).unwrap();
-        if record_dependency {
-            assert!(
-                matches!(&record.dependencies[..], [Dependency::Node(observed_node, fingerprint)]
-                    if fingerprint.scheme == "content" && fingerprint.value == original)
-            );
-        } else {
-            assert!(record.dependencies.is_empty());
-        }
-        assert!(
-            record
-                .is_current(&graph, &CriterionVersion::new("v1"))
-                .unwrap()
-        );
-        *graph.contents.lock().unwrap() = "changed source".into();
-        assert_eq!(
-            record
-                .is_current(&graph, &CriterionVersion::new("v1"))
-                .unwrap(),
-            !record_dependency
-        );
-    }
-}
-
 // {test}`requirements.sdk.graph.criteria.criterion_trait`
 // {test}`requirements.sdk.graph.domain_types`
 // {test}`requirements.sdk.domain`
@@ -1434,6 +1398,7 @@ async fn one_submission_accepts_only_its_value_and_skips_other_calls_and_prose()
     assert!(graph.reads.lock().unwrap().is_empty());
     assert!(ctx.dependencies().is_empty());
     assert_eq!(agent.provider.requests.lock().unwrap().len(), 1);
+    assert!(!graph.cache().usage().tools.contains_key("read_node"));
 }
 
 // {test}`requirements.sdk.graph.agent-harness.submission.acceptance`
@@ -1568,120 +1533,6 @@ async fn queued_contents_and_graph_read_tools_redact_credentials_before_delivery
         matches!(&ctx.dependencies()[..], [Dependency::Node(observed, fingerprint)] if *observed == graph.cache().intern_node(Node(1)) && fingerprint.value == original)
     );
     assert_eq!(*graph.contents.lock().unwrap(), original);
-}
-
-// {test}`requirements.sdk.graph.validation-context.tracked_inspection`
-// {test}`requirements.sdk.sources.provider_observations`
-// {test}`requirements.sdk.graph.validation-context.list_sources.behavior`
-// {test}`requirements.sdk.graph.validation-context.list_sources.inputs`
-// {test}`requirements.sdk.graph.validation-context.outline_source.behavior`
-// {test}`requirements.sdk.graph.validation-context.outline_source.fn`
-// {test}`requirements.sdk.graph.validation-context.outline_source.inputs`
-// {test}`requirements.sdk.graph.search.search_text.fn`
-// {test}`requirements.sdk.graph.search.search_text.behavior`
-// {test}`requirements.sdk.graph.search.search_text.inputs`
-// {test}`requirements.sdk.graph.validation-context.pages.behavior`
-// {test}`requirements.sdk.graph.validation-context.pages.inputs`
-#[tokio::test]
-async fn source_discovery_and_its_pages_do_not_register_reads() {
-    let root = tempfile::tempdir().unwrap();
-    let text = (0..1500)
-        .map(|n| format!("line {n} hit\n"))
-        .collect::<String>();
-    std::fs::write(root.path().join("note.txt"), text).unwrap();
-    let calls = Arc::new(Mutex::new(0));
-    let seen = calls.clone();
-    let observed_node = crate::domain::ValidationCache::<Memory>::new().intern_node(Node(7));
-    let factory = SourceTools {
-        analysis: SourceAnalysis::new(
-            LocalSources::new(root.path()),
-            crate::outline_engine::language::Registry::new([]),
-        ),
-        observation: move |_: &OutlineId, _: &ParsedSource| {
-            *seen.lock().unwrap() += 1;
-            Ok(Some(Dependency::Node(
-                observed_node,
-                Fingerprint {
-                    scheme: "snapshot".into(),
-                    value: "unused".into(),
-                },
-            )))
-        },
-    };
-    let mut session = super::tools::SessionTools::new(
-        <SourceTools<_, _> as ToolFactory<Memory>>::session(&factory),
-    );
-    assert_eq!(
-        session
-            .extra
-            .definitions()
-            .unwrap()
-            .iter()
-            .map(|tool| tool.name.as_str())
-            .collect::<Vec<_>>(),
-        [
-            "list_sources",
-            "search_text",
-            "search_structure",
-            "outline_source",
-            "read_source"
-        ]
-    );
-    for (name, args) in [
-        ("list_sources", json!({})),
-        ("search_text", json!({"pattern":"hit"})),
-        (
-            "outline_source",
-            json!({"resource":{"scheme":"repo","location":"note.txt"}}),
-        ),
-    ] {
-        let delivery = session.dispatch(name, &args).await.unwrap();
-        assert!(delivery.dependencies.is_empty());
-        let mut page: Value = serde_json::from_str(&delivery.text).unwrap();
-        while let Some(next) = page.get("next") {
-            let delivery = session
-                .dispatch("get_next_page", &json!({"uuid":next}))
-                .await
-                .unwrap();
-            assert!(delivery.dependencies.is_empty());
-            page = serde_json::from_str(&delivery.text).unwrap();
-        }
-    }
-    assert_eq!(*calls.lock().unwrap(), 0);
-}
-
-struct CachedProvider;
-impl SourceProvider for CachedProvider {
-    type Error = SourceError;
-    async fn list(&self, _: &SourceScope) -> Result<Vec<ResourceId>, SourceError> {
-        Ok(vec![ResourceId {
-            scheme: "generated".into(),
-            location: "cached".into(),
-        }])
-    }
-    // :::{cite} habeas:coverage
-    // The provider overrides parse with a cached snapshot. Selected-source
-    // reads must deliver and fingerprint that snapshot without fetching again;
-    // this trait-required callback rejects a refetch. Primitive provider reads
-    // are covered separately, and executing this guard would fail this test.
-    // :::
-    async fn read(&self, _: &ResourceId) -> Result<SourceFile, SourceError> {
-        Err(SourceError::Invalid("must not refetch".into()))
-    }
-    async fn parse(
-        &self,
-        resource: &ResourceId,
-        languages: &crate::outline_engine::language::Registry,
-    ) -> Result<ParsedSource, SourceError> {
-        parse_snapshot(
-            resource,
-            SourceFile {
-                bytes: b"fn observed() { call(); }\n".as_slice().into(),
-                language: Some("rust".into()),
-            },
-            languages,
-        )
-    }
 }
 
 // {cite}`habeas:util`
@@ -2189,6 +2040,7 @@ impl Conversation for MinimalConversation {
     }
 }
 
+// {test}`requirements.sdk.validation-cache.usage`
 // {test}`requirements.sdk.graph.running-criteria.ToolUsage.calls`
 // {test}`requirements.sdk.graph.running-criteria.ToolUsage.result_bytes`
 // {test}`requirements.sdk.graph.running-criteria.usage_by_tool`
@@ -2339,53 +2191,6 @@ async fn generic_conversations_can_use_default_telemetry_through_retry_and_conti
     let history = serde_json::to_string(&requests[3].chat_history).unwrap();
     assert!(history.contains("fixture answer"));
     assert!(history.contains("continue within 32 tokens"));
-}
-
-// {test}`requirements.sdk.sources.provider_observations`
-// {test}`requirements.sdk.graph.validation-context.tracked_inspection`
-// {test}`requirements.sdk.sources.provider_results.parse_snapshot`
-// {test}`requirements.sdk.graph.evidence.node_inputs`
-// {test}`requirements.sdk.graph.validation-context.read_source.behavior`
-// {test}`requirements.sdk.graph.validation-context.read_source.inputs`
-// {test}`requirements.sdk.graph.search.search_structure.behavior`
-// {test}`requirements.sdk.graph.search.search_structure.inputs`
-// {test}`requirements.sdk.graph.validation-context.outline_source.behavior`
-// {test}`requirements.sdk.graph.validation-context.outline_source.inputs`
-#[tokio::test]
-async fn cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input() {
-    let graph = Memory::new("different current source".into());
-    let observed_node = graph.cache().intern_node(Node(7));
-    let factory = SourceTools {
-        analysis: SourceAnalysis::new(CachedProvider, crate::outline_engine::languages::registry()),
-        observation: |id: &OutlineId, parsed: &ParsedSource| {
-            let index = parsed
-                .outline
-                .resolve(&id.selector)
-                .map_err(|error| error.to_string())?;
-            Ok(Some(Dependency::Node(
-                observed_node,
-                Fingerprint {
-                    scheme: "selected-content".into(),
-                    value: parsed
-                        .outline
-                        .node_lines(parsed.source.text().unwrap(), index)
-                        .join("\n"),
-                },
-            )))
-        },
-    };
-    let agent=ToolAgent::new(Script::new(vec![
-        Some(vec![("search_structure",json!({"language":"rust","rule":{"rule":{"pattern":"call()"}}}))]),
-        Some(vec![("outline_source",json!({"resource":{"scheme":"generated","location":"cached"}}))]),
-        Some(vec![("read_source",json!({"resource":{"scheme":"generated","location":"cached"},"selector":"fn[observed]"}))]),
-        Some(vec![("read_source",json!({"resource":{"scheme":"generated","location":"cached"},"selector":"fn[missing]"}))]),
-        Some(vec![("submit_result",json!({"result":true}))]),
-    ])).with_tools(factory);
-    let ctx = ValidationContext::with_agent(&graph, graph.cache().intern_node(Node(1)), &agent);
-    assert!(ctx.ask::<bool>().await.unwrap());
-    assert!(
-        matches!(&ctx.dependencies()[..],[Dependency::Node(observed,fingerprint)] if *observed == observed_node && fingerprint.value=="fn observed() { call(); }" && fingerprint.scheme=="selected-content")
-    );
 }
 
 /// Determine whether tests cover the requirement's behavior and edge cases.
@@ -2860,74 +2665,6 @@ async fn graph_read_pages_retain_the_prepared_snapshot_after_contents_change() {
 }
 
 // {test}`requirements.sdk.graph.validation-context.pages.behavior`
-// {test}`requirements.sdk.graph.validation-context.pages.inputs`
-// {test}`requirements.sdk.graph.validation-context.read_source.behavior`
-// {test}`requirements.sdk.graph.validation-context.read_source.inputs`
-#[tokio::test]
-async fn source_read_pages_retain_text_and_dependencies_without_another_read() {
-    let root = tempfile::tempdir().unwrap();
-    let original = "original source snapshot\n".repeat(1200);
-    let path = root.path().join("note.txt");
-    std::fs::write(&path, &original).unwrap();
-    let observed = Arc::new(Mutex::new(0));
-    let count = observed.clone();
-    let observed_node = crate::domain::ValidationCache::<Memory>::new().intern_node(Node(7));
-    let factory = SourceTools {
-        analysis: SourceAnalysis::new(
-            LocalSources::new(root.path()),
-            crate::outline_engine::language::Registry::new([]),
-        ),
-        observation: move |id: &OutlineId, parsed: &ParsedSource| {
-            assert_eq!(id.selector, "");
-            *count.lock().unwrap() += 1;
-            Ok(Some(Dependency::Node(
-                observed_node,
-                Fingerprint {
-                    scheme: "snapshot".into(),
-                    value: parsed.source.text().unwrap().into(),
-                },
-            )))
-        },
-    };
-    let mut session = super::tools::SessionTools::new(
-        <SourceTools<_, _> as ToolFactory<Memory>>::session(&factory),
-    );
-    let first = session
-        .dispatch(
-            "read_source",
-            &json!({"resource":{"scheme":"repo","location":"note.txt"}}),
-        )
-        .await
-        .unwrap();
-    let prepared: Value = serde_json::from_str(&first.text).unwrap();
-    std::fs::write(&path, "replacement contents\n").unwrap();
-    let mut page = prepared;
-    let mut lines = page["text"].as_array().unwrap().clone();
-    assert!(page["next"].is_string());
-    while let Some(next) = page.get("next") {
-        let delivery = session
-            .dispatch("get_next_page", &json!({"uuid":next}))
-            .await
-            .unwrap();
-        assert!(
-            matches!(&delivery.dependencies[..], [Dependency::Node(observed, fingerprint)] if *observed == observed_node && fingerprint.value == original)
-        );
-        page = serde_json::from_str(&delivery.text).unwrap();
-        assert_eq!(page["node"]["selector"], "");
-        lines.extend_from_slice(page["text"].as_array().unwrap());
-    }
-    assert_eq!(
-        lines
-            .iter()
-            .map(|v| v.as_str().unwrap())
-            .collect::<Vec<_>>()
-            .join("\n"),
-        original.trim_end()
-    );
-    assert_eq!(*observed.lock().unwrap(), 1);
-}
-
-// {test}`requirements.sdk.graph.validation-context.pages.behavior`
 // {test}`requirements.sdk.graph.agent-harness.tool_agent.isolation`
 #[tokio::test]
 async fn graph_page_ids_from_a_populated_peer_conversation_are_rejected() {
@@ -2980,332 +2717,4 @@ async fn graph_page_ids_from_a_populated_peer_conversation_are_rejected() {
     assert!(ctx.ask::<bool>().await.unwrap());
     assert_eq!(*graph.reads.lock().unwrap(), [1, 1]);
     assert_eq!(agent.provider.state.lock().unwrap().0, 5);
-}
-
-// {test}`requirements.sdk.graph.validation-context.read_source.behavior`
-// {test}`requirements.sdk.graph.validation-context.read_source.inputs`
-// {test}`requirements.sdk.graph.validation-context.list_sources.behavior`
-// {test}`requirements.sdk.graph.validation-context.list_sources.inputs`
-// {test}`requirements.sdk.graph.validation-context.outline_source.behavior`
-// {test}`requirements.sdk.graph.validation-context.outline_source.inputs`
-// {test}`requirements.sdk.graph.search.search_text.behavior`
-// {test}`requirements.sdk.graph.search.search_text.inputs`
-// {test}`requirements.sdk.graph.search.search_structure.behavior`
-// {test}`requirements.sdk.graph.search.search_structure.inputs`
-// {test}`requirements.sdk.graph.validation-context.pages.behavior`
-// {test}`requirements.sdk.graph.validation-context.pages.inputs`
-// {test}`requirements.sdk.graph.search.search_text.mcp`
-#[tokio::test]
-// {test}`requirements.sdk.graph.agent-harness.fixed_tools`
-async fn source_tools_forward_arguments_and_present_discovery_and_read_results() {
-    struct Provider(Arc<Mutex<Vec<Value>>>);
-    impl SourceProvider for Provider {
-        type Error = SourceError;
-        async fn list(&self, scope: &SourceScope) -> Result<Vec<ResourceId>, SourceError> {
-            self.0
-                .lock()
-                .unwrap()
-                .push(json!({"list":scope.path_prefix()}));
-            Ok(vec![ResourceId {
-                scheme: "generated".into(),
-                location: "source".into(),
-            }])
-        }
-        async fn read(&self, id: &ResourceId) -> Result<SourceFile, SourceError> {
-            self.0.lock().unwrap().push(json!({"read":id}));
-            Ok(SourceFile {
-                bytes: b"fn chosen() { call(); }\nfn other() {}\n"
-                    .as_slice()
-                    .into(),
-                language: Some("rust".into()),
-            })
-        }
-        async fn search_text(&self, query: &TextQuery) -> Result<TextMatches, SourceError> {
-            self.0.lock().unwrap().push(json!({"text":query.pattern,"prefix":query.scope.path_prefix(),"context":query.context_lines,"limit":query.limit}));
-            if query.pattern == "error" {
-                return Err(SourceError::Invalid("text search failed".into()));
-            }
-            Ok(TextMatches {
-                complete: query.limit.is_none(),
-                matches: vec![TextMatch {
-                    path: "source".into(),
-                    line: 7,
-                    excerpt: "text excerpt".into(),
-                }],
-            })
-        }
-        async fn search_structure(
-            &self,
-            query: &StructuralQuery,
-            _: &crate::outline_engine::language::Registry,
-        ) -> Result<StructuralMatches, SourceError> {
-            self.0.lock().unwrap().push(json!({"structure":query.language,"rule":query.rule,"prefix":query.scope.path_prefix(),"limit":query.limit}));
-            if query.language.as_str() == "error" {
-                return Err(SourceError::Invalid("structural search failed".into()));
-            }
-            Ok(StructuralMatches {
-                complete: query.limit.is_none(),
-                matches: vec![StructuralMatch {
-                    node: crate::outline::OutlineData {
-                        path: "source".into(),
-                        selector: "fn[chosen]".into(),
-                    },
-                    excerpt: if query.scope.path_prefix() == "paged" {
-                        "structural excerpt".repeat(800)
-                    } else {
-                        "structural excerpt".into()
-                    },
-                }],
-            })
-        }
-    }
-    let calls = Arc::new(Mutex::new(Vec::new()));
-    let reads = Arc::new(Mutex::new(Vec::new()));
-    let observed = reads.clone();
-    let observed_node = crate::domain::ValidationCache::<Memory>::new().intern_node(Node(7));
-    let factory = SourceTools {
-        analysis: SourceAnalysis::new(
-            Provider(calls.clone()),
-            crate::outline_engine::languages::registry(),
-        ),
-        observation: move |id: &OutlineId, parsed: &ParsedSource| {
-            observed.lock().unwrap().push(id.clone());
-            assert_eq!(
-                parsed.source.text().unwrap(),
-                "fn chosen() { call(); }\nfn other() {}\n"
-            );
-            Ok(Some(Dependency::Node(
-                observed_node,
-                Fingerprint {
-                    scheme: "selected".into(),
-                    value: id.selector.clone(),
-                },
-            )))
-        },
-    };
-    let mut session = super::tools::SessionTools::new(
-        <SourceTools<_, _> as ToolFactory<Memory>>::session(&factory),
-    );
-    let resource = json!({"scheme":"generated","location":"source"});
-    for prefix in [None, Some("src/")] {
-        let mut args = json!({});
-        if let Some(prefix) = prefix {
-            args["prefix"] = json!(prefix);
-        }
-        let delivery = session.dispatch("list_sources", &args).await.unwrap();
-        assert_eq!(
-            serde_json::from_str::<Value>(&delivery.text).unwrap(),
-            json!({"files":[resource]})
-        );
-        assert!(delivery.dependencies.is_empty());
-        args["pattern"] = json!("call.*");
-        if prefix.is_some() {
-            args["context_lines"] = json!(3);
-            args["limit"] = json!(2);
-        }
-        let delivery = session.dispatch("search_text", &args).await.unwrap();
-        assert_eq!(
-            serde_json::from_str::<Value>(&delivery.text).unwrap(),
-            json!({"complete":prefix.is_none(),"matches":[{"path":"source","line":7,"excerpt":"text excerpt"}]})
-        );
-        assert!(delivery.dependencies.is_empty());
-        args["language"] = json!("rust");
-        args["rule"] = json!({"rule":{"pattern":"call()"}});
-        let delivery = session.dispatch("search_structure", &args).await.unwrap();
-        assert_eq!(
-            serde_json::from_str::<Value>(&delivery.text).unwrap(),
-            json!({"complete":prefix.is_none(),"matches":[{"node":{"path":"source","selector":"fn[chosen]"},"excerpt":"structural excerpt"}]})
-        );
-        assert!(delivery.dependencies.is_empty());
-    }
-    let delivery = session
-        .dispatch("outline_source", &json!({"resource":resource}))
-        .await
-        .unwrap();
-    let outline: Value = serde_json::from_str(&delivery.text).unwrap();
-    assert_eq!(outline["resource"], resource);
-    assert!(
-        outline["nodes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|node| node["selector"] == "fn[chosen]" && node["kind"] == "fn"),
-        "{outline}"
-    );
-    assert!(delivery.dependencies.is_empty());
-    assert!(reads.lock().unwrap().is_empty());
-    for selector in [None, Some(""), Some("fn[chosen]")] {
-        let mut args = json!({"resource":resource});
-        if let Some(selector) = selector {
-            args["selector"] = json!(selector);
-        }
-        let delivery = session.dispatch("read_source", &args).await.unwrap();
-        let read: Value = serde_json::from_str(&delivery.text).unwrap();
-        assert_eq!(
-            read["node"],
-            json!({"resource":resource,"selector":selector.unwrap_or("")})
-        );
-        let expected = if selector == Some("fn[chosen]") {
-            json!(["fn chosen() { call(); }"])
-        } else {
-            json!(["fn chosen() { call(); }", "fn other() {}"])
-        };
-        assert_eq!(read["text"], expected);
-        assert!(
-            matches!(&delivery.dependencies[..], [Dependency::Node(observed, fingerprint)] if *observed == observed_node && fingerprint.value == selector.unwrap_or(""))
-        );
-    }
-    assert_eq!(
-        &calls.lock().unwrap()[..6],
-        &[
-            json!({"list":""}),
-            json!({"text":"call.*","prefix":"","context":0,"limit":null}),
-            json!({"structure":"rust","rule":{"rule":{"pattern":"call()"}},"prefix":"","limit":null}),
-            json!({"list":"src/"}),
-            json!({"text":"call.*","prefix":"src/","context":3,"limit":2}),
-            json!({"structure":"rust","rule":{"rule":{"pattern":"call()"}},"prefix":"src/","limit":2}),
-        ]
-    );
-    assert_eq!(
-        reads
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|id| id.selector.as_str())
-            .collect::<Vec<_>>(),
-        ["", "", "fn[chosen]"]
-    );
-    for (name, args, message) in [
-        (
-            "search_text",
-            json!({"pattern":"error"}),
-            "text search failed",
-        ),
-        (
-            "search_structure",
-            json!({"language":"error","rule":{"rule":{"pattern":"call()"}}}),
-            "structural search failed",
-        ),
-    ] {
-        assert!(
-            session
-                .dispatch(name, &args)
-                .await
-                .err()
-                .unwrap()
-                .to_string()
-                .contains(message)
-        );
-    }
-    let delivered = session
-        .dispatch(
-            "search_structure",
-            &json!({"language":"rust","rule":{"rule":{"pattern":"call()"}},"prefix":"paged"}),
-        )
-        .await
-        .unwrap();
-    assert!(delivered.dependencies.is_empty());
-    let result: Value = serde_json::from_str(&delivered.text).unwrap();
-    assert!(result.get("next").is_none());
-    assert_eq!(
-        result["matches"][0]["excerpt"],
-        "structural excerpt".repeat(800)
-    );
-    assert_eq!(
-        reads.lock().unwrap().len(),
-        3,
-        "discovery pages cannot invoke the observation callback"
-    );
-}
-
-// {test}`requirements.sdk.graph.validation-context.outline_source.behavior`
-// {test}`requirements.sdk.sources.provider_results.parse_snapshot`
-#[tokio::test]
-async fn source_outlines_present_every_top_level_and_nested_item() {
-    let root = tempfile::tempdir().unwrap();
-    let text = "fn top() {}\nstruct Thing;\nimpl Thing { fn nested(&self) {} }\nfn last() {}\n";
-    std::fs::write(root.path().join("outline.rs"), text).unwrap();
-    let factory = SourceTools {
-        analysis: SourceAnalysis::new(
-            LocalSources::new(root.path()),
-            crate::outline_engine::languages::registry(),
-        ),
-        observation: |_: &OutlineId,
-                      _: &ParsedSource|
-         -> Result<Option<Dependency<NodeId<Memory>, Label>>, String> {
-            panic!("outlines are discovery")
-        },
-    };
-    let id = ResourceId {
-        scheme: "repo".into(),
-        location: "outline.rs".into(),
-    };
-    let parsed = factory.analysis.parse(&id).await.unwrap();
-    assert_eq!(parsed.resource, id);
-    assert_eq!(parsed.source.text().unwrap(), text);
-    let mut session = super::tools::SessionTools::new(
-        <SourceTools<_, _> as ToolFactory<Memory>>::session(&factory),
-    );
-    let delivery = session
-        .dispatch("outline_source", &json!({"resource":id}))
-        .await
-        .unwrap();
-    assert_eq!(
-        serde_json::from_str::<Value>(&delivery.text).unwrap(),
-        json!({
-            "resource":id,
-            "nodes":[
-                {"selector":"", "kind":""},
-                {"selector":"fn[top]", "kind":"fn"},
-                {"selector":"struct[Thing]", "kind":"struct"},
-                {"selector":"impl[Thing]", "kind":"impl"},
-                {"selector":"impl[Thing]/fn[nested]", "kind":"fn"},
-                {"selector":"fn[last]", "kind":"fn"}
-            ]
-        })
-    );
-}
-
-// {test}`requirements.sdk.graph.search.search_structure.behavior`
-// {test}`requirements.sdk.graph.search.search_structure.inputs`
-#[tokio::test]
-async fn empty_structural_search_results_remain_discovery() {
-    let root = tempfile::tempdir().unwrap();
-    std::fs::write(
-        root.path().join("source.rs"),
-        "fn chosen() { present(); }\n",
-    )
-    .unwrap();
-    let observations = Arc::new(Mutex::new(0));
-    let called = observations.clone();
-    let factory = SourceTools {
-        analysis: SourceAnalysis::new(
-            LocalSources::new(root.path()),
-            crate::outline_engine::languages::registry(),
-        ),
-        observation: move |_: &OutlineId,
-                           _: &ParsedSource|
-              -> Result<Option<Dependency<NodeId<Memory>, Label>>, String> {
-            *called.lock().unwrap() += 1;
-            Ok(None)
-        },
-    };
-    let mut session = super::tools::SessionTools::new(
-        <SourceTools<_, _> as ToolFactory<Memory>>::session(&factory),
-    );
-    let delivery = session
-        .dispatch(
-            "search_structure",
-            &json!({
-                "language":"rust", "rule":{"rule":{"pattern":"absent()"}}
-            }),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        serde_json::from_str::<Value>(&delivery.text).unwrap(),
-        json!({"complete":true,"matches":[]})
-    );
-    assert!(delivery.dependencies.is_empty());
-    assert_eq!(*observations.lock().unwrap(), 0);
 }

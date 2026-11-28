@@ -1,8 +1,8 @@
 {
   "requirement": "`source_span` returns the original text at a file-relative `Span`, including when\ncalled on a selected item. `source_span_redacted` accepts the same coordinates\nand applies {cite}`requirements.sdk.sources.redaction` using the whole snapshot.\nA span containing the first byte of a recognized credential receives its marker.\nEach span preserves the line breaks in its portion of the credential. Joining\nadjacent redacted spans produces the redacted text of their union.\n\nBoth methods return `None` for reversed bounds, out-of-file offsets, or offsets\ninside a UTF-8 character. An empty span at a valid boundary returns empty text.",
   "determination": true,
-  "rationale": "**Obligations and the tests that cover them**\n\nThe main test is `crates/trust-but-verify/tests/outline_content.rs#fn[selected_item_reads_checked_file_spans_with_snapshot_redaction]`. It builds a source file with a multibyte `é` before a GitHub token. It selects `fn[selected]` and calls both span methods on the selected item.\n\n- **`source_span` returns the original text at a file-relative span, including on a selected item.** The test asserts `item.source_span(rest) == Some(&token[4..])`. The span lies outside the selected fn and sits after a multibyte character, so it shows the offsets are file-relative bytes.\n- **`source_span_redacted` redacts using the whole snapshot.** The span `(0, source.len())` must equal `redact_text(&source)`. The credential is in a comment outside the selected item, so this confirms whole-file redaction.\n- **A span containing the first byte of a credential receives its marker.** `source_span_redacted(first)` ends mid-token and must equal `[REDACTED:GitHub Token]`. `source_span_redacted(rest)` excludes the first byte and must equal `\"\"`. Together they check both the marker and its absence.\n- **Each span preserves the line breaks in its portion of the credential.** `crates/trust-but-verify/src/redaction/tests.rs#fn[adjacent_redacted_slices_preserve_a_split_crlf]` splits a multi-line CRLF private key between `\\r` and `\\n`. It asserts the first slice ends with `\\r` and that the two slices joined equal `redact_text`. `source_span_redacted` delegates to `Redaction::slice` after a bounds check, so this test exercises the same code that decides line-break preservation.\n- **Joining adjacent redacted spans produces the redacted text of their union.** The CRLF test covers one split. The marked test covers the single-line token case only by implication, because the marker plus `\"\"` there matches the whole-file redaction.\n- **Both methods return `None` for reversed bounds, out-of-file offsets, or offsets inside a UTF-8 character.** The loop asserts `None` from both methods for `Span::new(1, 0)` (reversed), `(0, len+1)` (out of file), `(4, 5)` (start inside `é`) and `(0, 4)` (end inside `é`).\n- **An empty span at a valid boundary returns empty text.** The test asserts `Some(\"\")` from both methods for the empty span at `source.len()`.\n\n**Observations**\n\n- `crates/trust-but-verify/src/redaction/tests.rs#fn[slices_concatenate_to_the_redacted_whole]` checks the join property at every char-boundary split of a source containing a multi-line private key. That includes empty slices at the start and end. It is marked only for `requirements.authoring.redaction` and `requirements.sdk.sources.redaction`. It is extra evidence for the join obligation and is not needed for adequacy, because the marked tests already cover each obligation above. A `{test}` reference to the subject would be a harmless addition.\n- No `{fixme}` acknowledgments apply.\n\nI found no requirement-violating behavior that the marked tests would accept.",
-  "references": "4cda47bedccbb94d4c4b51c6d7a69c7c2f1a63b236a281ad8d2bcf57fb10f536",
+  "rationale": "structural: I found no structural obligation in `requirements.sdk.outlines.source_spans` that needs implementation evidence, so the empty review roots are acceptable. I judged each clause by asking whether a different implementation could produce the same observable results and still violate it.\n\n- **\"`source_span` returns the original text at a file-relative `Span`, including when called on a selected item\".** This describes returned values. A version that sliced the text through another mechanism, or that was reached through a selected item, would return the same results, so the mechanism is discretionary.\n- **\"`source_span_redacted` accepts the same coordinates and applies `requirements.sdk.sources.redaction` using the whole snapshot\".** \"Whole snapshot\" is observable. A span must be redacted as if the whole file were scanned, so a credential that begins before the span is handled correctly. An implementation that redacts the whole file and then slices, or one that scans a window and gives identical results, would satisfy the text equally. The redaction rules themselves belong to `requirements.sdk.sources.redaction`, which this requirement only cites.\n- **Marker, line-break and adjacency rules.** \"A span containing the first byte of a recognized credential receives its marker\", \"Each span preserves the line breaks…\" and \"Joining adjacent redacted spans produces the redacted text of their union\" are all constraints on output.\n- **\"Both methods return `None` for reversed bounds, out-of-file offsets, or offsets inside a UTF-8 character. An empty span at a valid boundary returns empty text.\"** These are input-to-output behaviors.\n\nThe method names `source_span` and `source_span_redacted` appear in the text. Their full signatures, `Option<&str>` and `Option<Cow<'_, str>>`, are declared in the outline-contents API requirements, not in this text. This text does not prescribe a type, library, algorithm or delegation interface.\n\nFor context, `crates/trust-but-verify/src/outline/contents.rs#impl[OutlineContent]/fn[source_span]` uses `snapshot.source.get(span.range())`. `fn[source_span_redacted]` in the same impl calls `source_span` first and redacts the whole file. Behavioral evidence for this requirement belongs to the tests.\n\nbehavioral: The two supplied tests cover each obligation of `requirements.sdk.outlines.source_spans`.\n\n**`crates/trust-but-verify/tests/outline_content.rs#fn[selected_item_reads_checked_file_spans_with_snapshot_redaction]`**\n- **Original text on a selected item:** it selects `fn[selected]` and asserts `item.source_span(rest) == Some(&token[4..])`. The span is file-relative and sits outside the item's own range.\n- **First-byte marker and whole-snapshot redaction:** the token is split into `first` and `rest`.\n  - `source_span_redacted(first)` is `[REDACTED:GitHub Token]`.\n  - `source_span_redacted(rest)` is `\"\"`.\n  - The span `0..len` equals `redact_text(&source)`.\n  - So the span holding the first byte gets the marker, a later span inside the credential gets nothing, and the file text is redacted as a whole.\n  - The source starts with a multibyte `é`, so the offsets are not trivial.\n- **Invalid spans:** it asserts that both methods return `None` for each of these, covering all three named cases:\n  - reversed bounds (`1,0`);\n  - an end beyond the file (`0,len+1`);\n  - a start inside `é` (`4,5`);\n  - an end inside `é` (`0,4`).\n- **Empty span:** an empty span at `source.len()` returns `Some(\"\")` from both methods.\n\n**`crates/trust-but-verify/src/redaction/tests.rs#fn[adjacent_redacted_slices_preserve_a_split_crlf]`**\n- It covers line-break preservation across adjacent slices and joining them into the redacted union. It uses a multi-line private key with CRLF line endings, split between the `\\r` and the `\\n`.\n- It asserts that the first slice ends with `\\r`.\n- It asserts that the two slices joined equal `redact_text(&source)`.\n- `OutlineContent::source_span_redacted` calls `Redaction::slice` after checking the span with `source_span`. So the test exercises the code that does the line-break handling and the joining.\n\nThe method-level test uses a single-line token, so it doesn't check line breaks. `source_span_redacted` adds no logic of its own for them, so I don't count that as a gap.\n\nI found no obligation without a test.",
+  "references": "0c9f63dc7b3d2bc4a2f66ee800dbaee5d83293d48f5fba4ac2dc3eee9e3b58c2",
   "inputs": [
     {
       "requirements": "requirements.sdk.outlines.source_spans",
@@ -55,11 +55,6 @@
       "hash": "bce78c0748c28ad94682bc3b418f100ab87483c82b1644b2a8d162759cf242a5"
     },
     {
-      "file": "crates/trust-but-verify/src/redaction/tests.rs",
-      "item": "fn[slices_concatenate_to_the_redacted_whole]",
-      "hash": "6216d74dae2a048018d64484ebaa0161f57db91c8cbeceda93a76f049ea82fab"
-    },
-    {
       "file": "crates/trust-but-verify/src/outline/contents.rs",
       "item": "impl[OutlineContent]/fn[source_span]",
       "hash": "fb232d23358b181d7556fb83b72d0497d35de26a1c87b8a0119b44b7443d4583"
@@ -68,9 +63,185 @@
       "file": "crates/trust-but-verify/src/outline/contents.rs",
       "item": "impl[OutlineContent]/fn[source_span_redacted]",
       "hash": "9667512ed3dddab4bf580ce50ff5bae2201312102fdc15e81dbddce13ed9892e"
+    },
+    {
+      "file": "crates/trust-but-verify/src/redaction/tests.rs",
+      "item": "fn[slices_concatenate_to_the_redacted_whole]",
+      "hash": "6216d74dae2a048018d64484ebaa0161f57db91c8cbeceda93a76f049ea82fab"
+    },
+    {
+      "file": "crates/trust-but-verify/src/redaction/mod.rs",
+      "item": "impl[Redaction]/fn[slice]",
+      "hash": "ad32a3fecd6cb80136ac846ec1087b60bc1daf9458f47a825749e2b21bfdcb09"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.outlines.source_spans"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "0c9f63dc7b3d2bc4a2f66ee800dbaee5d83293d48f5fba4ac2dc3eee9e3b58c2"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.outlines.source_spans"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "33158b8e790002846e3d89c782e5fbdee6777d181216729b326a143f900f8465"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.sources.redaction"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "fae586f1737583f6532a84c71a9a4704271ce8aedf7fd86fc2b86dd2189998b3"
+            }
+          ]
+        },
+        {
+          "OutgoingEdges": [
+            {
+              "Requirement": "requirements.sdk.outlines.source_spans"
+            },
+            "Implements",
+            {
+              "scheme": "node-path-set-sha256-v1",
+              "value": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "I found no structural obligation in `requirements.sdk.outlines.source_spans` that needs implementation evidence, so the empty review roots are acceptable. I judged each clause by asking whether a different implementation could produce the same observable results and still violate it.\n\n- **\"`source_span` returns the original text at a file-relative `Span`, including when called on a selected item\".** This describes returned values. A version that sliced the text through another mechanism, or that was reached through a selected item, would return the same results, so the mechanism is discretionary.\n- **\"`source_span_redacted` accepts the same coordinates and applies `requirements.sdk.sources.redaction` using the whole snapshot\".** \"Whole snapshot\" is observable. A span must be redacted as if the whole file were scanned, so a credential that begins before the span is handled correctly. An implementation that redacts the whole file and then slices, or one that scans a window and gives identical results, would satisfy the text equally. The redaction rules themselves belong to `requirements.sdk.sources.redaction`, which this requirement only cites.\n- **Marker, line-break and adjacency rules.** \"A span containing the first byte of a recognized credential receives its marker\", \"Each span preserves the line breaks…\" and \"Joining adjacent redacted spans produces the redacted text of their union\" are all constraints on output.\n- **\"Both methods return `None` for reversed bounds, out-of-file offsets, or offsets inside a UTF-8 character. An empty span at a valid boundary returns empty text.\"** These are input-to-output behaviors.\n\nThe method names `source_span` and `source_span_redacted` appear in the text. Their full signatures, `Option<&str>` and `Option<Cow<'_, str>>`, are declared in the outline-contents API requirements, not in this text. This text does not prescribe a type, library, algorithm or delegation interface.\n\nFor context, `crates/trust-but-verify/src/outline/contents.rs#impl[OutlineContent]/fn[source_span]` uses `snapshot.source.get(span.range())`. `fn[source_span_redacted]` in the same impl calls `source_span` first and redacts the whole file. Behavioral evidence for this requirement belongs to the tests."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.outlines.source_spans"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "0c9f63dc7b3d2bc4a2f66ee800dbaee5d83293d48f5fba4ac2dc3eee9e3b58c2"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.outlines.source_spans"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "33158b8e790002846e3d89c782e5fbdee6777d181216729b326a143f900f8465"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.sources.redaction"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "fae586f1737583f6532a84c71a9a4704271ce8aedf7fd86fc2b86dd2189998b3"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/redaction/tests.rs"
+                },
+                "selector": "fn[adjacent_redacted_slices_preserve_a_split_crlf]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "5a936aaee96f6e2dff571868ab76bc276c4ca3cf90cc457001ba08da659b0722"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/outline_content.rs"
+                },
+                "selector": "fn[selected_item_reads_checked_file_spans_with_snapshot_redaction]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "bce78c0748c28ad94682bc3b418f100ab87483c82b1644b2a8d162759cf242a5"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/outline/contents.rs"
+                },
+                "selector": "impl[OutlineContent]/fn[source_span]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "fb232d23358b181d7556fb83b72d0497d35de26a1c87b8a0119b44b7443d4583"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/outline/contents.rs"
+                },
+                "selector": "impl[OutlineContent]/fn[source_span_redacted]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "9667512ed3dddab4bf580ce50ff5bae2201312102fdc15e81dbddce13ed9892e"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The two supplied tests cover each obligation of `requirements.sdk.outlines.source_spans`.\n\n**`crates/trust-but-verify/tests/outline_content.rs#fn[selected_item_reads_checked_file_spans_with_snapshot_redaction]`**\n- **Original text on a selected item:** it selects `fn[selected]` and asserts `item.source_span(rest) == Some(&token[4..])`. The span is file-relative and sits outside the item's own range.\n- **First-byte marker and whole-snapshot redaction:** the token is split into `first` and `rest`.\n  - `source_span_redacted(first)` is `[REDACTED:GitHub Token]`.\n  - `source_span_redacted(rest)` is `\"\"`.\n  - The span `0..len` equals `redact_text(&source)`.\n  - So the span holding the first byte gets the marker, a later span inside the credential gets nothing, and the file text is redacted as a whole.\n  - The source starts with a multibyte `é`, so the offsets are not trivial.\n- **Invalid spans:** it asserts that both methods return `None` for each of these, covering all three named cases:\n  - reversed bounds (`1,0`);\n  - an end beyond the file (`0,len+1`);\n  - a start inside `é` (`4,5`);\n  - an end inside `é` (`0,4`).\n- **Empty span:** an empty span at `source.len()` returns `Some(\"\")` from both methods.\n\n**`crates/trust-but-verify/src/redaction/tests.rs#fn[adjacent_redacted_slices_preserve_a_split_crlf]`**\n- It covers line-break preservation across adjacent slices and joining them into the redacted union. It uses a multi-line private key with CRLF line endings, split between the `\\r` and the `\\n`.\n- It asserts that the first slice ends with `\\r`.\n- It asserts that the two slices joined equal `redact_text(&source)`.\n- `OutlineContent::source_span_redacted` calls `Redaction::slice` after checking the span with `source_span`. So the test exercises the code that does the line-break handling and the joining.\n\nThe method-level test uses a single-line token, so it doesn't check line breaks. `source_span_redacted` adds no logic of its own for them, so I don't count that as a gap.\n\nI found no obligation without a test."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -80,19 +251,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "4cda47bedccbb94d4c4b51c6d7a69c7c2f1a63b236a281ad8d2bcf57fb10f536"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.outlines.source_spans"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "d227879c393a88070cb2455d09632b15326683fcf601f765d8d278a4da27755a"
+          "value": "0c9f63dc7b3d2bc4a2f66ee800dbaee5d83293d48f5fba4ac2dc3eee9e3b58c2"
         }
       ]
     },
@@ -115,6 +274,18 @@
         {
           "scheme": "habeas-input-v1",
           "value": "fae586f1737583f6532a84c71a9a4704271ce8aedf7fd86fc2b86dd2189998b3"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.sdk.outlines.source_spans"
+        },
+        "Implements",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
         }
       ]
     },
@@ -153,35 +324,6 @@
       ]
     },
     {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.outlines.source_spans"
-        },
-        "Implements",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "883c387cbed2564335fda21326462a4839c6741d40da0ff2b0ce2527199b254d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/redaction/tests.rs"
-            },
-            "selector": "fn[slices_concatenate_to_the_redacted_whole]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "6216d74dae2a048018d64484ebaa0161f57db91c8cbeceda93a76f049ea82fab"
-        }
-      ]
-    },
-    {
       "Node": [
         {
           "Source": {
@@ -212,6 +354,52 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "9667512ed3dddab4bf580ce50ff5bae2201312102fdc15e81dbddce13ed9892e"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.sdk.outlines.source_spans"
+        },
+        "Tests",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "2b9e2f57c1fab9984f54a324c65f6543bee0b89e2361ff3c21afbf5696f0ea2e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/redaction/tests.rs"
+            },
+            "selector": "fn[slices_concatenate_to_the_redacted_whole]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "6216d74dae2a048018d64484ebaa0161f57db91c8cbeceda93a76f049ea82fab"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/redaction/mod.rs"
+            },
+            "selector": "impl[Redaction]/fn[slice]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "ad32a3fecd6cb80136ac846ec1087b60bc1daf9458f47a825749e2b21bfdcb09"
         }
       ]
     }

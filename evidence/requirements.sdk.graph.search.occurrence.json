@@ -1,8 +1,8 @@
 {
   "requirement": "Return one result per occurrence, including multiple matches on the same line or in the same item. Each result contains the enclosing `NodeId<D>`, the exact matched text, and its file-relative `Span` in the retained UTF-8 source (zero-based byte offsets, end exclusive). `SourceProject::search_text` and `SourceProject::search_structure` return these hits. Rust callers can use the node ID to load the item's contents and choose their own presentation.\n\n```rust,ignore\n#[non_exhaustive]\npub struct SearchHit<N> {\n    pub node: N,\n    pub span: Span,\n    pub text: String,\n    /* private fields */\n}\n\nimpl<N> SearchHit<N> {\n    pub fn new(\n        node: N,\n        span: Span,\n        item: OutlineContent,\n    ) -> Result<Self, SourceError>;\n}\n```\n\nTrait implementations\n\n```rust,ignore\nimpl<N: Debug> Debug for SearchHit<N>;\n```",
   "determination": true,
-  "rationale": "Obligations from `requirements.sdk.graph.search.occurrence`: (1) one result per occurrence, including several on one line or in one item; (2) each hit carries the enclosing node, the exact matched text and a file-relative span (zero-based UTF-8 byte offsets, end exclusive); (3) both `SourceProject::search_text` and `SourceProject::search_structure` return these hits; (4) the `SearchHit` shape, with public `node`, `span` and `text`, plus `new` and `Debug`.\n\nCoverage in `crates/trust-but-verify/src/agent/project_sources.rs`:\n- `mod[tests]/fn[search_groups_exact_occurrences_and_records_the_selected_declaration]` covers `search_text`. The source is `const A = \"éhit\"; const B = \"hit hit\";` on a single line. It asserts exactly three hits as (node, span, text) tuples:\n  - `const[A]` at 19..22 with text \"hit\".\n  - `const[B]` at 42..45 and again at 46..49.\n  - This covers one result per occurrence, two hits in one item, and several hits on one line. The 2-byte `é` shifts the offsets, so byte offsets (not chars) and the 0-based, end-exclusive convention are checked. The enclosing node and the exact text are asserted.\n- `mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]` covers `search_structure`. It uses `fn one(){call();} fn two(){call();}` on one line. It asserts hits `code.rs#fn[one]` 9..15 \"call()\" and `code.rs#fn[two]` 27..33 \"call()\". It also asserts that the spans equal `StructuralRule::matches` on the file text. This covers the structural entry point with correct node, text and span, and two same-line occurrences in different items.\n- The tests read `h.node`, `h.span` and `h.text` directly, so the public fields are exercised.\n\nRemaining points:\n- `SearchHit::new` returns `Result`, but the requirement text names no failure behavior for it. An untested invalid-span path is therefore not a named boundary.\n- The `Debug` implementation is a derive with no conditional or transformation of its own, so it needs no test.\n- Both tests carry `{test}` references to the subject, so there is no marking gap.",
-  "references": "05ded44da7e3f4a19670904d011df86965e34df4c69720e0597fb2ca2641db1f",
+  "rationale": "structural: The structural obligations in `requirements.sdk.graph.search.occurrence` are the `SearchHit<N>` shape, `SearchHit::new`, the `Debug` impl, and the two `SourceProject` methods that return these hits. The supplied roots cover each of them.\n\n- **`SearchHit` shape:** The text prescribes `#[non_exhaustive] pub struct SearchHit<N>` with public `node: N`, `span: Span` and `text: String`, plus private fields. `crates/trust-but-verify/src/sources/public.rs#struct[SearchHit]` declares exactly that, with a private `pub(crate) item: OutlineContent`. A struct with different public fields, or one that was exhaustive, would break the clause.\n- **Constructor:** The text prescribes `new(node: N, span: Span, item: OutlineContent) -> Result<Self, SourceError>`. `crates/trust-but-verify/src/sources/public.rs#impl[SearchHit<N>]/fn[new]` has that signature. It takes the matched text from `item.source_span(span)` and returns `SourceError::Invalid` for a bad span.\n- **Debug:** The text prescribes `impl<N: Debug> Debug for SearchHit<N>`. `#[derive(Debug)]` on `SearchHit` produces it, and the derive adds the `N: Debug` bound. It is reached through the marked struct and needs no separate marker.\n- **Search methods:** The text says `SourceProject::search_text` and `SourceProject::search_structure` return these hits. Both `crates/trust-but-verify/src/sources/hits.rs#impl[SourceProject<D>]/fn[search_text]` and `...fn[search_structure]` return `Result<SearchResults<SearchHit<NodeId<D>>>, SourceError>`.\n  - Both delegate to `find_hits`, which is reached from the marked roots, so it needs no marker.\n  - `find_hits` builds one `SearchHit::new(node, span, item)` per span, so each occurrence gets its own hit. Same-line and same-item matches are handled the same way.\n\nThe other clauses state observable behavior. These are one result per occurrence, the exact matched text, and zero-based, end-exclusive byte spans. Different internals could produce the same results, so they are not structural obligations. No missing roots or gaps found.\n\nbehavioral: Both tests are marked `requirements.sdk.graph.search.occurrence`. Together they cover the observable obligations.\n\n- **One result per occurrence, including same line and same item.** `search_groups_exact_occurrences_and_records_the_selected_declaration` in `crates/trust-but-verify/src/agent/project_sources.rs` runs `search_text(\"hit\")` over `const A = \"éhit\"; const B = \"hit hit\";`. It asserts exactly three hits. Two of them are in `const[B]` on the same line, with spans 42..45 and 46..49. The third is in `const[A]`.\n- **Enclosing node.** The same test asserts the interned node `code.rs#const[A]` or `code.rs#const[B]` for each hit. `structural_tags_select_only_the_original_enclosing_item` asserts `code.rs#fn[one]` and `code.rs#fn[two]` for the structural hits.\n- **Exact matched text.** The text-search test asserts `h.text == \"hit\"`. The structural test asserts `\"call()\"` for both hits.\n- **File-relative span, zero-based byte offsets, end exclusive.** The text-search test puts the multibyte `é` before the first match, so its span 19..22 is in bytes rather than characters. The `B` spans are 42..45 and 46..49, which are offsets in the whole file and not relative to the item. The structural test asserts 9..15 and 27..33 for `call()` in two different functions. It also cross-checks the spans against `StructuralRule::matches` on the file text.\n- **`SourceProject::search_text` and `SourceProject::search_structure` return these hits.** Each method is exercised through `ProjectSources`. Both go through the shared `find_hits`, which builds each hit with `SearchHit::new`.\n\nThe requirement states no error condition for `SearchHit::new`, and the `Debug` implementation is a derive. Neither is a behavioral obligation that needs its own test.\n\nI found no multi-match-in-one-item case for structural search. The grouping and span logic is shared with text search, and the text-search test covers that case. This is not a gap.",
+  "references": "01ffbd05f7d84cb60fde182597033a8fa68b873b69c2870111239ddde0d31b11",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.search.occurrence",
@@ -40,17 +40,274 @@
       ]
     },
     {
+      "file": "crates/trust-but-verify/src/sources/hits.rs",
+      "item": "impl[SourceProject<D>]/fn[search_text]",
+      "hash": "622d4c214d6aac8539a48609c15930fdef8806b21c3e849d982228694f4fe8f8"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/hits.rs",
+      "item": "impl[SourceProject<D>]/fn[search_structure]",
+      "hash": "f041b48d441b23c4656e871797cecd541993e7397235c89612cbcb60162f89f5"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/public.rs",
+      "item": "struct[SearchHit]",
+      "hash": "6329a9554d836b667a36cbddf6f6a61e9a1ef843fe553ac9bac468ef2e72bfba"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/public.rs",
+      "item": "impl[SearchHit<N>]/fn[new]",
+      "hash": "f7815a8255d7a75f1a47aab2c02c7b8ef8adbd7ee0bda485b8df8a9ff6b0bf52"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/hits.rs",
+      "item": "impl[SourceProject<D>]/fn[find_hits]",
+      "hash": "0ef6d3270fabef7a085f15432de661be81ce916274bd92ab79b9ea2bed2e4ea7"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/public.rs",
+      "item": "impl[SearchHit<N>]",
+      "hash": "04d833c451263d870079ba071ad6753d03bb516e1847a6d22f5b41a68aa6dd6b"
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]",
-      "hash": "51da68bc4a12b4ba257787791938819f709b3fe5b32fd8652f22127f9dce1f60"
+      "hash": "bba9cf6f0b10888a512bf213b967a0aa2bd218f6033032c613dd48d34fbcc43a"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[search_groups_exact_occurrences_and_records_the_selected_declaration]",
       "hash": "31b2ed3b415ba9a7cdf8e933ae5247c8b1bcd9430badda6ea6b37f9d178a619e"
+    },
+    {
+      "file": "crates/trust-but-verify/src/outline/contents.rs",
+      "item": "impl[Span]/fn[from_range]",
+      "hash": "fe79ef80a8899ca07bb213b0558c57f82231490f37d61b7990d03cab7f00cca4"
+    },
+    {
+      "file": "crates/trust-but-verify/src/outline/contents.rs",
+      "item": "impl[OutlineContent]/fn[source_span]",
+      "hash": "fb232d23358b181d7556fb83b72d0497d35de26a1c87b8a0119b44b7443d4583"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.search.occurrence"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "01ffbd05f7d84cb60fde182597033a8fa68b873b69c2870111239ddde0d31b11"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.search.occurrence"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "4ed4f9854cf745cbc5b237351bbd0685a6e9ec95c8e3dd9887456701abe2f8c2"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/sources/hits.rs"
+                },
+                "selector": "impl[SourceProject<D>]/fn[search_text]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "622d4c214d6aac8539a48609c15930fdef8806b21c3e849d982228694f4fe8f8"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/sources/hits.rs"
+                },
+                "selector": "impl[SourceProject<D>]/fn[search_structure]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f041b48d441b23c4656e871797cecd541993e7397235c89612cbcb60162f89f5"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/sources/public.rs"
+                },
+                "selector": "struct[SearchHit]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "6329a9554d836b667a36cbddf6f6a61e9a1ef843fe553ac9bac468ef2e72bfba"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/sources/public.rs"
+                },
+                "selector": "impl[SearchHit<N>]/fn[new]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f7815a8255d7a75f1a47aab2c02c7b8ef8adbd7ee0bda485b8df8a9ff6b0bf52"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/sources/hits.rs"
+                },
+                "selector": "impl[SourceProject<D>]/fn[find_hits]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "0ef6d3270fabef7a085f15432de661be81ce916274bd92ab79b9ea2bed2e4ea7"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/sources/public.rs"
+                },
+                "selector": "impl[SearchHit<N>]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "7a1131f6265f101d9b5dba68c5cf5b05d66d7698b895ce24fef8a160ab950d01"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The structural obligations in `requirements.sdk.graph.search.occurrence` are the `SearchHit<N>` shape, `SearchHit::new`, the `Debug` impl, and the two `SourceProject` methods that return these hits. The supplied roots cover each of them.\n\n- **`SearchHit` shape:** The text prescribes `#[non_exhaustive] pub struct SearchHit<N>` with public `node: N`, `span: Span` and `text: String`, plus private fields. `crates/trust-but-verify/src/sources/public.rs#struct[SearchHit]` declares exactly that, with a private `pub(crate) item: OutlineContent`. A struct with different public fields, or one that was exhaustive, would break the clause.\n- **Constructor:** The text prescribes `new(node: N, span: Span, item: OutlineContent) -> Result<Self, SourceError>`. `crates/trust-but-verify/src/sources/public.rs#impl[SearchHit<N>]/fn[new]` has that signature. It takes the matched text from `item.source_span(span)` and returns `SourceError::Invalid` for a bad span.\n- **Debug:** The text prescribes `impl<N: Debug> Debug for SearchHit<N>`. `#[derive(Debug)]` on `SearchHit` produces it, and the derive adds the `N: Debug` bound. It is reached through the marked struct and needs no separate marker.\n- **Search methods:** The text says `SourceProject::search_text` and `SourceProject::search_structure` return these hits. Both `crates/trust-but-verify/src/sources/hits.rs#impl[SourceProject<D>]/fn[search_text]` and `...fn[search_structure]` return `Result<SearchResults<SearchHit<NodeId<D>>>, SourceError>`.\n  - Both delegate to `find_hits`, which is reached from the marked roots, so it needs no marker.\n  - `find_hits` builds one `SearchHit::new(node, span, item)` per span, so each occurrence gets its own hit. Same-line and same-item matches are handled the same way.\n\nThe other clauses state observable behavior. These are one result per occurrence, the exact matched text, and zero-based, end-exclusive byte spans. Different internals could produce the same results, so they are not structural obligations. No missing roots or gaps found."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.search.occurrence"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "01ffbd05f7d84cb60fde182597033a8fa68b873b69c2870111239ddde0d31b11"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.search.occurrence"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "4ed4f9854cf745cbc5b237351bbd0685a6e9ec95c8e3dd9887456701abe2f8c2"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+                },
+                "selector": "mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "bba9cf6f0b10888a512bf213b967a0aa2bd218f6033032c613dd48d34fbcc43a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+                },
+                "selector": "mod[tests]/fn[search_groups_exact_occurrences_and_records_the_selected_declaration]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "31b2ed3b415ba9a7cdf8e933ae5247c8b1bcd9430badda6ea6b37f9d178a619e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/sources/hits.rs"
+                },
+                "selector": "impl[SourceProject<D>]/fn[find_hits]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "0ef6d3270fabef7a085f15432de661be81ce916274bd92ab79b9ea2bed2e4ea7"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "Both tests are marked `requirements.sdk.graph.search.occurrence`. Together they cover the observable obligations.\n\n- **One result per occurrence, including same line and same item.** `search_groups_exact_occurrences_and_records_the_selected_declaration` in `crates/trust-but-verify/src/agent/project_sources.rs` runs `search_text(\"hit\")` over `const A = \"éhit\"; const B = \"hit hit\";`. It asserts exactly three hits. Two of them are in `const[B]` on the same line, with spans 42..45 and 46..49. The third is in `const[A]`.\n- **Enclosing node.** The same test asserts the interned node `code.rs#const[A]` or `code.rs#const[B]` for each hit. `structural_tags_select_only_the_original_enclosing_item` asserts `code.rs#fn[one]` and `code.rs#fn[two]` for the structural hits.\n- **Exact matched text.** The text-search test asserts `h.text == \"hit\"`. The structural test asserts `\"call()\"` for both hits.\n- **File-relative span, zero-based byte offsets, end exclusive.** The text-search test puts the multibyte `é` before the first match, so its span 19..22 is in bytes rather than characters. The `B` spans are 42..45 and 46..49, which are offsets in the whole file and not relative to the item. The structural test asserts 9..15 and 27..33 for `call()` in two different functions. It also cross-checks the spans against `StructuralRule::matches` on the file text.\n- **`SourceProject::search_text` and `SourceProject::search_structure` return these hits.** Each method is exercised through `ProjectSources`. Both go through the shared `find_hits`, which builds each hit with `SearchHit::new`.\n\nThe requirement states no error condition for `SearchHit::new`, and the `Debug` implementation is a derive. Neither is a behavioral obligation that needs its own test.\n\nI found no multi-match-in-one-item case for structural search. The grouping and span logic is shared with text search, and the text-search test covers that case. This is not a gap."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -60,19 +317,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "05ded44da7e3f4a19670904d011df86965e34df4c69720e0597fb2ca2641db1f"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.search.occurrence"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "dd7fc9e91d911f11b73220f373d7d13175f6b4d7d41879cf4307322dc9d1fb01"
+          "value": "01ffbd05f7d84cb60fde182597033a8fa68b873b69c2870111239ddde0d31b11"
         }
       ]
     },
@@ -93,6 +338,108 @@
           "Source": {
             "resource": {
               "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/hits.rs"
+            },
+            "selector": "impl[SourceProject<D>]/fn[search_text]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "622d4c214d6aac8539a48609c15930fdef8806b21c3e849d982228694f4fe8f8"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/hits.rs"
+            },
+            "selector": "impl[SourceProject<D>]/fn[search_structure]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "f041b48d441b23c4656e871797cecd541993e7397235c89612cbcb60162f89f5"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/public.rs"
+            },
+            "selector": "struct[SearchHit]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "6329a9554d836b667a36cbddf6f6a61e9a1ef843fe553ac9bac468ef2e72bfba"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/public.rs"
+            },
+            "selector": "impl[SearchHit<N>]/fn[new]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "f7815a8255d7a75f1a47aab2c02c7b8ef8adbd7ee0bda485b8df8a9ff6b0bf52"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/hits.rs"
+            },
+            "selector": "impl[SourceProject<D>]/fn[find_hits]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "0ef6d3270fabef7a085f15432de661be81ce916274bd92ab79b9ea2bed2e4ea7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/public.rs"
+            },
+            "selector": "impl[SearchHit<N>]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "7a1131f6265f101d9b5dba68c5cf5b05d66d7698b895ce24fef8a160ab950d01"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/project_sources.rs"
             },
             "selector": "mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]"
@@ -100,7 +447,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "51da68bc4a12b4ba257787791938819f709b3fe5b32fd8652f22127f9dce1f60"
+          "value": "bba9cf6f0b10888a512bf213b967a0aa2bd218f6033032c613dd48d34fbcc43a"
         }
       ]
     },
@@ -118,6 +465,40 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "31b2ed3b415ba9a7cdf8e933ae5247c8b1bcd9430badda6ea6b37f9d178a619e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/outline/contents.rs"
+            },
+            "selector": "impl[Span]/fn[from_range]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "fe79ef80a8899ca07bb213b0558c57f82231490f37d61b7990d03cab7f00cca4"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/outline/contents.rs"
+            },
+            "selector": "impl[OutlineContent]/fn[source_span]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "fb232d23358b181d7556fb83b72d0497d35de26a1c87b8a0119b44b7443d4583"
         }
       ]
     }

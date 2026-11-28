@@ -1,8 +1,8 @@
 {
   "requirement": "The method is declared under {cite}`requirements.sdk.graph.running-criteria.store_evidence`.\n\nThe method saves under the source identity and criterion path captured in\n`Fingerprinted`, preserving its version, input trace, and completed answer. Encoding follows\n{cite}`requirements.sdk.graph.evidence.record.output`; atomic replacement follows\n{cite}`requirements.sdk.graph.evidence.evidence_storage`. The result type needs\nno `Sync` bound: the method encodes the answer and captures the record and\nstorage key before constructing the storage future.",
   "determination": true,
-  "rationale": "The reviewed tests adequately check `requirements.sdk.graph.evidence.store_evidence`. I did not read the implementation, and I did not reassess the cited requirements' own tests.\n\nObligation-to-test mapping:\n- **Saves under the source identity and criterion path from `Fingerprinted`.** `criteria_keep_typed_answers_and_persist_only_when_requested` in `tests/contracts.rs` stores values and reloads them by source and criterion. It also looks up the saved records by criterion path (`behavior`, `text`) and asserts their output. `serialization_failure_leaves_the_existing_record_unchanged` and `concurrent_same_criterion_executions_keep_complete_independent_records` load directly by `(Node(1), path)` through the domain. `malformed_records_are_storage_errors_and_bad_outputs_are_output_errors` stores through `FileEvidenceStorage` and reads the record at the path derived from the source and criterion.\n- **Preserves version, input trace and completed answer.**\n  - `criteria_keep_typed_answers_and_persist_only_when_requested` compares the loaded output, source, path, version and dependencies with the stored value.\n  - `input_checking_and_execution_keep_separate_observations` asserts that the stored dependencies are the new `Dependency::Node(2, ...)` fingerprint.\n  - `concurrent_same_criterion_executions_keep_complete_independent_records` asserts that the saved version, dependencies and output all come from the same save.\n  - `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer` and `agent_edge_tools_record_selections_without_validating_targets` (both in `agent/tests.rs`) assert saved dependencies, including `OutgoingEdges`, against the stored value.\n  - `runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls` in `validation_tests.rs` asserts the stored dependencies.\n- **Replacement of an existing record.** `typed_loading_reports_decode_errors_even_for_stale_evidence` stores a v2 value over a v1 record and asserts that one record remains. `input_checking_and_execution_keep_separate_observations` asserts that the stored dependencies are replaced.\n- **Encoding follows `record.output`.**\n  - A serialization failure returns `ValidationError::Output` and leaves the existing record unchanged. `serialization_failure_leaves_the_existing_record_unchanged` asserts the error variant and message. It asserts that version, dependencies and output are unchanged, and that the write count is still 1.\n  - A storage failure returns `ValidationError::Graph`. `resolution_storage_and_callback_errors_are_not_judgments` in `validation_tests.rs` sets `fail_store` and asserts `Graph(\"store\")` and that no record exists.\n- **Atomic replacement follows `evidence_storage`.** The concurrent-store test asserts that the saved record is complete and from a single save. This obligation is also delegated to the cited requirement.\n- **No `Sync` bound on the result type, and the future is `Send`.** `validation_and_answer_need_send_without_sync` stores a non-`Sync` `Cell` answer through the `send(...)` helper and then reloads it.\n\nI found no unacknowledged gap.",
-  "references": "8561f0acb4fa06d2bcf449879c6c18e3a9f1c4c2cfce0597b732e72399ab8b47",
+  "rationale": "structural: The structural obligation in `requirements.sdk.graph.evidence.store_evidence` is this clause: \"The result type needs no `Sync` bound: the method encodes the answer and captures the record and storage key before constructing the storage future.\"\n\nAn alternative would move `serde_json::to_value(&inputs.output)` and the record construction into the `async` block. That block would then capture `inputs`, and `O` would need `Sync`. The observable results would stay the same, so this clause does prescribe how the method is built.\n\n`crates/trust-but-verify/src/graph.rs#impl[Validator<'d, D>]/fn[store_evidence]` meets it:\n- It builds `encoded` before the `async move` block. `encoded` is the `serde_json::to_value` result mapped into a `Record` with the version, the dependencies from `persist_dependencies`, and the output.\n- It copies `inputs.source` into `node` and clones `inputs.criterion` into `criterion_path` before the block.\n- The future captures only `encoded`, `node`, `criterion_path` and `self`. It does not capture `inputs`, so `O` needs no `Sync` or `Clone`.\n- The future then maps an encoding error to `ValidationError::Output` and calls `self.domain.store_evidence(&node, &criterion_path, &record)`. It maps a storage error to `ValidationError::Graph`.\n\nThe other clauses state observable behavior only:\n- The method saves under the source identity and criterion path, keeping the version, input trace and output.\n- Encoding and error mapping follow `requirements.sdk.graph.evidence.record.output`.\n- Atomic replacement follows `requirements.sdk.graph.evidence.evidence_storage`.\n\nThe last two are cited requirements. The signature belongs to `requirements.sdk.graph.running-criteria.store_evidence`, which is also cited. A different factoring that gives the same results would still satisfy these clauses.\n\nThe root carries the `{impl}` markers for both the subject and the running-criteria declaration. No other root is needed.\n\nbehavioral: The marked tests cover each observable obligation in `requirements.sdk.graph.evidence.store_evidence`. I did not read the implementation.\n\n- **Save under the `Fingerprinted` source identity and criterion path, keeping version, input trace and answer.**\n  - `crates/trust-but-verify/tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` stores a verified value. It then loads it back and asserts that source id, criterion path, version, dependencies and output match. It also checks the raw stored JSON output for the `behavior` and `text` criteria. Distinct criteria (`behavior`, `structure`, `text`) of one source get separate records.\n  - `fn[input_checking_and_execution_keep_separate_observations]` asserts that the stored record's dependencies are the freshly observed `Dependency::Node` fingerprint. It also checks that a new save replaces an old record for the same key.\n  - `fn[concurrent_same_criterion_executions_keep_complete_independent_records]` asserts that the stored version, dependencies and output all come from the same save, and that there is one record.\n  - `crates/trust-but-verify/src/agent/tests.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` asserts the saved record's key (node 1) and its `OutgoingEdges` dependency. It also checks that a load returns equal dependencies.\n  - `fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]` and `fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]` assert that the stored dependencies and the reloaded record match the value.\n- **Encoding follows `requirements.sdk.graph.evidence.record.output`.**\n  - `fn[serialization_failure_leaves_the_existing_record_unchanged]` asserts that a serialization failure returns `ValidationError::Output`, with the message \"cannot encode answer\". It also asserts that the old record's version, dependencies and output are unchanged and that no extra write happened.\n  - `fn[resolution_storage_and_callback_errors_are_not_judgments]` asserts that a storage failure returns `ValidationError::Graph(\"store\")` and that no record is stored.\n  - `crates/trust-but-verify/tests/storage.rs#fn[malformed_records_are_storage_errors_and_bad_outputs_are_output_errors]` stores through the real file storage and re-reads the result.\n- **Atomic replacement follows `requirements.sdk.graph.evidence.evidence_storage`.** The concurrent-save test checks that competing saves leave one complete record, and the replacement tests check that a save overwrites the existing record. The storage key and atomicity rules belong to the cited requirement and its own tests, not to this subject.\n- **No `Sync` bound on the result type, and the record and storage key are captured before the future is built.** `fn[validation_and_answer_need_send_without_sync]` uses a `Cell`-based answer, which is `Send` but not `Sync`. It passes `store_evidence` through a `send(...)` helper that requires the future to be `Send`, and it still stores and reloads the value.\n\nI found no behavioral obligation without a test.",
+  "references": "cfb125067ebdd6ba7afdbeebbed98cc781b415b48ac9e8b10c37c97b79c99e85",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.evidence.store_evidence",
@@ -121,6 +121,26 @@
       ]
     },
     {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "impl[Validator<'d,%20D>]/fn[store_evidence]",
+      "hash": "f102d22aa4e7d1e1b656e215b1de8c72c49ac2993a5b98b251539d7116e94a1c"
+    },
+    {
+      "definition": "requirements.sdk.application_domain",
+      "text": [
+        "::::{definition} application_domain",
+        ":phrase: application domain",
+        "",
+        ":::{cite} requirements.sdk.domain",
+        "An *application domain* is the application's graph, node contents, and evidence",
+        "storage, made available together for criterion execution. In the SDK, it",
+        "implements [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html) to supply",
+        "its shared types, node and edge operations, and evidence persistence.",
+        ":::",
+        "::::"
+      ]
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[agent_edge_tools_record_selections_without_validating_targets]",
       "hash": "b6a97104378322ec71f0706145d948cd08299ea50133f0316b1795f099e9aa2c"
@@ -174,24 +194,365 @@
       "file": "crates/trust-but-verify/tests/storage.rs",
       "item": "fn[malformed_records_are_storage_errors_and_bad_outputs_are_output_errors]",
       "hash": "ddebc3087009d0e23caf14a7a4d0927347150c7ecea342a55d5113e9d49eed70"
-    },
-    {
-      "definition": "requirements.sdk.application_domain",
-      "text": [
-        "::::{definition} application_domain",
-        ":phrase: application domain",
-        "",
-        ":::{cite} requirements.sdk.domain",
-        "An *application domain* is the application's graph, node contents, and evidence",
-        "storage, made available together for criterion execution. In the SDK, it",
-        "implements [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html) to supply",
-        "its shared types, node and edge operations, and evidence persistence.",
-        ":::",
-        "::::"
-      ]
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.evidence.store_evidence"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "cfb125067ebdd6ba7afdbeebbed98cc781b415b48ac9e8b10c37c97b79c99e85"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.evidence.store_evidence"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "eae3caf58178aed3cde49b2c2aa8113161d639b5a8c64eb4b2803c54b8c6195a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.running-criteria.store_evidence"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "69ce4c498eccd4d33ddebeab789013c284816d2c8f59995cbfbf1cfcf981a12f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.evidence.record.output"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "7de8cc465e0e2ba988a89672cf1bc5f51ad4061d6dc35d24ab0bb84a84211766"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.evidence.evidence_storage"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "c7f27458b6588b955695e577d871fa935e4f6fde516107710f6681f589279d73"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph.rs"
+                },
+                "selector": "impl[Validator<'d,%20D>]/fn[store_evidence]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f102d22aa4e7d1e1b656e215b1de8c72c49ac2993a5b98b251539d7116e94a1c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Definition": "requirements.sdk.application_domain"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "1f3d0d387ce356e5b4cc0cc22d20543142b5dcd7352c1eb5e4dd8dd73b058a34"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The structural obligation in `requirements.sdk.graph.evidence.store_evidence` is this clause: \"The result type needs no `Sync` bound: the method encodes the answer and captures the record and storage key before constructing the storage future.\"\n\nAn alternative would move `serde_json::to_value(&inputs.output)` and the record construction into the `async` block. That block would then capture `inputs`, and `O` would need `Sync`. The observable results would stay the same, so this clause does prescribe how the method is built.\n\n`crates/trust-but-verify/src/graph.rs#impl[Validator<'d, D>]/fn[store_evidence]` meets it:\n- It builds `encoded` before the `async move` block. `encoded` is the `serde_json::to_value` result mapped into a `Record` with the version, the dependencies from `persist_dependencies`, and the output.\n- It copies `inputs.source` into `node` and clones `inputs.criterion` into `criterion_path` before the block.\n- The future captures only `encoded`, `node`, `criterion_path` and `self`. It does not capture `inputs`, so `O` needs no `Sync` or `Clone`.\n- The future then maps an encoding error to `ValidationError::Output` and calls `self.domain.store_evidence(&node, &criterion_path, &record)`. It maps a storage error to `ValidationError::Graph`.\n\nThe other clauses state observable behavior only:\n- The method saves under the source identity and criterion path, keeping the version, input trace and output.\n- Encoding and error mapping follow `requirements.sdk.graph.evidence.record.output`.\n- Atomic replacement follows `requirements.sdk.graph.evidence.evidence_storage`.\n\nThe last two are cited requirements. The signature belongs to `requirements.sdk.graph.running-criteria.store_evidence`, which is also cited. A different factoring that gives the same results would still satisfy these clauses.\n\nThe root carries the `{impl}` markers for both the subject and the running-criteria declaration. No other root is needed."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.evidence.store_evidence"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "cfb125067ebdd6ba7afdbeebbed98cc781b415b48ac9e8b10c37c97b79c99e85"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.evidence.store_evidence"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "eae3caf58178aed3cde49b2c2aa8113161d639b5a8c64eb4b2803c54b8c6195a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.running-criteria.store_evidence"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "69ce4c498eccd4d33ddebeab789013c284816d2c8f59995cbfbf1cfcf981a12f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.evidence.record.output"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "7de8cc465e0e2ba988a89672cf1bc5f51ad4061d6dc35d24ab0bb84a84211766"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.evidence.evidence_storage"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "c7f27458b6588b955695e577d871fa935e4f6fde516107710f6681f589279d73"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[agent_edge_tools_record_selections_without_validating_targets]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "1923ba1a1e40335b0976450eaedbabe266a0cbc1c568947f37797528e5a0c0d0"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "e28b69f092651a66561d8b9ed54e6b7c678f70b7543352ad8fe674bfbba1cbe9"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "81cef7e9131056e0404e9859aa8dbca51cafdbce27b95006e6c60a1fcef02077"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[resolution_storage_and_callback_errors_are_not_judgments]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "fda9a0fb466dfba174cb82ea6f0301ce22a098e2b6fdcbb97a03a342dfa995b5"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[criteria_keep_typed_answers_and_persist_only_when_requested]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f47c40151c7d8ba4e5cd3b84d1c8d19288a02beb3f6148a79bdbcf6bc857964c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[typed_loading_reports_decode_errors_even_for_stale_evidence]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "a01bc430f7621e26f62a3028ef443c3746ee12fd7770c17774af73ccedd5a00b"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[input_checking_and_execution_keep_separate_observations]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "18077299d4d19283dc23552df4fc72593db7ed97af1357da34df047c6438cfff"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[validation_and_answer_need_send_without_sync]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "2bf006acebdb8fc3df250c66c66a218d7e2e7d0edd1566f398067c9a9012f735"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[serialization_failure_leaves_the_existing_record_unchanged]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f11bb79da53761b4ff4d2d3c9a10f6cb75650ee97ca3983784290a2bf24b60b2"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[concurrent_same_criterion_executions_keep_complete_independent_records]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "70754a4e4c0dca2f9b977cedc23fb77732e752f36e72e309fe495e2ee218931a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/storage.rs"
+                },
+                "selector": "fn[malformed_records_are_storage_errors_and_bad_outputs_are_output_errors]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "ddebc3087009d0e23caf14a7a4d0927347150c7ecea342a55d5113e9d49eed70"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Definition": "requirements.sdk.application_domain"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "1f3d0d387ce356e5b4cc0cc22d20543142b5dcd7352c1eb5e4dd8dd73b058a34"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The marked tests cover each observable obligation in `requirements.sdk.graph.evidence.store_evidence`. I did not read the implementation.\n\n- **Save under the `Fingerprinted` source identity and criterion path, keeping version, input trace and answer.**\n  - `crates/trust-but-verify/tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` stores a verified value. It then loads it back and asserts that source id, criterion path, version, dependencies and output match. It also checks the raw stored JSON output for the `behavior` and `text` criteria. Distinct criteria (`behavior`, `structure`, `text`) of one source get separate records.\n  - `fn[input_checking_and_execution_keep_separate_observations]` asserts that the stored record's dependencies are the freshly observed `Dependency::Node` fingerprint. It also checks that a new save replaces an old record for the same key.\n  - `fn[concurrent_same_criterion_executions_keep_complete_independent_records]` asserts that the stored version, dependencies and output all come from the same save, and that there is one record.\n  - `crates/trust-but-verify/src/agent/tests.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` asserts the saved record's key (node 1) and its `OutgoingEdges` dependency. It also checks that a load returns equal dependencies.\n  - `fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]` and `fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]` assert that the stored dependencies and the reloaded record match the value.\n- **Encoding follows `requirements.sdk.graph.evidence.record.output`.**\n  - `fn[serialization_failure_leaves_the_existing_record_unchanged]` asserts that a serialization failure returns `ValidationError::Output`, with the message \"cannot encode answer\". It also asserts that the old record's version, dependencies and output are unchanged and that no extra write happened.\n  - `fn[resolution_storage_and_callback_errors_are_not_judgments]` asserts that a storage failure returns `ValidationError::Graph(\"store\")` and that no record is stored.\n  - `crates/trust-but-verify/tests/storage.rs#fn[malformed_records_are_storage_errors_and_bad_outputs_are_output_errors]` stores through the real file storage and re-reads the result.\n- **Atomic replacement follows `requirements.sdk.graph.evidence.evidence_storage`.** The concurrent-save test checks that competing saves leave one complete record, and the replacement tests check that a save overwrites the existing record. The storage key and atomicity rules belong to the cited requirement and its own tests, not to this subject.\n- **No `Sync` bound on the result type, and the record and storage key are captured before the future is built.** `fn[validation_and_answer_need_send_without_sync]` uses a `Cell`-based answer, which is `Send` but not `Sync`. It passes `store_evidence` through a `send(...)` helper that requires the future to be `Send`, and it still stores and reloads the value.\n\nI found no behavioral obligation without a test."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -201,19 +562,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "8561f0acb4fa06d2bcf449879c6c18e3a9f1c4c2cfce0597b732e72399ab8b47"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.evidence.store_evidence"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "9cf1780c01039c577f0c766320a713d945181746fac8d69f120e31326d341d41"
+          "value": "cfb125067ebdd6ba7afdbeebbed98cc781b415b48ac9e8b10c37c97b79c99e85"
         }
       ]
     },
@@ -258,6 +607,34 @@
         {
           "scheme": "habeas-input-v1",
           "value": "c7f27458b6588b955695e577d871fa935e4f6fde516107710f6681f589279d73"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "impl[Validator<'d,%20D>]/fn[store_evidence]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "f102d22aa4e7d1e1b656e215b1de8c72c49ac2993a5b98b251539d7116e94a1c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Definition": "requirements.sdk.application_domain"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "1f3d0d387ce356e5b4cc0cc22d20543142b5dcd7352c1eb5e4dd8dd73b058a34"
         }
       ]
     },
@@ -445,17 +822,6 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "ddebc3087009d0e23caf14a7a4d0927347150c7ecea342a55d5113e9d49eed70"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Definition": "requirements.sdk.application_domain"
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "1f3d0d387ce356e5b4cc0cc22d20543142b5dcd7352c1eb5e4dd8dd73b058a34"
         }
       ]
     }

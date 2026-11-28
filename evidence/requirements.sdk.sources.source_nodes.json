@@ -1,8 +1,8 @@
 {
   "requirement": "An application supporting tracked source inspection returns `Self::NodeData` for the requested path and selector. The SDK interns that data in the domain's cache to obtain `NodeId<Self>`. An unsupported or invalid address returns an error. The cache retains the address when the SDK maps a source item. For source identities the application can supply independently, implement `source_address` to recover the project-relative outline address from the domain identity. Other identities return `None`.\n\n```rust,ignore\npub trait Domain: Clone + Send + Sync {\n    // ...\n    fn source_node(\n        &self,\n        item: &OutlineData,\n    ) -> Result<Self::NodeData, SourceError> { ... }\n    fn source_address(&self, _data: &Self::NodeData) -> Option<OutlineData> { ... }\n}\n```",
   "determination": true,
-  "rationale": "I found no adequacy gap. The tests cover each obligation in `requirements.sdk.sources.source_nodes`.\n\n- **Mapping returns `NodeData` for the path and selector, and the SDK interns it.**\n  - `src/sdk.rs#mod[tests]/fn[habeas_paths_preserve_opaque_segments_and_separate_all_node_kinds]` maps `src/parser.rs` with selector `impl[Parser]/fn[parse]` through `source_node`. It asserts that `source_address` returns the same address.\n  - `crates/trust-but-verify/src/agent/project_sources.rs#mod[tests]/fn[direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns]` asserts that a successful `read_source` records a dependency on the interned node `intern_node(\"source-node\")`.\n  - `agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads` in the same file asserts that each `intern_node(\"parser.rs#...\")` node resolves to the expected selector and fingerprint.\n- **Unsupported or invalid addresses return an error.**\n  - The Habeas test asserts that `source_node` fails for `../outside.rs`, `/absolute.rs`, the malformed selector `fn[`, and the empty path.\n  - The `direct_source_reads...` test asserts \"unsupported source item\" errors for an unknown file and an unknown selector. It asserts that no reads occur and no dependencies are recorded.\n  - It also asserts that a failing read of a mapped item preserves its error.\n  - `crates/trust-but-verify/tests/contracts.rs#fn[domain_without_project_sources_leaves_source_tools_disabled]` asserts that the default `source_node` returns `SourceError::Invalid`.\n- **The cache retains the address when the SDK maps a source item.**\n  - In `configured_agent_uses_domain_source_tools_in_independent_executions`, the test domain does not implement `source_address`. The test reads a node from the `list_sources` output, and that read returns the file snapshot. It asserts that the mapped node resolves to the right text, so the cache must have kept the address.\n  - `agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads` covers the same obligation. It reads by `node`, by `data`, and by `path` plus `location`, and gets the same result each way. It asserts that inconsistent combinations are rejected before any read.\n- **`source_address` recovers the address for identities the application can supply, and returns `None` for others.**\n  - The Habeas test round-trips a mapped source node. It asserts `None` for every other `HabeasNode` kind, and `None` for invalid outline addresses.\n  - The `contracts.rs` test asserts that the default `source_address(&Node(1))` is `None`.\n  - The project test domain in `project_sources.rs` implements `source_address`, and the round-trip test exercises it.\n\nThe tests assert outcomes rather than only running the code, so the assertions would catch violations of these obligations. I found no obligation left untested.",
-  "references": "8c4c396e8c49a6ace48a76549c421443948dfb1565500ca1dc4f5a5ff632e3c1",
+  "rationale": "structural: Structural obligations in `requirements.sdk.sources.source_nodes`, each with the roots that cover it:\n\n1. The `Domain` trait declares `fn source_node(&self, item: &OutlineData) -> Result<Self::NodeData, SourceError>`. An alternative that took a different parameter or returned a different type would break the stated signature. `trait[Domain]/fn[source_node]` in `crates/trust-but-verify/src/domain.rs` has exactly this signature. Its default returns `SourceError::Invalid`, which covers the clause that an unsupported or invalid address returns an error.\n\n2. The `Domain` trait declares `fn source_address(&self, _data: &Self::NodeData) -> Option<OutlineData>`, and other identities return `None`. `trait[Domain]/fn[source_address]` has this signature and defaults to `None`.\n\n3. \"The SDK interns that data in the domain's cache to obtain `NodeId<Self>`.\" An alternative that kept a separate interner outside the domain's cache would violate this clause. `impl[SourceProject<D>]/fn[intern_source]` in `crates/trust-but-verify/src/sources/hits.rs` calls `self.domain.source_node(address)?`. It then interns the result through `self.domain.cache().intern_source(...)` and returns a `NodeId<D>`.\n\n4. \"The cache retains the address when the SDK maps a source item.\" `impl[ValidationCache<D>]/fn[intern_source]` in `domain.rs` interns the node and inserts the address into `source_addresses`. A marked root reaches this function, so it needs no marker of its own. Likewise, `SourceProject::address` in `hits.rs`, which reads that map and falls back to `Domain::source_address`, is reached and needs none.\n\nThe three supplied roots cover every structural obligation. I found no missing root.\n\nbehavioral: Each obligation in `requirements.sdk.sources.source_nodes` maps to a test with assertions. I did not read the implementation source. I judged the tests against the requirement text and the test bodies supplied.\n\n1. **`source_node` returns `NodeData` for the requested path and selector, and the SDK interns it to get `NodeId<Self>`.**\n   - `src/sdk.rs#mod[tests]/fn[habeas_paths_preserve_opaque_segments_and_separate_all_node_kinds]` maps `src/parser.rs#impl[Parser]/fn[parse]` through `source_node`. It then checks that `source_address` returns the identical `OutlineData`.\n   - `crates/trust-but-verify/src/agent/project_sources.rs#mod[tests]/fn[agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads]` asserts that the node IDs produced for `parser.rs#impl[Parser]/fn[parse]` and `parser.rs#impl[Parser]` equal `cache().intern_node(\"parser.rs#...\")`. It also asserts that the dependencies match.\n   - `direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns` asserts that the interned `\"source-node\"` is the dependency recorded for a successful read.\n\n2. **An unsupported or invalid address returns an error.**\n   - The Habeas test rejects `../outside.rs`, `/absolute.rs`, the malformed selector `fn[`, and an empty path through `source_node`.\n   - `direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns` rejects an unknown file and an unknown selector with an \"unsupported source item\" error. It asserts that nothing is read and no dependencies are recorded.\n   - `crates/trust-but-verify/tests/contracts.rs#fn[domain_without_project_sources_leaves_source_tools_disabled]` shows the default `source_node` returns `SourceError::Invalid`.\n   - The `read_node` rejection cases in `agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads` cover invalid addresses at the tool level, such as an absent file or absent selector. They also assert that no domain reads happen.\n\n3. **The cache retains the address when the SDK maps a source item.**\n   - `agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads` reads by node ID alone, using the node from a `list_sources` entry and from a child entry. The result is identical to reading by data or by path.\n   - It also checks that a mismatched node and data pair is rejected.\n   - `configured_agent_uses_domain_source_tools_in_independent_executions` reads a node from a listing and from search results in two independent executions.\n\n4. **`source_address` recovers the project-relative outline address for source identities the application can supply, and returns `None` for others.**\n   - The Habeas test round-trips a valid source and asserts `None` for invalid identities. It asserts `None` for all eight other `HabeasNode` kinds.\n   - `domain_without_project_sources_leaves_source_tools_disabled` asserts the default `source_address` returns `None`.\n\nThe obligations have positive, negative and default-behavior coverage. I found no gaps.",
+  "references": "e25ac830c540e5bfd0d4f9be249dc1457eb119a31f7652e910cde95d917ada7f",
   "inputs": [
     {
       "requirements": "requirements.sdk.sources.source_nodes",
@@ -26,6 +26,31 @@
         "```",
         ":::"
       ]
+    },
+    {
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "trait[Domain]/fn[source_node]",
+      "hash": "031f3f125568c5a7d2071ed6c1cc478759e21d01d4c85e80588c27d04004f2ed"
+    },
+    {
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "trait[Domain]/fn[source_address]",
+      "hash": "2b4d0d0abe0d0a3d3b546ca2799462aaf3c83cda7f2837cb9d8808759ea1a85e"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/hits.rs",
+      "item": "impl[SourceProject<D>]/fn[intern_source]",
+      "hash": "434c505656482827b10f77a64af8bde740ba49c7136faaa2d906d5a54bfd4867"
+    },
+    {
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "impl[ValidationCache<D>]/fn[intern_source]",
+      "hash": "9d4c19223216a4598c5fb534d60e10da08d4c47d5500af608244e7b014a53c9f"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/hits.rs",
+      "item": "impl[SourceProject<D>]/fn[address]",
+      "hash": "b4b3ea104a1a7c664127567447e31cd6a996e93684059694539516ab9eff1967"
     },
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
@@ -58,12 +83,263 @@
       "hash": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
-      "item": "mod[tests]/impl[Project/Domain]/fn[source_address]",
-      "hash": "9fd67ac266852468429ca13143aeae190c4cf182b074924137776fe4de6d30ad"
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'_,%20D>]/fn[read_source]",
+      "hash": "629b640874f77578a312dd7f8f8b643adfda5c1595bb1d46cf3c8edcf1f39ae5"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.sources.source_nodes"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "e25ac830c540e5bfd0d4f9be249dc1457eb119a31f7652e910cde95d917ada7f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.sources.source_nodes"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "8e6346502a38d35769ac9ca222239063ec8f7cd6ca436c2e180b3c8c3b81ac61"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/domain.rs"
+                },
+                "selector": "trait[Domain]/fn[source_node]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "031f3f125568c5a7d2071ed6c1cc478759e21d01d4c85e80588c27d04004f2ed"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/domain.rs"
+                },
+                "selector": "trait[Domain]/fn[source_address]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "2b4d0d0abe0d0a3d3b546ca2799462aaf3c83cda7f2837cb9d8808759ea1a85e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/sources/hits.rs"
+                },
+                "selector": "impl[SourceProject<D>]/fn[intern_source]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "434c505656482827b10f77a64af8bde740ba49c7136faaa2d906d5a54bfd4867"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/domain.rs"
+                },
+                "selector": "impl[ValidationCache<D>]/fn[intern_source]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "9d4c19223216a4598c5fb534d60e10da08d4c47d5500af608244e7b014a53c9f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/sources/hits.rs"
+                },
+                "selector": "impl[SourceProject<D>]/fn[address]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "b4b3ea104a1a7c664127567447e31cd6a996e93684059694539516ab9eff1967"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "Structural obligations in `requirements.sdk.sources.source_nodes`, each with the roots that cover it:\n\n1. The `Domain` trait declares `fn source_node(&self, item: &OutlineData) -> Result<Self::NodeData, SourceError>`. An alternative that took a different parameter or returned a different type would break the stated signature. `trait[Domain]/fn[source_node]` in `crates/trust-but-verify/src/domain.rs` has exactly this signature. Its default returns `SourceError::Invalid`, which covers the clause that an unsupported or invalid address returns an error.\n\n2. The `Domain` trait declares `fn source_address(&self, _data: &Self::NodeData) -> Option<OutlineData>`, and other identities return `None`. `trait[Domain]/fn[source_address]` has this signature and defaults to `None`.\n\n3. \"The SDK interns that data in the domain's cache to obtain `NodeId<Self>`.\" An alternative that kept a separate interner outside the domain's cache would violate this clause. `impl[SourceProject<D>]/fn[intern_source]` in `crates/trust-but-verify/src/sources/hits.rs` calls `self.domain.source_node(address)?`. It then interns the result through `self.domain.cache().intern_source(...)` and returns a `NodeId<D>`.\n\n4. \"The cache retains the address when the SDK maps a source item.\" `impl[ValidationCache<D>]/fn[intern_source]` in `domain.rs` interns the node and inserts the address into `source_addresses`. A marked root reaches this function, so it needs no marker of its own. Likewise, `SourceProject::address` in `hits.rs`, which reads that map and falls back to `Domain::source_address`, is reached and needs none.\n\nThe three supplied roots cover every structural obligation. I found no missing root."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.sources.source_nodes"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "e25ac830c540e5bfd0d4f9be249dc1457eb119a31f7652e910cde95d917ada7f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.sources.source_nodes"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "8e6346502a38d35769ac9ca222239063ec8f7cd6ca436c2e180b3c8c3b81ac61"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/configured.rs"
+                },
+                "selector": "mod[tests]/fn[configured_agent_uses_domain_source_tools_in_independent_executions]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f9d8fbc31acd81ef8aa636e21fe02910790b3ec81c15b618e8fdb2b93a7a50de"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+                },
+                "selector": "mod[tests]/fn[agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "1cbb5271ef711f99b4cdf58db525ac3fe07d9c2bd659e1030ab40c96f91bab32"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+                },
+                "selector": "mod[tests]/fn[direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f7c969d81571787c36b6000c09b1e32924d46fe93e2af58df04353b3ae951f11"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[domain_without_project_sources_leaves_source_tools_disabled]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "959312509064c36bad0d18da8d0ba1d7ca31316690528ddc3704f468443c7a56"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/sdk.rs"
+                },
+                "selector": "mod[tests]/fn[habeas_paths_preserve_opaque_segments_and_separate_all_node_kinds]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "89f84e7890031b709974b073969b5de43b2b4d0835816040fc4ef4421e6734a0"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/public_api.rs"
+                },
+                "selector": "fn[public_exports_match_the_appendix]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "Each obligation in `requirements.sdk.sources.source_nodes` maps to a test with assertions. I did not read the implementation source. I judged the tests against the requirement text and the test bodies supplied.\n\n1. **`source_node` returns `NodeData` for the requested path and selector, and the SDK interns it to get `NodeId<Self>`.**\n   - `src/sdk.rs#mod[tests]/fn[habeas_paths_preserve_opaque_segments_and_separate_all_node_kinds]` maps `src/parser.rs#impl[Parser]/fn[parse]` through `source_node`. It then checks that `source_address` returns the identical `OutlineData`.\n   - `crates/trust-but-verify/src/agent/project_sources.rs#mod[tests]/fn[agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads]` asserts that the node IDs produced for `parser.rs#impl[Parser]/fn[parse]` and `parser.rs#impl[Parser]` equal `cache().intern_node(\"parser.rs#...\")`. It also asserts that the dependencies match.\n   - `direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns` asserts that the interned `\"source-node\"` is the dependency recorded for a successful read.\n\n2. **An unsupported or invalid address returns an error.**\n   - The Habeas test rejects `../outside.rs`, `/absolute.rs`, the malformed selector `fn[`, and an empty path through `source_node`.\n   - `direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns` rejects an unknown file and an unknown selector with an \"unsupported source item\" error. It asserts that nothing is read and no dependencies are recorded.\n   - `crates/trust-but-verify/tests/contracts.rs#fn[domain_without_project_sources_leaves_source_tools_disabled]` shows the default `source_node` returns `SourceError::Invalid`.\n   - The `read_node` rejection cases in `agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads` cover invalid addresses at the tool level, such as an absent file or absent selector. They also assert that no domain reads happen.\n\n3. **The cache retains the address when the SDK maps a source item.**\n   - `agent_node_addresses_round_trip_and_reject_inconsistent_identities_before_reads` reads by node ID alone, using the node from a `list_sources` entry and from a child entry. The result is identical to reading by data or by path.\n   - It also checks that a mismatched node and data pair is rejected.\n   - `configured_agent_uses_domain_source_tools_in_independent_executions` reads a node from a listing and from search results in two independent executions.\n\n4. **`source_address` recovers the project-relative outline address for source identities the application can supply, and returns `None` for others.**\n   - The Habeas test round-trips a valid source and asserts `None` for invalid identities. It asserts `None` for all eight other `HabeasNode` kinds.\n   - `domain_without_project_sources_leaves_source_tools_disabled` asserts the default `source_address` returns `None`.\n\nThe obligations have positive, negative and default-behavior coverage. I found no gaps."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -73,19 +349,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "8c4c396e8c49a6ace48a76549c421443948dfb1565500ca1dc4f5a5ff632e3c1"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.sources.source_nodes"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "52b1e80c2d23ae6e77f717132ea324ddd2eeb8f9668972c50a9a03ed124fad76"
+          "value": "e25ac830c540e5bfd0d4f9be249dc1457eb119a31f7652e910cde95d917ada7f"
         }
       ]
     },
@@ -97,6 +361,91 @@
         {
           "scheme": "habeas-input-v1",
           "value": "8e6346502a38d35769ac9ca222239063ec8f7cd6ca436c2e180b3c8c3b81ac61"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "trait[Domain]/fn[source_node]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "031f3f125568c5a7d2071ed6c1cc478759e21d01d4c85e80588c27d04004f2ed"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "trait[Domain]/fn[source_address]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "2b4d0d0abe0d0a3d3b546ca2799462aaf3c83cda7f2837cb9d8808759ea1a85e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/hits.rs"
+            },
+            "selector": "impl[SourceProject<D>]/fn[intern_source]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "434c505656482827b10f77a64af8bde740ba49c7136faaa2d906d5a54bfd4867"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "impl[ValidationCache<D>]/fn[intern_source]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "9d4c19223216a4598c5fb534d60e10da08d4c47d5500af608244e7b014a53c9f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/hits.rs"
+            },
+            "selector": "impl[SourceProject<D>]/fn[address]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b4b3ea104a1a7c664127567447e31cd6a996e93684059694539516ab9eff1967"
         }
       ]
     },
@@ -208,14 +557,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+              "location": "crates/trust-but-verify/src/procedure.rs"
             },
-            "selector": "mod[tests]/impl[Project/Domain]/fn[source_address]"
+            "selector": "impl[ValidationContext<'_,%20D>]/fn[read_source]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "9fd67ac266852468429ca13143aeae190c4cf182b074924137776fe4de6d30ad"
+          "value": "629b640874f77578a312dd7f8f8b643adfda5c1595bb1d46cf3c8edcf1f39ae5"
         }
       ]
     }

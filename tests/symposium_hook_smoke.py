@@ -94,6 +94,10 @@ def main():
         manifest = (repo / "Cargo.toml").read_text()
         # The standalone stub uses the SDK from this checkout.
         manifest = manifest[manifest.index("[package]") :]
+        # Source-reference comments may appear between installation fields.
+        manifest = "\n".join(
+            line for line in manifest.split("\n") if not line.lstrip().startswith("#")
+        )
         sdk_path = 'path = "crates/trust-but-verify"'
         if manifest.count(sdk_path) != 1:
             raise AssertionError("Habeas's SDK dependency changed")

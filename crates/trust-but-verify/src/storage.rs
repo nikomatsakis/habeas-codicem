@@ -9,13 +9,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
-// {impl}`requirements.sdk.filesystem-storage.interface`
+// {impl}`requirements.sdk.filesystem-storage.FileStorageError`
 #[derive(Debug)]
 pub enum FileStorageError {
     Io(std::io::Error),
     Json(serde_json::Error),
 }
 
+// {impl}`requirements.sdk.filesystem-storage.FileStorageError`
 impl std::fmt::Display for FileStorageError {
     // {cite}`habeas:util`
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -25,22 +26,24 @@ impl std::fmt::Display for FileStorageError {
         }
     }
 }
+// {impl}`requirements.sdk.filesystem-storage.FileStorageError`
 impl std::error::Error for FileStorageError {}
 
+// {impl}`requirements.sdk.filesystem-storage.FileEvidenceStorage`
 // {impl}`requirements.sdk.filesystem-storage.interface`
-// {impl}`requirements.sdk.graph.evidence.evidence_storage.filesystem`
 #[derive(Clone)]
 pub struct FileEvidenceStorage {
     root: PathBuf,
 }
 
 impl FileEvidenceStorage {
+    // {impl}`requirements.sdk.filesystem-storage.interface`
+    // {impl}`requirements.sdk.filesystem-storage.FileEvidenceStorage`
     // {cite}`habeas:util`
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
     }
 
-    // {impl}`requirements.sdk.filesystem-storage.keys`
     pub fn record_path(&self, path: &NodePath, criterion: &CriterionPath) -> PathBuf {
         let mut result = self.root.clone();
         for (index, segments) in [path.segments(), criterion.segments()]
@@ -62,6 +65,8 @@ impl FileEvidenceStorage {
         result.join("record.json")
     }
 
+    // {impl}`requirements.sdk.filesystem-storage.FileEvidenceStorage`
+    // {impl}`requirements.sdk.filesystem-storage.interface`
     // {impl}`requirements.sdk.filesystem-storage.load`
     pub async fn load<N, L>(
         &self,
@@ -82,7 +87,8 @@ impl FileEvidenceStorage {
             .map_err(FileStorageError::Json)
     }
 
-    // {impl}`requirements.sdk.filesystem-storage.store`
+    // {impl}`requirements.sdk.filesystem-storage.FileEvidenceStorage`
+    // {impl}`requirements.sdk.filesystem-storage.interface`
     pub async fn store<N, L>(
         &self,
         path: &NodePath,
@@ -125,7 +131,6 @@ impl TemporaryRecord for tempfile::NamedTempFile {
     }
 }
 
-// {impl}`requirements.sdk.filesystem-storage.store`
 fn write_and_replace<T: TemporaryRecord>(
     mut temporary: T,
     bytes: &[u8],

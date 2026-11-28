@@ -30,8 +30,6 @@ pub(super) const TOOL_NAMES: &[&str] = &[
     FINISH_SEARCH,
 ];
 
-// {impl}`requirements.sdk.graph.search.windows`
-// {impl}`requirements.sdk.graph.search.omissions`
 fn excerpt(
     item: &crate::outline::OutlineContent,
     hits: &[crate::outline::Span],
@@ -83,7 +81,6 @@ fn excerpt(
     (result, spans)
 }
 
-// {impl}`requirements.sdk.graph.search.finish_search.inputs`
 fn excerpt_dependencies<D: crate::domain::Domain>(
     project: &ProjectSources<D>,
     hit: &crate::sources::SearchHit<NodeId<D>>,
@@ -406,6 +403,7 @@ mod tests {
         assert_eq!(tools.domain.0.lock().unwrap().reads, reads);
     }
 
+    // {test}`requirements.authoring.redaction_notice`
     // {test}`requirements.sdk.graph.validation-context.read_node.source_children`
     // {test}`requirements.sdk.sources.redaction`
     #[test]
@@ -551,6 +549,7 @@ mod tests {
     // {test}`requirements.authoring.finish_search.inputs`
     // {test}`requirements.authoring.tool_descriptions.common_case`
     // {test}`requirements.authoring.delivered_inputs`
+    // {test}`requirements.sdk.graph.validation-context.pages.inputs`
     async fn search_obligations_follow_delivery_and_keep_the_original_snapshot() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("source.txt");
@@ -704,6 +703,7 @@ mod tests {
         assert!(peer.dispatch("get_next_page", &next).await.is_err());
         std::fs::write(&path, "changed after search").unwrap();
         let delivery = session.dispatch("get_next_page", &next).await.unwrap();
+        assert!(delivery.dependencies.is_empty());
         let second: Value = serde_json::from_str(&delivery.text).unwrap();
         assert_eq!(
             delivery.input_count,
@@ -779,6 +779,7 @@ mod tests {
     // {test}`requirements.sdk.graph.search.search_structure.mcp`
     // {test}`requirements.sdk.graph.running-criteria.UsageStats`
     #[tokio::test]
+    // {test}`requirements.sdk.graph.validation-context.pages.inputs`
     async fn structural_search_counts_each_visible_excerpt_across_pages() {
         let root = tempfile::tempdir().unwrap();
         let code: String = (0..200)
@@ -800,6 +801,7 @@ mod tests {
             .unwrap();
         let mut seen = 0;
         loop {
+            assert!(delivery.dependencies.is_empty());
             let page: Value = serde_json::from_str(&delivery.text).unwrap();
             assert_eq!(page["complete"], true);
             assert_eq!(page.get("instructions").is_some(), seen == 0);
@@ -824,10 +826,94 @@ mod tests {
         assert_eq!(seen, 200);
     }
 
+    // {test}`requirements.sdk.graph.search.search_structure.inputs`
+    #[tokio::test]
+    async fn structural_excerpt_tracks_each_visible_node_in_the_delivered_snapshot() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("code.rs");
+        std::fs::write(&file, "impl S { fn a() {} fn b() {} }").unwrap();
+        let domain = project("");
+        let tools = ProjectSources::new(domain.clone(), Sources::new(root.path()));
+        let original = crate::outline::OutlineContent::from_path(domain.cache(), &file).unwrap();
+        let mut session = SessionTools::new(tools.session());
+        let result = session
+            .dispatch(
+                "search_structure",
+                &json!({"language":"rust", "rule":{"rule":{"kind":"impl_item"}}}),
+            )
+            .await
+            .unwrap();
+        let page: Value = serde_json::from_str(&result.text).unwrap();
+        assert_eq!(
+            page["matches"][0]["excerpt"],
+            "impl S { fn a() {} fn b() {} }"
+        );
+        std::fs::write(file, "impl S { fn replacement() {} }").unwrap();
+        let finish = |used: Value| json!({"search_id":page["search_id"],"used":used});
+        let expected = ["impl[S]", "impl[S]/fn[a]", "impl[S]/fn[b]"].map(|selector| {
+            Dependency::Node(
+                domain.cache().intern_node(format!("code.rs#{selector}")),
+                original.select(selector).unwrap().fingerprint(),
+            )
+        });
+        for _ in 0..2 {
+            let accepted = session
+                .dispatch("finish_search", &finish(json!([page["matches"][0]["tag"]])))
+                .await
+                .unwrap();
+            assert_eq!(accepted.dependencies.len(), expected.len());
+            assert!(
+                expected
+                    .iter()
+                    .all(|dep| accepted.dependencies.contains(dep))
+            );
+            assert!(
+                session
+                    .dispatch("finish_search", &finish(json!(["unknown"])))
+                    .await
+                    .is_err()
+            );
+        }
+    }
+
+    // {test}`requirements.sdk.graph.validation-context.list_sources.mcp.description`
+    // {test}`requirements.sdk.graph.search.search_text.mcp.description`
+    // {test}`requirements.sdk.graph.search.search_structure.mcp.description`
+    // {test}`requirements.sdk.graph.search.finish_search.mcp.description`
+    #[tokio::test]
+    async fn published_tool_descriptions_match_the_contract() {
+        let root = tempfile::tempdir().unwrap();
+        let tools = ProjectSources {
+            sources: Sources::new(root.path()).into(),
+            domain: project("").into(),
+        };
+        let definitions = tools.session().definitions().unwrap();
+        for (name, expected) in [
+            ("list_sources", "List available project file nodes."),
+            (
+                "search_text",
+                "Find regular-expression matches in available files, optionally within a file or directory. Read selected nodes separately.",
+            ),
+            (
+                "search_structure",
+                "Find structural matches in available files, optionally within a file or directory. Read selected nodes separately.",
+            ),
+            (
+                "finish_search",
+                "Close a delivered search and record dependencies for snippets you used to justify your conclusion without an additional source read. search_id is the result's UUID and used is an array of its short entry tags, e.g. {\"search_id\":\"11111111-1111-4111-8111-111111111111\",\"used\":[\"1\"]}. Entries whose source you also read may be omitted; including them is harmless. Use used:[] when no entries qualify, including an empty search. Every delivered search must be finished before submission. The result is {search_id, finished:true}; no additional source is delivered.",
+            ),
+        ] {
+            let tool = definitions.iter().find(|tool| tool.name == name).unwrap();
+            assert_eq!(tool.description, expected, "{name}");
+        }
+    }
+
+    // {test}`requirements.sdk.graph.search.search_text.mcp.description`
     // {test}`requirements.sdk.graph.validation-context.pages.behavior`
     // {test}`requirements.sdk.graph.search.search_text.mcp`
     #[tokio::test]
     // {test}`requirements.sdk.graph.search.group_hits`
+    // {test}`requirements.sdk.graph.validation-context.pages.inputs`
     async fn search_pages_return_every_original_match_in_order() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("source.txt");
@@ -878,6 +964,7 @@ mod tests {
         let mut count = 0;
         let mut pages = 0;
         loop {
+            assert!(delivery.dependencies.is_empty());
             let page: Value = serde_json::from_str(&delivery.text).unwrap();
             assert_eq!(page["complete"], true);
             assert!(uuid::Uuid::parse_str(page["search_id"].as_str().unwrap()).is_ok());
@@ -902,6 +989,7 @@ mod tests {
         assert_eq!(count, lines.len());
     }
 
+    // {test}`requirements.sdk.graph.search.search_structure.mcp.description`
     // {test}`requirements.sdk.graph.search.search_structure.inputs`
     // {test}`requirements.sdk.graph.search.finish_search.inputs`
     // {test}`requirements.sdk.graph.search.agent_search`
@@ -924,6 +1012,25 @@ mod tests {
             domain: domain.clone().into(),
         };
         let mut session = SessionTools::new(tools.session());
+        let empty = session
+            .dispatch(
+                "search_structure",
+                &json!({"language":"rust","rule":{"rule":{"pattern":"absent()"}}}),
+            )
+            .await
+            .unwrap();
+        assert!(empty.dependencies.is_empty());
+        let empty: Value = serde_json::from_str(&empty.text).unwrap();
+        assert_eq!(empty["matches"], json!([]));
+        assert_eq!(empty["complete"], true);
+        let closed = session
+            .dispatch(
+                "finish_search",
+                &json!({"search_id":empty["search_id"],"used":[]}),
+            )
+            .await
+            .unwrap();
+        assert!(closed.dependencies.is_empty());
         let args = json!({"language":"rust","rule":{"rule":{"pattern":"call()"}}});
         let query = StructuralQuery::new("rust".into(), args["rule"].as_object().unwrap().clone());
         let hits = tools.search_structure(&query).await.unwrap();
@@ -1041,6 +1148,7 @@ mod tests {
         assert_eq!(domain.0.lock().unwrap().reads, 1);
     }
 
+    // {test}`requirements.sdk.graph.validation-context.pages.inputs`
     // {test}`requirements.sdk.graph.validation-context.outline_source.mcp`
     // {test}`requirements.sdk.graph.validation-context.outline_source.behavior`
     // {test}`requirements.sdk.graph.validation-context.pages.mcp`
@@ -1143,7 +1251,13 @@ mod tests {
             assert_eq!(page["file"], "code.rs");
             assert_eq!(page["selector"], "");
             received.push_str(page["text"].as_str().unwrap());
-            assert_eq!(root_read.dependencies.len(), 1);
+            assert_eq!(
+                root_read.dependencies,
+                [Dependency::Node(
+                    tools.domain.cache().intern_node("code.rs#".into()),
+                    crate::procedure::context_fingerprint(&root_text)
+                )]
+            );
             children.extend(
                 page["children"]
                     .as_array()
@@ -1174,6 +1288,7 @@ mod tests {
         );
     }
 
+    // {test}`requirements.sdk.graph.validation-context.pages.inputs`
     // {test}`requirements.sdk.graph.validation-context.list_sources.mcp`
     // {test}`requirements.sdk.graph.validation-context.pages.behavior`
     // {test}`requirements.sdk.graph.validation-context.list_sources.inputs`
@@ -1841,6 +1956,7 @@ mod tests {
             .dispatch("outline_source", &listing["files"][index])
             .await
             .unwrap();
+        assert!(recovered.dependencies.is_empty());
         let outline: Value = serde_json::from_str(&recovered.text).unwrap();
         assert!(outline["items"][0]["node"].is_u64());
         assert_eq!(domain.0.lock().unwrap().reads, 0);
@@ -1850,6 +1966,19 @@ mod tests {
             .read_node(&cx, &json!({"path":"invalid.rs","location":"fn[intact]"}))
             .unwrap();
         let text = serde_json::from_str::<Value>(&read.text).unwrap();
+        let expected = domain.cache().intern_node("invalid.rs#fn[intact]".into());
+        let snapshot = crate::outline::OutlineContent::from_path(
+            domain.cache(),
+            &root.path().join("invalid.rs"),
+        )
+        .unwrap();
+        assert_eq!(
+            read.dependencies,
+            [Dependency::Node(
+                expected,
+                snapshot.select("fn[intact]").unwrap().fingerprint()
+            )]
+        );
         assert_eq!(text["file"], "invalid.rs");
         assert_eq!(text["selector"], "fn[intact]");
         assert!(text["text"].as_str().unwrap().contains("keep()"));
@@ -1893,17 +2022,12 @@ where
         Some(self.tools)
     }
 
-    // {impl}`requirements.sdk.graph.validation-context.list_sources.mcp`
-    // {impl}`requirements.sdk.graph.validation-context.list_sources.mcp.description`
-    // {impl}`requirements.sdk.graph.validation-context.outline_source.mcp`
-    // {impl}`requirements.sdk.graph.validation-context.outline_source.mcp.description`
-    // {impl}`requirements.sdk.graph.search.search_text.mcp`
-    // {impl}`requirements.sdk.graph.search.search_text.mcp.description`
-    // {impl}`requirements.sdk.graph.search.search_structure.mcp`
-    // {impl}`requirements.sdk.graph.search.search_structure.mcp.description`
     // {impl}`requirements.sdk.graph.search.finish_search.mcp`
+    // {impl}`requirements.sdk.graph.validation-context.list_sources.mcp.description`
+    // {impl}`requirements.sdk.graph.validation-context.outline_source.mcp.description`
+    // {impl}`requirements.sdk.graph.search.search_text.mcp.description`
+    // {impl}`requirements.sdk.graph.search.search_structure.mcp.description`
     // {impl}`requirements.sdk.graph.search.finish_search.mcp.description`
-    // {impl}`requirements.authoring.tool_descriptions.common_case`
     fn definitions(&self) -> io::Result<Vec<ToolDefinition>> {
         [
             json!({"name":LIST_SOURCES,"description":"List available project file nodes.", "parameters":{"type":"object","properties":{}}}),
@@ -1924,23 +2048,8 @@ where
         .collect()
     }
 
+    // {impl}`requirements.sdk.graph.agent-harness.fixed_tools`
     // {impl}`requirements.sdk.graph.search.agent_search`
-    // {impl}`requirements.sdk.graph.search.group_hits`
-    // {impl}`requirements.sdk.graph.search.search_text.behavior`
-    // {impl}`requirements.sdk.graph.search.search_structure.behavior`
-    // {impl}`requirements.sdk.graph.search.search_text.inputs`
-    // {impl}`requirements.sdk.graph.search.search_text.mcp`
-    // {impl}`requirements.sdk.graph.search.search_structure.mcp`
-    // {impl}`requirements.sdk.graph.search.search_structure.inputs`
-    // {impl}`requirements.sdk.graph.validation-context.list_sources.behavior`
-    // {impl}`requirements.sdk.graph.validation-context.list_sources.inputs`
-    // {impl}`requirements.sdk.graph.validation-context.outline_source.behavior`
-    // {impl}`requirements.sdk.graph.validation-context.outline_source.inputs`
-    // {impl}`requirements.sdk.sources.provider_observations`
-    // {impl}`requirements.sdk.graph.validation-context.read_source.behavior`
-    // {impl}`requirements.sdk.graph.validation-context.read_source.inputs`
-    // {impl}`requirements.sdk.graph.validation-context.pages.inputs`
-    // {impl}`requirements.sdk.sources.redaction`
     fn dispatch<'a>(
         &'a mut self,
         name: &'a str,

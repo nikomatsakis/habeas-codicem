@@ -51,6 +51,36 @@ fn records_support_clone_and_debug_with_independent_bounds() {
     assert!(debug_record(&original).contains("clone-test"));
 }
 
+// {test}`requirements.sdk.graph.evidence.dependencies`
+#[test]
+fn dependency_identity_includes_the_variant_and_each_field() {
+    fn assert_clone<T: Clone + Eq + std::fmt::Debug>(value: &T) {
+        assert_eq!(&value.clone(), value);
+    }
+    let fingerprint = |value: &str| Fingerprint::new("hash".into(), value.into());
+    let node = Dependency::Node("source", fingerprint("a"));
+    let edges = Dependency::OutgoingEdges("source", "label", fingerprint("a"));
+    assert_clone(&node);
+    assert_clone(&edges);
+    assert!(format!("{node:?}").contains("Node"));
+    assert!(format!("{edges:?}").contains("OutgoingEdges"));
+    assert_ne!(node, edges);
+    assert_ne!(node, Dependency::Node("other", fingerprint("a")));
+    assert_ne!(node, Dependency::Node("source", fingerprint("b")));
+    for other in [
+        Dependency::OutgoingEdges("other", "label", fingerprint("a")),
+        Dependency::OutgoingEdges("source", "other", fingerprint("a")),
+        Dependency::OutgoingEdges("source", "label", fingerprint("b")),
+        Dependency::OutgoingEdges(
+            "source",
+            "label",
+            Fingerprint::new("other".into(), "a".into()),
+        ),
+    ] {
+        assert_ne!(edges, other);
+    }
+}
+
 // {test}`requirements.sdk.graph.evidence.record`
 // {test}`requirements.sdk.graph.evidence.recorded_criterion_version`
 // {test}`requirements.sdk.graph.criteria.criterion_version`

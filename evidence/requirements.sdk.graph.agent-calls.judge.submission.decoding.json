@@ -1,8 +1,8 @@
 {
-  "requirement": "If the submitted result cannot be deserialized into `R`, the call ends with\n`ValidationError::Agent` before invoking any vetting callbacks.",
+  "requirement": "Decode the submitted `result` directly as `R` and invoke vetting callbacks only\nfor successfully decoded answers. If decoding fails, return the decoding error\nand guidance on the expected `result` to the model as a tool error. Keep the\nconversation open for a corrected submission.",
   "determination": true,
-  "rationale": "The subject requires that a submitted result that cannot be deserialized into `R` ends the call with `ValidationError::Agent`, and that no vetting callback runs first.\n\n`crates/trust-but-verify/src/agent/tests.rs#fn[typed_submission_references_resolve_and_invalid_results_are_agent_errors]` is marked `{test}` for the subject. It covers both obligations.\n\n- **Undecodable result:** it submits `{\"result\":\"wrong\"}` and asks for `bool`. The string cannot become a `bool`, so this is a real decode failure. It asserts `Err(ValidationError::Agent(_))`.\n- **No vetting before the error:** the same call installs `vet_answer(|_| panic!(...))`. This is the only vetting callback I found, in `procedure.rs`. If decoding failed but vetting still ran, the test would panic.\n- **Positive control:** the earlier `Answer` submission decodes successfully, so the test also shows the success path.\n\nThe other three invalid payloads are `{}`, `{\"other\":true}` and `{\"result\":true,\"extra\":true}`. These are malformed submissions rather than decode failures, and they add coverage without being needed for this requirement.\n\nI found no gap.",
-  "references": "e3a5fe45d43bd8249c3bba6c58efc85b15e9af5ed286059fe88369f67025424e",
+  "rationale": "structural: The structural obligation is in the clause \"Decode the submitted `result` directly as `R`\". An implementation that decoded into a wrapper or an intermediate type would violate it. A second obligation is \"invoke vetting callbacks only for successfully decoded answers\". Running the callbacks on raw JSON would violate that. The rest of the text (return the error with guidance as a tool error, keep the conversation open) is observable behavior.\n\n`crates/trust-but-verify/src/procedure.rs#impl[Ask<'a, 'd, D, R, P>]#2/fn[execute]` meets both obligations in its `finish` closure. It calls `serde_json::from_value::<R>(value)` directly. On `Err` it returns `Submission::Retry(\"Invalid `result`: {error}. Resubmit with the JSON value described by the submit_result tool schema...\")` before the vet callbacks loop runs. The callbacks run only after a successful decode.\n\n`Submission::Retry` is how the conversation stays open and the error reaches the model. `crates/trust-but-verify/src/agent.rs#fn[converse]` records the retry message as the tool result and continues the conversation. The root carries the {impl} marker for this requirement, and I found no other root that needs one.\n\nbehavioral: Both reviewed tests carry `{test}` references for `requirements.sdk.graph.agent-calls.judge.submission.decoding`.\n\n**Obligations and coverage**\n- **Decode `result` directly as `R`.** `string_answers_preserve_json_text` asks for `String` and submits a JSON-text string. It asserts the returned value equals that exact text, so the string is not re-parsed. `malformed_submissions_receive_feedback_and_can_be_corrected` submits `{\"result\":\"{\\\"decision\\\":\\\"Yes\\\"}\"}` for `R=Answer`. It expects an \"invalid type: string\" error, which shows the value is decoded directly and a JSON-encoded string is not unwrapped. The structured object `{\"decision\":\"No\"}` in the second turn is decoded successfully.\n- **Call vetting callbacks only for successfully decoded answers.** The test uses `vet_answer` with a counter. After a malformed first turn and a valid second turn, it asserts `vetted == 1`. The callback therefore did not run for any of the eight malformed submissions.\n- **Return the decoding error and guidance as a tool error.** For each malformed case the test reads the next request's last chat message, a `ToolResult`. It asserts `is_error` is true and that the serialized feedback contains the specific diagnostic and the guidance text. The cases are:\n  - missing field `decision`;\n  - unknown variant `Maybe`;\n  - wrong type (`42`);\n  - a string where an object is expected;\n  - malformed JSON text;\n  - envelope errors (no `result` field, a wrong field name, an extra field).\n- **Keep the conversation open for a corrected submission.** Each case scripts a second turn with a valid answer. The test asserts the call succeeds with `Decision::No`, and that there is a second request carrying the feedback.\n\nThe tests cover every obligation, with several error classes. I found no gaps.",
+  "references": "843b7cc025cbf3341efc6f742c317b64757307e1cb9449b4852123e25db1314c",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.agent-calls.judge.submission.decoding",
@@ -11,23 +11,167 @@
       ],
       "text": [
         ":::{req} judge.submission.decoding",
-        "If the submitted result cannot be deserialized into `R`, the call ends with",
-        "`ValidationError::Agent` before invoking any vetting callbacks.",
+        "Decode the submitted `result` directly as `R` and invoke vetting callbacks only",
+        "for successfully decoded answers. If decoding fails, return the decoding error",
+        "and guidance on the expected `result` to the model as a tool error. Keep the",
+        "conversation open for a corrected submission.",
         ":::"
       ]
     },
     {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "fn[typed_submission_references_resolve_and_invalid_results_are_agent_errors]",
-      "hash": "ddd3b03441ab9cd50df733d7f1ff28bdd5a224fa49a2ea82050a34f03a1d4f2e"
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]",
+      "hash": "13819c4675914551da6e0dde0cc498d09495c2f2124f3f03e353ca0cdfef866a"
     },
     {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[vet_answer]",
-      "hash": "edbb68fcf0aa659ac3f79d6222ff6665aae046e9e8965d414cfec3cd8bc64428"
+      "file": "crates/trust-but-verify/src/agent.rs",
+      "item": "fn[converse]",
+      "hash": "b664f957f4a77588596c6224d8175ec50ee6a2012013b9bfb7dc82a46e3ee241"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "fn[malformed_submissions_receive_feedback_and_can_be_corrected]",
+      "hash": "0564e22cc58185b18f3400dbf76a500a9672e3b5c11c56844cefdc23cfe53b97"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "fn[string_answers_preserve_json_text]",
+      "hash": "89f0cd69a5a45286184c82f7bdf8931c1a5f7383c37dff2684aea034b37a7406"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.agent-calls.judge.submission.decoding"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "843b7cc025cbf3341efc6f742c317b64757307e1cb9449b4852123e25db1314c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-calls.judge.submission.decoding"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "b68fc23e2c2b7669e931647be983ea791f1e2f374d402d825aacd94df34bf965"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "13819c4675914551da6e0dde0cc498d09495c2f2124f3f03e353ca0cdfef866a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent.rs"
+                },
+                "selector": "fn[converse]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "b664f957f4a77588596c6224d8175ec50ee6a2012013b9bfb7dc82a46e3ee241"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The structural obligation is in the clause \"Decode the submitted `result` directly as `R`\". An implementation that decoded into a wrapper or an intermediate type would violate it. A second obligation is \"invoke vetting callbacks only for successfully decoded answers\". Running the callbacks on raw JSON would violate that. The rest of the text (return the error with guidance as a tool error, keep the conversation open) is observable behavior.\n\n`crates/trust-but-verify/src/procedure.rs#impl[Ask<'a, 'd, D, R, P>]#2/fn[execute]` meets both obligations in its `finish` closure. It calls `serde_json::from_value::<R>(value)` directly. On `Err` it returns `Submission::Retry(\"Invalid `result`: {error}. Resubmit with the JSON value described by the submit_result tool schema...\")` before the vet callbacks loop runs. The callbacks run only after a successful decode.\n\n`Submission::Retry` is how the conversation stays open and the error reaches the model. `crates/trust-but-verify/src/agent.rs#fn[converse]` records the retry message as the tool result and continues the conversation. The root carries the {impl} marker for this requirement, and I found no other root that needs one."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.agent-calls.judge.submission.decoding"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "843b7cc025cbf3341efc6f742c317b64757307e1cb9449b4852123e25db1314c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-calls.judge.submission.decoding"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "b68fc23e2c2b7669e931647be983ea791f1e2f374d402d825aacd94df34bf965"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[malformed_submissions_receive_feedback_and_can_be_corrected]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "0564e22cc58185b18f3400dbf76a500a9672e3b5c11c56844cefdc23cfe53b97"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[string_answers_preserve_json_text]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "89f0cd69a5a45286184c82f7bdf8931c1a5f7383c37dff2684aea034b37a7406"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "Both reviewed tests carry `{test}` references for `requirements.sdk.graph.agent-calls.judge.submission.decoding`.\n\n**Obligations and coverage**\n- **Decode `result` directly as `R`.** `string_answers_preserve_json_text` asks for `String` and submits a JSON-text string. It asserts the returned value equals that exact text, so the string is not re-parsed. `malformed_submissions_receive_feedback_and_can_be_corrected` submits `{\"result\":\"{\\\"decision\\\":\\\"Yes\\\"}\"}` for `R=Answer`. It expects an \"invalid type: string\" error, which shows the value is decoded directly and a JSON-encoded string is not unwrapped. The structured object `{\"decision\":\"No\"}` in the second turn is decoded successfully.\n- **Call vetting callbacks only for successfully decoded answers.** The test uses `vet_answer` with a counter. After a malformed first turn and a valid second turn, it asserts `vetted == 1`. The callback therefore did not run for any of the eight malformed submissions.\n- **Return the decoding error and guidance as a tool error.** For each malformed case the test reads the next request's last chat message, a `ToolResult`. It asserts `is_error` is true and that the serialized feedback contains the specific diagnostic and the guidance text. The cases are:\n  - missing field `decision`;\n  - unknown variant `Maybe`;\n  - wrong type (`42`);\n  - a string where an object is expected;\n  - malformed JSON text;\n  - envelope errors (no `result` field, a wrong field name, an extra field).\n- **Keep the conversation open for a corrected submission.** Each case scripts a second turn with a valid answer. The test asserts the call succeeds with `Decision::No`, and that there is a second request carrying the feedback.\n\nThe tests cover every obligation, with several error classes. I found no gaps."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -37,19 +181,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "e3a5fe45d43bd8249c3bba6c58efc85b15e9af5ed286059fe88369f67025424e"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.agent-calls.judge.submission.decoding"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "9cd9828f67ec7f951b1f8a667b02fceb573d479284b6d4791b6db570cf09f7ce"
+          "value": "843b7cc025cbf3341efc6f742c317b64757307e1cb9449b4852123e25db1314c"
         }
       ]
     },
@@ -60,24 +192,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "61d443baceb347f6aadd701a110006df658cfbad3e96ec596c4bb169d016d745"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "fn[typed_submission_references_resolve_and_invalid_results_are_agent_errors]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "ddd3b03441ab9cd50df733d7f1ff28bdd5a224fa49a2ea82050a34f03a1d4f2e"
+          "value": "b68fc23e2c2b7669e931647be983ea791f1e2f374d402d825aacd94df34bf965"
         }
       ]
     },
@@ -89,12 +204,63 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/procedure.rs"
             },
-            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[vet_answer]"
+            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "edbb68fcf0aa659ac3f79d6222ff6665aae046e9e8965d414cfec3cd8bc64428"
+          "value": "13819c4675914551da6e0dde0cc498d09495c2f2124f3f03e353ca0cdfef866a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent.rs"
+            },
+            "selector": "fn[converse]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b664f957f4a77588596c6224d8175ec50ee6a2012013b9bfb7dc82a46e3ee241"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
+            },
+            "selector": "fn[malformed_submissions_receive_feedback_and_can_be_corrected]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "0564e22cc58185b18f3400dbf76a500a9672e3b5c11c56844cefdc23cfe53b97"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
+            },
+            "selector": "fn[string_answers_preserve_json_text]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "89f0cd69a5a45286184c82f7bdf8931c1a5f7383c37dff2684aea034b37a7406"
         }
       ]
     }

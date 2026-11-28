@@ -1,8 +1,8 @@
 {
   "requirement": "The method is declared under {cite}`requirements.sdk.graph.running-criteria.load_evidence`.\n\n`load_evidence` captures the source identity and criterion path while constructing\nits future. It retains no reference to the criterion value while storage is\npending, so the criterion needs no `Sync` bound. It loads the complete record and\ndecodes its output under {cite}`requirements.sdk.graph.evidence.record.output`.\nVersion and input comparison are separate steps.",
   "determination": true,
-  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.graph.evidence.check_node`. I did not read the implementation. The assessment rests on the supplied test source.\n\n**No `Sync` bound and early capture.** `crates/trust-but-verify/tests/contracts.rs#fn[validation_and_answer_need_send_without_sync]` passes `validator.load_evidence(&descriptor)` through a `send(...)` helper. By its name, that helper requires the future to be `Send`. The descriptor is a `Review` that holds a `Cell` (`descriptor_reads`), so it is not `Sync`. A future that kept `&criterion` across a storage await, or held it from construction until the first poll, would not be `Send`. The test also asserts `descriptor_reads == 1` and a correct loaded output. This is my reading of how `send` and `Review` work, because I did not open the helper definitions.\n\n**Loading the complete record.**\n- `fn[criteria_keep_typed_answers_and_persist_only_when_requested]` loads a saved record. It checks `output`, `source_node_id`, `criterion_path`, `version` and `dependencies` against the stored value.\n- It also checks that a missing record returns `Ok(None)`.\n- `fn[wildcard_revision_does_not_supply_other_criteria_or_nodes]` shows that a different criterion path or source node returns `None`. Together these show that the captured source identity and criterion path locate the record.\n- `fn[agent_edge_tools_record_selections_without_validating_targets]` loads a record with outgoing-edge dependencies and compares them.\n\n**Decoding output under `record.output`.**\n- `fn[typed_loading_reports_decode_errors_even_for_stale_evidence]` and `tests/storage.rs#fn[malformed_records_are_storage_errors_and_bad_outputs_are_output_errors]` assert `ValidationError::Output` for an output that cannot decode. This holds even when the version or inputs are stale.\n- The storage test also asserts that the file is unchanged and that no re-execution happened.\n- The malformed-record and storage-failure cases are covered by `FileStorageError::Json` and `Graph(\"load\")` in `validation_tests.rs#fn[resolution_storage_and_callback_errors_are_not_judgments]` and `contracts.rs#fn[loading_execution_resolution_and_saving_failures_do_not_publish_answers]`.\n\n**Version and input comparison as separate steps.**\n- `validation_tests.rs#fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]` loads a record saved under `v1` with a `v2` criterion. The load succeeds and returns the old version. `is_compatible_with` is false and `check_inputs` is true. The legacy `None` version case is also covered.\n- `contracts.rs#fn[dependency_resolution_failures_do_not_execute_or_replace_saved_answers]` loads successfully while input resolution fails. `check_inputs` then returns `Err`.\n- `fn[changing_one_criteria_input_does_not_invalidate_another]` loads both records and gets different `check_inputs` results.\n- `fn[typed_loading_reports_decode_errors_even_for_stale_evidence]` asserts that loading performs no input reads.\n\nThe declaration obligation, \"declared under `load_evidence`\", is a cited requirement and needs no separate test. All tests carry `{test}` markers for the subject.",
-  "references": "c938fbdae810b4e363fa27dfd8ed1c011fc42c08cfea14f2ba34058c19edb583",
+  "rationale": "structural: The root `crates/trust-but-verify/src/graph.rs#impl[Validator<'d, D>]/fn[load_evidence]` carries the structural obligations in `requirements.sdk.graph.evidence.check_node`.\n\n**Capture before the future (structural).** The clause is: \"captures the source identity and criterion path while constructing its future. It retains no reference to the criterion value while storage is pending, so the criterion needs no `Sync` bound.\"\n- A behavior-preserving alternative would be an `async move` block that calls `criterion.source_node_id()` or `criterion.criterion_path()` inside the future. That version would hold `&V` across the storage await. It would then need `V: Sync` for the `+ Send` future, so it would violate the clause.\n- The root avoids this. It is a plain `fn` that returns `impl Future<...> + Send`. It computes `node` and `criterion_path` from `criterion` before the `async move` block. The block uses only `self`, `node` and `criterion_path`, never `criterion`. The signature adds no `Sync` bound on `V`.\n\n**Complete record and output decoding.** The future calls `self.domain.load_evidence(&node, &criterion_path)`. It maps storage errors to `ValidationError::Graph`, returns `Ok(None)` for a missing record, and decodes `record.output` with `serde_json::from_value` into `V::Ok`. It maps decode errors to `ValidationError::Output`. This matches the delegated `requirements.sdk.graph.evidence.record.output`. It builds the `Fingerprinted` from the full record: version, dependencies and output.\n\n**Version and input comparison are separate steps.** `load_evidence` performs no comparison of version or inputs. It returns the loaded record unchanged, so comparison is left to the caller.\n\n**Declared signature.** The signature comes from `requirements.sdk.graph.running-criteria.load_evidence`, which the text only cites. The root's signature matches it.\n\nThe remaining clauses are observable behavior, not structural obligations.\n\nbehavioral: Obligations in `requirements.sdk.graph.evidence.check_node`, and the tests that cover them:\n\n1. **Capture and no `Sync` bound.** `load_evidence` captures the source identity and criterion path at construction. It keeps no reference to the criterion while storage is pending, so the criterion needs no `Sync` bound.\n   - `tests/contracts.rs#fn[validation_and_answer_need_send_without_sync]` passes `validator.load_evidence(&descriptor)` to `send`. `send` is `fn send<T: Send>`.\n   - `Review` contains a `Cell` field, `descriptor_reads`, so it is `!Sync`. The test therefore only compiles if the load future is `Send` without holding `&Review`.\n   - The test also asserts `descriptor_reads == 1`, which shows the criterion's identity was read once.\n   - The `Cell` output type and the typed load round-trip are asserted (`into_output().get() == 17`).\n\n2. **Loads the complete record.**\n   - `criteria_keep_typed_answers_and_persist_only_when_requested` asserts that the loaded output, source node, path, version and dependencies all equal the stored values. Missing evidence gives `None`.\n   - `caller_reuses_negative_answers_and_compares_revisions_explicitly` and `agent_edge_tools_record_selections_without_validating_targets` check that dependencies round-trip and that an unknown node or criterion gives `None`.\n   - `wildcard_revision_does_not_supply_other_criteria_or_nodes` checks that a different criterion or a different source node gives `None`.\n\n3. **Decodes output under `record.output`.**\n   - `malformed_records_are_storage_errors_and_bad_outputs_are_output_errors` uses a real file store. Malformed JSON gives `ValidationError::Graph`. A bad output gives `ValidationError::Output`, and the record file is left unchanged.\n   - `typed_loading_reports_decode_errors_even_for_stale_evidence` checks that an undecodable output gives `Output` even when the version and inputs are stale, and that no input reads happen.\n   - `resolution_storage_and_callback_errors_are_not_judgments` and `loading_execution_resolution_and_saving_failures_do_not_publish_answers` check that a load failure gives `Graph`.\n\n4. **Version and input comparison are separate steps.**\n   - A stale-version record (v1 loaded for a v2 criterion) loads successfully. Version compatibility is then checked explicitly with `is_compatible_with`.\n   - A record with stale inputs also loads, and `check_inputs` is a separate call (`changing_one_criteria_input_does_not_invalidate_another`).\n   - A record whose inputs cannot resolve still loads, and only `check_inputs` returns the error (`dependency_resolution_failures_do_not_execute_or_replace_saved_answers`).\n   - A `None` version loads and is compatible with any revision (`wildcard_revision_does_not_supply_other_criteria_or_nodes`).\n\nThe tests carry `{test}` markers for the subject. The cited requirements `load_evidence` and `record.output` need no reassessment here. I found no gaps.",
+  "references": "9e35ae9cfa8a5af0c6f266c8655417793308a1b38e05e7d9f1d6dcb79bcf2b40",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.evidence.check_node",
@@ -62,6 +62,11 @@
         "reuse workflow under {cite}`requirements.sdk.graph.evidence.procedure_identity`.",
         ":::"
       ]
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "impl[Validator<'d,%20D>]/fn[load_evidence]",
+      "hash": "bde37aab7f8c36fe6e9fea0051d849d53a6b3fb0afe3e8e134a5c073f1896d5d"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -134,7 +139,370 @@
       "hash": "8584e807e9abc79dc59d3352ed10789b3f88c34eaf2710718740786192bf2708"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.evidence.check_node"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "9e35ae9cfa8a5af0c6f266c8655417793308a1b38e05e7d9f1d6dcb79bcf2b40"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.evidence.check_node"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "ab09893535d55027ff42e05bb2dd5e8fc90d663420daffe9e635dbd34103275a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.running-criteria.load_evidence"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "3ee36ac642ffabe41027447c19777b3aa5e4a71a66c14a46784843565ef2c5c5"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.evidence.record.output"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "7de8cc465e0e2ba988a89672cf1bc5f51ad4061d6dc35d24ab0bb84a84211766"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph.rs"
+                },
+                "selector": "impl[Validator<'d,%20D>]/fn[load_evidence]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "bde37aab7f8c36fe6e9fea0051d849d53a6b3fb0afe3e8e134a5c073f1896d5d"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The root `crates/trust-but-verify/src/graph.rs#impl[Validator<'d, D>]/fn[load_evidence]` carries the structural obligations in `requirements.sdk.graph.evidence.check_node`.\n\n**Capture before the future (structural).** The clause is: \"captures the source identity and criterion path while constructing its future. It retains no reference to the criterion value while storage is pending, so the criterion needs no `Sync` bound.\"\n- A behavior-preserving alternative would be an `async move` block that calls `criterion.source_node_id()` or `criterion.criterion_path()` inside the future. That version would hold `&V` across the storage await. It would then need `V: Sync` for the `+ Send` future, so it would violate the clause.\n- The root avoids this. It is a plain `fn` that returns `impl Future<...> + Send`. It computes `node` and `criterion_path` from `criterion` before the `async move` block. The block uses only `self`, `node` and `criterion_path`, never `criterion`. The signature adds no `Sync` bound on `V`.\n\n**Complete record and output decoding.** The future calls `self.domain.load_evidence(&node, &criterion_path)`. It maps storage errors to `ValidationError::Graph`, returns `Ok(None)` for a missing record, and decodes `record.output` with `serde_json::from_value` into `V::Ok`. It maps decode errors to `ValidationError::Output`. This matches the delegated `requirements.sdk.graph.evidence.record.output`. It builds the `Fingerprinted` from the full record: version, dependencies and output.\n\n**Version and input comparison are separate steps.** `load_evidence` performs no comparison of version or inputs. It returns the loaded record unchanged, so comparison is left to the caller.\n\n**Declared signature.** The signature comes from `requirements.sdk.graph.running-criteria.load_evidence`, which the text only cites. The root's signature matches it.\n\nThe remaining clauses are observable behavior, not structural obligations."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.evidence.check_node"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "9e35ae9cfa8a5af0c6f266c8655417793308a1b38e05e7d9f1d6dcb79bcf2b40"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.evidence.check_node"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "ab09893535d55027ff42e05bb2dd5e8fc90d663420daffe9e635dbd34103275a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.running-criteria.load_evidence"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "3ee36ac642ffabe41027447c19777b3aa5e4a71a66c14a46784843565ef2c5c5"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.evidence.record.output"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "7de8cc465e0e2ba988a89672cf1bc5f51ad4061d6dc35d24ab0bb84a84211766"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[agent_edge_tools_record_selections_without_validating_targets]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "1923ba1a1e40335b0976450eaedbabe266a0cbc1c568947f37797528e5a0c0d0"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "4050d7164d344983064df2ae023af8d39fc28f0cfe0437e2e558d3f65111498c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[resolution_storage_and_callback_errors_are_not_judgments]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "fda9a0fb466dfba174cb82ea6f0301ce22a098e2b6fdcbb97a03a342dfa995b5"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[criteria_keep_typed_answers_and_persist_only_when_requested]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f47c40151c7d8ba4e5cd3b84d1c8d19288a02beb3f6148a79bdbcf6bc857964c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[changing_one_criteria_input_does_not_invalidate_another]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "5e0c5d4bf17a4bd3acb69b36972940c3aebec22800b81b85faa413f5e6d28c3e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[typed_loading_reports_decode_errors_even_for_stale_evidence]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "a01bc430f7621e26f62a3028ef443c3746ee12fd7770c17774af73ccedd5a00b"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[dependency_resolution_failures_do_not_execute_or_replace_saved_answers]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "7d35c2bd6a734803097aa36c74244a08f1bfb8ca2564f9ff71fe398c0fbea414"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[wildcard_revision_does_not_supply_other_criteria_or_nodes]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "0433495b024591d9502b4ea7d229eeaced87022be0a6733f43ff4e1476011405"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[validation_and_answer_need_send_without_sync]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "2bf006acebdb8fc3df250c66c66a218d7e2e7d0edd1566f398067c9a9012f735"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[loading_execution_resolution_and_saving_failures_do_not_publish_answers]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "620e62c110521f2b47ca9a0f7decd1c242282514389273ecc122d94af6449cac"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/storage.rs"
+                },
+                "selector": "fn[malformed_records_are_storage_errors_and_bad_outputs_are_output_errors]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "ddebc3087009d0e23caf14a7a4d0927347150c7ecea342a55d5113e9d49eed70"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "struct[Review]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "652b0fbf1429a07f1f684ae3909df03bd45fa67026c91ad5f951a06c00a5cb24"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "impl[Review<O>/Criterion<Application>]/fn[source_node_id]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "d75641e490d99c582421310863ffd6f1cf57c0f6919d1a488b032d91081cf192"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[send]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "8584e807e9abc79dc59d3352ed10789b3f88c34eaf2710718740786192bf2708"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "Obligations in `requirements.sdk.graph.evidence.check_node`, and the tests that cover them:\n\n1. **Capture and no `Sync` bound.** `load_evidence` captures the source identity and criterion path at construction. It keeps no reference to the criterion while storage is pending, so the criterion needs no `Sync` bound.\n   - `tests/contracts.rs#fn[validation_and_answer_need_send_without_sync]` passes `validator.load_evidence(&descriptor)` to `send`. `send` is `fn send<T: Send>`.\n   - `Review` contains a `Cell` field, `descriptor_reads`, so it is `!Sync`. The test therefore only compiles if the load future is `Send` without holding `&Review`.\n   - The test also asserts `descriptor_reads == 1`, which shows the criterion's identity was read once.\n   - The `Cell` output type and the typed load round-trip are asserted (`into_output().get() == 17`).\n\n2. **Loads the complete record.**\n   - `criteria_keep_typed_answers_and_persist_only_when_requested` asserts that the loaded output, source node, path, version and dependencies all equal the stored values. Missing evidence gives `None`.\n   - `caller_reuses_negative_answers_and_compares_revisions_explicitly` and `agent_edge_tools_record_selections_without_validating_targets` check that dependencies round-trip and that an unknown node or criterion gives `None`.\n   - `wildcard_revision_does_not_supply_other_criteria_or_nodes` checks that a different criterion or a different source node gives `None`.\n\n3. **Decodes output under `record.output`.**\n   - `malformed_records_are_storage_errors_and_bad_outputs_are_output_errors` uses a real file store. Malformed JSON gives `ValidationError::Graph`. A bad output gives `ValidationError::Output`, and the record file is left unchanged.\n   - `typed_loading_reports_decode_errors_even_for_stale_evidence` checks that an undecodable output gives `Output` even when the version and inputs are stale, and that no input reads happen.\n   - `resolution_storage_and_callback_errors_are_not_judgments` and `loading_execution_resolution_and_saving_failures_do_not_publish_answers` check that a load failure gives `Graph`.\n\n4. **Version and input comparison are separate steps.**\n   - A stale-version record (v1 loaded for a v2 criterion) loads successfully. Version compatibility is then checked explicitly with `is_compatible_with`.\n   - A record with stale inputs also loads, and `check_inputs` is a separate call (`changing_one_criteria_input_does_not_invalidate_another`).\n   - A record whose inputs cannot resolve still loads, and only `check_inputs` returns the error (`dependency_resolution_failures_do_not_execute_or_replace_saved_answers`).\n   - A `None` version loads and is compatible with any revision (`wildcard_revision_does_not_supply_other_criteria_or_nodes`).\n\nThe tests carry `{test}` markers for the subject. The cited requirements `load_evidence` and `record.output` need no reassessment here. I found no gaps."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -144,19 +512,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "c938fbdae810b4e363fa27dfd8ed1c011fc42c08cfea14f2ba34058c19edb583"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.evidence.check_node"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "1ae03878a295a25bc0ba28276199bb43f09169c7da7872b3f9ec0954ea886602"
+          "value": "9e35ae9cfa8a5af0c6f266c8655417793308a1b38e05e7d9f1d6dcb79bcf2b40"
         }
       ]
     },
@@ -190,6 +546,23 @@
         {
           "scheme": "habeas-input-v1",
           "value": "7de8cc465e0e2ba988a89672cf1bc5f51ad4061d6dc35d24ab0bb84a84211766"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "impl[Validator<'d,%20D>]/fn[load_evidence]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "bde37aab7f8c36fe6e9fea0051d849d53a6b3fb0afe3e8e134a5c073f1896d5d"
         }
       ]
     },

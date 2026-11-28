@@ -256,6 +256,47 @@ async fn gitignore_is_shared_by_all_operations_with_or_without_a_git_repository(
     }
 }
 
+// {test}`requirements.sdk.sources.local_provider`
+#[tokio::test]
+async fn a_nested_ignore_file_scopes_all_operations_to_its_own_directory() {
+    for repository in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        if repository {
+            git(root.path(), &["init", "--quiet"]);
+        }
+        fs::create_dir(root.path().join("sub")).unwrap();
+        fs::write(root.path().join("sub/.gitignore"), "local.rs\n").unwrap();
+        let sources = Sources::new(root.path());
+        for path in ["local.rs", "sub/local.rs"] {
+            fs::write(root.path().join(path), "fn needle() {}\n").unwrap();
+        }
+        let listed = sources.list(&SourceScope::all()).await.unwrap();
+        for (path, visible) in [("local.rs", true), ("sub/local.rs", false)] {
+            assert_eq!(listed.iter().any(|p| p == Path::new(path)), visible);
+            assert_eq!(sources.read(&file(path)).await.is_ok(), visible);
+            assert_eq!(sources.parse(&file(path)).await.is_ok(), visible);
+            let scope = SourceScope::under(path);
+            let text = TextQuery::new("needle".into()).scope(scope.clone());
+            let rule = serde_json::json!({"rule":{"kind":"function_item"}});
+            let structure =
+                StructuralQuery::new("rust".into(), rule.as_object().unwrap().clone()).scope(scope);
+            assert_eq!(
+                sources.search_text(&text).await.unwrap().matches.len(),
+                usize::from(visible)
+            );
+            assert_eq!(
+                sources
+                    .search_structure(&structure)
+                    .await
+                    .unwrap()
+                    .matches
+                    .len(),
+                usize::from(visible)
+            );
+        }
+    }
+}
+
 // {test}`requirements.sdk.sources.provider.errors`
 // {test}`requirements.sdk.sources.provider_results.parse_snapshot`
 // {test}`requirements.sdk.sources.provider_results.search_completeness`
@@ -332,6 +373,7 @@ async fn empty_sources_errors_and_retained_snapshots_remain_distinct() {
     assert!(sources.search_text(&invalid).await.is_err());
 }
 
+// {test}`requirements.sdk.graph.search.SearchResults`
 // {test}`requirements.sdk.sources.provider_defaults`
 // {test}`requirements.sdk.sources.provider`
 // {test}`requirements.sdk.sources.provider_defaults.composition`
@@ -400,6 +442,10 @@ async fn built_in_languages_and_structural_search_use_the_project_scope() {
         assert!(scoped.complete);
         assert!(scoped.matches.is_empty(), "{prefix}");
     }
+    fs::write(root.path().join("another.rs"), "fn other() { call(); }\n").unwrap();
+    fs::write(root.path().join("script.py"), "def script():\n    call()\n").unwrap();
+    let all_rust = sources.search_structure(&query).await.unwrap();
+    assert_eq!(all_rust.matches.len(), 2);
     let visible = sources
         .search_structure(
             &StructuralQuery::new(query.language.clone(), query.rule.clone())
@@ -407,11 +453,9 @@ async fn built_in_languages_and_structural_search_use_the_project_scope() {
         )
         .await
         .unwrap();
+    assert!(visible.complete);
+    assert_eq!(visible.matches.len(), 1);
     assert_eq!(visible.matches[0].node.path, Path::new("visible.rs"));
-    fs::write(root.path().join("another.rs"), "fn other() { call(); }\n").unwrap();
-    fs::write(root.path().join("script.py"), "def script():\n    call()\n").unwrap();
-    let all_rust = sources.search_structure(&query).await.unwrap();
-    assert_eq!(all_rust.matches.len(), 2);
     assert!(all_rust.complete);
     let bounded = StructuralQuery::new(query.language.clone(), query.rule.clone()).limit(1);
     let subset = sources.search_structure(&bounded).await.unwrap();

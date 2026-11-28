@@ -1,8 +1,8 @@
 {
   "requirement": "A `Criterion::execute` invocation receives one `Send + Sync`\n`ValidationContext<'d, D>` for `D: Domain`, with tracked `inspection(&self)`\nand the `ask(&self)` builder under\n{cite}`requirements.sdk.graph.agent-calls.judge`.\n\nEach awaited ask builder runs its own conversation and returns its own submitted\nanswer. The context combines delivered node contents, tool reads, direct\ninspection reads, and recorded edge selections into one dependency trace for\nthe criterion. It records the node identities and fingerprints of the supplied\ncontents. A later call that selects fewer nodes, or none, preserves earlier\ninputs. An unawaited builder contributes no\nagent-delivery dependencies.\n\nShared references support concurrent calls: builders, conversations, and\nsubmission state remain independent, while updates to the trace are synchronized.\nCalls can run concurrently without holding an exclusive context borrow across\nan agent interaction or locking the whole context for the conversation.\n\nThe same context supports deterministic criteria under\n{cite}`requirements.sdk.graph.criteria.deterministic_procedures`.",
   "determination": true,
-  "rationale": "I found no test-adequacy gap. Each obligation in `requirements.sdk.graph.agent-calls.author_procedure` maps to a marked test with assertions that enforce it. I judged this from the supplied test source and did not read any implementation source.\n\n- **`Send + Sync` context with tracked `inspection(&self)` and `ask(&self)`**\n  - `later_lighter_agent_calls_preserve_the_contexts_existing_trace` in `crates/trust-but-verify/src/graph/validation_tests.rs` calls `assert_send_sync(&ctx)`.\n  - The same test calls `ctx.read(...)` through a shared reference and checks that the read shows up in `ctx.dependencies()`.\n  - It also calls `ctx.ask()` through a shared reference.\n\n- **Each awaited builder runs its own conversation and returns its own answer**\n  - `shared_context_allows_independent_concurrent_agent_calls` expects two different answers (7 and 11) and two separate agent requests.\n  - `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` in `crates/trust-but-verify/src/agent/tests.rs` expects \"alpha\" and \"beta\", with 3 calls each.\n  - `agent_executions_isolate_conversations_and_dependency_traces` also checks per-execution answers and call counts.\n\n- **One combined trace of delivered contents, tool reads, direct reads and edge selections, with node identities and fingerprints**\n  - `later_lighter_agent_calls_preserve_the_contexts_existing_trace` checks the exact dependency vector. It holds a direct read, an `OutgoingEdges` selection, a delivered `Node` entry and a second direct read, each with its fingerprint.\n  - `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` checks the `OutgoingEdges` and `Node` dependencies recorded by tool reads, including fingerprint values.\n  - `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` checks that the three expected dependencies from both calls are merged, and that `finish` carries them into the record.\n\n- **A later call selecting fewer nodes, or none, preserves earlier inputs**\n  - The `ctx.ask().context(\"lighter\")` call in `later_lighter_agent_calls_preserve_the_contexts_existing_trace` selects no nodes. The test asserts `ctx.dependencies() == retained` afterwards.\n  - The `Vec::<String>::new()` and plain-`ask` calls in `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` also cover calls with no node insertions.\n\n- **An unawaited builder contributes no agent-delivery dependencies**\n  - `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` drops a builder and asserts that `ctx.dependencies()` is empty and that no reads or selections happened.\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` drops a builder and asserts that no agent request was made.\n  - Failed or undelivered reads also leave no recorded dependency: `node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents` and the failure cases in `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` assert this.\n\n- **Concurrent calls through shared references without an exclusive borrow or a whole-context lock held across the agent interaction**\n  - Two tests run two asks under `futures::join!` with a 2-party `Barrier` and a timeout. They are `shared_context_allows_independent_concurrent_agent_calls` and `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads`. A held lock or exclusive borrow would stop the barrier from releasing and the timeout would fail the test.\n  - Builders, conversations and submissions stay independent. The per-conversation call counts, per-tool usage totals and per-execution dependency lists confirm this.\n  - The same sharing is checked at the validator level in `agent_executions_isolate_conversations_and_dependency_traces`.\n\n- **The same context supports deterministic criteria under `requirements.sdk.graph.criteria.deterministic_procedures` (cited)**\n  - `deterministic_validation_uses_required_storage_without_an_agent` runs a criterion with no agent and asserts the computed result and rationale.\n  - It also asserts the stored `Node` dependency and that `ask` returns `NoAgentConfigured`.\n\nI found no marking gaps. Every reviewed test carries a `{test}` reference to the subject.",
-  "references": "4769a6fab52e4ed959f9b29805c202c666152a83eed1c1a9f10f2dba04857b1c",
+  "rationale": "structural: **Structural obligations found**\n\n1. \"receives one `Send + Sync` `ValidationContext<'d, D>`\" and \"updates to the trace are synchronized\". An alternative that keeps a `RefCell` or a plain `Vec` for the trace would make the context `!Sync`, so this is a structural obligation. `ValidationContext` in `crates/trust-but-verify/src/procedure.rs#struct[ValidationContext]` meets it:\n   - Its `observations` field is a `std::sync::Mutex<Vec<Dependency<..>>>`.\n   - The `usage` field is also behind a `Mutex`.\n   - The `agent` field is `&dyn Agent<D>`, and `Agent<D>: Send + Sync`.\n   - The graph is held as `&'d D`, and `Domain: Send + Sync`.\n   - A test, `later_lighter_agent_calls_preserve_the_contexts_existing_trace`, calls `assert_send_sync(&ctx)`. I treated that only as corroboration, because test adequacy is outside this assessment.\n\n2. \"tracked `inspection(&self)`\" and \"without holding an exclusive context borrow\". The inspection operations and `ask` must take `&self`. This is also structural: `&mut self` would force exclusive borrows across an agent interaction. The sentence is not a prescribed method called `inspection`. The cited `tracked_inspection` requirement uses \"inspection\" for the context's inspection operations, and no function with that name exists in the crate. The code meets the obligation:\n   - `impl[ValidationContext]#2/fn[read]` takes `&self`.\n   - `impl[ValidationContext]#2/fn[outgoing_edges]` takes `&self`. It prepares the snapshot, then records the edge selection through `observe_edges`.\n   - `impl[ValidationContext]#2/fn[record_read]` takes `&self`. It locks `observations` only for the push, and skips an identical node and fingerprint pair. That implements the recorded node identities and fingerprints, and \"a later call ... preserves earlier inputs\", because it only appends.\n   - `impl[ValidationContext]#3/fn[ask]` has the prescribed signature `ask<R>(&self) -> Ask<'_, 'd, D, R, ContextPhase>` with `R: DeserializeOwned + JsonSchema + Send`. It builds an `Ask` holding `&self`, fresh `contexts`, `insertions` and `callbacks`, and invokes no agent. Each builder is independent.\n\n3. \"locking the whole context for the conversation\" must not happen. The struct comment says the lock is held only while reading or recording dependencies. `read_snapshot` calls `prepare_read`, which does not lock, and then `record_read`, which locks briefly. `Ask::execute` runs `agent.run(request, self.ctx)` while holding no lock. Its submission state (`accepted`, `callbacks`) is local to each execution, so conversations and submission state stay independent.\n\n**Behavioural clauses, not structural:**\n- Each awaited builder runs its own conversation and returns its own answer.\n- Contents, tool reads and edge selections feed one trace.\n- An unawaited builder contributes no agent-delivery dependencies.\n- Deterministic criteria work without an agent.\n\nThese describe observable behaviour and fix no library, type or signature. The mapped roots (struct, `read`, `outgoing_edges`, `record_read`, `ask`) cover the structural obligations. The reachable helpers (`read_snapshot`, `prepare_read`, `prepare_edges`, `observe_edges`, `Ask::execute`) are reached from those roots and need no separate marker. I found no gap.\n\nbehavioral: Each obligation in `requirements.sdk.graph.agent-calls.author_procedure` maps to a marked test that asserts the outcome.\n\n- **`Send + Sync` context with `ask(&self)` and tracked reads.** `later_lighter_agent_calls_preserve_the_contexts_existing_trace` calls `assert_send_sync(&ctx)`. It also uses `ctx.read` for direct inspection and `ctx.ask()` through shared references. The spec's `inspection(&self)` wording matches no method named `inspection`. The tracked reads are exercised through `ctx.read`, and the refining requirement `requirements.sdk.graph.validation-context.tracked_inspection` is tested separately.\n- **Each awaited builder runs its own conversation and returns its own answer.** `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` returns \"alpha\" and \"beta\" from two concurrent builders, each with three provider calls. `agent_executions_isolate_conversations_and_dependency_traces` does the same for two executions. `shared_context_allows_independent_concurrent_agent_calls` returns 7 and 11 from two concurrent calls.\n- **One combined dependency trace.**\n  - `later_lighter_agent_calls_preserve_the_contexts_existing_trace` asserts a trace that combines a direct read, an edge selection with its fingerprint, and delivered node contents.\n  - `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` asserts that tool reads record `OutgoingEdges` and `Node` dependencies with their fingerprints.\n  - `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` asserts the combined trace and that `finish` persists the same dependencies.\n- **Node identities and fingerprints of supplied contents.** The same tests assert `Dependency::Node(node, Fingerprint{..})` values.\n- **A later call with fewer or no nodes preserves earlier inputs.** `later_lighter_agent_calls_preserve_the_contexts_existing_trace` makes a later `ask().context(\"lighter\")` call with no node selections. It asserts that `ctx.dependencies()` still equals the earlier `retained` trace.\n- **An unawaited builder contributes no agent-delivery dependencies.** `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` and `queued_reads_selection_and_rendering_fail_before_agent_invocation` drop a builder. They assert that `dependencies()` is empty and that no reads or selections happened. Failed reads, failed renders and failed preparation also leave the trace empty.\n- **Concurrency without an exclusive borrow or a whole-context lock.** The two concurrent tests use `tokio::sync::Barrier::new(2)` and a timeout. Each call must be in flight at the same time as the other to pass. They also assert that histories, pages and tool usage stay isolated and that trace updates stay consistent.\n- **Deterministic criteria.** `deterministic_validation_uses_required_storage_without_an_agent` runs a `Review` criterion through `Validator::verify` with no agent. It asserts the computed result, the stored evidence, and a `Node` dependency. It also asserts `NoAgentConfigured` when `ask` is called without an agent. The cited `requirements.sdk.graph.criteria.deterministic_procedures` is context only and is not reassessed here.\n\nI found no behavioral obligation without a test.",
+  "references": "e5b2af190ff7aff7e1c42cd1cf6948338f2e1a5ed8d5ca7be990976d61989410",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.agent-calls.author_procedure",
@@ -73,6 +73,102 @@
       ]
     },
     {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "struct[ValidationContext]",
+      "hash": "defb99017b963c4c84a93ef11f1d3ff8b4b060eec08f941d74c06b9189e77643"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#2/fn[read]",
+      "hash": "e3ce3269bf63c716627e418fc7d922f77e8d482ef21246ed76dc35c70b71140a"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#2/fn[outgoing_edges]",
+      "hash": "eb9fdf9b1da5d58821486f1def4d05602048096954f29399f5ee43b9904459b2"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#2/fn[record_read]",
+      "hash": "1dc587db0a3a4a600591a2e6a625b750dfea2e58dd92e4513a94ace96580c7b7"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#3/fn[ask]",
+      "hash": "b8b2eae7581183984c864d30ec9f6e3d2861dc9fae437a46d1870f95f68be4c8"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#2/fn[graph]",
+      "hash": "ff4b99200a54945fead98c14ac34dbb1f7048c3fe5e84c120f64c3ccd5382345"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#2/fn[read_snapshot]",
+      "hash": "5e3efe54a48c8f95e29eb184caacad03019678d83ccf4910bcd1f67c52801b00"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#2/fn[dependencies]",
+      "hash": "72fa58502abbc09e86c6141200426ecd38a65056564b8449255e86b55a6567d2"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'_,%20D>]/fn[read_source]",
+      "hash": "629b640874f77578a312dd7f8f8b643adfda5c1595bb1d46cf3c8edcf1f39ae5"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "fn[later_lighter_agent_calls_preserve_the_contexts_existing_trace]/fn[assert_send_sync]",
+      "hash": "9fa626c7cb78d250cfe0a82341acf26c54f25f6804f5ff7f16b3ace04264e0ad"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "fn[later_lighter_agent_calls_preserve_the_contexts_existing_trace]",
+      "hash": "3d8d45bcfb91dd42c4496203c0275753211599c9f41ee53f0126f73158aaeca5"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "trait[Agent]",
+      "hash": "eead58622b8d2faa910d93ab4556717bb2d61c93d1f636a87b7d2f69980d7753"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "trait[Agent]/fn[run]",
+      "hash": "afc0fd689ee40c20cb2ca08650c33a13ed1acb890f40a18917647917294cba36"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]",
+      "hash": "13819c4675914551da6e0dde0cc498d09495c2f2124f3f03e353ca0cdfef866a"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#2/fn[prepare_read]",
+      "hash": "fbcf18f9d49e19cd802b06c9e7f7c44e95e1a92cbfe433f6f876632ce008b54a"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#2/fn[prepare_edges]",
+      "hash": "917017f2c36bc75e21c8a5e20623856ae658a3d2fc0bb20fa3c424a66ff37dc7"
+    },
+    {
+      "requirements": "requirements.sdk.graph.validation-context.tracked_inspection",
+      "matches": [
+        "requirements.sdk.graph.validation-context.tracked_inspection"
+      ],
+      "text": [
+        ":::{req} tracked_inspection",
+        "Criteria and their agents should use the SDK's context inspection",
+        "operations for information on which a judgment depends.",
+        "The context records successful node-content observations in the enclosing",
+        "validation's trace. The SDK makes no recording claim for arbitrary filesystem,",
+        "process, or network I/O outside that interface. Discovery-only results do not",
+        "count as full reads of the nodes they locate.",
+        ":::"
+      ]
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]",
       "hash": "ce5910db3f51c79716eacd6ed0e14047a6cc9620e87298ed573bacdddbd27216"
@@ -119,16 +215,636 @@
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
-      "item": "fn[later_lighter_agent_calls_preserve_the_contexts_existing_trace]",
-      "hash": "3d8d45bcfb91dd42c4496203c0275753211599c9f41ee53f0126f73158aaeca5"
+      "item": "fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]",
+      "hash": "c619fbf659ef4402ae73ba7b22f1801483210fabdeda3a6ef8decf65e6c303ae"
     },
     {
-      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
-      "item": "fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]",
-      "hash": "16e5d66c127375503160b7357b3aab780341b16eb17adf36510391e372907734"
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "trait[Criterion]/fn[execute]",
+      "hash": "aeb36550aef4a87c004dd456aa8978a0f94e979e6c0ecdbcb3a2826128718e7c"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#2/fn[observe_edges]",
+      "hash": "831cd39bda6afa6bd2fa7ff0e35760d8f6b73a85b6c87c095db3145ba1a610e7"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#2/fn[record_usage]",
+      "hash": "ec37af703933baa6c4357ed5eb41a88375f557bde29253a65e7e5085cb898ee5"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#2/fn[observe_edges_by]",
+      "hash": "79c486c66b5897677f4f145e4dca1b0b429772162a33c02be8ae5de0601ba704"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#2/fn[update_usage]",
+      "hash": "974d173b1030308bda89861b3531381e857bf60d7bfa45a00eca6055a6a620e4"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "struct[Ask]",
+      "hash": "b38a7967586a6b57f32ac9441bea1003e46964014583c1dbc2797f9896771465"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "macro[await_phase]",
+      "hash": "8380f0027b0bf5c0f5908e181e1f69c8f1ea3a9dc2c77556be30d47cc152b84d"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.agent-calls.author_procedure"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "e5b2af190ff7aff7e1c42cd1cf6948338f2e1a5ed8d5ca7be990976d61989410"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-calls.author_procedure"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "554a0589f3aae60b028d25a3660d8077b1797522eeb54a5b7679682fd32d30bd"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-calls.judge"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "dfd4dcc68382d1b7f2cd1a0f329a4ae0b13c765a5cd834b4b7c153f6b830b6c3"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.criteria.deterministic_procedures"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "ae0e49791504f121834b4d0c4fdf93cf0ffbca6614fe479f9be219eaaa96b4c6"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "struct[ValidationContext]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "defb99017b963c4c84a93ef11f1d3ff8b4b060eec08f941d74c06b9189e77643"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[ValidationContext<'d,%20D>]#2/fn[read]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "e3ce3269bf63c716627e418fc7d922f77e8d482ef21246ed76dc35c70b71140a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[ValidationContext<'d,%20D>]#2/fn[outgoing_edges]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "eb9fdf9b1da5d58821486f1def4d05602048096954f29399f5ee43b9904459b2"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[ValidationContext<'d,%20D>]#2/fn[record_read]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "1dc587db0a3a4a600591a2e6a625b750dfea2e58dd92e4513a94ace96580c7b7"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[ValidationContext<'d,%20D>]#3/fn[ask]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "b8b2eae7581183984c864d30ec9f6e3d2861dc9fae437a46d1870f95f68be4c8"
+            }
+          ]
+        },
+        {
+          "OutgoingEdges": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-calls.author_procedure"
+            },
+            "Implements",
+            {
+              "scheme": "node-path-set-sha256-v1",
+              "value": "6b8d8f93255518fbd0df75ac8793be57ca73e7d33fe1d6b574e001b79b9d534c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[ValidationContext<'d,%20D>]#2/fn[graph]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "ff4b99200a54945fead98c14ac34dbb1f7048c3fe5e84c120f64c3ccd5382345"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[ValidationContext<'d,%20D>]#2/fn[read_snapshot]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "5e3efe54a48c8f95e29eb184caacad03019678d83ccf4910bcd1f67c52801b00"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[ValidationContext<'d,%20D>]#2/fn[dependencies]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "72fa58502abbc09e86c6141200426ecd38a65056564b8449255e86b55a6567d2"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[ValidationContext<'_,%20D>]/fn[read_source]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "629b640874f77578a312dd7f8f8b643adfda5c1595bb1d46cf3c8edcf1f39ae5"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[later_lighter_agent_calls_preserve_the_contexts_existing_trace]/fn[assert_send_sync]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "9fa626c7cb78d250cfe0a82341acf26c54f25f6804f5ff7f16b3ace04264e0ad"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[later_lighter_agent_calls_preserve_the_contexts_existing_trace]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "6684804bd1c7f6ac2d750825ff2831ced13bf76b9c74cdda2ca3d32a6fb174ef"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "trait[Agent]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f60efca9783ec13738d8ef64a520988e47c8b5a668754ba06191c1982b796417"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "trait[Agent]/fn[run]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "afc0fd689ee40c20cb2ca08650c33a13ed1acb890f40a18917647917294cba36"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "13819c4675914551da6e0dde0cc498d09495c2f2124f3f03e353ca0cdfef866a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[ValidationContext<'d,%20D>]#2/fn[prepare_read]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "fbcf18f9d49e19cd802b06c9e7f7c44e95e1a92cbfe433f6f876632ce008b54a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[ValidationContext<'d,%20D>]#2/fn[prepare_edges]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "917017f2c36bc75e21c8a5e20623856ae658a3d2fc0bb20fa3c424a66ff37dc7"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.validation-context.tracked_inspection"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "8851e44a7543e3b24a61a46cff605394d5cc878bf6c2c1a633d05197e04b9b3c"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "**Structural obligations found**\n\n1. \"receives one `Send + Sync` `ValidationContext<'d, D>`\" and \"updates to the trace are synchronized\". An alternative that keeps a `RefCell` or a plain `Vec` for the trace would make the context `!Sync`, so this is a structural obligation. `ValidationContext` in `crates/trust-but-verify/src/procedure.rs#struct[ValidationContext]` meets it:\n   - Its `observations` field is a `std::sync::Mutex<Vec<Dependency<..>>>`.\n   - The `usage` field is also behind a `Mutex`.\n   - The `agent` field is `&dyn Agent<D>`, and `Agent<D>: Send + Sync`.\n   - The graph is held as `&'d D`, and `Domain: Send + Sync`.\n   - A test, `later_lighter_agent_calls_preserve_the_contexts_existing_trace`, calls `assert_send_sync(&ctx)`. I treated that only as corroboration, because test adequacy is outside this assessment.\n\n2. \"tracked `inspection(&self)`\" and \"without holding an exclusive context borrow\". The inspection operations and `ask` must take `&self`. This is also structural: `&mut self` would force exclusive borrows across an agent interaction. The sentence is not a prescribed method called `inspection`. The cited `tracked_inspection` requirement uses \"inspection\" for the context's inspection operations, and no function with that name exists in the crate. The code meets the obligation:\n   - `impl[ValidationContext]#2/fn[read]` takes `&self`.\n   - `impl[ValidationContext]#2/fn[outgoing_edges]` takes `&self`. It prepares the snapshot, then records the edge selection through `observe_edges`.\n   - `impl[ValidationContext]#2/fn[record_read]` takes `&self`. It locks `observations` only for the push, and skips an identical node and fingerprint pair. That implements the recorded node identities and fingerprints, and \"a later call ... preserves earlier inputs\", because it only appends.\n   - `impl[ValidationContext]#3/fn[ask]` has the prescribed signature `ask<R>(&self) -> Ask<'_, 'd, D, R, ContextPhase>` with `R: DeserializeOwned + JsonSchema + Send`. It builds an `Ask` holding `&self`, fresh `contexts`, `insertions` and `callbacks`, and invokes no agent. Each builder is independent.\n\n3. \"locking the whole context for the conversation\" must not happen. The struct comment says the lock is held only while reading or recording dependencies. `read_snapshot` calls `prepare_read`, which does not lock, and then `record_read`, which locks briefly. `Ask::execute` runs `agent.run(request, self.ctx)` while holding no lock. Its submission state (`accepted`, `callbacks`) is local to each execution, so conversations and submission state stay independent.\n\n**Behavioural clauses, not structural:**\n- Each awaited builder runs its own conversation and returns its own answer.\n- Contents, tool reads and edge selections feed one trace.\n- An unawaited builder contributes no agent-delivery dependencies.\n- Deterministic criteria work without an agent.\n\nThese describe observable behaviour and fix no library, type or signature. The mapped roots (struct, `read`, `outgoing_edges`, `record_read`, `ask`) cover the structural obligations. The reachable helpers (`read_snapshot`, `prepare_read`, `prepare_edges`, `observe_edges`, `Ask::execute`) are reached from those roots and need no separate marker. I found no gap."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.agent-calls.author_procedure"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "e5b2af190ff7aff7e1c42cd1cf6948338f2e1a5ed8d5ca7be990976d61989410"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-calls.author_procedure"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "554a0589f3aae60b028d25a3660d8077b1797522eeb54a5b7679682fd32d30bd"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-calls.judge"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "dfd4dcc68382d1b7f2cd1a0f329a4ae0b13c765a5cd834b4b7c153f6b830b6c3"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.criteria.deterministic_procedures"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "ae0e49791504f121834b4d0c4fdf93cf0ffbca6614fe479f9be219eaaa96b4c6"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "07f3a94cd585fd150e0944575c24f6d3538f7ec6c1f07277c24bb2f20ee7fd87"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[agent_executions_isolate_conversations_and_dependency_traces]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "056d0e24c13d4598d0ca252b07b88f5943e47267f99859790a84f3575cf78f38"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "c7885e4745b0ff03722c7fce69141d3f4f47d1b948da6955f161cac7606bae4d"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[deterministic_validation_uses_required_storage_without_an_agent]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "744f61b15e6acace9d745f474ecd3efd0733907389f6bc82870a8a9ea5769173"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "63a3e780b1741aa8111ee299db8c0cf724757b49deb7822f4ab7301f5a1b2207"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[generic_conversations_can_use_default_telemetry_through_retry_and_continuation]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "8ed001e20faf00ba0c965b2988852bcbd7797a27f56395b308b89f1348a3beda"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[dropped_builders_and_missing_agents_do_not_resolve_queued_inputs]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "9cbe92178baf6b64f5b753b824d8484aaeaf4cef82c6372f433f35776444e34c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "eb15fcf83118155b8a9a790a7851de9cd58a337bfb384d07d8fdf0571bbbd6be"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[shared_context_allows_independent_concurrent_agent_calls]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "c1e103cff6f9bbdbf982230e4b2beac870658b9ecab472a2cac25b61da76317f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[later_lighter_agent_calls_preserve_the_contexts_existing_trace]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "6684804bd1c7f6ac2d750825ff2831ced13bf76b9c74cdda2ca3d32a6fb174ef"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "c619fbf659ef4402ae73ba7b22f1801483210fabdeda3a6ef8decf65e6c303ae"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "Each obligation in `requirements.sdk.graph.agent-calls.author_procedure` maps to a marked test that asserts the outcome.\n\n- **`Send + Sync` context with `ask(&self)` and tracked reads.** `later_lighter_agent_calls_preserve_the_contexts_existing_trace` calls `assert_send_sync(&ctx)`. It also uses `ctx.read` for direct inspection and `ctx.ask()` through shared references. The spec's `inspection(&self)` wording matches no method named `inspection`. The tracked reads are exercised through `ctx.read`, and the refining requirement `requirements.sdk.graph.validation-context.tracked_inspection` is tested separately.\n- **Each awaited builder runs its own conversation and returns its own answer.** `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` returns \"alpha\" and \"beta\" from two concurrent builders, each with three provider calls. `agent_executions_isolate_conversations_and_dependency_traces` does the same for two executions. `shared_context_allows_independent_concurrent_agent_calls` returns 7 and 11 from two concurrent calls.\n- **One combined dependency trace.**\n  - `later_lighter_agent_calls_preserve_the_contexts_existing_trace` asserts a trace that combines a direct read, an edge selection with its fingerprint, and delivered node contents.\n  - `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` asserts that tool reads record `OutgoingEdges` and `Node` dependencies with their fingerprints.\n  - `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` asserts the combined trace and that `finish` persists the same dependencies.\n- **Node identities and fingerprints of supplied contents.** The same tests assert `Dependency::Node(node, Fingerprint{..})` values.\n- **A later call with fewer or no nodes preserves earlier inputs.** `later_lighter_agent_calls_preserve_the_contexts_existing_trace` makes a later `ask().context(\"lighter\")` call with no node selections. It asserts that `ctx.dependencies()` still equals the earlier `retained` trace.\n- **An unawaited builder contributes no agent-delivery dependencies.** `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` and `queued_reads_selection_and_rendering_fail_before_agent_invocation` drop a builder. They assert that `dependencies()` is empty and that no reads or selections happened. Failed reads, failed renders and failed preparation also leave the trace empty.\n- **Concurrency without an exclusive borrow or a whole-context lock.** The two concurrent tests use `tokio::sync::Barrier::new(2)` and a timeout. Each call must be in flight at the same time as the other to pass. They also assert that histories, pages and tool usage stay isolated and that trace updates stay consistent.\n- **Deterministic criteria.** `deterministic_validation_uses_required_storage_without_an_agent` runs a `Review` criterion through `Validator::verify` with no agent. It asserts the computed result, the stored evidence, and a `Node` dependency. It also asserts `NoAgentConfigured` when `ask` is called without an agent. The cited `requirements.sdk.graph.criteria.deterministic_procedures` is context only and is not reassessed here.\n\nI found no behavioral obligation without a test."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -138,19 +854,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "4769a6fab52e4ed959f9b29805c202c666152a83eed1c1a9f10f2dba04857b1c"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.agent-calls.author_procedure"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "dfb3cb5860dda6a8010c58b4a9f06fba13f45758c889e37a065490786a378e76"
+          "value": "e5b2af190ff7aff7e1c42cd1cf6948338f2e1a5ed8d5ca7be990976d61989410"
         }
       ]
     },
@@ -184,6 +888,301 @@
         {
           "scheme": "habeas-input-v1",
           "value": "ae0e49791504f121834b4d0c4fdf93cf0ffbca6614fe479f9be219eaaa96b4c6"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "struct[ValidationContext]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "defb99017b963c4c84a93ef11f1d3ff8b4b060eec08f941d74c06b9189e77643"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[read]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "e3ce3269bf63c716627e418fc7d922f77e8d482ef21246ed76dc35c70b71140a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[outgoing_edges]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "eb9fdf9b1da5d58821486f1def4d05602048096954f29399f5ee43b9904459b2"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[record_read]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "1dc587db0a3a4a600591a2e6a625b750dfea2e58dd92e4513a94ace96580c7b7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#3/fn[ask]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b8b2eae7581183984c864d30ec9f6e3d2861dc9fae437a46d1870f95f68be4c8"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.sdk.graph.agent-calls.author_procedure"
+        },
+        "Implements",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "6b8d8f93255518fbd0df75ac8793be57ca73e7d33fe1d6b574e001b79b9d534c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[graph]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "ff4b99200a54945fead98c14ac34dbb1f7048c3fe5e84c120f64c3ccd5382345"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[read_snapshot]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "5e3efe54a48c8f95e29eb184caacad03019678d83ccf4910bcd1f67c52801b00"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[dependencies]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "72fa58502abbc09e86c6141200426ecd38a65056564b8449255e86b55a6567d2"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'_,%20D>]/fn[read_source]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "629b640874f77578a312dd7f8f8b643adfda5c1595bb1d46cf3c8edcf1f39ae5"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+            },
+            "selector": "fn[later_lighter_agent_calls_preserve_the_contexts_existing_trace]/fn[assert_send_sync]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "9fa626c7cb78d250cfe0a82341acf26c54f25f6804f5ff7f16b3ace04264e0ad"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+            },
+            "selector": "fn[later_lighter_agent_calls_preserve_the_contexts_existing_trace]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "6684804bd1c7f6ac2d750825ff2831ced13bf76b9c74cdda2ca3d32a6fb174ef"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "trait[Agent]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "f60efca9783ec13738d8ef64a520988e47c8b5a668754ba06191c1982b796417"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "trait[Agent]/fn[run]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "afc0fd689ee40c20cb2ca08650c33a13ed1acb890f40a18917647917294cba36"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "13819c4675914551da6e0dde0cc498d09495c2f2124f3f03e353ca0cdfef866a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[prepare_read]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "fbcf18f9d49e19cd802b06c9e7f7c44e95e1a92cbfe433f6f876632ce008b54a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[prepare_edges]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "917017f2c36bc75e21c8a5e20623856ae658a3d2fc0bb20fa3c424a66ff37dc7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.sdk.graph.validation-context.tracked_inspection"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "8851e44a7543e3b24a61a46cff605394d5cc878bf6c2c1a633d05197e04b9b3c"
         }
       ]
     },
@@ -348,12 +1347,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
             },
-            "selector": "fn[later_lighter_agent_calls_preserve_the_contexts_existing_trace]"
+            "selector": "fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "6684804bd1c7f6ac2d750825ff2831ced13bf76b9c74cdda2ca3d32a6fb174ef"
+          "value": "c619fbf659ef4402ae73ba7b22f1801483210fabdeda3a6ef8decf65e6c303ae"
         }
       ]
     },
@@ -363,14 +1362,116 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+              "location": "crates/trust-but-verify/src/graph.rs"
             },
-            "selector": "fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]"
+            "selector": "trait[Criterion]/fn[execute]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "16e5d66c127375503160b7357b3aab780341b16eb17adf36510391e372907734"
+          "value": "aeb36550aef4a87c004dd456aa8978a0f94e979e6c0ecdbcb3a2826128718e7c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[observe_edges]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "831cd39bda6afa6bd2fa7ff0e35760d8f6b73a85b6c87c095db3145ba1a610e7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[record_usage]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "ec37af703933baa6c4357ed5eb41a88375f557bde29253a65e7e5085cb898ee5"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[observe_edges_by]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "79c486c66b5897677f4f145e4dca1b0b429772162a33c02be8ae5de0601ba704"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[update_usage]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "974d173b1030308bda89861b3531381e857bf60d7bfa45a00eca6055a6a620e4"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "struct[Ask]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b38a7967586a6b57f32ac9441bea1003e46964014583c1dbc2797f9896771465"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "macro[await_phase]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "8380f0027b0bf5c0f5908e181e1f69c8f1ea3a9dc2c77556be30d47cc152b84d"
         }
       ]
     }

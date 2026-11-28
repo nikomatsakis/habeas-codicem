@@ -16,8 +16,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-/// A compact node handle assigned by one domain cache.
 // {impl}`requirements.sdk.graph.NodeId`
+// {impl}`requirements.sdk.graph.validation-context.node_reference`
+/// A compact node handle assigned by one domain cache.
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(transparent, bound = "")]
 #[schemars(transparent, inline, bound = "")]
@@ -26,31 +27,39 @@ pub struct NodeId<D: Domain> {
     #[serde(skip)]
     marker: std::marker::PhantomData<fn(D) -> D>,
 }
+// {impl}`requirements.sdk.graph.NodeId`
 impl<D: Domain> Copy for NodeId<D> {}
+// {impl}`requirements.sdk.graph.NodeId`
 impl<D: Domain> Clone for NodeId<D> {
     fn clone(&self) -> Self {
         *self
     }
 }
+// {impl}`requirements.sdk.graph.NodeId`
 impl<D: Domain> std::fmt::Debug for NodeId<D> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.index.fmt(f)
     }
 }
+// {impl}`requirements.sdk.graph.NodeId`
 impl<D: Domain> PartialEq for NodeId<D> {
     fn eq(&self, other: &Self) -> bool {
         self.index == other.index
     }
 }
+// {impl}`requirements.sdk.graph.NodeId`
 impl<D: Domain> Eq for NodeId<D> {}
+// {impl}`requirements.sdk.graph.NodeId`
 impl<D: Domain> std::hash::Hash for NodeId<D> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.index.hash(state)
     }
 }
 
-/// Shared node identities, source snapshots, and agent configuration for a domain.
+// {impl}`requirements.sdk.validation-cache.shared_node_ids`
+// {impl}`requirements.sdk.graph.search.source_identity`
 // {impl}`requirements.sdk.validation-cache.ValidationCache`
+/// Shared node identities, source snapshots, and agent configuration for a domain.
 pub struct ValidationCache<D: Domain> {
     pub(crate) usage: Arc<Mutex<crate::graph::UsageStats>>,
     nodes: Arc<Mutex<indexmap::IndexSet<Arc<D::NodeData>>>>,
@@ -71,7 +80,9 @@ pub(crate) struct CachedFile {
     pub outline: Option<OutlineContent>,
 }
 
+// {impl}`requirements.sdk.validation-cache.ValidationCache`
 impl<D: Domain> Clone for ValidationCache<D> {
+    // {impl}`requirements.sdk.validation-cache.shared_node_ids`
     fn clone(&self) -> Self {
         Self {
             usage: self.usage.clone(),
@@ -84,7 +95,9 @@ impl<D: Domain> Clone for ValidationCache<D> {
     }
 }
 
+// {impl}`requirements.sdk.validation-cache.ValidationCache`
 impl<D: Domain> Default for ValidationCache<D> {
+    // {impl}`requirements.sdk.validation-cache.shared_node_ids`
     fn default() -> Self {
         Self {
             usage: Default::default(),
@@ -103,15 +116,14 @@ impl<D: Domain> ValidationCache<D> {
         Self::default()
     }
 
-    /// Snapshot provider usage across all clones of this cache.
     // {impl}`requirements.sdk.validation-cache.usage`
+    /// Snapshot provider usage across all clones of this cache.
     pub fn usage(&self) -> UsageStats {
         self.usage.lock().expect("usage lock poisoned").clone()
     }
 
-    /// Return the handle for this durable identity in this cache.
     // {impl}`requirements.sdk.validation-cache.intern_node`
-    // {impl}`requirements.sdk.validation-cache.shared_node_ids`
+    /// Return the handle for this durable identity in this cache.
     pub fn intern_node(&self, data: D::NodeData) -> NodeId<D> {
         let mut nodes = self.nodes.lock().expect("node cache poisoned");
         let index = nodes
@@ -123,7 +135,6 @@ impl<D: Domain> ValidationCache<D> {
         }
     }
 
-    // {impl}`requirements.sdk.sources.source_nodes`
     pub(crate) fn intern_source(
         &self,
         data: D::NodeData,
@@ -137,8 +148,8 @@ impl<D: Domain> ValidationCache<D> {
         node
     }
 
-    /// Resolve an assigned handle to its durable identity.
     // {impl}`requirements.sdk.validation-cache.node_data`
+    /// Resolve an assigned handle to its durable identity.
     pub fn node_data(&self, node: NodeId<D>) -> Option<Arc<D::NodeData>> {
         self.nodes
             .lock()
@@ -147,8 +158,8 @@ impl<D: Domain> ValidationCache<D> {
             .cloned()
     }
 
-    /// Attach the project files available to search and inspection.
     // {impl}`requirements.sdk.validation-cache.with_sources`
+    /// Attach the project files available to search and inspection.
     pub fn with_sources(mut self, sources: crate::sources::Sources) -> Self {
         self.sources = Some(Arc::new(sources));
         self
@@ -166,8 +177,8 @@ impl<D: Domain> ValidationCache<D> {
         cache
     }
 
-    /// Select the agent for requests through this handle and future clones.
     // {impl}`requirements.sdk.validation-cache.set_agent`
+    /// Select the agent for requests through this handle and future clones.
     pub fn set_agent(&mut self, config: impl AgentSettings<D>)
     where
         D::NodeData: serde::Serialize + serde::de::DeserializeOwned + schemars::JsonSchema,
@@ -183,16 +194,16 @@ impl<D: Domain> ValidationCache<D> {
     }
 }
 
+// {impl}`requirements.sdk.domain`
 /// The application's graph and evidence persistence.
 ///
 /// Clones can share application state while each execution records its own inputs.
-// {impl}`requirements.sdk.domain`
 pub trait Domain: Clone + Send + Sync {
-    /// The cache shared by this domain and its clones.
     // {impl}`requirements.sdk.validation-cache.cache`
+    /// The cache shared by this domain and its clones.
     fn cache(&self) -> &ValidationCache<Self>;
 
-    // {impl}`requirements.sdk.graph.search.source_identity`
+    // {impl}`requirements.sdk.sources.provider.attachment`
     /// Project source tools available to the configured agent.
     fn project_sources(&self) -> Option<crate::sources::SourceProject<Self>> {
         Some(crate::sources::SourceProject {
@@ -201,6 +212,8 @@ pub trait Domain: Clone + Send + Sync {
         })
     }
 
+    // {impl}`requirements.sdk.graph.search.source_identity`
+    // {impl}`requirements.sdk.sources.source_nodes`
     /// Graph identity for a project-relative outline item.
     fn source_node(
         &self,
@@ -211,55 +224,59 @@ pub trait Domain: Clone + Send + Sync {
         )))
     }
 
-    /// Recover a source address for a domain identity supplied independently of discovery.
+    // {impl}`requirements.sdk.graph.search.source_identity`
     // {impl}`requirements.sdk.sources.source_nodes`
+    /// Recover a source address for a domain identity supplied independently of discovery.
     fn source_address(&self, _data: &Self::NodeData) -> Option<crate::outline::OutlineData> {
         None
     }
 
-    /// Application-defined errors from domain operations.
     // {impl}`requirements.sdk.errors`
+    /// Application-defined errors from domain operations.
     type Error: Send;
 
-    /// The identity of a particular node in the graph.
-    // {impl}`requirements.sdk.graph.domain_types`
     // {impl}`requirements.sdk.graph.NodeData`
+    /// The identity of a particular node in the graph.
     type NodeData: Clone + Eq + Hash + Send + Sync;
 
-    /// The application's representation of a node's prepared contents.
     // {impl}`requirements.sdk.graph.node_content`
+    /// The application's representation of a node's prepared contents.
     type NodeContent: NodeContents;
 
     /// The kind of relationship between two nodes.
     // {impl}`requirements.sdk.graph-edges.label`
     type EdgeLabel: Clone + Send + Sync;
 
-    /// Convert a node identity to its distinct, stable path.
     // {impl}`requirements.sdk.graph.node_path_method`
+    /// Convert a node identity to its distinct, stable path.
     fn node_path(&self, node: &NodeId<Self>) -> NodePath;
 
-    /// Load and prepare contents for fingerprinting and presentation.
+    // {impl}`requirements.sdk.errors`
     // {impl}`requirements.sdk.graph.node_content`
+    /// Load and prepare contents for fingerprinting and presentation.
     fn node_content(&self, node: &NodeId<Self>) -> Result<Self::NodeContent, Self::Error>;
 
-    /// Select targets with this label, preserving order and duplicates.
+    // {impl}`requirements.sdk.errors`
     // {impl}`requirements.sdk.graph-edges.outgoing_edges`
+    /// Select targets with this label, preserving order and duplicates.
     fn outgoing_edges(
         &self,
         node: &NodeId<Self>,
         label: Self::EdgeLabel,
     ) -> Result<Vec<NodeId<Self>>, Self::Error>;
 
-    /// Load this source/criterion pair's record; `Ok(None)` means absent.
+    // {impl}`requirements.sdk.errors`
     // {impl}`requirements.sdk.graph.evidence.evidence_storage`
+    /// Load this source/criterion pair's record; `Ok(None)` means absent.
     fn load_evidence(
         &self,
         node: &NodeId<Self>,
         criterion: &CriterionPath,
     ) -> impl Future<Output = Result<Option<Record<Self::NodeData, Self::EdgeLabel>>, Self::Error>> + Send;
 
-    /// Atomically replace this source/criterion pair's complete record.
+    // {impl}`requirements.sdk.errors`
     // {impl}`requirements.sdk.graph.evidence.evidence_storage`
+    /// Atomically replace this source/criterion pair's complete record.
     fn store_evidence(
         &self,
         node: &NodeId<Self>,
@@ -268,19 +285,19 @@ pub trait Domain: Clone + Send + Sync {
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 }
 
+// {impl}`requirements.sdk.graph.NodeContents`
 /// A retained observation, ready for fingerprinting and presentation.
-// {impl}`requirements.sdk.graph.node_content`
 pub trait NodeContents: Send + Sync {
+    // {impl}`requirements.sdk.graph.node_content.fingerprint`
     /// Describe these retained contents without rereading external state.
     ///
     /// The same contents under the same rules give the same fingerprint.
     /// Retain the rules and their version; change the scheme when rules change.
-    // {impl}`requirements.sdk.graph.node_content.fingerprint`
     fn fingerprint(&self) -> Fingerprint;
 
+    // {impl}`requirements.sdk.graph.node_content.format`
     /// Present the same observation described by `fingerprint`.
     ///
     /// All resource reads and fallible preparation happen when loading contents.
-    // {impl}`requirements.sdk.graph.node_content.format`
     fn format(&self) -> String;
 }

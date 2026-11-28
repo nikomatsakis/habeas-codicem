@@ -20,7 +20,6 @@ use crate::{DefinitionKind, ReferenceKind};
 pub(crate) const SITES_DIR: &str = "sites";
 
 /// The inspection phase that validates site reviews.
-// {impl}`requirements.authoring.progress`
 const SITE_STAGE: &str = "site reviews";
 
 // {cite}`habeas:util`
@@ -69,7 +68,6 @@ impl SiteItem {
         }
     }
 
-    // {impl}`requirements.references.site_review`
     /// The sorted names of the queries with a match at the site.
     pub(crate) fn queries(&self) -> Vec<String> {
         self.matches
@@ -83,8 +81,6 @@ impl SiteItem {
     /// The matches as the model receives them: each query's kind and name
     /// and the selector of the innermost node containing the match, without
     /// line numbers, and, for a violation match, its redacted text.
-    // {impl}`requirements.authoring.site_prompt`
-    // {impl}`requirements.authoring.no_line_numbers`
     pub(crate) fn matches_value(&self) -> Value {
         Value::Array(
             self.matches
@@ -105,14 +101,12 @@ impl SiteItem {
         )
     }
 
-    // {impl}`requirements.references.site_review`
     /// Whether a reference lies inside the site's node.
     pub(crate) fn contains(&self, root: &Path, reference: &SourceReference) -> bool {
         display_path(root, &reference.file) == self.file
             && self.range.contains(&(reference.line, reference.column))
     }
 
-    // {impl}`requirements.references.site_review`
     /// The `{fixme}` references naming the requirement inside the site,
     /// which acknowledge gaps at this site only.
     pub(crate) fn fixmes<'a>(
@@ -146,7 +140,6 @@ pub(crate) fn in_own_site(root: &Path, sites: &Sites, reference: &SourceReferenc
             .is_some_and(|sites| sites.iter().any(|site| site.contains(root, reference)))
 }
 
-// {impl}`requirements.references.site_review`
 /// `evidence/sites/<full-name>/<file>/<selector>.json`, with the selector
 /// encoded as for citation reviews.
 pub(crate) fn review_path(requirement: &str, file: &str, item: &str) -> String {
@@ -173,7 +166,6 @@ pub(crate) fn is_review_path(evidence_root: &Path, path: &Path) -> bool {
 
 /// The sites of one distributed requirement's well-formed queries, without
 /// validating the queries; a requirement without queries has none.
-// {impl}`requirements.references.distributed`
 pub(crate) fn requirement_sites(
     root: &Path,
     name: &str,
@@ -224,7 +216,6 @@ fn collect_sites(
 /// Validates every requirement's query directives and finds each
 /// distributed requirement's sites. A query that is malformed, or whose
 /// `within` query is, finds no sites.
-// {impl}`requirements.ci.errors`
 pub(crate) fn discover(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
@@ -284,7 +275,6 @@ pub(crate) fn discover(
                 // A query that cannot run leaves its sites unknown: the
                 // scan is incomplete, so authoring must not treat the
                 // missing sites' reviews as orphans.
-                // {impl}`requirements.authoring.batch`
                 Err(error) => {
                     let error = format!(
                         "{location}: query {} of {name} cannot run: {error}",
@@ -305,7 +295,6 @@ pub(crate) fn discover(
 /// segment, a violation query needs a site query to lie `within`, each rule
 /// must compile, and each `match` snippet must contain a match and each
 /// `no_match` snippet none.
-// {impl}`requirements.ci.errors`
 fn validate_queries<'a>(
     cache: &crate::inputs::SourceCache,
     name: &str,
@@ -430,7 +419,6 @@ fn validate_queries<'a>(
 
 /// Reports query directives outside a `{req}` body in one chapter. Text in
 /// code blocks stays literal.
-// {impl}`requirements.ci.errors`
 pub(crate) fn validate_query_placement(
     label: &str,
     content: &str,
@@ -465,7 +453,6 @@ pub(crate) fn validate_query_placement(
     }
 }
 
-// {impl}`requirements.references.site_review`
 /// The declarations a requirement cites, which every site review receives.
 pub(crate) fn cited_declarations(
     declaration: &Declaration,
@@ -500,7 +487,6 @@ impl SiteFixme {
         json!({"item": self.item, "commentary": self.commentary})
     }
 
-    // {impl}`requirements.references.site_review`
     /// The comparison key: the node and the body's words, so reflowing the
     /// body does not make the review stale.
     fn key(&self) -> (String, Vec<String>) {
@@ -514,7 +500,6 @@ impl SiteFixme {
     }
 }
 
-// {impl}`requirements.references.site_review`
 /// The `{fixme}` references naming the requirement inside a site, in source
 /// order, as recorded in its review.
 pub(crate) fn site_fixmes(
@@ -543,7 +528,6 @@ pub(crate) fn site_fixmes(
         .collect()
 }
 
-// {impl}`requirements.references.site_review`
 /// Whether two lists of site `{fixme}` references are the same, by node and
 /// body words.
 fn same_fixmes(recorded: &[SiteFixme], current: &[SiteFixme]) -> bool {
@@ -558,10 +542,7 @@ fn same_fixmes(recorded: &[SiteFixme], current: &[SiteFixme]) -> bool {
 /// Validates site reviews: each current site needs a current, accepted
 /// review, and every review file must name a current site. `files` are the
 /// review files already listed with the rest of `evidence/`.
-// {impl}`requirements.ci.outcomes`
-// {impl}`requirements.ci.errors`
 #[allow(clippy::too_many_arguments)]
-// {impl}`requirements.references.site_review`
 pub(crate) fn validate(
     domain: &crate::sdk::HabeasDomain,
     references: &[SourceReference],
@@ -612,8 +593,6 @@ pub(crate) fn validate(
 }
 
 /// Validates one review file against its current site.
-// {impl}`requirements.ci.errors`
-// {impl}`requirements.references.site_review`
 fn validate_review(
     domain: &crate::sdk::HabeasDomain,
     label: &str,

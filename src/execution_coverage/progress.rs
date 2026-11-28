@@ -9,17 +9,14 @@ pub(super) struct Progress {
 }
 
 impl Progress {
-    // {impl}`requirements.test-coverage.processes.progress.preparation`
     pub(super) fn preparation() -> Self {
         Self::new("Preparing coverage: recording inputs", None)
     }
 
-    // {impl}`requirements.test-coverage.processes.progress`
     pub(super) fn conversion(total: usize) -> Self {
         Self::new("Converting coverage", Some(total))
     }
 
-    // {impl}`requirements.test-coverage.processes.progress.terminal`
     fn new(stage: &'static str, total: Option<usize>) -> Self {
         let target = enabled(
             io::stderr().is_terminal(),
@@ -76,13 +73,11 @@ impl Progress {
     }
 }
 
-// {impl}`requirements.test-coverage.processes.progress.terminal`
 fn enabled(terminal: bool, term: Option<&std::ffi::OsStr>) -> bool {
     terminal && term.is_none_or(|term| term != "dumb")
 }
 
 impl Drop for Progress {
-    // {impl}`requirements.test-coverage.processes.progress.terminal`
     fn drop(&mut self) {
         if let Some(bar) = &self.bar {
             bar.disable_steady_tick();

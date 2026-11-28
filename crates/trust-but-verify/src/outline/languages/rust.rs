@@ -84,7 +84,6 @@ fn is_doc_comment(node: Node<'_>, _source: &str) -> bool {
 
 /// Inner doc comments document the item enclosing them, and their prose is
 /// hashed in its own group, apart from outer doc comments.
-// {impl}`requirements.references.outline_comments`
 fn is_inner_doc_comment(node: Node<'_>, _source: &str) -> bool {
     has_marker(node, "inner_doc_comment_marker")
 }
@@ -147,10 +146,7 @@ const KINDS: &[KindRule] = &[
     KindRule::new("use_declaration", "use", NameRule::Anonymous),
 ];
 
-// {impl}`requirements.references.rust_item_selectors`
-// {impl}`requirements.references.outline_comments`
-// {impl}`requirements.references.structural_hash`
-// {impl}`requirements.sdk.sources.rust.attachments`
+// {impl}`requirements.references.outlines`
 pub static PROFILE: Profile = Profile {
     name: "rust",
     fingerprint_scheme: "rust-structural-v1",

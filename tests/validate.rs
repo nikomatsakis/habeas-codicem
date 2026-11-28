@@ -248,6 +248,7 @@ esac
     let matching = format!("habeas {version}");
     let registry =
         format!("registry+https://github.com/rust-lang/crates.io-index#habeas@{version}");
+    let alternate_registry = format!("registry+https://example.org/index#habeas@{version}");
     let mut child = Command::new(std::env::current_exe().unwrap());
     child
         .args(["--exact", "validate_child", "--nocapture"])
@@ -270,6 +271,7 @@ esac
         (&registry, "habeas 0.0.0", "0", "0", "--version\nbuild\n"),
         (&registry, &matching, "0", "1", "--version\nbuild\n"),
         (&registry, &matching, "1", "0", "build\n"),
+        (&alternate_registry, &matching, "0", "0", "build\n"),
         (
             "path+file:///checkout#habeas",
             &matching,
@@ -309,6 +311,44 @@ esac
     let missing = child.env("PACKAGE_ID", &registry).output().unwrap();
     assert!(missing.status.success(), "{missing:?}");
     assert_eq!(fs::read_to_string(calls).unwrap(), "build\n");
+}
+
+// {test}`requirements.integration.validate.test_annotations`
+#[test]
+fn unmarked_tests_fail_validation_with_their_locations() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("project");
+    let state = temp.path().join("state");
+    fs::create_dir_all(root.join("md")).unwrap();
+    fs::create_dir_all(root.join("tests")).unwrap();
+    fs::write(root.join("Cargo.toml"), "[package]\nname = 'fixture'\n").unwrap();
+    fs::write(root.join("book.toml"), "[book]\nsrc = 'md'\n").unwrap();
+    common::coverage_setup(&root);
+    let output = validate_in(&root, &state);
+    assert!(output.status.success(), "{output:?}");
+    fs::write(
+        root.join("tests/items.rs"),
+        "#[test]\nfn first() {}\n#[tokio::test]\nasync fn second() {}\n",
+    )
+    .unwrap();
+    fs::write(root.join("tests/another.rs"), "#[test]\nfn third() {}\n").unwrap();
+    for _ in 0..2 {
+        let output = validate_in(&root, &state);
+        assert!(!output.status.success(), "{output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let findings: Vec<_> = stderr
+            .lines()
+            .filter(|line| line.starts_with("- "))
+            .collect();
+        assert_eq!(
+            findings,
+            [
+                "- tests/another.rs:2: test function third has no {test} annotation",
+                "- tests/items.rs:2: test function first has no {test} annotation",
+                "- tests/items.rs:4: test function second has no {test} annotation",
+            ]
+        );
+    }
 }
 
 // {test}`requirements.integration.validate`

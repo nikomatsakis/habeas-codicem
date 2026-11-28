@@ -1,8 +1,8 @@
 {
   "requirement": "`ValidationCache::usage()` returns an owned snapshot of the cache’s lifetime\n{cite}`requirements.sdk.graph.running-criteria.UsageStats`. A newly constructed\ncache starts at zero. Every agent call through the cache or any clone adds its\nusage exactly once by the time the call returns, including retries and failed\nattempts. Concurrent calls contribute to the same totals. The snapshot sums tool invocations and result bytes by tool name across validators under {cite}`requirements.sdk.graph.running-criteria.ToolUsage.by_name`. Reading a snapshot\npreserves the counters, and later calls leave earlier snapshots unchanged.\n\n```rust,ignore\nimpl<D: Domain> ValidationCache<D> {\n    pub fn usage(&self) -> UsageStats;\n}\n```",
   "determination": true,
-  "rationale": "I judged the tests against each clause of `requirements.sdk.validation-cache.usage`. I read the supplied test bodies and did not request implementation source.\n\n- **Starts at zero.** `agent_executions_isolate_conversations_and_dependency_traces` in `crates/trust-but-verify/src/agent/tests.rs` takes `cache.usage()` before any call. It asserts `initial.attempts == 0` and `initial.tools.is_empty()`.\n- **Retries and failed attempts.** `cache_retains_usage_across_validators_and_sums_each_token_category` runs a throttled failure and then a retry. It asserts the cache totals: attempts 3, retries 1, failed_attempts 1. It also asserts the per-category token sums and the prepared and delivered input counts.\n  - `validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse` covers a permanent failure, a retry and evidence reuse. It asserts attempts 3, retries 1, failed_attempts 2, and the token counts, for both the validator and the cache.\n- **Added once by the time the call returns.** Each test reads `cache.usage()` after the awaited call returns and asserts exact counts, so double counting or missing counts would fail. `dropping_an_inflight_request_preserves_its_attempt` covers a cancelled in-flight request. It asserts that the cache records 1 attempt.\n- **Cache and any clone.** `cache_retains_usage_across_validators_and_sums_each_token_category` builds a validator on `graph` and another on its clone `peer`. It asserts that `graph.cache().usage()`, `peer.cache().usage()` and the retained `cache` all show 3 attempts.\n- **Concurrent calls share totals.** `agent_executions_isolate_conversations_and_dependency_traces` joins two validators concurrently and uses a barrier to force overlap. It asserts `cache.usage().attempts == 6`, which is 3 per validator.\n- **Tool sums by name across validators.** The same test asserts that the cache has 3 tool entries. For each of `read_node`, `get_next_page` and `submit_result`, it asserts calls of 1 per validator and 2 in the cache. It asserts `totals[name].result_bytes` equals the sum of the two validators' bytes. It also asserts that bytes are positive for the tools that return content. This covers the cited `ToolUsage.by_name` as applied here.\n- **Snapshots are unchanged by later calls, and reads preserve counters.** `initial` is still zero after the later calls. `before_failure` in `validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse` still shows failed_attempts 1 after a later failure raises the live total to 2. Repeated `cache.usage()` reads in the tests give consistent values.\n\nI found no requirement-violating behavior that these tests would accept, and I found no marking gaps.",
-  "references": "d4acd724ad04f9a7b0374a47d1799adb4edb47664e2e83d78d271436e22477bb",
+  "rationale": "structural: The only structural clause is the prescribed signature `impl<D: Domain> ValidationCache<D> { pub fn usage(&self) -> UsageStats; }` with an \"owned snapshot\". The root `crates/trust-but-verify/src/domain.rs#impl[ValidationCache<D>]/fn[usage]` has exactly that signature. It locks `self.usage` and returns `.clone()`, so the snapshot is owned. Later calls leave earlier snapshots unchanged, and reading a snapshot leaves the counters as they were.\n\nThe other clauses are observable behavior, so an alternative implementation could change them without violating a structural clause. These clauses are: starts at zero, each call counted exactly once including retries and failed attempts, concurrent calls feeding the same totals, and summing by tool name. Clones share one counter (`Arc<Mutex<UsageStats>>` in `struct[ValidationCache]`, copied by `clone`). Another mechanism could produce the same results, so the text does not mandate that mechanism. The `UsageStats` and `ToolUsage.by_name` citations only supply context, and their structure belongs to their own declarations. No other root is needed.\n\nbehavioral: I judged the marked tests against each obligation in `requirements.sdk.validation-cache.usage`. I did not read any implementation source. I found no gap.\n\n- **Starts at zero.**\n  - `registered_tools_use_the_current_context_and_ordinary_node_ids` asserts that a new cache's `usage().tools` is empty.\n  - `agent_executions_isolate_conversations_and_dependency_traces` takes `initial = cache.usage()` before any call. It later asserts `initial.attempts == 0` and empty tools.\n  - `validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse` checks zero counters, but on a fresh `Validator`'s usage, not the cache's. The two cache-level checks above cover the cache.\n- **Every call through the cache or any clone adds usage once, including retries and failed attempts.**\n  - `cache_retains_usage_across_validators_and_sums_each_token_category` runs two validators over `graph` and its clone `peer`. One call hits a throttled retry. It asserts the cache totals through `cache`, `graph.cache()` and `peer.cache()`: attempts 3, retries 1, failed attempts 1. It also checks each token category's reported sum and missing count.\n  - `validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse` covers a retry followed by success, then a terminal failure. It asserts cache totals of attempts 3, retries 1 and failed attempts 2. Evidence reuse via `refresh_evidence` adds no extra attempts.\n  - `dropping_an_inflight_request_preserves_its_attempt` checks that a dropped call still records its attempt.\n- **Concurrent calls share totals.** `agent_executions_isolate_conversations_and_dependency_traces` joins two executions with `futures::join!` behind a barrier. It asserts the cache's attempts are 6 (3 + 3). It also asserts the cache's per-tool calls are 2 each, and that the cache's `result_bytes` equal the sum of the two validators' bytes.\n- **Tool calls and bytes summed by name across validators.**\n  - The test above checks the per-tool sums across the two validators.\n  - `tool_usage_counts_utf8_results_and_errors_once_across_retries` asserts exact `calls` and `result_bytes` per tool through `cache.usage().tools`, with a retry in the run.\n  - `registered_tools_use_the_current_context_and_ordinary_node_ids` covers registered tools alongside built-in ones. It asserts the tool-name key set and that the byte totals equal the lengths of the outputs sent back to the provider.\n- **Snapshots are owned and preserved.**\n  - `before_failure` is taken before a later failing call. It still reports `failed_attempts == 1` while the cache has moved to 2.\n  - `initial` still reports zero attempts and no tools after later calls.\n  - Repeated `usage()` reads return the same totals.\n\nThe tests assert specific values, not just execution. Every obligation has a relevant assertion.",
+  "references": "911a511af3341d639f3388c8f32354a2467e55757b81030216450b8ed24289f8",
   "inputs": [
     {
       "requirements": "requirements.sdk.validation-cache.usage",
@@ -81,6 +81,26 @@
       ]
     },
     {
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "impl[ValidationCache<D>]/fn[usage]",
+      "hash": "2d10a901352fd177a045ec630112caa534d9d1c980af4305ea5d51c07020a6b1"
+    },
+    {
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "struct[ValidationCache]",
+      "hash": "59a1685bcb72103a9b5f6dd2487d6a9ae1fc23b25867b10188cb310a34c24128"
+    },
+    {
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "impl[ValidationCache<D>/Clone]/fn[clone]",
+      "hash": "2a234fd49297f9c1bb1ca3deecbd848da49383a0d8eda254c3b80febdbbb56d6"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/fn[registered_tools_use_the_current_context_and_ordinary_node_ids]",
+      "hash": "1bf97cc8cd53fefba38eba8a9c2426fe72f0fd8d8f2f957083dc512fc16577cb"
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[agent_executions_isolate_conversations_and_dependency_traces]",
       "hash": "056d0e24c13d4598d0ca252b07b88f5943e47267f99859790a84f3575cf78f38"
@@ -101,12 +121,300 @@
       "hash": "ef6fa84ab2321053ec43ba5562ecbe2d7ce7da0691c2e75f2b515b403967786b"
     },
     {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "fn[tool_usage_counts_utf8_results_and_errors_once_across_retries]",
+      "hash": "082682fdc3eafc57a2f004ee63b765b6fe1dda9bcfcb6e0700cc31242571378f"
+    },
+    {
       "file": "crates/trust-but-verify/tests/public_api.rs",
       "item": "fn[public_exports_match_the_appendix]",
       "hash": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
+    },
+    {
+      "file": "crates/trust-but-verify/src/domain.rs",
+      "item": "impl[ValidationCache<D>/Default]/fn[default]",
+      "hash": "deec6f4eb70d26d6ad9a664e758474efa29fb5fcb5a79769d07c9e6378d52ead"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.validation-cache.usage"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "911a511af3341d639f3388c8f32354a2467e55757b81030216450b8ed24289f8"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.validation-cache.usage"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "8d48e3dcb971196d7887d9d71ae19c168e8791c1fdc3aefb1d90e5bd5de8c028"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.running-criteria.UsageStats"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "acada9370a9aa5e46ab48f6bd6c3b337f00d357491ac0b8fc97a4a1bb1811196"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.running-criteria.ToolUsage.by_name"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "d5d2624fde6fc24ceccb913dbbc30d9fce6ba9c277785c1d7546b069fb3ca858"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/domain.rs"
+                },
+                "selector": "impl[ValidationCache<D>]/fn[usage]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "2d10a901352fd177a045ec630112caa534d9d1c980af4305ea5d51c07020a6b1"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/domain.rs"
+                },
+                "selector": "struct[ValidationCache]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "59a1685bcb72103a9b5f6dd2487d6a9ae1fc23b25867b10188cb310a34c24128"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/domain.rs"
+                },
+                "selector": "impl[ValidationCache<D>/Clone]/fn[clone]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "2a234fd49297f9c1bb1ca3deecbd848da49383a0d8eda254c3b80febdbbb56d6"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The only structural clause is the prescribed signature `impl<D: Domain> ValidationCache<D> { pub fn usage(&self) -> UsageStats; }` with an \"owned snapshot\". The root `crates/trust-but-verify/src/domain.rs#impl[ValidationCache<D>]/fn[usage]` has exactly that signature. It locks `self.usage` and returns `.clone()`, so the snapshot is owned. Later calls leave earlier snapshots unchanged, and reading a snapshot leaves the counters as they were.\n\nThe other clauses are observable behavior, so an alternative implementation could change them without violating a structural clause. These clauses are: starts at zero, each call counted exactly once including retries and failed attempts, concurrent calls feeding the same totals, and summing by tool name. Clones share one counter (`Arc<Mutex<UsageStats>>` in `struct[ValidationCache]`, copied by `clone`). Another mechanism could produce the same results, so the text does not mandate that mechanism. The `UsageStats` and `ToolUsage.by_name` citations only supply context, and their structure belongs to their own declarations. No other root is needed."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.validation-cache.usage"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "911a511af3341d639f3388c8f32354a2467e55757b81030216450b8ed24289f8"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.validation-cache.usage"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "8d48e3dcb971196d7887d9d71ae19c168e8791c1fdc3aefb1d90e5bd5de8c028"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.running-criteria.UsageStats"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "acada9370a9aa5e46ab48f6bd6c3b337f00d357491ac0b8fc97a4a1bb1811196"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.running-criteria.ToolUsage.by_name"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "d5d2624fde6fc24ceccb913dbbc30d9fce6ba9c277785c1d7546b069fb3ca858"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/configured.rs"
+                },
+                "selector": "mod[tests]/fn[registered_tools_use_the_current_context_and_ordinary_node_ids]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "2a2cd72d471bf2cf18e6987128b2d9c2c22deeaa2d3e269118486369534f0a29"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[agent_executions_isolate_conversations_and_dependency_traces]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "056d0e24c13d4598d0ca252b07b88f5943e47267f99859790a84f3575cf78f38"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "52c15d1d0e93301c4d527c00d5c2b47d2c8be8114c9e65409e2746298fcc75e3"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[cache_retains_usage_across_validators_and_sums_each_token_category]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "97ba915319c99e373ceb68462d68188b2dfbaacd19982fe551ab4fcca4bda03a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[dropping_an_inflight_request_preserves_its_attempt]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "0d5540119411bbeb047869aa519d1a0fc2ce843e8e00c0803527afecea921d37"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[tool_usage_counts_utf8_results_and_errors_once_across_retries]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "082682fdc3eafc57a2f004ee63b765b6fe1dda9bcfcb6e0700cc31242571378f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/public_api.rs"
+                },
+                "selector": "fn[public_exports_match_the_appendix]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "I judged the marked tests against each obligation in `requirements.sdk.validation-cache.usage`. I did not read any implementation source. I found no gap.\n\n- **Starts at zero.**\n  - `registered_tools_use_the_current_context_and_ordinary_node_ids` asserts that a new cache's `usage().tools` is empty.\n  - `agent_executions_isolate_conversations_and_dependency_traces` takes `initial = cache.usage()` before any call. It later asserts `initial.attempts == 0` and empty tools.\n  - `validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse` checks zero counters, but on a fresh `Validator`'s usage, not the cache's. The two cache-level checks above cover the cache.\n- **Every call through the cache or any clone adds usage once, including retries and failed attempts.**\n  - `cache_retains_usage_across_validators_and_sums_each_token_category` runs two validators over `graph` and its clone `peer`. One call hits a throttled retry. It asserts the cache totals through `cache`, `graph.cache()` and `peer.cache()`: attempts 3, retries 1, failed attempts 1. It also checks each token category's reported sum and missing count.\n  - `validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse` covers a retry followed by success, then a terminal failure. It asserts cache totals of attempts 3, retries 1 and failed attempts 2. Evidence reuse via `refresh_evidence` adds no extra attempts.\n  - `dropping_an_inflight_request_preserves_its_attempt` checks that a dropped call still records its attempt.\n- **Concurrent calls share totals.** `agent_executions_isolate_conversations_and_dependency_traces` joins two executions with `futures::join!` behind a barrier. It asserts the cache's attempts are 6 (3 + 3). It also asserts the cache's per-tool calls are 2 each, and that the cache's `result_bytes` equal the sum of the two validators' bytes.\n- **Tool calls and bytes summed by name across validators.**\n  - The test above checks the per-tool sums across the two validators.\n  - `tool_usage_counts_utf8_results_and_errors_once_across_retries` asserts exact `calls` and `result_bytes` per tool through `cache.usage().tools`, with a retry in the run.\n  - `registered_tools_use_the_current_context_and_ordinary_node_ids` covers registered tools alongside built-in ones. It asserts the tool-name key set and that the byte totals equal the lengths of the outputs sent back to the provider.\n- **Snapshots are owned and preserved.**\n  - `before_failure` is taken before a later failing call. It still reports `failed_attempts == 1` while the cache has moved to 2.\n  - `initial` still reports zero attempts and no tools after later calls.\n  - Repeated `usage()` reads return the same totals.\n\nThe tests assert specific values, not just execution. Every obligation has a relevant assertion."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -116,19 +424,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "d4acd724ad04f9a7b0374a47d1799adb4edb47664e2e83d78d271436e22477bb"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.validation-cache.usage"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "e1932bb6160dfd8ce886b5559a0c6d9803fc4451193f887583d88a60d7fea4fd"
+          "value": "911a511af3341d639f3388c8f32354a2467e55757b81030216450b8ed24289f8"
         }
       ]
     },
@@ -162,6 +458,74 @@
         {
           "scheme": "habeas-input-v1",
           "value": "d5d2624fde6fc24ceccb913dbbc30d9fce6ba9c277785c1d7546b069fb3ca858"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "impl[ValidationCache<D>]/fn[usage]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "2d10a901352fd177a045ec630112caa534d9d1c980af4305ea5d51c07020a6b1"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "struct[ValidationCache]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "59a1685bcb72103a9b5f6dd2487d6a9ae1fc23b25867b10188cb310a34c24128"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "impl[ValidationCache<D>/Clone]/fn[clone]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "2a234fd49297f9c1bb1ca3deecbd848da49383a0d8eda254c3b80febdbbb56d6"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
+            },
+            "selector": "mod[tests]/fn[registered_tools_use_the_current_context_and_ordinary_node_ids]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "2a2cd72d471bf2cf18e6987128b2d9c2c22deeaa2d3e269118486369534f0a29"
         }
       ]
     },
@@ -239,6 +603,23 @@
           "Source": {
             "resource": {
               "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
+            },
+            "selector": "fn[tool_usage_counts_utf8_results_and_errors_once_across_retries]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "082682fdc3eafc57a2f004ee63b765b6fe1dda9bcfcb6e0700cc31242571378f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
               "location": "crates/trust-but-verify/tests/public_api.rs"
             },
             "selector": "fn[public_exports_match_the_appendix]"
@@ -247,6 +628,23 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/domain.rs"
+            },
+            "selector": "impl[ValidationCache<D>/Default]/fn[default]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "deec6f4eb70d26d6ad9a664e758474efa29fb5fcb5a79769d07c9e6378d52ead"
         }
       ]
     }

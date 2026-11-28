@@ -18,8 +18,6 @@ use crate::{
 };
 
 /// Where the requirements index and its generated evidence detail pages go.
-// {impl}`requirements.index.detail_pages`
-// {impl}`requirements.index.chapter`
 pub(crate) struct DetailPlan {
     index_path: PathBuf,
     generated_index: bool,
@@ -28,12 +26,10 @@ pub(crate) struct DetailPlan {
     chapters: Vec<(PathBuf, Vec<String>)>,
 }
 
-// {impl}`requirements.index.source_links`
 pub(crate) struct SourceLinks {
     blob_prefix: String,
 }
 
-// {impl}`requirements.index.detail_format`
 pub(crate) struct RenderSources<'a> {
     /// CLI inspection compares input hashes; the book only displays source.
     pub(crate) check_hashes: bool,
@@ -47,7 +43,6 @@ pub(crate) struct RenderSources<'a> {
 }
 
 impl SourceLinks {
-    // {impl}`requirements.index.source_links`
     fn from_config(config: &Config) -> io::Result<Option<Self>> {
         let html = if config.contains_key("output.habeas.html") {
             "output.habeas.html"
@@ -94,7 +89,6 @@ impl SourceLinks {
         }))
     }
 
-    // {impl}`requirements.index.source_links`
     fn input_url(&self, file: &str, start: u64, end: u64) -> Option<String> {
         if start == 0 || end < start {
             return None;
@@ -118,7 +112,6 @@ impl SourceLinks {
     }
 }
 
-// {impl}`requirements.index.source_links`
 fn encode_url_segment(segment: &str) -> String {
     let mut encoded = String::new();
     for byte in segment.bytes() {
@@ -132,7 +125,6 @@ fn encode_url_segment(segment: &str) -> String {
     encoded
 }
 
-// {impl}`requirements.index.state`
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EvidenceState {
     Valid,
@@ -146,7 +138,6 @@ pub(crate) enum EvidenceState {
     Unreadable,
 }
 
-// {impl}`requirements.index.detail_format`
 pub(crate) struct LoadedDetailEvidence {
     state: EvidenceState,
     record: Option<String>,
@@ -154,7 +145,6 @@ pub(crate) struct LoadedDetailEvidence {
     fixme_entries: Vec<String>,
 }
 
-// {impl}`requirements.index.detail_format`
 struct DetailEvidence<'a> {
     state: EvidenceState,
     record: Option<&'a str>,
@@ -163,15 +153,12 @@ struct DetailEvidence<'a> {
 }
 
 impl LoadedDetailEvidence {
-    // {impl}`requirements.index.state`
-    // {impl}`requirements.ci.outcomes`
     pub(crate) fn load(root: &Path, name: &str, report: &EvidenceReport) -> Self {
         Self::load_path(root, &format!("evidence/{name}.json"), report)
     }
 
     /// Loads the record at a project-relative path, with the validation
     /// errors reported for it, such as a citation review.
-    // {impl}`requirements.index.state`
     pub(crate) fn load_path(root: &Path, relative: &str, report: &EvidenceReport) -> Self {
         let evidence_path = root.join(relative);
         let prefix = format!("{relative}:");
@@ -181,7 +168,6 @@ impl LoadedDetailEvidence {
             .filter(|error| error.starts_with(&prefix))
             .cloned()
             .collect::<Vec<_>>();
-        // {impl}`requirements.index.invalid_detail`
         let record = match fs::read_to_string(&evidence_path) {
             Ok(record) => Some(record),
             Err(error) if error.kind() == io::ErrorKind::NotFound => None,
@@ -231,9 +217,6 @@ impl LoadedDetailEvidence {
         }
     }
 
-    // {impl}`requirements.index.state`
-    // {impl}`requirements.index.render_only`
-    // {impl}`requirements.index.invalid_detail`
     pub(crate) fn load_record_path(root: &Path, relative: &str) -> Self {
         let mut errors = Vec::new();
         let record = match fs::read_to_string(root.join(relative)) {
@@ -303,7 +286,6 @@ impl LoadedDetailEvidence {
         self.state
     }
 
-    // {impl}`requirements.index.state`
     pub(crate) fn errors(&self) -> &[String] {
         &self.errors
     }
@@ -322,12 +304,10 @@ impl LoadedDetailEvidence {
         Some(judgment.kind())
     }
 
-    // {impl}`requirements.index.detail_format`
     pub(crate) fn fixme_entries(&self) -> &[String] {
         &self.fixme_entries
     }
 
-    // {impl}`requirements.index.detail_format`
     fn borrowed(&self) -> DetailEvidence<'_> {
         DetailEvidence {
             state: self.state,
@@ -339,7 +319,6 @@ impl LoadedDetailEvidence {
 }
 
 impl EvidenceState {
-    // {impl}`requirements.index.state`
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Valid => "Valid",
@@ -354,7 +333,6 @@ impl EvidenceState {
         }
     }
 
-    // {impl}`requirements.index.state`
     fn color(self) -> &'static str {
         match self {
             Self::Valid | Self::RecordedTrue => "237346",
@@ -367,11 +345,6 @@ impl EvidenceState {
 }
 
 impl DetailPlan {
-    // {impl}`requirements.index.chapter`
-    // {impl}`requirements.index.chapter.default`
-    // {impl}`requirements.examples.index`
-    // {impl}`requirements.index.detail_pages`
-    // {impl}`requirements.index.path_conflicts`
     pub(crate) fn find(
         book: &Book,
         definitions: &BTreeMap<String, Definition>,
@@ -404,7 +377,6 @@ impl DetailPlan {
             .chapters()
             .filter_map(|chapter| chapter.path.as_ref())
             .collect::<BTreeSet<_>>();
-        // {impl}`requirements.index.path_conflicts`
         if generated_index && existing_paths.contains(&index_path) {
             return Err(invalid_index(&format!(
                 "generated requirements index {} conflicts with a book chapter",
@@ -436,16 +408,11 @@ impl DetailPlan {
         self.detail_paths.get(name).map(PathBuf::as_path)
     }
 
-    // {impl}`requirements.index.navigation`
     pub(crate) fn is_detail_path(&self, path: &Path) -> bool {
         self.detail_paths.values().any(|detail| detail == path)
     }
 
-    // {impl}`requirements.index.state`
-    // {impl}`requirements.examples.index`
-    // {impl}`requirements.index.chapter`
-    // {impl}`requirements.index.chapter.default`
-    // {impl}`requirements.index.detail_pages`
+    // {impl}`requirements.cli.shared_status_rendering`
     pub(crate) fn populate(
         &self,
         book: &mut Book,
@@ -492,7 +459,6 @@ impl DetailPlan {
                 evidence.borrowed(),
                 &sources,
             );
-            // {impl}`requirements.index.source_links`
             let source_path = if evidence_path.exists() {
                 evidence_edit_path(&config.book.src, name)
             } else {
@@ -501,7 +467,6 @@ impl DetailPlan {
             pages.insert(name.clone(), (detail_path.clone(), content, source_path));
         }
 
-        // {impl}`requirements.cli.shared_status_rendering`
         let rows = render_evidence_table(&rows);
 
         if self.generated_index {
@@ -526,7 +491,6 @@ impl DetailPlan {
             book.push_item(chapter);
         }
 
-        // {impl}`requirements.index.navigation`
         let mut index_found = false;
         let mut chapters_found = 0;
         book.for_each_chapter_mut(|chapter| {
@@ -583,12 +547,10 @@ impl DetailPlan {
 }
 
 /// The generated page for `name`, in a directory named after its chapter.
-// {impl}`requirements.index.detail_pages`
 fn detail_path(chapter: &Path, name: &str) -> PathBuf {
     chapter.with_extension("").join(format!("{name}.md"))
 }
 
-// {impl}`requirements.index.source_links`
 fn evidence_edit_path(book_src: &Path, name: &str) -> PathBuf {
     let mut path = PathBuf::new();
     for component in book_src.components() {
@@ -602,7 +564,6 @@ fn evidence_edit_path(book_src: &Path, name: &str) -> PathBuf {
 }
 
 /// Escape HTML tokens while retaining the surrounding Markdown source.
-// {impl}`requirements.index.detail_format.rationale_html`
 fn literal_rationale_html(rationale: &str) -> String {
     let mut markdown = rationale.to_owned();
     loop {
@@ -650,10 +611,6 @@ fn literal_rationale_html(rationale: &str) -> String {
     }
 }
 
-// {impl}`requirements.index.detail_format`
-// {impl}`requirements.index.invalid_detail`
-// {impl}`requirements.examples.index`
-// {impl}`requirements.index.navigation`
 fn render_detail_page(
     name: &str,
     detail_path: &Path,
@@ -693,9 +650,6 @@ fn render_detail_page(
     )
 }
 
-// {impl}`requirements.index.rustdocs`
-// {impl}`requirements.index.detail_format`
-// {impl}`requirements.index.navigation`
 fn rebase_markdown_destinations(markdown: &str, source: &Path, destination: &Path) -> String {
     let parser = Parser::new(markdown);
     let mut replacements = BTreeMap::new();
@@ -746,7 +700,6 @@ fn rebase_markdown_destinations(markdown: &str, source: &Path, destination: &Pat
     rebased
 }
 
-// {impl}`requirements.index.detail_format`
 fn markdown_destination(markdown: &str, mut start: usize, end: usize) -> Range<usize> {
     let bytes = markdown.as_bytes();
     while start < end && bytes[start].is_ascii_whitespace() {
@@ -776,8 +729,6 @@ fn markdown_destination(markdown: &str, mut start: usize, end: usize) -> Range<u
     start..cursor
 }
 
-// {impl}`requirements.index.rustdocs`
-// {impl}`requirements.index.navigation`
 fn rebase_destination(url: &str, source: &Path, destination: &Path) -> String {
     let path_end = url.find(['?', '#']).unwrap_or(url.len());
     let path = &url[..path_end];
@@ -860,7 +811,6 @@ pub(crate) fn render_cli_detail_page(
 }
 
 /// The groups detail pages sort inputs into, in display order.
-// {impl}`requirements.index.detail_format`
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum InputGroup {
     Implementation,
@@ -877,7 +827,6 @@ impl InputGroup {
         Self::OtherSources,
     ];
 
-    // {impl}`requirements.index.detail_format`
     fn heading(self) -> &'static str {
         match self {
             Self::Implementation => "Implementation",
@@ -887,7 +836,6 @@ impl InputGroup {
         }
     }
 
-    // {impl}`requirements.index.detail_format`
     fn id(self) -> &'static str {
         match self {
             Self::Implementation => "habeas-inputs-implementation",
@@ -899,7 +847,6 @@ impl InputGroup {
 }
 
 /// Current edges from one definition, used to group its evidence inputs.
-// {impl}`requirements.index.detail_format`
 #[derive(Default)]
 struct DefinitionEdges {
     /// `{impl}` and `{test}` reference sites as canonical file and line.
@@ -911,7 +858,6 @@ struct DefinitionEdges {
 }
 
 impl DefinitionEdges {
-    // {impl}`requirements.index.detail_format`
     fn current(name: &str, sources: &RenderSources<'_>) -> Self {
         let mut edges = Self::default();
         for reference in sources.references {
@@ -942,7 +888,6 @@ impl DefinitionEdges {
         edges
     }
 
-    // {impl}`requirements.index.detail_format`
     fn group(
         &self,
         root: &Path,
@@ -1000,11 +945,6 @@ impl DefinitionEdges {
     }
 }
 
-// {impl}`requirements.index.detail_format`
-// {impl}`requirements.index.invalid_detail`
-// {impl}`requirements.index.state`
-// {impl}`requirements.examples.index`
-// {impl}`requirements.authoring.redaction`
 fn render_detail_sections(
     mut content: String,
     name: &str,
@@ -1114,7 +1054,6 @@ fn render_detail_sections(
 }
 
 /// An input's selector and what it currently resolves to.
-// {impl}`requirements.index.detail_format`
 struct InputLocation {
     selector: Option<InputSelector>,
     resolved: Option<Result<ResolvedInput, String>>,
@@ -1122,9 +1061,6 @@ struct InputLocation {
 }
 
 impl InputLocation {
-    // {impl}`requirements.index.detail_format`
-    // {impl}`requirements.definitions.inputs`
-    // {impl}`requirements.ci.outline_inputs`
     fn resolve(input: &Value, sources: &RenderSources<'_>) -> Self {
         let selector = InputSelector::from_input(input);
         let resolved = selector
@@ -1142,10 +1078,6 @@ impl InputLocation {
     }
 }
 
-// {impl}`requirements.index.source_links`
-// {impl}`requirements.index.detail_format`
-// {impl}`requirements.definitions.inputs`
-// {impl}`requirements.ci.outline_inputs`
 fn render_input(
     content: &mut String,
     index: usize,
@@ -1231,8 +1163,6 @@ fn render_input(
     content.push_str("\n</details>\n\n");
 }
 
-// {impl}`requirements.index.source_links`
-// {impl}`requirements.index.detail_format`
 fn render_source_location(
     content: &mut String,
     range: &SourceRange,
@@ -1261,7 +1191,6 @@ fn render_source_location(
     }
 }
 
-// {impl}`requirements.index.detail_format`
 fn push_code_block(content: &mut String, text: &str, language: &str) {
     let longest = text
         .split(|character| character != '`')
@@ -1278,7 +1207,6 @@ fn push_code_block(content: &mut String, text: &str, language: &str) {
     content.push('\n');
 }
 
-// {impl}`requirements.index.detail_format`
 fn code_language(file: Option<&str>) -> &'static str {
     match file
         .and_then(|file| Path::new(file).extension())
@@ -1296,7 +1224,6 @@ fn code_language(file: Option<&str>) -> &'static str {
     }
 }
 
-// {impl}`requirements.index.chapter`
 fn marker_ranges(content: &str) -> io::Result<Vec<Range<usize>>> {
     let protected = protected_ranges(content);
     let definitions = definition_blocks(content);
@@ -1350,7 +1277,6 @@ fn marker_ranges(content: &str) -> io::Result<Vec<Range<usize>>> {
     Ok(ranges)
 }
 
-// {impl}`requirements.index.chapter`
 fn invalid_index(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }

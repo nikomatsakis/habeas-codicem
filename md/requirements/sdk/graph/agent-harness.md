@@ -559,8 +559,9 @@ ends with `ValidationError::Agent`.
 
 :::{req} submission.invalid
 For a response with exactly one `submit_result` call, arguments other than an
-object containing only the `result` field end the request with
-`ValidationError::Agent`. Decoding the field's value into `R` follows
+object containing only the `result` field receive a tool error describing that
+expected structure. The model can resubmit in the same conversation. Decoding
+the field's value into `R` follows
 {cite}`requirements.sdk.graph.agent-calls.judge.submission.decoding`.
 :::
 
@@ -584,7 +585,8 @@ another ask request. The application interprets the completed answer under
 :::{example} submission_count
 A model finishes with prose but no `submit_result` call: the harness reminds
 it once, and when it then calls `submit_result`, the agent request succeeds. When
-it ends with prose again, the request fails. The same reminder applies to a response with multiple `submit_result` calls. A single call with invalid
-arguments fails without requesting a replacement submission.
+it ends with prose again, the request fails. The same reminder applies to a
+response with multiple `submit_result` calls. A single call with invalid
+arguments receives a tool error so the model can correct the submission.
 {test}`requirements.sdk.graph.agent-harness.submission.reminder`
 :::

@@ -7,7 +7,6 @@ use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table, value};
 
 const WRAPPER: &str = "habeas-coverage";
 
-// {impl}`requirements.test-coverage.setup.configuration`
 pub fn workspace_root(root: &Path) -> io::Result<PathBuf> {
     let root = fs::canonicalize(root)?;
     let manifest = root.join("Cargo.toml");
@@ -86,7 +85,6 @@ fn table(item: &mut Item, path: &Path, setting: &str) -> io::Result<()> {
 
 // Deliberately prove an unconditional first run-wrapper rule, rather than approximate
 // arbitrary nextest filtersets. Unrelated setup/list rules are left to nextest.
-// {impl}`requirements.test-coverage.run.configuration`
 pub(super) fn check(source: &str, path: &Path, profile: &str) -> io::Result<()> {
     let config: toml::Table = source.parse().map_err(|error| invalid(path, error))?;
     if !config
@@ -208,17 +206,14 @@ pub(super) fn check(source: &str, path: &Path, profile: &str) -> io::Result<()> 
     ))
 }
 
-// {impl}`requirements.test-coverage.setup.validation`
-// {impl}`requirements.test-coverage.setup.validation.static`
 pub fn validate_setup(root: &Path) -> io::Result<()> {
     let path = workspace_root(root)?.join(".config/nextest.toml");
     let source = fs::read_to_string(&path).map_err(|error| invalid(&path, error))?;
     check(&source, &path, "default")
 }
 
-// Returns planned content; callers preflight all conflicts before writing anything.
 // {impl}`requirements.test-coverage.setup.configuration`
-// {impl}`requirements.test-coverage.setup`
+// Returns planned content; callers preflight all conflicts before writing anything.
 pub fn configure(root: &Path) -> io::Result<(PathBuf, String)> {
     let path = workspace_root(root)?.join(".config/nextest.toml");
     let source = if path.exists() {

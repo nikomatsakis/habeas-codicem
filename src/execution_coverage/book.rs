@@ -95,7 +95,6 @@ pub(super) fn readable(record: &Record) -> bool {
         })
 }
 
-// {impl}`requirements.test-coverage.index.summary`
 pub(super) fn union<'a>(records: impl Iterator<Item = &'a Record>) -> BTreeMap<(String, u32), u64> {
     let mut files: BTreeMap<&str, BTreeMap<u32, u64>> = BTreeMap::new();
     for record in records {
@@ -121,7 +120,6 @@ pub(super) fn union<'a>(records: impl Iterator<Item = &'a Record>) -> BTreeMap<(
         .collect()
 }
 
-// {impl}`requirements.test-coverage.index.file_map.directories`
 #[derive(Default)]
 struct GapDirectory<'a> {
     files: Vec<&'a super::notes::DocumentedFile>,
@@ -138,9 +136,6 @@ impl GapDirectory<'_> {
             + self.directories.values().map(Self::count).sum::<usize>()
     }
 
-    // {impl}`requirements.test-coverage.index.gaps.details`
-    // {impl}`requirements.test-coverage.index.gaps.details.initial`
-    // {impl}`requirements.test-coverage.index.gaps.explanations`
     fn render(&self, html: &mut String, folder: &str, index: &Path, next: &mut usize) {
         if !self.files.is_empty() {
             html.push_str("<table class=\"gap-file-table\"><colgroup><col><col><col></colgroup><thead><tr><th>File</th><th>Documented source items</th><th>Notes</th></tr></thead><tbody>\n");
@@ -173,14 +168,6 @@ impl GapDirectory<'_> {
     }
 }
 
-// {impl}`requirements.test-coverage.index.file_map.combined`
-// {impl}`requirements.test-coverage.index.file_map.table`
-// {impl}`requirements.test-coverage.index.file_map.directories.initial`
-// {impl}`requirements.test-coverage.index.file_map.directories.data`
-// {impl}`requirements.test-coverage.index.gaps`
-// {impl}`requirements.test-coverage.index.gaps.summary`
-// {impl}`requirements.test-coverage.index.gaps.accepted`
-// {impl}`requirements.test-coverage.index.file_map.notes`
 fn gaps_map(files: &[super::notes::DocumentedFile], index: &Path) -> String {
     let mut tree = GapDirectory::default();
     for file in files.iter().filter(|file| !file.items.is_empty()) {
@@ -201,13 +188,6 @@ fn gaps_map(files: &[super::notes::DocumentedFile], index: &Path) -> String {
     html
 }
 
-// {impl}`requirements.test-coverage.index`
-// {impl}`requirements.test-coverage.index.paths`
-// {impl}`requirements.test-coverage.index.unavailable`
-// {impl}`requirements.test-coverage.index.render_only`
-// {impl}`requirements.test-coverage.index.details`
-// {impl}`requirements.test-coverage.index.file_map`
-// {impl}`requirements.test-coverage.index.file_map.combined.details`
 pub(crate) fn populate(book: &mut Book, project: &Path, parent: &Path) -> io::Result<()> {
     populate_in(book, project, None, parent)
 }
@@ -236,9 +216,6 @@ pub(super) struct SavedCoverage {
     pub(super) invalid_store: bool,
 }
 
-// {impl}`requirements.test-coverage.index.selection`
-// {impl}`requirements.test-coverage.index.freshness`
-// {impl}`requirements.test-coverage.check.measurement`
 pub(super) fn load_saved(project: &Path, target: Option<PathBuf>) -> SavedCoverage {
     let mut diagnostics = Vec::new();
     let mut invalid_store = false;
@@ -311,12 +288,6 @@ pub(super) fn load_saved(project: &Path, target: Option<PathBuf>) -> SavedCovera
     }
 }
 
-// {impl}`requirements.test-coverage.index.navigation`
-// {impl}`requirements.test-coverage.index.source`
-// {impl}`requirements.test-coverage.index.guidance`
-// {impl}`requirements.test-coverage.index.details`
-// {impl}`requirements.test-coverage.index.file_map.test`
-// {impl}`requirements.test-coverage.index.file_map.combined.details`
 pub(super) fn populate_in(
     book: &mut Book,
     project: &Path,
@@ -1232,6 +1203,7 @@ mod tests {
                 .passed
         );
     }
+    // {test}`requirements.test-coverage.index.gaps`
     // {test}`requirements.test-coverage.index.file_map`
     // {test}`requirements.test-coverage.index.file_map.table`
     // {test}`requirements.test-coverage.index.file_map.combined`

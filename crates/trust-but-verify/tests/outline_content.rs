@@ -168,6 +168,7 @@ fn outline_errors_preserve_diagnostic_and_line() {
     assert_eq!(reported.to_string(), "line 7: bad selector");
 }
 
+// {test}`requirements.sdk.sources.plain-text.language`
 // {test}`requirements.sdk.outlines.parser.supplied_source`
 // {test}`requirements.sdk.outlines.defaults`
 // {test}`requirements.sdk.outlines.items`
@@ -548,6 +549,7 @@ fn ambiguous_items_are_errors_except_for_identical_plain_text_lines() {
     );
 }
 
+// {test}`requirements.sdk.outlines.language_provider.fingerprint_scheme`
 // {test}`requirements.sdk.outlines.parser`
 // {test}`requirements.sdk.outlines.independent`
 // {test}`requirements.sdk.outlines.outline_file`
@@ -611,6 +613,7 @@ fn outline_only_languages_report_unsupported_structural_search() {
     );
 }
 
+// {test}`requirements.sdk.sources.plain-text.language`
 // {test}`requirements.sdk.outlines.defaults`
 // {test}`requirements.sdk.outlines.independent`
 // {test}`requirements.sdk.outlines.parser.supplied_source`
@@ -1570,6 +1573,27 @@ fn yaml_selection_includes_comments_owned_by_the_entry() {
         root.outline().items[1].span,
         Span::new(0, selected.text().len())
     );
+    let sequence = "list:\n  # first\n  - a: 1 # trailing\n    b: 2\n  # second\n  - c\n";
+    let outline =
+        OutlineContent::from_source(&ValidationCache::new(), "list.yaml", sequence.into()).unwrap();
+    let entries: Vec<_> = outline
+        .outline()
+        .items
+        .iter()
+        .filter(|item| item.kind == "item")
+        .map(|item| {
+            outline
+                .select(&item.selector)
+                .unwrap()
+                .text()
+                .trim()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(
+        entries,
+        ["# first\n  - a: 1 # trailing\n    b: 2", "# second\n  - c"]
+    );
     let nested = "a:\n  b: 1\n# before next\nd: 2\n";
     let root =
         OutlineContent::from_source(&ValidationCache::new(), "nested.yml", nested.into()).unwrap();
@@ -2002,6 +2026,9 @@ fn outline_constructors_preserve_fields_and_replace_attachments() {
     );
     let outline = Outline::new(vec![item.clone()]);
     assert!(outline.diagnostic.is_none());
+    let error = OutlineError::new(2, "incomplete".into());
+    let outline = outline.with_diagnostic(error.clone());
+    assert_eq!(outline.diagnostic, Some(error));
     assert!(!format!("{outline:?}").is_empty());
     let cloned = outline.clone();
     let [item] = cloned.items.as_slice() else {

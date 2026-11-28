@@ -8,7 +8,6 @@ use serde_json::Value;
 /// The forms of a line-number citation: a file path followed by `:` and a
 /// digit, `line` or `lines` followed by a number, or a parenthesized number
 /// range.
-// {impl}`requirements.authoring.line_numbers.detection`
 static LINE_NUMBERS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
         // A file path's extension starts with a letter, so a version
@@ -21,7 +20,6 @@ static LINE_NUMBERS: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// The first text in `rationale` that cites line numbers, if any.
-// {impl}`requirements.authoring.line_numbers.detection`
 pub(crate) fn cited(rationale: &str) -> Option<&str> {
     LINE_NUMBERS.find(rationale).map(|found| found.as_str())
 }
@@ -52,7 +50,6 @@ static FILE_DIAGNOSTIC: LazyLock<Regex> = LazyLock::new(|| {
 /// error or diagnostic names, which the model did not supply. Such locations
 /// use the empty outline selector, `file#`, because malformed sources may not
 /// have a parseable inner node.
-// {impl}`requirements.authoring.no_line_numbers`
 pub(crate) fn without_source_lines(error: &str) -> String {
     let error = PARSE_POSITION.replace_all(error, "");
     let error = FILE_DIAGNOSTIC.replace_all(&error, "$1#: ");
@@ -95,7 +92,6 @@ pub(crate) enum Outcome {
 impl Rejection {
     /// The submission to accept in place of `arguments`: the rejected one
     /// when `arguments` gives exactly the UUID its rejection returned.
-    // {impl}`requirements.authoring.line_numbers.resubmission`
     pub(crate) fn resubmitted(&self, arguments: &Value) -> Option<Value> {
         let (uuid, pointer, rejected) = self.rejected.as_ref()?;
         (arguments.pointer(pointer).and_then(Value::as_str) == Some(uuid.as_str()))
@@ -105,8 +101,6 @@ impl Rejection {
     /// Decides an otherwise valid submission: accepted unless its rationale
     /// cites line numbers, rejected once with a fresh UUID, and failed after
     /// that.
-    // {impl}`requirements.authoring.line_numbers.rejection`
-    // {impl}`requirements.authoring.line_numbers.resubmission`
     pub(crate) fn decide(&mut self, submit: &str, arguments: &Value, guidance: &str) -> Outcome {
         let paths = std::iter::once("/rationale".to_string()).chain(
             (0..arguments["corrections"].as_array().map_or(0, Vec::len))

@@ -1,8 +1,8 @@
 {
   "requirement": "Encode the answer and replace the record for its source node and criterion path, preserving its version and dependencies under {cite}`requirements.sdk.graph.evidence.store_evidence`.\n\n```rust,ignore\nimpl<'d, D: Domain> Validator<'d, D> {\n    pub fn store_evidence<O: Serialize>(\n        &self,\n        inputs: &Fingerprinted<D, O>,\n    ) -> impl Future<Output = Result<(), ValidationError<D::Error>>> + Send;\n}\n```",
   "determination": true,
-  "rationale": "The subject requires `store_evidence` to encode the answer, replace the record for the source node and criterion path, and preserve version and dependencies. Its signature is `Validator::store_evidence`, returning a `Send` future with no `Sync` bound on the output. I did not read the implementation. I judged only from the supplied tests.\n\n- **Encoding and persistence only on request.** `tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` first shows that `verify` writes nothing: executions and writes are (1, 0), and `load_evidence` returns `None`. After `store_evidence`, the loaded record matches the original on output, source node, criterion path, version and dependencies. The raw stored records are checked as encoded JSON: `{satisfied:false,details:[...]}` for the `behavior` path and `null` for the `text` path. Records under different criterion paths stay separate.\n- **Replace the record for the node and path.** `src/graph/validation_tests.rs#fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]` stores a v1 answer for node 9. It then verifies and stores a v2 replacement and asserts that the stored record for node 9 now has version `v2`. The same test shows that node 8 does not see the record for node 9. In `criteria_keep_typed_answers_and_persist_only_when_requested`, an unsaved replacement leaves the stored record unchanged.\n- **Preserve version and dependencies.** The `v1` and `v2` versions are asserted in the stored records. `tests/contracts.rs#fn[dependency_resolution_failures_do_not_execute_or_replace_saved_answers]` stores a record with a `Dependency::Node` and a `Dependency::OutgoingEdges`. It asserts that the stored record's dependencies equal the durable inputs, and that the stored output is `false`, both before and after resolution failures.\n- **Send without Sync.** `tests/contracts.rs#fn[validation_and_answer_need_send_without_sync]` runs `store_evidence` through the `send` helper with a non-`Sync` `Cell` output. It then loads the stored value and gets 17 back.\n\nThe requirement text names no error-case obligations. The cited `requirements.sdk.graph.evidence.store_evidence`, `requirements.sdk.graph.evidence.record.output` and `requirements.sdk.graph.evidence.evidence_storage` carry the details of encoding and atomic replacement, so I did not reassess them. `tests/public_api.rs#fn[public_exports_match_the_appendix]` is marked only for the public API and is not relevant to this subject. I found no gaps.",
-  "references": "ed1544fd67ffff7e6988e65fc73a78d4fa457b118027d130323e7ca25e4d4912",
+  "rationale": "structural: The only structural obligation in `requirements.sdk.graph.running-criteria.store_evidence` is the prescribed signature. That signature is `Validator<'d, D: Domain>::store_evidence<O: Serialize>(&self, inputs: &Fingerprinted<D, O>) -> impl Future<Output = Result<(), ValidationError<D::Error>>> + Send`. A version with a different receiver, a different input type or a returned future that lacks `Send` would break callers, so this clause binds the implementation.\n\n`crates/trust-but-verify/src/graph.rs#impl[Validator<'d,%20D>]/fn[store_evidence]` declares exactly that signature, and it carries the `{impl}` marker for this requirement.\n\nThe body also matches the behavioral clauses:\n- It encodes `inputs.output` with `serde_json::to_value`.\n- It builds a `Record` from `inputs.version`, `persist_dependencies(...)` and the encoded output.\n- It captures `inputs.source` and `inputs.criterion` as the storage key.\n- It delegates to `self.domain.store_evidence`, mapping encoding errors to `ValidationError::Output` and storage errors to `ValidationError::Graph`.\n\nReplacing the record is the storage layer's job under the cited `evidence_storage` requirement. `persist_dependencies` and `Domain::store_evidence` are reached from this marked root, so they need no separate marker.\n\nThe sibling `requirements.sdk.graph.evidence.store_evidence` is marked on the same item. Its extra clause, that no `Sync` bound is needed because encoding happens before the future is built, is also met by the body. The method encodes eagerly, then moves `encoded`, `node` and `criterion_path` into the `async move` block.\n\nbehavioral: The reviewed tests cover every observable obligation of `requirements.sdk.graph.running-criteria.store_evidence`. They also cover the `Send` bound on the returned future, which the signature states and the refining requirement `requirements.sdk.graph.evidence.store_evidence` repeats. I did not read the implementation source.\n\n- **Encode the answer.**\n  - `crates/trust-but-verify/tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` stores a structured answer. It asserts that the stored record's `output` is `json!({\"satisfied\":false,\"details\":[\"missing edge case\"]})`. It also asserts `json!(null)` for the unit answer.\n  - The same test loads the answers back and compares them with the originals. The `Send`-without-`Sync` test (`validation_and_answer_need_send_without_sync`) does the same round trip for a `Cell` answer.\n- **Save under the source node and criterion path.** The `criteria_keep_typed_answers_and_persist_only_when_requested` test stores answers under three criterion paths (`behavior`, `structure`, `text`). It finds each stored record by path, and it loads each answer back by its descriptor. `validation_tests.rs#fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]` checks that loading node 8 returns `None` after node 9 was stored. The saved record is therefore keyed by the source identity captured in `Fingerprinted`.\n- **Replace the record.** In `caller_reuses_negative_answers_and_compares_revisions_explicitly`, a v1 record is stored first. A v2 verification is then stored, and the record for node 9 now has version `v2`. In `criteria_keep_typed_answers_and_persist_only_when_requested`, `verify` leaves the stored record unchanged until an explicit store.\n- **Preserve the version.** The loaded version equals the verified version (`assert_eq!(loaded.version(), value.version())`). The stored record in the `Memory` graph is asserted to have `v2` after the replacement.\n- **Preserve the dependencies.**\n  - `contracts.rs#fn[dependency_resolution_failures_do_not_execute_or_replace_saved_answers]` stores a value with a node read and an outgoing-edges dependency. It asserts that the persisted dependencies equal the expected `Dependency` list, both on the loaded value and in the stored record.\n  - The same test asserts that the stored record's dependencies and output stay unchanged when input resolution fails.\n  - The empty-dependency case is asserted in the other two tests.\n- **`Send` future without a `Sync` bound on the result.** `validation_and_answer_need_send_without_sync` passes the `store_evidence` future through `send(...)` with a non-`Sync` `Cell` answer.\n\nThe reviewed tests accept no plausible violation of the requirement that I could identify. `public_exports_match_the_appendix` only checks the declared export, which fits the signature block.",
+  "references": "c3767bf2147a8650c6969675734a1b4e008c983d96235b9e605afdfa72f5e059",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.running-criteria.store_evidence",
@@ -44,6 +44,11 @@
       ]
     },
     {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "impl[Validator<'d,%20D>]/fn[store_evidence]",
+      "hash": "f102d22aa4e7d1e1b656e215b1de8c72c49ac2993a5b98b251539d7116e94a1c"
+    },
+    {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
       "item": "fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]",
       "hash": "4050d7164d344983064df2ae023af8d39fc28f0cfe0437e2e558d3f65111498c"
@@ -69,7 +74,195 @@
       "hash": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.running-criteria.store_evidence"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "c3767bf2147a8650c6969675734a1b4e008c983d96235b9e605afdfa72f5e059"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.running-criteria.store_evidence"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "69ce4c498eccd4d33ddebeab789013c284816d2c8f59995cbfbf1cfcf981a12f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.evidence.store_evidence"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "eae3caf58178aed3cde49b2c2aa8113161d639b5a8c64eb4b2803c54b8c6195a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph.rs"
+                },
+                "selector": "impl[Validator<'d,%20D>]/fn[store_evidence]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f102d22aa4e7d1e1b656e215b1de8c72c49ac2993a5b98b251539d7116e94a1c"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The only structural obligation in `requirements.sdk.graph.running-criteria.store_evidence` is the prescribed signature. That signature is `Validator<'d, D: Domain>::store_evidence<O: Serialize>(&self, inputs: &Fingerprinted<D, O>) -> impl Future<Output = Result<(), ValidationError<D::Error>>> + Send`. A version with a different receiver, a different input type or a returned future that lacks `Send` would break callers, so this clause binds the implementation.\n\n`crates/trust-but-verify/src/graph.rs#impl[Validator<'d,%20D>]/fn[store_evidence]` declares exactly that signature, and it carries the `{impl}` marker for this requirement.\n\nThe body also matches the behavioral clauses:\n- It encodes `inputs.output` with `serde_json::to_value`.\n- It builds a `Record` from `inputs.version`, `persist_dependencies(...)` and the encoded output.\n- It captures `inputs.source` and `inputs.criterion` as the storage key.\n- It delegates to `self.domain.store_evidence`, mapping encoding errors to `ValidationError::Output` and storage errors to `ValidationError::Graph`.\n\nReplacing the record is the storage layer's job under the cited `evidence_storage` requirement. `persist_dependencies` and `Domain::store_evidence` are reached from this marked root, so they need no separate marker.\n\nThe sibling `requirements.sdk.graph.evidence.store_evidence` is marked on the same item. Its extra clause, that no `Sync` bound is needed because encoding happens before the future is built, is also met by the body. The method encodes eagerly, then moves `encoded`, `node` and `criterion_path` into the `async move` block."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.running-criteria.store_evidence"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "c3767bf2147a8650c6969675734a1b4e008c983d96235b9e605afdfa72f5e059"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.running-criteria.store_evidence"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "69ce4c498eccd4d33ddebeab789013c284816d2c8f59995cbfbf1cfcf981a12f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.evidence.store_evidence"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "eae3caf58178aed3cde49b2c2aa8113161d639b5a8c64eb4b2803c54b8c6195a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "4050d7164d344983064df2ae023af8d39fc28f0cfe0437e2e558d3f65111498c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[criteria_keep_typed_answers_and_persist_only_when_requested]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f47c40151c7d8ba4e5cd3b84d1c8d19288a02beb3f6148a79bdbcf6bc857964c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[dependency_resolution_failures_do_not_execute_or_replace_saved_answers]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "7d35c2bd6a734803097aa36c74244a08f1bfb8ca2564f9ff71fe398c0fbea414"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[validation_and_answer_need_send_without_sync]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "2bf006acebdb8fc3df250c66c66a218d7e2e7d0edd1566f398067c9a9012f735"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/public_api.rs"
+                },
+                "selector": "fn[public_exports_match_the_appendix]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The reviewed tests cover every observable obligation of `requirements.sdk.graph.running-criteria.store_evidence`. They also cover the `Send` bound on the returned future, which the signature states and the refining requirement `requirements.sdk.graph.evidence.store_evidence` repeats. I did not read the implementation source.\n\n- **Encode the answer.**\n  - `crates/trust-but-verify/tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` stores a structured answer. It asserts that the stored record's `output` is `json!({\"satisfied\":false,\"details\":[\"missing edge case\"]})`. It also asserts `json!(null)` for the unit answer.\n  - The same test loads the answers back and compares them with the originals. The `Send`-without-`Sync` test (`validation_and_answer_need_send_without_sync`) does the same round trip for a `Cell` answer.\n- **Save under the source node and criterion path.** The `criteria_keep_typed_answers_and_persist_only_when_requested` test stores answers under three criterion paths (`behavior`, `structure`, `text`). It finds each stored record by path, and it loads each answer back by its descriptor. `validation_tests.rs#fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]` checks that loading node 8 returns `None` after node 9 was stored. The saved record is therefore keyed by the source identity captured in `Fingerprinted`.\n- **Replace the record.** In `caller_reuses_negative_answers_and_compares_revisions_explicitly`, a v1 record is stored first. A v2 verification is then stored, and the record for node 9 now has version `v2`. In `criteria_keep_typed_answers_and_persist_only_when_requested`, `verify` leaves the stored record unchanged until an explicit store.\n- **Preserve the version.** The loaded version equals the verified version (`assert_eq!(loaded.version(), value.version())`). The stored record in the `Memory` graph is asserted to have `v2` after the replacement.\n- **Preserve the dependencies.**\n  - `contracts.rs#fn[dependency_resolution_failures_do_not_execute_or_replace_saved_answers]` stores a value with a node read and an outgoing-edges dependency. It asserts that the persisted dependencies equal the expected `Dependency` list, both on the loaded value and in the stored record.\n  - The same test asserts that the stored record's dependencies and output stay unchanged when input resolution fails.\n  - The empty-dependency case is asserted in the other two tests.\n- **`Send` future without a `Sync` bound on the result.** `validation_and_answer_need_send_without_sync` passes the `store_evidence` future through `send(...)` with a non-`Sync` `Cell` answer.\n\nThe reviewed tests accept no plausible violation of the requirement that I could identify. `public_exports_match_the_appendix` only checks the declared export, which fits the signature block."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -79,19 +272,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "ed1544fd67ffff7e6988e65fc73a78d4fa457b118027d130323e7ca25e4d4912"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.running-criteria.store_evidence"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "289ad986711b4c4e11d66ba776505692dfa08f34ed945cff8f546c40b8ce18bd"
+          "value": "c3767bf2147a8650c6969675734a1b4e008c983d96235b9e605afdfa72f5e059"
         }
       ]
     },
@@ -114,6 +295,23 @@
         {
           "scheme": "habeas-input-v1",
           "value": "eae3caf58178aed3cde49b2c2aa8113161d639b5a8c64eb4b2803c54b8c6195a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "impl[Validator<'d,%20D>]/fn[store_evidence]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "f102d22aa4e7d1e1b656e215b1de8c72c49ac2993a5b98b251539d7116e94a1c"
         }
       ]
     },

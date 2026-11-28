@@ -1,8 +1,8 @@
 {
   "requirement": "For each {term}`requirements.sdk.graph.search.hit` in a text or structural search, locate the start of the match in the outline of the **same snapshot**. Select the innermost item containing that position. The item's project-relative file path and selector form its `OutlineData`. When no smaller item contains the position, use the file root (empty selector).",
   "determination": true,
-  "rationale": "The reviewed tests adequately cover `requirements.sdk.graph.search.enclosing_item`.\n\nI read the implementation, `crates/trust-but-verify/src/sources/hits.rs#impl[SourceProject<D>]/fn[find_hits]`, to establish one point. Text and structural searches share one locator: `file.at_offset(span.start)` followed by `with_path`. The only reason I read it was to see whether the two search kinds share code. I did not use it to derive expected behavior.\n\nObligations and the tests that cover them:\n\n- **Innermost containing item.**\n  - `scoped_search_accounts_for_visible_descendant_text` asserts selector `impl[Parser]/fn[parse]` for a structural hit on `hit()`. It asserts `impl[Parser]` for text hits on `impl Parser`, so the hit lands on the outer item when the match starts there.\n  - `separated_hit_windows_preserve_the_function_declaration` asserts `impl[Runner]/fn[run]` for text hits nested inside an impl.\n  - `structural_tags_select_only_the_original_enclosing_item` asserts that two structural hits resolve to `code.rs#fn[one]` and `code.rs#fn[two]` respectively, with exact spans.\n\n- **Position is the start of the match.** `matches_crossing_item_boundaries_belong_to_the_item_at_the_start` uses `fn a() {}   fn b() {}` with three patterns.\n  - `   fn b` starts in the gap between items and resolves to the root `pair.rs#`.\n  - `\\}   fn b` starts inside `fn a` and resolves to `fn[a]`.\n  - `fn b` resolves to `fn[b]`.\n  - Together these show that the start of the match decides the item, not its end or its extent.\n\n- **Fallback to the file root when no smaller item contains the position.**\n  - `root_hits_clip_context_to_utf8_boundaries` covers a file with no items and asserts `fragment.rs#` with an empty selector.\n  - The `   fn b` case in the crossing test also covers a root hit in a file that has items.\n\n- **Comments attached to an item.** `search_in_leading_and_trailing_comments_selects_the_function` asserts that hits in a comment before and a comment after `pub fn check` both resolve to `fn[check]`.\n\n- **Path and selector form the OutlineData.** Assertions on the `file` and `selector` fields cover this in `scoped_search_accounts_for_visible_descendant_text` (`src/code.rs`), `separated_hit_windows_preserve_the_function_declaration` and `root_hits_clip_context_to_utf8_boundaries`. Dependency assertions cover it in the scoped and structural tests, with the node ID `src/code.rs#<selector>` and the fingerprint of the original outline.\n\n- **Same snapshot.** These tests keep the retained snapshot's selection stable after the file changes.\n  - The structural test overwrites the file with `fn replaced() {}` and then still gets selection from the original outline.\n  - The separated-hit test rewrites the file to `fn changed() {}` after the first window, and the second window still resolves to `impl[Runner]/fn[run]`.\n  - The scoped test rewrites the file before `finish_search`, and the dependency still carries the original fingerprint.\n\nI found no gap. Text and structural search share the single locator, and the text does not distinguish structural boundary cases from text ones, so no separate structural boundary test is needed. Every test I relied on carries a `{test}` reference to the requirement.",
-  "references": "db577d0606c65817fe928297e67961a41bb82e93bf5afbcb0ac7e8e5487b94d5",
+  "rationale": "structural: `requirements.sdk.graph.search.enclosing_item` has no implementation roots and no structural obligation that needs implementation evidence. I checked each clause for an alternative that keeps the observable behavior but breaks the clause.\n\n- \"locate the start of the match in the outline of the **same snapshot**\": this is observable behavior. An implementation could use any lookup structure or algorithm, such as a linear scan, an index or a cache. It satisfies the clause as long as each hit is resolved against the outline of the snapshot that was searched. Only the resulting item shows whether a different snapshot was used, so this is behavior.\n- \"Select the innermost item containing that position\": this states the result only. It names no algorithm, library, signature or interface.\n- \"The item's project-relative file path and selector form its `OutlineData`\": this describes the content of the output, a path plus a selector. `OutlineData` already exists as a project type. A different carrier with the same path and selector would give identical runtime results. A search for `OutlineData` showed only existing uses, such as `OutlineData::new` and `OutlineData::root`, and found no implementation of this requirement. Using the type is a discretionary choice, not a required structure.\n- \"When no smaller item contains the position, use the file root (empty selector)\": this is a fallback outcome and says nothing about how the code is built.\n\nEvery clause therefore specifies only observable behavior, which tests can verify. No structural obligation is unmet, so no `{impl}` marker is needed.\n\nbehavioral: The reviewed tests cover each obligation in `requirements.sdk.graph.search.enclosing_item`.\n\n- **Innermost item, text search:** `separated_hit_windows_preserve_the_function_declaration` expects `impl[Runner]/fn[run]` (the method, not the impl) and the path `runner.rs`. `scoped_search_accounts_for_visible_descendant_text` expects `impl[Parser]` for a hit on `impl Parser` and `impl[Parser]/fn[parse]` for a hit inside the method.\n- **Innermost item, structural search:** `structural_tags_select_only_the_original_enclosing_item` expects `code.rs#fn[one]` and `code.rs#fn[two]` for the two `call()` hits. `scoped_search_accounts_for_visible_descendant_text` expects `impl[Parser]/fn[parse]` for a structural hit on `hit()`.\n- **Hit position is the start of the match:** `matches_crossing_item_boundaries_belong_to_the_item_at_the_start` uses `fn a() {}   fn b() {}`. A match starting in the gap between the items resolves to the file root. A match starting in `fn a` and ending in `fn b` resolves to `fn[a]`. A match starting at `fn b` resolves to `fn[b]`.\n- **Comment-attached text:** `search_in_leading_and_trailing_comments_selects_the_function` shows that hits in comments before and after a function resolve to `example.rs#fn[check]`.\n- **File root fallback:** `root_hits_clip_context_to_utf8_boundaries` shows that a hit in a file with no items resolves to `fragment.rs#`, whose selector is empty. This holds for ASCII and multibyte sources.\n- **Same snapshot:** `structural_tags_select_only_the_original_enclosing_item` overwrites the file with `fn replaced() {}` after the first hits. It still gets `fn[two]` and the original fingerprint afterwards. `separated_hit_windows_preserve_the_function_declaration` overwrites the file after the first iteration. Its second iteration, run after the overwrite, still reports `impl[Runner]/fn[run]`.\n- **OutlineData (file and selector):** the assertions check the `file` and `selector` fields, or the interned `path#selector` node.\n\nThe tests check these outcomes with real assertions. Text and structural search both go through `find_hits` in `crates/trust-but-verify/src/sources/hits.rs`, so the text-search boundary and root tests also exercise the shared code for structural search. I found no unmarked relevant tests.",
+  "references": "03fa878928fa1eb21d1ed78ca7b8af1212fbc5fb8f592138810ce0164cdf2248",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.search.enclosing_item",
@@ -16,6 +16,16 @@
       ]
     },
     {
+      "definition": "requirements.sdk.graph.search.hit",
+      "text": [
+        ":::{definition} hit",
+        ":phrase: source search hit",
+        "",
+        "A *source search hit* is one occurrence of a query in a retained file snapshot.",
+        ":::"
+      ]
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[scoped_search_accounts_for_visible_descendant_text]",
       "hash": "f060e56e75e5979a869995d852b38568135366dbb7580b4f9d60b8b87cc0926d"
@@ -23,7 +33,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]",
-      "hash": "51da68bc4a12b4ba257787791938819f709b3fe5b32fd8652f22127f9dce1f60"
+      "hash": "bba9cf6f0b10888a512bf213b967a0aa2bd218f6033032c613dd48d34fbcc43a"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
@@ -46,22 +56,263 @@
       "hash": "1a9702e2ef2e866be27e54566db11c5f797bdac533f8e3439359ef3297dc7969"
     },
     {
-      "definition": "requirements.sdk.graph.search.hit",
-      "text": [
-        ":::{definition} hit",
-        ":phrase: source search hit",
-        "",
-        "A *source search hit* is one occurrence of a query in a retained file snapshot.",
-        ":::"
-      ]
+      "file": "crates/trust-but-verify/src/sources/hits.rs",
+      "item": "impl[SourceProject<D>]/fn[search_text]",
+      "hash": "622d4c214d6aac8539a48609c15930fdef8806b21c3e849d982228694f4fe8f8"
     },
     {
       "file": "crates/trust-but-verify/src/sources/hits.rs",
-      "item": "impl[SourceProject<D>]/fn[find_hits]",
-      "hash": "0ef6d3270fabef7a085f15432de661be81ce916274bd92ab79b9ea2bed2e4ea7"
+      "item": "impl[SourceProject<D>]/fn[search_structure]",
+      "hash": "f041b48d441b23c4656e871797cecd541993e7397235c89612cbcb60162f89f5"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.search.enclosing_item"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "03fa878928fa1eb21d1ed78ca7b8af1212fbc5fb8f592138810ce0164cdf2248"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.search.enclosing_item"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "176530a9f1d61dcef97638a3db4f8037d82bce62bd5fbcd3d108cccbba7fb9a4"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Definition": "requirements.sdk.graph.search.hit"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "e2745c1a737906dc9d336632855696d81f517020a76aaa53704da7ce0db2f7be"
+            }
+          ]
+        },
+        {
+          "OutgoingEdges": [
+            {
+              "Requirement": "requirements.sdk.graph.search.enclosing_item"
+            },
+            "Implements",
+            {
+              "scheme": "node-path-set-sha256-v1",
+              "value": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "`requirements.sdk.graph.search.enclosing_item` has no implementation roots and no structural obligation that needs implementation evidence. I checked each clause for an alternative that keeps the observable behavior but breaks the clause.\n\n- \"locate the start of the match in the outline of the **same snapshot**\": this is observable behavior. An implementation could use any lookup structure or algorithm, such as a linear scan, an index or a cache. It satisfies the clause as long as each hit is resolved against the outline of the snapshot that was searched. Only the resulting item shows whether a different snapshot was used, so this is behavior.\n- \"Select the innermost item containing that position\": this states the result only. It names no algorithm, library, signature or interface.\n- \"The item's project-relative file path and selector form its `OutlineData`\": this describes the content of the output, a path plus a selector. `OutlineData` already exists as a project type. A different carrier with the same path and selector would give identical runtime results. A search for `OutlineData` showed only existing uses, such as `OutlineData::new` and `OutlineData::root`, and found no implementation of this requirement. Using the type is a discretionary choice, not a required structure.\n- \"When no smaller item contains the position, use the file root (empty selector)\": this is a fallback outcome and says nothing about how the code is built.\n\nEvery clause therefore specifies only observable behavior, which tests can verify. No structural obligation is unmet, so no `{impl}` marker is needed."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.search.enclosing_item"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "03fa878928fa1eb21d1ed78ca7b8af1212fbc5fb8f592138810ce0164cdf2248"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.search.enclosing_item"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "176530a9f1d61dcef97638a3db4f8037d82bce62bd5fbcd3d108cccbba7fb9a4"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+                },
+                "selector": "mod[tests]/fn[scoped_search_accounts_for_visible_descendant_text]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f060e56e75e5979a869995d852b38568135366dbb7580b4f9d60b8b87cc0926d"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+                },
+                "selector": "mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "bba9cf6f0b10888a512bf213b967a0aa2bd218f6033032c613dd48d34fbcc43a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+                },
+                "selector": "mod[tests]/fn[search_in_leading_and_trailing_comments_selects_the_function]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "aee78221e18958c3dac68e6eff48b461a8d8454dccc03bb55cca4076f8760c5d"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+                },
+                "selector": "mod[tests]/fn[root_hits_clip_context_to_utf8_boundaries]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "a7d93a5020881837e00f5ccd0599571e628c7dc612a6b0c62c6db5c9d8073e9a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+                },
+                "selector": "mod[tests]/fn[matches_crossing_item_boundaries_belong_to_the_item_at_the_start]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "97d25a495db4f0459fa513bc2d7ebcc80ab39c2b4fc4ab91425dbb3d6322c2a8"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+                },
+                "selector": "mod[tests]/fn[separated_hit_windows_preserve_the_function_declaration]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "1a9702e2ef2e866be27e54566db11c5f797bdac533f8e3439359ef3297dc7969"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Definition": "requirements.sdk.graph.search.hit"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "e2745c1a737906dc9d336632855696d81f517020a76aaa53704da7ce0db2f7be"
+            }
+          ]
+        },
+        {
+          "OutgoingEdges": [
+            {
+              "Requirement": "requirements.sdk.graph.search.enclosing_item"
+            },
+            "Implements",
+            {
+              "scheme": "node-path-set-sha256-v1",
+              "value": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/sources/hits.rs"
+                },
+                "selector": "impl[SourceProject<D>]/fn[search_text]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "622d4c214d6aac8539a48609c15930fdef8806b21c3e849d982228694f4fe8f8"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/sources/hits.rs"
+                },
+                "selector": "impl[SourceProject<D>]/fn[search_structure]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f041b48d441b23c4656e871797cecd541993e7397235c89612cbcb60162f89f5"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The reviewed tests cover each obligation in `requirements.sdk.graph.search.enclosing_item`.\n\n- **Innermost item, text search:** `separated_hit_windows_preserve_the_function_declaration` expects `impl[Runner]/fn[run]` (the method, not the impl) and the path `runner.rs`. `scoped_search_accounts_for_visible_descendant_text` expects `impl[Parser]` for a hit on `impl Parser` and `impl[Parser]/fn[parse]` for a hit inside the method.\n- **Innermost item, structural search:** `structural_tags_select_only_the_original_enclosing_item` expects `code.rs#fn[one]` and `code.rs#fn[two]` for the two `call()` hits. `scoped_search_accounts_for_visible_descendant_text` expects `impl[Parser]/fn[parse]` for a structural hit on `hit()`.\n- **Hit position is the start of the match:** `matches_crossing_item_boundaries_belong_to_the_item_at_the_start` uses `fn a() {}   fn b() {}`. A match starting in the gap between the items resolves to the file root. A match starting in `fn a` and ending in `fn b` resolves to `fn[a]`. A match starting at `fn b` resolves to `fn[b]`.\n- **Comment-attached text:** `search_in_leading_and_trailing_comments_selects_the_function` shows that hits in comments before and after a function resolve to `example.rs#fn[check]`.\n- **File root fallback:** `root_hits_clip_context_to_utf8_boundaries` shows that a hit in a file with no items resolves to `fragment.rs#`, whose selector is empty. This holds for ASCII and multibyte sources.\n- **Same snapshot:** `structural_tags_select_only_the_original_enclosing_item` overwrites the file with `fn replaced() {}` after the first hits. It still gets `fn[two]` and the original fingerprint afterwards. `separated_hit_windows_preserve_the_function_declaration` overwrites the file after the first iteration. Its second iteration, run after the overwrite, still reports `impl[Runner]/fn[run]`.\n- **OutlineData (file and selector):** the assertions check the `file` and `selector` fields, or the interned `path#selector` node.\n\nThe tests check these outcomes with real assertions. Text and structural search both go through `find_hits` in `crates/trust-but-verify/src/sources/hits.rs`, so the text-search boundary and root tests also exercise the shared code for structural search. I found no unmarked relevant tests."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -71,19 +322,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "db577d0606c65817fe928297e67961a41bb82e93bf5afbcb0ac7e8e5487b94d5"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.search.enclosing_item"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "60d34f898ff91acc7210d134e24ae3217a75ebded19be588cf6335a45406a1a4"
+          "value": "03fa878928fa1eb21d1ed78ca7b8af1212fbc5fb8f592138810ce0164cdf2248"
         }
       ]
     },
@@ -95,6 +334,29 @@
         {
           "scheme": "habeas-input-v1",
           "value": "176530a9f1d61dcef97638a3db4f8037d82bce62bd5fbcd3d108cccbba7fb9a4"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Definition": "requirements.sdk.graph.search.hit"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "e2745c1a737906dc9d336632855696d81f517020a76aaa53704da7ce0db2f7be"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.sdk.graph.search.enclosing_item"
+        },
+        "Implements",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
         }
       ]
     },
@@ -128,7 +390,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "51da68bc4a12b4ba257787791938819f709b3fe5b32fd8652f22127f9dce1f60"
+          "value": "bba9cf6f0b10888a512bf213b967a0aa2bd218f6033032c613dd48d34fbcc43a"
         }
       ]
     },
@@ -203,23 +465,17 @@
     {
       "Node": [
         {
-          "Definition": "requirements.sdk.graph.search.hit"
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/hits.rs"
+            },
+            "selector": "impl[SourceProject<D>]/fn[search_text]"
+          }
         },
         {
-          "scheme": "habeas-input-v1",
-          "value": "e2745c1a737906dc9d336632855696d81f517020a76aaa53704da7ce0db2f7be"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.search.enclosing_item"
-        },
-        "Implements",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "aaed2b9bb7b55764b5b784f4f862235d7c32f3caa04827993f16ba2517c64dc3"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "622d4c214d6aac8539a48609c15930fdef8806b21c3e849d982228694f4fe8f8"
         }
       ]
     },
@@ -231,12 +487,24 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/sources/hits.rs"
             },
-            "selector": "impl[SourceProject<D>]/fn[find_hits]"
+            "selector": "impl[SourceProject<D>]/fn[search_structure]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "0ef6d3270fabef7a085f15432de661be81ce916274bd92ab79b9ea2bed2e4ea7"
+          "value": "f041b48d441b23c4656e871797cecd541993e7397235c89612cbcb60162f89f5"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.sdk.graph.search.enclosing_item"
+        },
+        "Tests",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "73e00f898a05b4bd60d7eaec2bc7d8b68af7cd5093ae8998afb2d9077c34900c"
         }
       ]
     }

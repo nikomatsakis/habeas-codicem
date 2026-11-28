@@ -42,7 +42,6 @@ fn referenced_terms(text: &str, markdown: bool, names: &mut BTreeSet<String>) {
     );
 }
 
-// {impl}`requirements.definitions.dependencies`
 pub(crate) fn dependencies(
     root: &Path,
     declarations: &BTreeMap<String, Declaration>,
@@ -59,7 +58,6 @@ pub(crate) fn dependencies(
 }
 
 /// Terms referenced directly by the subject, inputs, or supplied acknowledgments.
-// {impl}`requirements.references.markdown_literals`
 // Malformed or unresolvable inputs are skipped: their own checks report them.
 fn direct_references(
     root: &Path,
@@ -117,7 +115,6 @@ fn direct_references(
                 InputSelector::Definition { definition } => {
                     pending.insert(definition);
                 }
-                // {impl}`requirements.references.reference_contexts`
                 InputSelector::Outline { file, .. }
                     if crate::outline::uses_language(
                         Path::new(&file),
@@ -143,7 +140,6 @@ fn direct_references(
                     }
                 }
                 // Other outlined languages count terms only in comments too.
-                // {impl}`requirements.references.reference_contexts`
                 InputSelector::Outline { file, .. } => {
                     let markdown = crate::outline::is_markdown_path(Path::new(&file));
                     let contexts = crate::evidence::ReferenceContexts::parse(
@@ -177,7 +173,6 @@ fn direct_references(
 /// Expands referenced terms to a fixed point. Returns the resolvable
 /// definitions and one problem per unresolvable term, continuing past each
 /// problem so every one is found.
-// {impl}`requirements.ci.errors`
 fn close_dependencies(
     declarations: &BTreeMap<String, Declaration>,
     mut pending: BTreeSet<String>,
@@ -206,7 +201,6 @@ fn close_dependencies(
     (required, errors)
 }
 
-// {impl}`requirements.ci.errors`
 pub(crate) fn validate_dependencies(
     root: &Path,
     declarations: &BTreeMap<String, Declaration>,

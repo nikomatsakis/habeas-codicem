@@ -79,7 +79,6 @@ fn closes(line: &str, length: usize) -> bool {
 
 /// Finds fenced references among lines. A fence closes at the next
 /// unprotected colon-only line with at least as many colons; fences may nest.
-// {impl}`requirements.ci.fence_lengths`
 pub(crate) fn find_fences(lines: &[FenceLine<'_>]) -> Vec<Fence> {
     let mut fences = Vec::new();
     for (index, line) in lines.iter().enumerate() {
@@ -147,7 +146,6 @@ fn split_lines(content: &str) -> Vec<(usize, usize, &str)> {
 
 /// Fenced references in Markdown text; fences in code or raw HTML remain
 /// literal. Without `markdown`, every line is text, as in a plain-text file.
-// {impl}`requirements.references.markdown_literals`
 pub(crate) fn markdown_fences(content: &str, markdown: bool) -> Vec<MarkdownFence> {
     let protected = if markdown {
         protected_ranges(content)

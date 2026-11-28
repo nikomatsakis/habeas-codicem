@@ -10,19 +10,14 @@ use crate::github::GithubIssues;
 use crate::index::{EvidenceState, LoadedDetailEvidence, RenderSources, render_cli_detail_page};
 use crate::markdown::render_evidence_table;
 
-// {impl}`requirements.cli.status`
-// {impl}`requirements.cli.fixme_summary`
 pub fn status_markdown(root: &Path, all: bool) -> io::Result<String> {
     status_markdown_filtered(root, all, None)
 }
 
-// {impl}`requirements.definitions.selection`
 pub fn status_markdown_filtered(root: &Path, all: bool, glob: Option<&str>) -> io::Result<String> {
     status_markdown_with_options(root, all, glob, false)
 }
 
-// {impl}`requirements.cli.shared_status_rendering`
-// {impl}`requirements.references.definition_globs`
 pub fn status_markdown_with_options(
     root: &Path,
     all: bool,
@@ -32,10 +27,10 @@ pub fn status_markdown_with_options(
     status_markdown_with_github(root, all, glob, verbose, &GithubIssues::offline())
 }
 
+// {impl}`requirements.cli.shared_status_rendering`
 /// Renders `habeas status`, reading the issues `{fixme}` references name
 /// through `github`. The convenience status functions use an offline issue
 /// source, so every issue counts as open.
-// {impl}`requirements.authoring.github_reads`
 pub fn status_markdown_with_github(
     root: &Path,
     all: bool,
@@ -109,7 +104,6 @@ pub fn status_markdown_with_github(
     output.push_str(&fixmes);
     // Site reviews are checked on their own; list those needing attention,
     // or every one with `--all`, by requirement, file, and selector.
-    // {impl}`requirements.references.site_review`
     let mut site_rows = Vec::new();
     for site in inspection
         .sites
@@ -176,7 +170,6 @@ pub fn status_markdown_with_github(
 /// assessments disagreed, which validation accepts. A citation review is
 /// selected when one of its citations names a selected definition, and a site
 /// review when its requirement is selected; without a selection, all are.
-// {impl}`requirements.authoring.confirmation`
 fn disagreements(
     root: &Path,
     inspection: &crate::evidence::RepositoryInspection,
@@ -246,8 +239,6 @@ fn disagreements(
     )
 }
 
-// {impl}`requirements.definitions.selection`
-// {impl}`requirements.references.definition_globs`
 pub fn info_markdown(root: &Path, selector: &str) -> io::Result<String> {
     let inspection = inspect_repository(root)?;
     definition_glob::validate(selector)
@@ -293,7 +284,6 @@ pub fn info_markdown(root: &Path, selector: &str) -> io::Result<String> {
 /// A distributed requirement's sites for `habeas info`: how many the
 /// requirement does not apply to, and each site with its review's
 /// determination.
-// {impl}`requirements.references.site_review`
 fn site_section(
     root: &Path,
     sites: &[crate::sites::SiteItem],

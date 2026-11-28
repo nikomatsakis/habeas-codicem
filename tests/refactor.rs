@@ -407,14 +407,21 @@ fn versioned_records_preserve_sdk_dependencies_across_verified_moves() {
             {"ReferenceSet": name},
             {"scheme": "habeas-reference-set-v1", "value": record["references"]},
         ]}));
-        let test_file = record["inputs"]
+        let mut target_paths: Vec<_> = record["inputs"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|input| input["item"] == "fn[verify]")
-            .unwrap()["file"]
-            .clone();
-        let target_paths = json!([["source", "repo", test_file, "fn[verify]"]]);
+            .filter(|input| input["file"].is_string())
+            .map(|input| {
+                vec![
+                    "source",
+                    "repo",
+                    input["file"].as_str().unwrap(),
+                    input["item"].as_str().unwrap(),
+                ]
+            })
+            .collect();
+        target_paths.sort();
         let membership: String = Sha256::digest(serde_json::to_vec(&target_paths).unwrap())
             .iter()
             .map(|byte| format!("{byte:02x}"))
@@ -424,7 +431,7 @@ fn versioned_records_preserve_sdk_dependencies_across_verified_moves() {
             "Mandatory",
             {"scheme": "node-path-set-sha256-v1", "value": membership},
         ]}));
-        record["format_version"] = json!(1);
+        record["format_version"] = json!(2);
         record["review_version"] = json!("*");
         record["dependencies"] = json!(dependencies);
         record
@@ -445,6 +452,9 @@ fn versioned_records_preserve_sdk_dependencies_across_verified_moves() {
         let old_path = root.join("evidence/rules.load.json");
         let record: Value = serde_json::from_slice(&fs::read(&old_path).unwrap()).unwrap();
         let mut native = versioned(record, "rules.load");
+        for name in ["structural", "behavioral"] {
+            native["criteria"][name] = json!({"revision":"*", "dependencies": native["dependencies"], "output":{"status":"success","rationale":"Supported."}});
+        }
         if matches!(scenario, "extra" | "bad-extra") {
             let mut extra = observation(&requirements_input(
                 "rules.check",
@@ -538,6 +548,12 @@ fn versioned_records_preserve_sdk_dependencies_across_verified_moves() {
         assert_eq!(migrated["determination"], true);
         assert_eq!(migrated["review_version"], "*");
         let mut expected = versioned(migrated.clone(), subject);
+        for name in ["structural", "behavioral"] {
+            assert_eq!(
+                migrated["criteria"][name]["dependencies"],
+                expected["dependencies"]
+            );
+        }
         if scenario == "extra" {
             expected["dependencies"]
                 .as_array_mut()
@@ -1321,6 +1337,33 @@ fn a_moved_chapter_with_a_new_glob_match_leaves_the_record_stale() {
     fs::write(
         root.join("md/core.md"),
         format!("{chapter}\n:::{{req}} added\nAn additional requirement.\n:::\n"),
+    )
+    .unwrap();
+    let output = refactor(root, &["--map", "rules=core"]);
+    assert!(output.status.success(), "{output:?}");
+    let report = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        report.contains("no longer selects what it recorded"),
+        "{report}"
+    );
+    assert_eq!(
+        fs::read(root.join("evidence/rules.check.json")).unwrap(),
+        original
+    );
+}
+
+// {test}`requirements.refactor.definition_inputs`
+#[test]
+fn editing_the_second_glob_match_prevents_migration() {
+    let temp = project();
+    let root = temp.path();
+    author(root);
+    let original = fs::read(root.join("evidence/rules.check.json")).unwrap();
+    let chapter = fs::read_to_string(root.join("md/rules.md")).unwrap();
+    fs::rename(root.join("md/rules.md"), root.join("md/core.md")).unwrap();
+    fs::write(
+        root.join("md/core.md"),
+        chapter.replace("Configuration MUST load.", "Configuration MUST load twice."),
     )
     .unwrap();
     let output = refactor(root, &["--map", "rules=core"]);

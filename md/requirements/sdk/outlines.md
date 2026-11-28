@@ -509,6 +509,7 @@ pub struct Outline {
 
 impl Outline {
     pub fn new(items: Vec<OutlineItem>) -> Self;
+    pub fn with_diagnostic(self, diagnostic: OutlineError) -> Self;
 }
 ```
 

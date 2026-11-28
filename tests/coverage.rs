@@ -86,6 +86,103 @@ fn unmarked_tests_and_parse_failures_remain_validation_errors() {
     );
 }
 
+// {test}`requirements.references.coverage.tests`
+#[test]
+fn a_test_annotation_counts_even_when_its_target_has_a_finding() {
+    let project = project();
+    fs::write(
+        project.path().join("md/example.md"),
+        ":::{example} empty\nAn empty list has zero items.\n:::\n",
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("src/lib.rs"),
+        concat!(
+            "// {test}`example.empty`\n#[test]\nfn empty_list() {}\n",
+            "// {test}`example.missing`\n#[test]\nfn missing_target() {}\n",
+        ),
+    )
+    .unwrap();
+    let errors = habeas::validate_repository(project.path())
+        .unwrap()
+        .errors
+        .join("\n");
+    assert!(
+        errors.contains("example example.empty must reference at least one requirement"),
+        "{errors}"
+    );
+    assert!(errors.contains("example.missing"), "{errors}");
+    assert!(!errors.contains("has no {test}"), "{errors}");
+}
+
+// {test}`requirements.references.coverage.tests`
+// {test}`requirements.integration.validate.test_annotations`
+#[test]
+fn test_annotations_follow_the_attribute_path_and_the_comment_owner() {
+    let project = project();
+    fs::write(
+        project.path().join("src/lib.rs"),
+        concat!(
+            "#[::essais::r#test]\nfn first() {}\n",
+            "#[équipe /* namespaced macro */ :: test(options)]\nfn second() {}\n",
+            "// {test}`rules.ready`\n#[::essais::test]\nfn marked() {}\n",
+            "#[cfg_attr(test, ignore)]\nfn helper() {}\n",
+        ),
+    )
+    .unwrap();
+    let errors = habeas::validate_repository(project.path()).unwrap().errors;
+    let findings: Vec<_> = errors
+        .iter()
+        .filter(|error| error.contains("has no {test}"))
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        findings,
+        [
+            "src/lib.rs:2: test function first has no {test} annotation",
+            "src/lib.rs:4: test function second has no {test} annotation"
+        ]
+    );
+}
+
+// {test}`requirements.cli.status.test_annotations`
+#[test]
+fn status_reports_each_unmarked_test_and_exits_successfully() {
+    let project = project();
+    let file = project.path().join("src/lib.rs");
+    let test = "#[tokio::test]\nasync fn ready() {}\n";
+    let status = || {
+        Command::new(env!("CARGO_BIN_EXE_habeas"))
+            .current_dir(project.path())
+            .arg("status")
+            .output()
+            .unwrap()
+    };
+    fs::write(
+        project.path().join("src/other.rs"),
+        "#[test]\nfn another() {}\n// {test}`rules.ready`\n#[test]\nfn marked() {}\n",
+    )
+    .unwrap();
+    fs::write(&file, test).unwrap();
+    let output = status();
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("src/lib.rs:2: test function ready has no {test}"),
+        "{output:?}"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("src/other.rs:2: test function another has no {test}"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("test function marked"), "{stdout}");
+    fs::write(file, format!("// {{test}}`rules.ready`\n{test}")).unwrap();
+    let output = status();
+    assert!(output.status.success(), "{output:?}");
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("test function ready"));
+}
+
 // {test}`requirements.cli.status`
 // {test}`requirements.cli.clap`
 #[test]

@@ -18,7 +18,6 @@ pub(crate) struct OutlineItems {
 }
 
 impl OutlineItems {
-    // {impl}`requirements.references.outline_comments`
     pub(crate) fn new(outline: &Outline, source: &str) -> Self {
         let line_starts: Vec<_> = std::iter::once(0)
             .chain(source.match_indices('\n').map(|(offset, _)| offset + 1))
@@ -80,7 +79,6 @@ impl OutlineItems {
         (line, byte - self.line_starts[line - 1] + 1)
     }
 
-    // {impl}`requirements.references.outline_comments`
     pub(crate) fn owner_at(&self, line: usize, column: usize) -> usize {
         let Some(start) = line
             .checked_sub(1)
@@ -100,7 +98,6 @@ impl OutlineItems {
         self.parents[item]
     }
 
-    // {impl}`requirements.references.distributed`
     pub(crate) fn owner(&self, range: &Range<usize>) -> usize {
         let contains = |span: &Range<usize>| span.start <= range.start && range.end <= span.end;
         if let Some(comment) = self.comments.iter().find(|comment| contains(&comment.span)) {
@@ -162,7 +159,6 @@ pub(crate) fn display_name(selector: &str) -> Option<String> {
 }
 
 /// Locate the declaration within its attachment-inclusive source span.
-// {impl}`requirements.cli.fixme_issues`
 fn declaration_start(item: &trust_but_verify::outline::OutlineItem, source: &str) -> usize {
     if let Some(span) = item.name_span.or(item.header_span) {
         return span.start;
@@ -267,7 +263,6 @@ impl EvidenceOutline {
         found
     }
 
-    // {impl}`requirements.ci.outline_inputs`
     pub(crate) fn nodes_for_lines(
         &self,
         lines: impl IntoIterator<Item = usize>,

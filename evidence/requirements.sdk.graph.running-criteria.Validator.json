@@ -1,8 +1,8 @@
 {
   "requirement": "Each validator owns its usage counters and updates them through an exclusive borrow. The borrowed domain supplies the shared node identities, outline snapshots, and agent configuration under {cite}`requirements.sdk.validation-cache.cache`.\n\n```rust,ignore\npub struct Validator<'d, D: Domain> { /* private fields */ }\n```",
   "determination": true,
-  "rationale": "Judged against the text of `requirements.sdk.graph.running-criteria.Validator`. I did not read the implementation source. The cited `requirements.sdk.validation-cache.cache` is context only.\n\n**Obligations and coverage**\n\n1. **Each validator owns its usage counters.**\n   - `crates/trust-but-verify/src/agent/tests.rs#fn[agent_executions_isolate_conversations_and_dependency_traces]` runs two separate validators on one graph at the same time. Each validator's `usage().attempts` is 3, while the shared cache total is 6. Each validator's per-tool call count is 1, against 2 in the cache total. Each validator's `result_bytes` sum to the cache total for that tool. So the counters are per validator and are aggregated into the shared cache.\n   - `crates/trust-but-verify/src/agent/tests.rs#fn[validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse]` checks that `validator.usage()` and `graph.cache().usage()` have the same attempt, retry, failed-attempt, token and prepared/delivered-input values after a failed run. A fresh `Validator::new(&graph)` then shows all-zero counters and no tools. The cache's `before_failure` snapshot has `failed_attempts` of 1, while the same graph's cache holds earlier activity. This shows a new validator does not inherit shared counts.\n\n2. **Counters are updated through an exclusive borrow.**\n   - Both tests pass `&mut validator` to `verify_with_agent`. The concurrent test gives each future its own `&mut` validator, and that compiles only under exclusive borrowing.\n   - A compile-time property needs no runtime assertion.\n\n3. **The borrowed domain supplies shared node identities, outline snapshots and agent configuration, citing the cache requirement.**\n   - Both tests build `Validator::new(&graph)`. Both intern nodes through `graph.cache()` and use those nodes in the validated questions.\n   - Stored and loaded evidence in the first test uses the same graph's handles.\n   - The cache requirement's own tests cover the obligation behind this clause.\n\n4. **The `pub struct Validator<'d, D: Domain>` declaration with private fields.** `crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]` compares the rustdoc export inventory with the specified exports.\n\nI found no requirement-violating behavior that these tests would accept.",
-  "references": "6df1da0653d2f28663f0d0bf65b360bf3827238f8dbaf51dbe5b7b074b004c98",
+  "rationale": "structural: The structural obligations in `requirements.sdk.graph.running-criteria.Validator` are met by the two roots.\n\n1. **Type declaration.** The text prescribes `pub struct Validator<'d, D: Domain>` with private fields. `crates/trust-but-verify/src/graph.rs#struct[Validator]` declares exactly that, with private fields `domain: &'d D` and `usage: UsageStats`.\n\n2. **Ownership of counters.** The text says \"Each validator owns its usage counters\". The `usage` field holds `UsageStats` by value, not behind an `Arc` or a shared reference. A variant that put the counters in a shared handle would violate this clause, and the current struct does not do that.\n\n3. **Exclusive-borrow updates.** The text says counters are updated \"through an exclusive borrow\". `crates/trust-but-verify/src/graph.rs#impl[Validator<'d, D>]/fn[execute]` takes `&mut self`. It hands `&mut self.usage` to the `ValidationContext` as `ctx.usage`, so the counters are updated only through that borrow.\n\n4. **Borrowed domain.** The text says \"The borrowed domain supplies the shared node identities, outline snapshots, and agent configuration\". The struct holds `&'d D`, and `execute` builds the context with `ValidationContext::configured(self.domain, ...)`. The cache supplied through `Domain::cache` is therefore reached through the borrowed domain, not copied into the validator. The cited `requirements.sdk.validation-cache.cache` only gives context. Its obligations belong to the `Domain` trait and are not part of this subject.\n\nI did not check `ValidationContext::configured`, the `Domain` trait or the `Validator` constructor. I judged the delegation from the field types and the `execute` body.\n\nThe rest of the text describes behavior, such as which data the domain supplies, and does not prescribe a structure.\n\nbehavioral: **Obligations in `requirements.sdk.graph.running-criteria.Validator`**\n1. Each validator owns its own usage counters.\n2. Validators update those counters through an exclusive borrow (`&mut`).\n3. The borrowed domain supplies shared node identities, outline snapshots and agent configuration through `requirements.sdk.validation-cache.cache`. That requirement is cited context, so I did not reassess its own tests.\n4. The type is `Validator<'d, D: Domain>` with private fields. This is a structural and public-API matter. `public_exports_match_the_appendix` in `crates/trust-but-verify/tests/public_api.rs` covers the export inventory.\n\n**Test mapping**\n- `crates/trust-but-verify/src/agent/tests.rs#fn[agent_executions_isolate_conversations_and_dependency_traces]` creates two validators on one graph and runs them concurrently, each through `verify_with_agent(&mut validator, ...)`.\n  - It asserts that each validator's `usage().attempts` is 3 and each validator's per-tool call counts are 1.\n  - It asserts that the shared `cache.usage()` totals are 6 attempts and 2 calls per tool, and that tool `result_bytes` equal the sum of the two validators' values.\n  - Together these show that counters are per validator and not shared, and that the cache aggregates them. They also show the validators use the domain's shared cache: they share the node handle interned via `graph.cache()`, and the outline-reading tools run against it.\n  - The concurrent execution with `&mut` borrows covers the exclusive-borrow update path.\n- `crates/trust-but-verify/src/agent/tests.rs#fn[validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse]` asserts that the validator's own counters and the cache's counters agree after failed and retried attempts.\n  - A fresh `Validator::new(&graph)` on the same, already used graph starts with all-zero counters and empty tools. So counters are owned per validator and are not inherited from the domain.\n\n**Exclusive borrow**\nThis is a compile-time property of the `&mut` signature. The tests only compile because they pass `&mut validator`, and no runtime behavior remains to assert.\n\n**Conclusion**\nI found no unexercised observable behavior. Per-validator ownership, aggregation into the domain cache, and the fresh-validator baseline are all asserted.",
+  "references": "e8e3975b7c405ddee3b71cbb49db2b975be2c07b10c6bdc4f5a634502d993423",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.running-criteria.Validator",
@@ -42,6 +42,16 @@
       ]
     },
     {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "struct[Validator]",
+      "hash": "d90727e1b0872aad81bb82e69b079f8a1c110387ba7e0fd7b3f7e9057d44543e"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "impl[Validator<'d,%20D>]/fn[execute]",
+      "hash": "807a5015afd77dd876f866ed3e422875eef8103383fe82adb04d64b7c839be51"
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[agent_executions_isolate_conversations_and_dependency_traces]",
       "hash": "056d0e24c13d4598d0ca252b07b88f5943e47267f99859790a84f3575cf78f38"
@@ -57,7 +67,178 @@
       "hash": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.running-criteria.Validator"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "e8e3975b7c405ddee3b71cbb49db2b975be2c07b10c6bdc4f5a634502d993423"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.running-criteria.Validator"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "4392bfe8ff4fe5cd05462058d45e086e0a128514e55af0934c20de399cf3db02"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.validation-cache.cache"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "493c773a21b6c0020a61fc829ca15f01a576dd8dc09ff29ffe698a4e12e5b959"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph.rs"
+                },
+                "selector": "struct[Validator]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "d90727e1b0872aad81bb82e69b079f8a1c110387ba7e0fd7b3f7e9057d44543e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph.rs"
+                },
+                "selector": "impl[Validator<'d,%20D>]/fn[execute]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "807a5015afd77dd876f866ed3e422875eef8103383fe82adb04d64b7c839be51"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The structural obligations in `requirements.sdk.graph.running-criteria.Validator` are met by the two roots.\n\n1. **Type declaration.** The text prescribes `pub struct Validator<'d, D: Domain>` with private fields. `crates/trust-but-verify/src/graph.rs#struct[Validator]` declares exactly that, with private fields `domain: &'d D` and `usage: UsageStats`.\n\n2. **Ownership of counters.** The text says \"Each validator owns its usage counters\". The `usage` field holds `UsageStats` by value, not behind an `Arc` or a shared reference. A variant that put the counters in a shared handle would violate this clause, and the current struct does not do that.\n\n3. **Exclusive-borrow updates.** The text says counters are updated \"through an exclusive borrow\". `crates/trust-but-verify/src/graph.rs#impl[Validator<'d, D>]/fn[execute]` takes `&mut self`. It hands `&mut self.usage` to the `ValidationContext` as `ctx.usage`, so the counters are updated only through that borrow.\n\n4. **Borrowed domain.** The text says \"The borrowed domain supplies the shared node identities, outline snapshots, and agent configuration\". The struct holds `&'d D`, and `execute` builds the context with `ValidationContext::configured(self.domain, ...)`. The cache supplied through `Domain::cache` is therefore reached through the borrowed domain, not copied into the validator. The cited `requirements.sdk.validation-cache.cache` only gives context. Its obligations belong to the `Domain` trait and are not part of this subject.\n\nI did not check `ValidationContext::configured`, the `Domain` trait or the `Validator` constructor. I judged the delegation from the field types and the `execute` body.\n\nThe rest of the text describes behavior, such as which data the domain supplies, and does not prescribe a structure."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.running-criteria.Validator"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "e8e3975b7c405ddee3b71cbb49db2b975be2c07b10c6bdc4f5a634502d993423"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.running-criteria.Validator"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "4392bfe8ff4fe5cd05462058d45e086e0a128514e55af0934c20de399cf3db02"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.validation-cache.cache"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "493c773a21b6c0020a61fc829ca15f01a576dd8dc09ff29ffe698a4e12e5b959"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[agent_executions_isolate_conversations_and_dependency_traces]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "056d0e24c13d4598d0ca252b07b88f5943e47267f99859790a84f3575cf78f38"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "52c15d1d0e93301c4d527c00d5c2b47d2c8be8114c9e65409e2746298fcc75e3"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/public_api.rs"
+                },
+                "selector": "fn[public_exports_match_the_appendix]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "**Obligations in `requirements.sdk.graph.running-criteria.Validator`**\n1. Each validator owns its own usage counters.\n2. Validators update those counters through an exclusive borrow (`&mut`).\n3. The borrowed domain supplies shared node identities, outline snapshots and agent configuration through `requirements.sdk.validation-cache.cache`. That requirement is cited context, so I did not reassess its own tests.\n4. The type is `Validator<'d, D: Domain>` with private fields. This is a structural and public-API matter. `public_exports_match_the_appendix` in `crates/trust-but-verify/tests/public_api.rs` covers the export inventory.\n\n**Test mapping**\n- `crates/trust-but-verify/src/agent/tests.rs#fn[agent_executions_isolate_conversations_and_dependency_traces]` creates two validators on one graph and runs them concurrently, each through `verify_with_agent(&mut validator, ...)`.\n  - It asserts that each validator's `usage().attempts` is 3 and each validator's per-tool call counts are 1.\n  - It asserts that the shared `cache.usage()` totals are 6 attempts and 2 calls per tool, and that tool `result_bytes` equal the sum of the two validators' values.\n  - Together these show that counters are per validator and not shared, and that the cache aggregates them. They also show the validators use the domain's shared cache: they share the node handle interned via `graph.cache()`, and the outline-reading tools run against it.\n  - The concurrent execution with `&mut` borrows covers the exclusive-borrow update path.\n- `crates/trust-but-verify/src/agent/tests.rs#fn[validators_keep_measured_tokens_after_failed_attempts_and_evidence_reuse]` asserts that the validator's own counters and the cache's counters agree after failed and retried attempts.\n  - A fresh `Validator::new(&graph)` on the same, already used graph starts with all-zero counters and empty tools. So counters are owned per validator and are not inherited from the domain.\n\n**Exclusive borrow**\nThis is a compile-time property of the `&mut` signature. The tests only compile because they pass `&mut validator`, and no runtime behavior remains to assert.\n\n**Conclusion**\nI found no unexercised observable behavior. Per-validator ownership, aggregation into the domain cache, and the fresh-validator baseline are all asserted."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -67,19 +248,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "6df1da0653d2f28663f0d0bf65b360bf3827238f8dbaf51dbe5b7b074b004c98"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.running-criteria.Validator"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "580c889d78ee42ae3155211e2aefaa1029426197b36ec8b587b278e7dc1d2256"
+          "value": "e8e3975b7c405ddee3b71cbb49db2b975be2c07b10c6bdc4f5a634502d993423"
         }
       ]
     },
@@ -102,6 +271,40 @@
         {
           "scheme": "habeas-input-v1",
           "value": "493c773a21b6c0020a61fc829ca15f01a576dd8dc09ff29ffe698a4e12e5b959"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "struct[Validator]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "d90727e1b0872aad81bb82e69b079f8a1c110387ba7e0fd7b3f7e9057d44543e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "impl[Validator<'d,%20D>]/fn[execute]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "807a5015afd77dd876f866ed3e422875eef8103383fe82adb04d64b7c839be51"
         }
       ]
     },

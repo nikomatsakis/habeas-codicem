@@ -171,6 +171,7 @@ documented TBV public API.
       - `diagnostic`
       - `items`
       - `new()`
+      - `with_diagnostic()`
     - `struct OutlineAttachment` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.OutlineAttachment) · [Inspect attachments](outlines.md#inspect-attachments)
       - `kind`
       - `span`

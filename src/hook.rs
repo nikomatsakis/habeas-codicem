@@ -9,9 +9,6 @@ use crate::setup;
 /// The sentence every applicable session receives, pointing at the overview skill.
 const SKILL_SENTENCE: &str = "This project tracks requirements with Habeas; load the `habeas` skill before starting any work.";
 
-// {impl}`requirements.integration.symposium_skill_hook`
-// {impl}`requirements.integration.symposium_skill_hook.setup_state`
-// {impl}`requirements.integration.symposium_skill_hook.not_applicable`
 pub(crate) fn session_start() -> Result<(), Box<dyn Error>> {
     let input: Value = serde_json::from_reader(io::stdin()).unwrap_or(Value::Null);
     let response = session_start_response(&input, &std::env::current_dir()?);

@@ -25,7 +25,6 @@ fn prelude_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, std::ops::
     (!prelude.is_empty()).then(|| (vec![prelude], start..start + raw.trim().len()))
 }
 
-// {impl}`requirements.references.outline_comments`
 fn is_comment(node: Node<'_>, source: &str) -> bool {
     kind_is_comment(node, source) || node.kind() == "js_comment"
 }
@@ -58,9 +57,7 @@ const KINDS: &[KindRule] = &[
     ),
 ];
 
-// {impl}`requirements.references.outline_comments`
-// {impl}`requirements.references.structural_hash`
-// {impl}`requirements.sdk.sources.css.attachments`
+// {impl}`requirements.references.outlines`
 pub static PROFILE: Profile = Profile {
     name: "css",
     fingerprint_scheme: "css-structural-v1",

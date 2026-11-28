@@ -1,8 +1,8 @@
 {
   "requirement": "Every call constructs a fresh `ValidationContext` identifying the source node\nand calls `Criterion::execute` with that context. Its completed answer, including\na negative assessment, and captured dependencies form the returned `Fingerprinted`\nunder {cite}`requirements.sdk.graph.evidence.inputs`.",
   "determination": true,
-  "rationale": "I judged the marked tests against each clause of `requirements.sdk.graph.running-criteria.validate_node`. I did not read implementation source or the test helpers beyond what the test bodies show.\n\n- **Fresh context per call, identifying the source node:**\n  - `crates/trust-but-verify/src/graph/validation_tests.rs#fn[concurrent_single_node_validations_keep_separate_traces]` runs three concurrent verifications of nodes 1, 2 and 3. Each stored record contains only that node's own `Dependency::Node(node, ..)` and `OutgoingEdges(node, ..)`. This shows each call gets its own context for its own source node.\n  - `fn[historical_freshness_reads_do_not_enter_the_replacement_trace]` reuses one validator for `load_evidence`, `check_inputs`, `verify` and `store_evidence`. The freshness read of node 2 does not appear in the replacement dependencies, which are only `Node(1, root)`. So `verify` does not reuse an earlier trace.\n  - `crates/trust-but-verify/src/agent/tests.rs#fn[agent_executions_isolate_conversations_and_dependency_traces]` runs two executions of the same criterion concurrently. Their dependency records differ (alpha has `Node(1)`, beta has `OutgoingEdges` plus `Node(2)`). The same test shows per-validator tool usage staying separate.\n  - `crates/trust-but-verify/tests/contracts.rs#fn[input_checking_and_execution_keep_separate_observations]` asserts that execution reads node 2 once and that the saved dependencies are exactly the execution's own observations.\n- **Calls `Criterion::execute` with that context:** `fn[criteria_keep_typed_answers_and_persist_only_when_requested]` counts executions: one `verify` gives `executions == 1` with no write, and the later `verify` calls bring the total to 4. The criteria's reads and edge lookups go through the supplied context, and the dependencies asserted in the tests above come from those lookups.\n- **Completed answer, including a negative one, becomes the output:**\n  - `fn[criteria_keep_typed_answers_and_persist_only_when_requested]` asserts that a `satisfied: false` answer is kept as `value.output()`. It also asserts `source_node_id`, `criterion_path` and `version`.\n  - `fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]` asserts `!value.output().result` after `verify`.\n- **Captured dependencies form the `Fingerprinted`:**\n  - `fn[criteria_keep_typed_answers_and_persist_only_when_requested]` asserts `value.dependencies().is_empty()` when the criterion observes nothing.\n  - `fn[changing_one_criteria_input_does_not_invalidate_another]` asserts the exact `Dependency::Node(Node(3), ..)` in `value.dependencies()`.\n  - `fn[concurrent_single_node_validations_keep_separate_traces]` asserts node and edge dependencies.\n  - `agent_edge_tools_record_selections_without_validating_targets` asserts that edge selections become `OutgoingEdges` dependencies, and that a failed delivery adds none.\n\nThe tests cover each obligation with assertions, so I found no gap.",
-  "references": "7efd14ac6912ec5776950f4b6750f8003a698e0519b38e57e5cc03ae8ed8463f",
+  "rationale": "structural: The subject's structural obligations are: (1) each call constructs a fresh `ValidationContext` identifying the source node, (2) it delegates to `Criterion::execute` with that context, and (3) the completed answer and captured dependencies form the returned `Fingerprinted`. An implementation that reused a shared context, skipped `Criterion::execute`, or built the result without the context's dependencies would violate these clauses.\n\n`crates/trust-but-verify/src/graph.rs#impl[Validator<'d, D>]/fn[execute]` meets all three:\n- It takes the node from `criterion.source_node_id()`.\n- It builds a new local `ValidationContext` per call with `ValidationContext::configured(self.domain, node, agent)`.\n- It calls `criterion.execute(&mut ctx).await?`.\n- It returns `Fingerprinted { source, criterion, version, dependencies: ctx.dependencies(), output: answer }`.\n\nThe answer is the criterion's completed `V::Ok`, so a negative assessment carried in it is returned as the output. The `Fingerprinted` fields match the `requirements.sdk.graph.evidence.inputs` shape, which is cited only as context. I did not read `ValidationContext::configured` or `ctx.dependencies()`. Freshness rests on the context being a local value created inside `execute`. This is the only root, and it carries the `{impl}` marker for this requirement. No further roots are needed.\n\nbehavioral: I judged this from the supplied tests only. I did not request implementation source or helper code, so I did not read how the `Review` criterion builds its `Memory` or `Application` fixtures. I judged those helpers from how the tests use them.\n\nObligations derived from `requirements.sdk.graph.running-criteria.validate_node`:\n1. Each call constructs a fresh `ValidationContext` that identifies the source node.\n2. Each call invokes `Criterion::execute` with that context.\n3. The completed answer, including a negative assessment, plus the captured dependencies form the returned `Fingerprinted`. Its shape is governed by the cited `requirements.sdk.graph.evidence.inputs`.\n\nCoverage:\n- **Fresh context per call.**\n  - `graph/validation_tests.rs#fn[a_second_verification_starts_with_an_empty_trace]` calls `verify` twice on the same `Validator`. The first call returns only `Dependency::Node(1, subject)`. The second call, on a different node, returns only `Dependency::Node(other, ...)`. No trace from the first call carries over.\n  - `graph/validation_tests.rs#fn[concurrent_single_node_validations_keep_separate_traces]` runs three concurrent verifications on different nodes. Each stored record holds only its own node's read and edge observations.\n  - `agent/tests.rs#fn[agent_executions_isolate_conversations_and_dependency_traces]` runs two concurrent agent executions of the same criterion. Each gets its own dependency trace, and the stored records differ.\n  - `graph/validation_tests.rs#fn[historical_freshness_reads_do_not_enter_the_replacement_trace]` shows that earlier reads, such as freshness checks, do not enter the new trace.\n- **Context identifies the source node.**\n  - Criteria that read through the context read the node that was verified. The `Dependency::Node` entries in the tests above name that node.\n  - `source_node_id()` is asserted in `tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` and in `a_second_verification_starts_with_an_empty_trace`.\n- **`execute` is called with the context.** The criteria's context reads and edge queries show up as dependencies, and executions are counted: `state.executions` is checked in the contracts tests and `state.started == [9]` in `caller_reuses_negative_answers_and_compares_revisions_explicitly`.\n- **Negative answer is returned as a completed answer.**\n  - `criteria_keep_typed_answers_and_persist_only_when_requested` asserts that `value.output()` equals the negative assessment (`satisfied: false`) and that `dependencies()` is empty.\n  - `caller_reuses_negative_answers_and_compares_revisions_explicitly` asserts `!value.output().result` and an empty dependency list.\n- **Captured dependencies are returned.**\n  - `changing_one_criteria_input_does_not_invalidate_another` and `input_checking_and_execution_keep_separate_observations` assert the exact dependency lists from execution.\n  - `agent_edge_tools_record_selections_without_validating_targets` asserts the exact `OutgoingEdges` dependencies.\n  - `validation_and_answer_need_send_without_sync` covers the typed output and the `Send` requirement.\n\nI found no obligation that is untested, and no relevant test that lacks a marker.",
+  "references": "59826f63dde1de887b8e2c10fe4e51fc2f90ebbdd12df6646c9f05eaf6d81281",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.running-criteria.validate_node",
@@ -48,6 +48,11 @@
       ]
     },
     {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "impl[Validator<'d,%20D>]/fn[execute]",
+      "hash": "807a5015afd77dd876f866ed3e422875eef8103383fe82adb04d64b7c839be51"
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[agent_executions_isolate_conversations_and_dependency_traces]",
       "hash": "056d0e24c13d4598d0ca252b07b88f5943e47267f99859790a84f3575cf78f38"
@@ -56,6 +61,11 @@
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[agent_edge_tools_record_selections_without_validating_targets]",
       "hash": "b6a97104378322ec71f0706145d948cd08299ea50133f0316b1795f099e9aa2c"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "fn[a_second_verification_starts_with_an_empty_trace]",
+      "hash": "3807d36d75a29722008bd527d0ec846ec896838a25a6d8e251f22d319f7ec680"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
@@ -93,6 +103,11 @@
       "hash": "2bf006acebdb8fc3df250c66c66a218d7e2e7d0edd1566f398067c9a9012f735"
     },
     {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#1/fn[configured]",
+      "hash": "8949a12bea88991a132561dd361e084ad980bf948bac22ff87626e6f06e47116"
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "impl[Review/Criterion<Memory>]/fn[execute]",
       "hash": "99946d075cab7f851d1eeaa77cca97bbcf86b354d48fc1fdad7f0e047578734b"
@@ -101,14 +116,282 @@
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "impl[Question/Criterion<Memory>]/fn[execute]",
       "hash": "b1906e0c4845a2120f414886d7f7afa2029fed7cfedeae7855f77c3a8aa45ea3"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "fn[agent_edge_tools_record_selections_without_validating_targets]/impl[EdgeReview/Criterion<GraphWithChangingEdges>]/fn[execute]",
-      "hash": "80ba906b1f9e7f84205889740fa275f8dca580163b784668792647e713a868fb"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.running-criteria.validate_node"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "59826f63dde1de887b8e2c10fe4e51fc2f90ebbdd12df6646c9f05eaf6d81281"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.running-criteria.validate_node"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "049219dd69ed5a5d75c11fa60c154ad982784dbf5455ff65ef732e2dd2f1a691"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.evidence.inputs"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "52e2648fb3a1222becf10daae31e460f2159187cd3d4d2c46a35a0fb409d01a7"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph.rs"
+                },
+                "selector": "impl[Validator<'d,%20D>]/fn[execute]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "807a5015afd77dd876f866ed3e422875eef8103383fe82adb04d64b7c839be51"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The subject's structural obligations are: (1) each call constructs a fresh `ValidationContext` identifying the source node, (2) it delegates to `Criterion::execute` with that context, and (3) the completed answer and captured dependencies form the returned `Fingerprinted`. An implementation that reused a shared context, skipped `Criterion::execute`, or built the result without the context's dependencies would violate these clauses.\n\n`crates/trust-but-verify/src/graph.rs#impl[Validator<'d, D>]/fn[execute]` meets all three:\n- It takes the node from `criterion.source_node_id()`.\n- It builds a new local `ValidationContext` per call with `ValidationContext::configured(self.domain, node, agent)`.\n- It calls `criterion.execute(&mut ctx).await?`.\n- It returns `Fingerprinted { source, criterion, version, dependencies: ctx.dependencies(), output: answer }`.\n\nThe answer is the criterion's completed `V::Ok`, so a negative assessment carried in it is returned as the output. The `Fingerprinted` fields match the `requirements.sdk.graph.evidence.inputs` shape, which is cited only as context. I did not read `ValidationContext::configured` or `ctx.dependencies()`. Freshness rests on the context being a local value created inside `execute`. This is the only root, and it carries the `{impl}` marker for this requirement. No further roots are needed."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.running-criteria.validate_node"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "59826f63dde1de887b8e2c10fe4e51fc2f90ebbdd12df6646c9f05eaf6d81281"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.running-criteria.validate_node"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "049219dd69ed5a5d75c11fa60c154ad982784dbf5455ff65ef732e2dd2f1a691"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.evidence.inputs"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "52e2648fb3a1222becf10daae31e460f2159187cd3d4d2c46a35a0fb409d01a7"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[agent_executions_isolate_conversations_and_dependency_traces]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "056d0e24c13d4598d0ca252b07b88f5943e47267f99859790a84f3575cf78f38"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[agent_edge_tools_record_selections_without_validating_targets]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "1923ba1a1e40335b0976450eaedbabe266a0cbc1c568947f37797528e5a0c0d0"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[a_second_verification_starts_with_an_empty_trace]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "3807d36d75a29722008bd527d0ec846ec896838a25a6d8e251f22d319f7ec680"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[historical_freshness_reads_do_not_enter_the_replacement_trace]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "fe7a07ecee35657c2dc29453c3efa04ea155340f540d826c1a0ebd60bc11e690"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "4050d7164d344983064df2ae023af8d39fc28f0cfe0437e2e558d3f65111498c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[concurrent_single_node_validations_keep_separate_traces]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "5013e59de848fef5d0de348958c93db5e4030fbf79d55559833aeaca30e2e544"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[criteria_keep_typed_answers_and_persist_only_when_requested]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f47c40151c7d8ba4e5cd3b84d1c8d19288a02beb3f6148a79bdbcf6bc857964c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[changing_one_criteria_input_does_not_invalidate_another]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "5e0c5d4bf17a4bd3acb69b36972940c3aebec22800b81b85faa413f5e6d28c3e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[input_checking_and_execution_keep_separate_observations]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "18077299d4d19283dc23552df4fc72593db7ed97af1357da34df047c6438cfff"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[validation_and_answer_need_send_without_sync]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "2bf006acebdb8fc3df250c66c66a218d7e2e7d0edd1566f398067c9a9012f735"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "I judged this from the supplied tests only. I did not request implementation source or helper code, so I did not read how the `Review` criterion builds its `Memory` or `Application` fixtures. I judged those helpers from how the tests use them.\n\nObligations derived from `requirements.sdk.graph.running-criteria.validate_node`:\n1. Each call constructs a fresh `ValidationContext` that identifies the source node.\n2. Each call invokes `Criterion::execute` with that context.\n3. The completed answer, including a negative assessment, plus the captured dependencies form the returned `Fingerprinted`. Its shape is governed by the cited `requirements.sdk.graph.evidence.inputs`.\n\nCoverage:\n- **Fresh context per call.**\n  - `graph/validation_tests.rs#fn[a_second_verification_starts_with_an_empty_trace]` calls `verify` twice on the same `Validator`. The first call returns only `Dependency::Node(1, subject)`. The second call, on a different node, returns only `Dependency::Node(other, ...)`. No trace from the first call carries over.\n  - `graph/validation_tests.rs#fn[concurrent_single_node_validations_keep_separate_traces]` runs three concurrent verifications on different nodes. Each stored record holds only its own node's read and edge observations.\n  - `agent/tests.rs#fn[agent_executions_isolate_conversations_and_dependency_traces]` runs two concurrent agent executions of the same criterion. Each gets its own dependency trace, and the stored records differ.\n  - `graph/validation_tests.rs#fn[historical_freshness_reads_do_not_enter_the_replacement_trace]` shows that earlier reads, such as freshness checks, do not enter the new trace.\n- **Context identifies the source node.**\n  - Criteria that read through the context read the node that was verified. The `Dependency::Node` entries in the tests above name that node.\n  - `source_node_id()` is asserted in `tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` and in `a_second_verification_starts_with_an_empty_trace`.\n- **`execute` is called with the context.** The criteria's context reads and edge queries show up as dependencies, and executions are counted: `state.executions` is checked in the contracts tests and `state.started == [9]` in `caller_reuses_negative_answers_and_compares_revisions_explicitly`.\n- **Negative answer is returned as a completed answer.**\n  - `criteria_keep_typed_answers_and_persist_only_when_requested` asserts that `value.output()` equals the negative assessment (`satisfied: false`) and that `dependencies()` is empty.\n  - `caller_reuses_negative_answers_and_compares_revisions_explicitly` asserts `!value.output().result` and an empty dependency list.\n- **Captured dependencies are returned.**\n  - `changing_one_criteria_input_does_not_invalidate_another` and `input_checking_and_execution_keep_separate_observations` assert the exact dependency lists from execution.\n  - `agent_edge_tools_record_selections_without_validating_targets` asserts the exact `OutgoingEdges` dependencies.\n  - `validation_and_answer_need_send_without_sync` covers the typed output and the `Send` requirement.\n\nI found no obligation that is untested, and no relevant test that lacks a marker."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -118,19 +401,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "7efd14ac6912ec5776950f4b6750f8003a698e0519b38e57e5cc03ae8ed8463f"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.running-criteria.validate_node"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "0cc2adaf21957d7a9e960f0f7e6abb68d6440e94cc1169d879f89c16a8b8e0f1"
+          "value": "59826f63dde1de887b8e2c10fe4e51fc2f90ebbdd12df6646c9f05eaf6d81281"
         }
       ]
     },
@@ -153,6 +424,23 @@
         {
           "scheme": "habeas-input-v1",
           "value": "52e2648fb3a1222becf10daae31e460f2159187cd3d4d2c46a35a0fb409d01a7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "impl[Validator<'d,%20D>]/fn[execute]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "807a5015afd77dd876f866ed3e422875eef8103383fe82adb04d64b7c839be51"
         }
       ]
     },
@@ -187,6 +475,23 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "1923ba1a1e40335b0976450eaedbabe266a0cbc1c568947f37797528e5a0c0d0"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+            },
+            "selector": "fn[a_second_verification_starts_with_an_empty_trace]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "3807d36d75a29722008bd527d0ec846ec896838a25a6d8e251f22d319f7ec680"
         }
       ]
     },
@@ -315,6 +620,23 @@
           "Source": {
             "resource": {
               "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#1/fn[configured]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "8949a12bea88991a132561dd361e084ad980bf948bac22ff87626e6f06e47116"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
             "selector": "impl[Review/Criterion<Memory>]/fn[execute]"
@@ -340,23 +662,6 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "b1906e0c4845a2120f414886d7f7afa2029fed7cfedeae7855f77c3a8aa45ea3"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "fn[agent_edge_tools_record_selections_without_validating_targets]/impl[EdgeReview/Criterion<GraphWithChangingEdges>]/fn[execute]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "80ba906b1f9e7f84205889740fa275f8dca580163b784668792647e713a868fb"
         }
       ]
     }

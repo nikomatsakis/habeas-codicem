@@ -27,6 +27,22 @@ Capitalized requirement terms in these chapters use the meanings defined by BCP
 14 ([RFC 2119](https://www.rfc-editor.org/rfc/rfc2119) and
 [RFC 8174](https://www.rfc-editor.org/rfc/rfc8174)).
 
+## How the requirements fit together
+
+The References chapter defines what source annotations mean and which items
+need them. Other chapters cite those rules where a tool or a person uses them.
+For example, the test annotation rule says that each test source item needs a `{test}` annotation. {cite}`requirements.references.coverage.tests`
+
+Project integration specifies how `habeas::validate()` enforces that rule in a
+Cargo test. The CLI chapter specifies what `habeas status` displays when the
+same rule is violated. Authoring describes how reviewers use the annotations
+to assess evidence. The skills guide authors in placing structural `{impl}`
+markers, including ones proposed during review.
+{cite}`requirements.integration.validate.test_annotations`
+{cite}`requirements.cli.status.test_annotations`
+{cite}`requirements.authoring.behavioral_review`
+{cite}`requirements.references.structural_markers`
+
 ## What needs human review
 
 The maintainer’s review goal is “I should not need to review any

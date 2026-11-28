@@ -28,7 +28,12 @@ pub(crate) fn versioned_fields(
     Option<CriterionVersion>,
     Vec<Dependency<HabeasNode, HabeasEdgeLabel>>,
 )> {
-    if value["format_version"].as_u64() != Some(1) {
+    if value["format_version"] == 2 && value.get("criteria").is_none() {
+        return Err(io::Error::other(
+            "requirement evidence format 2 requires both criteria",
+        ));
+    }
+    if !matches!(value["format_version"].as_u64(), Some(1 | 2)) {
         return Err(io::Error::other(format!(
             "unsupported evidence format version {:?}",
             value["format_version"]
@@ -81,8 +86,6 @@ fn normalize_dependencies(dependencies: &mut Value) -> io::Result<()> {
 }
 
 /// Read-only semantic view used by the existing application checks.
-// {impl}`requirements.sdk.habeas.evidence_format`
-// {impl}`requirements.sdk.habeas.evidence_format.errors`
 pub(crate) fn view(value: &Value) -> io::Result<Value> {
     if is_versioned(value) {
         versioned_fields(value)?;
@@ -102,6 +105,18 @@ pub(crate) fn application_fields(value: &Value) -> io::Result<Value> {
     for field in SDK_FIELDS {
         object.remove(field);
     }
+    if let Some(criteria) = object.remove("criteria") {
+        let (judgment, _) =
+            crate::authoring::corrections::combine_criteria(&criteria)?.evidence()?;
+        if !object.contains_key("requirement")
+            || !object.contains_key("references")
+            || object.get("determination") != Some(&judgment.to_value())
+        {
+            return Err(io::Error::other(
+                "requirement judgment does not match its criteria",
+            ));
+        }
+    }
     if let Some(corrections) = object.remove("corrections") {
         if object.get("determination") != Some(&Value::Bool(false))
             || !object.contains_key("references")
@@ -118,8 +133,6 @@ pub(crate) fn application_fields(value: &Value) -> io::Result<Value> {
     Ok(Value::Object(object))
 }
 
-// {impl}`requirements.sdk.habeas.evidence_conversion.provenance`
-// {impl}`requirements.sdk.habeas.evidence_conversion.legacy_freshness`
 pub(crate) fn decode(
     value: &Value,
     subject: &HabeasNode,
@@ -160,12 +173,16 @@ pub(crate) fn decode(
         }
         (None, dependencies)
     };
+    if let Some(criteria) = value.get("criteria") {
+        metadata["criteria"] = criteria.clone();
+    }
     if let Some(items) = value.get("corrections") {
         metadata["corrections"] = items.clone();
     }
     Ok(Record::new(version, dependencies, metadata))
 }
 
+// {impl}`requirements.definitions.inputs`
 /// Validate stored forms without consulting current sources or review policy.
 fn check_shape(value: &Value, subject: &HabeasNode) -> io::Result<()> {
     let object = value
@@ -283,7 +300,6 @@ fn hex_digest(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-// {impl}`requirements.sdk.habeas.evidence_format`
 pub(crate) fn encode(record: &Record<HabeasNode, HabeasEdgeLabel>) -> io::Result<Value> {
     let mut value = record.output.clone();
     let object = value
@@ -296,7 +312,14 @@ pub(crate) fn encode(record: &Record<HabeasNode, HabeasEdgeLabel>) -> io::Result
         .and_then(Value::as_str)
         .filter(|rationale| !rationale.trim().is_empty())
         .ok_or_else(|| io::Error::other("evidence rationale must be nonempty"))?;
-    object.insert("format_version".into(), json!(1));
+    object.insert(
+        "format_version".into(),
+        json!(if object.contains_key("criteria") {
+            2
+        } else {
+            1
+        }),
+    );
     object.insert(
         "review_version".into(),
         json!(
@@ -313,7 +336,6 @@ pub(crate) fn encode(record: &Record<HabeasNode, HabeasEdgeLabel>) -> io::Result
     Ok(value)
 }
 
-// {impl}`requirements.sdk.habeas.evidence_conversion.atomic`
 pub(crate) fn write_atomic(path: &Path, value: &Value) -> io::Result<()> {
     let mut bytes = serde_json::to_vec_pretty(value).map_err(io::Error::other)?;
     bytes.push(b'\n');
@@ -336,9 +358,6 @@ pub(crate) fn write_atomic(path: &Path, value: &Value) -> io::Result<()> {
 }
 
 /// Called only for application-validated current legacy records in a write path.
-// {impl}`requirements.sdk.habeas.evidence_conversion`
-// {impl}`requirements.sdk.habeas.evidence_conversion.writes`
-// {impl}`requirements.sdk.habeas.evidence_conversion.idempotent`
 pub(crate) fn convert_file(path: &Path, subject: &HabeasNode) -> io::Result<()> {
     let bytes = std::fs::read(path)?;
     let value: Value = serde_json::from_slice(&bytes).map_err(io::Error::other)?;

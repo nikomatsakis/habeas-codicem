@@ -23,9 +23,6 @@ where
     D::EdgeLabel: serde::de::DeserializeOwned + schemars::JsonSchema + PartialEq,
     D::Error: std::fmt::Display,
 {
-    // {impl}`requirements.sdk.graph.agent-harness.with_agent`
-    // {impl}`requirements.sdk.graph.agent-harness.tool_agent`
-    // {impl}`requirements.sdk.graph.agent-harness.tool_agent.provider_failure`
     fn run<'a>(
         &'a self,
         request: AgentRequest<'a, NodeId<D>, D::Error>,
@@ -311,6 +308,7 @@ mod tests {
         assert_eq!(server.join().unwrap().len(), 2);
     }
 
+    // {test}`requirements.sdk.graph.running-criteria.validate_node.errors`
     // {test}`requirements.sdk.graph.agent-harness.with_agent`
     // {test}`requirements.sdk.graph.agent-harness.tool_agent.provider_failure`
     // {test}`requirements.sdk.graph.criteria.deterministic_procedures`
@@ -552,6 +550,7 @@ mod tests {
         }
     }
 
+    // {test}`requirements.sdk.validation-cache.usage`
     // {test}`requirements.sdk.validation-cache.with_agent`
     // {test}`requirements.sdk.graph.agent-harness.AgentWithTools`
     // {test}`requirements.sdk.graph.agent-harness.AgentSettings`
@@ -1027,13 +1026,14 @@ mod tests {
 
     // {test}`requirements.sdk.graph.running-criteria.Validator.usage`
     #[tokio::test]
-    async fn refreshing_missing_evidence_accounts_for_accepted_and_invalid_answers() {
+    async fn refreshing_missing_evidence_accounts_for_accepted_and_corrected_answers() {
         let (backend, server) = local_backend(vec![
             ("submit_result", serde_json::json!({"result":true})),
             (
                 "submit_result",
                 serde_json::json!({"result":"invalid boolean"}),
             ),
+            ("submit_result", serde_json::json!({"result":false})),
         ]);
         let domain = TestDomain(
             Default::default(),
@@ -1057,12 +1057,10 @@ mod tests {
             (1, 1, 1, 10)
         );
         domain.0.lock().unwrap().take();
-        assert!(
-            validator
-                .refresh_evidence(Question(true, node))
-                .await
-                .is_err()
-        );
+        validator
+            .refresh_evidence(Question(true, node))
+            .await
+            .unwrap();
         let usage = validator.usage();
         assert_eq!(
             (
@@ -1071,9 +1069,9 @@ mod tests {
                 usage.delivered_inputs,
                 usage.input_tokens.reported
             ),
-            (2, 2, 2, 20)
+            (3, 2, 2, 30)
         );
-        assert_eq!(server.join().unwrap().len(), 2);
+        assert_eq!(server.join().unwrap().len(), 3);
     }
 
     fn local_backend(
@@ -1406,6 +1404,7 @@ mod tests {
         }
     }
 
+    // {test}`requirements.sdk.graph.validation-context.read_source.inputs`
     // {test}`requirements.sdk.graph.search.finish_search.behavior`
     // {test}`requirements.sdk.graph.search.finish_search.inputs`
     // {test}`requirements.sdk.graph.agent-harness.submission.acceptance`

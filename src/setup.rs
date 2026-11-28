@@ -5,7 +5,11 @@ use std::process::Command;
 
 use toml_edit::{Array, DocumentMut, Item, Table, value};
 
-const TEST_SOURCE: &str = "#[test]\nfn habeas() {\n    habeas::validate();\n}\n";
+const LEGACY_TEST_SOURCE: &str = "#[test]\nfn habeas() {\n    habeas::validate();\n}\n";
+// {impl}`requirements.cli.setup.validation_test`
+// {impl}`requirements.integration.validate.optimized`
+const TEST_SOURCE: &str =
+    "// {test}`habeas:validate`\n#[test]\nfn habeas() {\n    habeas::validate();\n}\n";
 const BADGE_CSS: &str = include_str!("../md/habeas.css");
 
 // {cite}`habeas:util`
@@ -21,7 +25,6 @@ fn css_relative(source_path: &Path) -> String {
         .join("/")
 }
 
-// {impl}`requirements.cli.setup`
 fn has_habeas_dev_dependency(manifest: &DocumentMut) -> bool {
     manifest
         .get("dev-dependencies")
@@ -30,7 +33,6 @@ fn has_habeas_dev_dependency(manifest: &DocumentMut) -> bool {
         .is_some()
 }
 
-// {impl}`requirements.cli.setup_project`
 fn book_source(book: &DocumentMut) -> Result<&str, &'static str> {
     let table = book
         .get("book")
@@ -58,38 +60,30 @@ pub(crate) fn find_project_root(cwd: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-// {impl}`requirements.cli.setup_project`
 pub(crate) fn project_root() -> Result<PathBuf, Box<dyn Error>> {
     let cwd = std::env::current_dir()?;
     find_project_root(&cwd)
         .ok_or_else(|| "cannot find a project with Cargo.toml and book.toml".into())
 }
 
-pub(crate) fn write_new_or_same(path: &Path, content: &str) -> Result<(), Box<dyn Error>> {
-    if path.exists() {
-        if fs::read_to_string(path)? != content {
-            return Err(format!(
-                "{} already exists with different content; review it before running setup again",
-                path.display()
-            )
-            .into());
-        }
-    } else {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(path, content)?;
+fn needs_setup_write(
+    path: &Path,
+    desired: &str,
+    previous: Option<&str>,
+) -> Result<bool, Box<dyn Error>> {
+    match fs::read_to_string(path) {
+        Ok(content) if content == desired => Ok(false),
+        Ok(content) if Some(content.as_str()) == previous => Ok(true),
+        Ok(_) => Err(format!("{} already exists with different content", path.display()).into()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(err) => Err(err.into()),
     }
-    Ok(())
 }
 
-// {impl}`requirements.test-coverage.setup`
-// {impl}`requirements.cli.mdbook`
 pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {
     let root = project_root()?;
     let book_path = root.join("book.toml");
     let mut book: DocumentMut = fs::read_to_string(&book_path)?.parse()?;
-    // {impl}`requirements.cli.setup_project`
     let source = book_source(&book)?.to_owned();
     let source_path = Path::new(&source);
     if source.is_empty()
@@ -107,10 +101,12 @@ pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {
 
     let css_path = source_dir.join("habeas.css");
     let test_path = root.join("tests/habeas.rs");
-    for (path, desired) in [(&css_path, BADGE_CSS), (&test_path, TEST_SOURCE)] {
-        if path.exists() && fs::read_to_string(path)? != desired {
-            return Err(format!("{} already exists with different content", path.display()).into());
-        }
+    let files = [
+        (&css_path, BADGE_CSS, None),
+        (&test_path, TEST_SOURCE, Some(LEGACY_TEST_SOURCE)),
+    ];
+    for (path, desired, previous) in files {
+        needs_setup_write(path, desired, previous)?;
     }
 
     book["preprocessor"]["habeas"]["command"] = value("habeas mdbook");
@@ -119,7 +115,6 @@ pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {
     book["preprocessor"]["habeas"]["renderers"] = value(renderers);
 
     let css_relative = css_relative(source_path);
-    // {impl}`requirements.cli.setup_css`
     let additional_css = &mut book["output"]["html"]["additional-css"];
     if additional_css.is_none() {
         let mut css = Array::new();
@@ -136,7 +131,6 @@ pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {
         return Err("output.html.additional-css must be an array".into());
     }
 
-    // {impl}`requirements.index.detail_pages`
     let fold = &mut book["output"]["html"]["fold"];
     if fold.is_none() {
         let mut table = Table::new();
@@ -174,8 +168,12 @@ pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {
         }
     }
 
-    write_new_or_same(&css_path, BADGE_CSS)?;
-    write_new_or_same(&test_path, TEST_SOURCE)?;
+    for (path, desired, previous) in files {
+        if needs_setup_write(path, desired, previous)? {
+            fs::create_dir_all(path.parent().unwrap())?;
+            fs::write(path, desired)?;
+        }
+    }
     fs::write(&book_path, book.to_string())?;
     fs::create_dir_all(nextest_path.parent().unwrap())?;
     fs::write(nextest_path, nextest_source)?;
@@ -183,8 +181,6 @@ pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-// {impl}`requirements.cli.setup_project`
-// {impl}`requirements.integration.symposium_setup_hook`
 // {cite}`requirements.cli.setup_css`
 pub(crate) fn is_configured(root: &Path) -> bool {
     if habeas::execution_coverage::validate_setup(root).is_err() {

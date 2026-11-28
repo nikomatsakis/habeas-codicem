@@ -4,8 +4,10 @@
 //! implements [`crate::domain::NodeContents`]. [`crate::outline::OutlineLang`] supplies language
 //! rules; [`crate::outline::languages`] contains the bundled languages and plain-text fallback.
 
+// {impl}`requirements.sdk.public-api.exports`
 #[path = "languages/mod.rs"]
 pub mod languages;
+// {impl}`requirements.sdk.public-api.exports`
 #[path = "selector.rs"]
 pub mod selector;
 use crate::domain::{NodeContents, ValidationCache};
@@ -22,11 +24,12 @@ use std::{
     sync::Arc,
 };
 
+// {impl}`requirements.sdk.outlines.address_identity`
+// {impl}`requirements.sdk.public_api`
 /// A file and a selectable item within it.
 ///
 /// The empty selector identifies the file root. Constructing an address does
 /// not read the file.
-// {impl}`requirements.sdk.outlines.address_identity`
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct OutlineData {
@@ -34,7 +37,9 @@ pub struct OutlineData {
     pub selector: String,
 }
 
+// {impl}`requirements.sdk.public_api`
 impl OutlineData {
+    // {impl}`requirements.sdk.outlines.address_identity`
     pub fn root(path: impl Into<PathBuf>) -> Self {
         Self {
             path: path.into(),
@@ -42,12 +47,12 @@ impl OutlineData {
         }
     }
 
+    // {impl}`requirements.sdk.outlines.address_identity`
     pub fn selector(self, selector: String) -> Result<Self, OutlineError> {
         Self::new(self.path, selector)
     }
 
     /// Construct an address after checking its selector syntax.
-    // {impl}`requirements.sdk.outlines.address_identity`
     pub fn new(path: impl Into<PathBuf>, selector: String) -> Result<Self, OutlineError> {
         parse_selector(&selector).map_err(selection_error)?;
         Ok(Self {
@@ -57,6 +62,8 @@ impl OutlineData {
     }
 }
 
+// {impl}`requirements.sdk.outlines.Span`
+// {impl}`requirements.sdk.public_api`
 /// UTF-8 byte boundaries in the original file snapshot, with an exclusive end.
 ///
 /// ```compile_fail,E0639
@@ -64,7 +71,6 @@ impl OutlineData {
 /// let _ = Span { start: 0, end: 1 };
 /// ```
 // {test}`requirements.sdk.outlines.Span`
-// {impl}`requirements.sdk.outlines.Span`
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Span {
@@ -72,7 +78,9 @@ pub struct Span {
     pub end: usize,
 }
 
+// {impl}`requirements.sdk.public_api`
 impl Span {
+    // {impl}`requirements.sdk.outlines.Span`
     pub fn new(start: usize, end: usize) -> Self {
         Self { start, end }
     }
@@ -97,8 +105,9 @@ impl std::ops::Index<Span> for str {
     }
 }
 
+// {impl}`requirements.sdk.outlines.Outline`
+// {impl}`requirements.sdk.public_api`
 /// Selectable items in a single source snapshot, in source preorder.
-// {impl}`requirements.sdk.outlines.items`
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct Outline {
@@ -107,20 +116,31 @@ pub struct Outline {
     pub diagnostic: Option<OutlineError>,
 }
 
+// {impl}`requirements.sdk.public_api`
 impl Outline {
+    // {impl}`requirements.sdk.outlines.Outline`
     pub fn new(items: Vec<OutlineItem>) -> Self {
         Self {
             items,
             diagnostic: None,
         }
     }
+
+    // {impl}`requirements.sdk.outlines.Outline`
+    pub fn with_diagnostic(mut self, diagnostic: OutlineError) -> Self {
+        self.diagnostic = Some(diagnostic);
+        self
+    }
 }
 
+// {impl}`requirements.sdk.graph.search.declaration_spans`
+// {impl}`requirements.sdk.outlines.OutlineItem`
+// {impl}`requirements.sdk.outlines.attachments`
+// {impl}`requirements.sdk.public_api`
 /// A selectable item and its structural digest.
 ///
 /// `span` contains byte offsets into the retained source, including every
 /// attachment owned by the item. Its end is exclusive.
-// {impl}`requirements.sdk.outlines.items`
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct OutlineItem {
@@ -136,8 +156,10 @@ pub struct OutlineItem {
     pub attachments: Vec<OutlineAttachment>,
 }
 
+// {impl}`requirements.sdk.public_api`
+// {impl}`requirements.sdk.outlines.OutlineItem`
 impl OutlineItem {
-    // {impl}`requirements.sdk.outlines.attachments.empty`
+    // {impl}`requirements.sdk.outlines.name_span`
     pub fn new(selector: String, kind: String, span: Span, structural_hash: String) -> Self {
         Self {
             selector,
@@ -153,14 +175,13 @@ impl OutlineItem {
     }
 
     /// Set the fingerprint digest for this item with its outline descendants excluded.
-    // {impl}`requirements.sdk.outlines.node_contents`
     pub fn with_own_hash(mut self, hash: String) -> Self {
         self.own_hash = Some(hash);
         self
     }
 
-    /// Set the source highlight for a named item.
     // {impl}`requirements.sdk.outlines.name_span`
+    /// Set the source highlight for a named item.
     pub fn with_name_span(mut self, span: Span) -> Self {
         self.name_span = Some(span);
         self
@@ -185,8 +206,9 @@ impl OutlineItem {
     }
 }
 
-/// A language-defined construct owned by an outline item.
 // {impl}`requirements.sdk.outlines.OutlineAttachment`
+// {impl}`requirements.sdk.public_api`
+/// A language-defined construct owned by an outline item.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct OutlineAttachment {
@@ -194,14 +216,16 @@ pub struct OutlineAttachment {
     pub span: Span,
 }
 
+// {impl}`requirements.sdk.public_api`
 impl OutlineAttachment {
+    // {impl}`requirements.sdk.outlines.OutlineAttachment`
     pub fn new(kind: AttachmentKind, span: Span) -> Self {
         Self { kind, span }
     }
 }
 
-/// How the language classifies the attached source.
 // {impl}`requirements.sdk.outlines.AttachmentKind`
+/// How the language classifies the attached source.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum AttachmentKind {
@@ -210,24 +234,24 @@ pub enum AttachmentKind {
     Other(String),
 }
 
+// {impl}`requirements.sdk.outlines.language_provider`
 /// Language rules for producing selectable source items.
 ///
 /// Clones share prepared configuration; implementations should not rebuild
 /// parsing rules or copy configuration in proportion to its size.
-// {impl}`requirements.sdk.outlines.language_provider`
 pub trait OutlineLang: Clone + Send + Sync {
     fn name(&self) -> &str;
     fn extensions(&self) -> &[&str];
     fn outline(&self, source: &str) -> Result<Outline, OutlineError>;
 
-    /// The structural-hash rules and version used by this language.
     // {impl}`requirements.sdk.outlines.language_provider.fingerprint_scheme`
+    /// The structural-hash rules and version used by this language.
     fn fingerprint_scheme(&self) -> &str;
 
+    // {impl}`requirements.sdk.outlines.language_provider.structural_search`
     /// Return source byte ranges matched by an optional structural rule.
     ///
     /// Outline-only languages report an unsupported-language error.
-    // {impl}`requirements.sdk.outlines.language_provider.structural_search`
     fn search_structure(
         &self,
         _source: &str,
@@ -237,6 +261,7 @@ pub trait OutlineLang: Clone + Send + Sync {
     }
 }
 
+// {impl}`requirements.sdk.outlines.language_provider.fingerprint_scheme`
 struct Snapshot {
     source: Arc<str>,
     outline: Outline,
@@ -246,11 +271,13 @@ struct Snapshot {
     redaction: crate::redaction::Redaction,
 }
 
+// {impl}`requirements.sdk.outlines.snapshot`
+// {impl}`requirements.sdk.outlines.outline_file.lifetime`
+// {impl}`requirements.sdk.outlines.parser`
 /// Owned contents for one selected source item.
 ///
 /// Selections share the original source and outline, so later file changes do
 /// not alter their text or fingerprints.
-// {impl}`requirements.sdk.outlines.snapshot`
 #[derive(Clone)]
 pub struct OutlineContent {
     id: OutlineData,
@@ -258,6 +285,7 @@ pub struct OutlineContent {
     selected: usize,
 }
 
+// {impl}`requirements.sdk.outlines.parser`
 impl std::fmt::Debug for OutlineContent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OutlineContent")
@@ -267,14 +295,10 @@ impl std::fmt::Debug for OutlineContent {
     }
 }
 
+// {impl}`requirements.sdk.outlines.parser`
 impl OutlineContent {
-    /// Read and outline a file, selecting its root.
-    // {impl}`requirements.sdk.outlines.parser`
-    // {impl}`requirements.sdk.outlines.outline_cache`
-    // {impl}`requirements.sdk.outlines.outline_cache.retry`
-    // {impl}`requirements.sdk.outlines.outline_cache.fresh`
     // {impl}`requirements.sdk.outlines.outline_file`
-    // {impl}`requirements.sdk.outlines.outline_file.lifetime`
+    /// Read and outline a file, selecting its root.
     pub fn from_path(
         cache: &ValidationCache<impl crate::domain::Domain>,
         path: impl AsRef<Path>,
@@ -324,7 +348,6 @@ impl OutlineContent {
     }
 
     /// Read the addressed file, then select its item.
-    // {impl}`requirements.sdk.outlines.parser`
     pub fn from_id(
         cache: &ValidationCache<impl crate::domain::Domain>,
         id: &OutlineData,
@@ -332,9 +355,8 @@ impl OutlineContent {
         Self::from_path(cache, &id.path)?.select(&id.selector)
     }
 
-    /// Outline supplied text without reading the named file.
     // {impl}`requirements.sdk.outlines.parser.supplied_source`
-    // {impl}`requirements.sdk.outlines.defaults`
+    /// Outline supplied text without reading the named file.
     pub fn from_source(
         cache: &ValidationCache<impl crate::domain::Domain>,
         filename: impl AsRef<Path>,
@@ -372,8 +394,8 @@ impl OutlineContent {
         Self::parse_with(&languages::PlainText, filename, source)
     }
 
-    /// Read a file using explicit language rules.
     // {impl}`requirements.sdk.outlines.additional_languages`
+    /// Read a file using explicit language rules.
     pub fn from_path_with<L: OutlineLang>(
         cache: &ValidationCache<impl crate::domain::Domain>,
         language: &L,
@@ -409,8 +431,8 @@ impl OutlineContent {
         }
     }
 
-    /// Outline supplied text using explicit language rules.
     // {impl}`requirements.sdk.outlines.additional_languages`
+    /// Outline supplied text using explicit language rules.
     pub fn from_source_with<L: OutlineLang>(
         cache: &ValidationCache<impl crate::domain::Domain>,
         language: &L,
@@ -444,6 +466,7 @@ impl OutlineContent {
         )
     }
 
+    // {impl}`requirements.sdk.outlines.snapshot`
     fn prepare(
         filename: &Path,
         source: Arc<str>,
@@ -485,9 +508,8 @@ impl OutlineContent {
         })
     }
 
-    /// Select another item from this retained file snapshot.
     // {impl}`requirements.sdk.outlines.selection`
-    // {impl}`requirements.sdk.outlines.errors`
+    /// Select another item from this retained file snapshot.
     pub fn select(&self, selector: &str) -> Result<Self, OutlineError> {
         let selector = parse_selector(selector)
             .map_err(selection_error)?
@@ -528,24 +550,25 @@ impl OutlineContent {
         })
     }
 
+    // {impl}`requirements.sdk.outlines.selection`
     /// Address of the selected item.
     pub fn id(&self) -> &OutlineData {
         &self.id
     }
 
+    // {impl}`requirements.sdk.outlines.selection`
     /// Selected source text, including attached source.
     pub fn text(&self) -> &str {
         &self.snapshot.source[self.item().span]
     }
 
-    /// Outline of the whole retained file, including when an item is selected.
     // {impl}`requirements.sdk.outlines.items`
+    /// Outline of the whole retained file, including when an item is selected.
     pub fn outline(&self) -> &Outline {
         &self.snapshot.outline
     }
 
     /// Name of the language that produced this file snapshot.
-    // {impl}`requirements.sdk.outlines.language`
     pub fn language(&self) -> &str {
         &self.snapshot.language
     }
@@ -555,8 +578,8 @@ impl OutlineContent {
         &self.item().structural_hash
     }
 
-    /// Retained structural-hash rules and their version.
     // {impl}`requirements.sdk.outlines.language_provider.fingerprint_scheme`
+    /// Retained structural-hash rules and their version.
     pub fn fingerprint_scheme(&self) -> &str {
         &self.snapshot.scheme
     }
@@ -578,13 +601,11 @@ impl OutlineContent {
     }
 
     /// Original text at file-relative UTF-8 byte boundaries in the retained snapshot.
-    // {impl}`requirements.sdk.outlines.source_spans`
     pub fn source_span(&self, span: Span) -> Option<&str> {
         self.snapshot.source.get(span.range())
     }
 
     /// Text at the same file-relative boundaries, with whole-file credential redaction.
-    // {impl}`requirements.sdk.outlines.source_spans`
     pub fn source_span_redacted(&self, span: Span) -> Option<std::borrow::Cow<'_, str>> {
         self.source_span(span)?;
         Some(
@@ -606,7 +627,6 @@ impl OutlineContent {
     }
 
     /// Nodes whose own source contributed bytes to a displayed search excerpt.
-    // {impl}`requirements.sdk.graph.search.finish_search.inputs`
     pub(crate) fn excerpt_items(&self, spans: &[Span]) -> Vec<Self> {
         let intersects = |start, end| {
             spans
@@ -655,6 +675,7 @@ impl OutlineContent {
 }
 
 // {impl}`requirements.sdk.outlines.node_contents`
+// {impl}`requirements.sdk.outlines.parser`
 impl NodeContents for OutlineContent {
     fn fingerprint(&self) -> Fingerprint {
         match &self.item().own_hash {
@@ -669,7 +690,6 @@ impl NodeContents for OutlineContent {
         }
     }
 
-    // {impl}`requirements.sdk.sources.redaction`
     fn format(&self) -> String {
         let bounds = self.item().span;
         let mut cursor = bounds.start;
@@ -701,11 +721,7 @@ impl NodeContents for OutlineContent {
 }
 
 impl Outline {
-    // {impl}`requirements.sdk.outlines.attachments`
-    // {impl}`requirements.sdk.outlines.name_span`
-    // {impl}`requirements.sdk.outlines.attachments.order`
     // {impl}`requirements.sdk.outlines.attachments.comments`
-    // {impl}`requirements.sdk.outlines.attachments.item_span`
     pub(crate) fn from_legacy(outline: LegacyOutline) -> Self {
         let mut items: Vec<_> = outline
             .nodes
@@ -754,9 +770,6 @@ impl Outline {
     }
 }
 
-// {impl}`requirements.sdk.outlines.attachments.span`
-// {impl}`requirements.sdk.outlines.attachments.item_span`
-// {impl}`requirements.sdk.outlines.name_span`
 fn validate_outline(outline: &Outline, source: &str) -> Result<(), OutlineError> {
     if outline
         .items
@@ -829,6 +842,8 @@ pub(super) fn unsupported_search(language: &str) -> OutlineError {
     ))
 }
 
+// {impl}`requirements.sdk.outlines.OutlineError`
+// {impl}`requirements.sdk.public_api`
 /// A source that its grammar cannot parse.
 ///
 /// ```compile_fail,E0639
@@ -844,12 +859,15 @@ pub struct OutlineError {
     pub message: String,
 }
 
+// {impl}`requirements.sdk.public_api`
 impl OutlineError {
+    // {impl}`requirements.sdk.outlines.OutlineError`
     pub fn new(line: usize, message: String) -> Self {
         Self { line, message }
     }
 }
 
+// {impl}`requirements.sdk.outlines.OutlineError`
 impl fmt::Display for OutlineError {
     // {cite}`habeas:util`
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -857,6 +875,7 @@ impl fmt::Display for OutlineError {
     }
 }
 
+// {impl}`requirements.sdk.outlines.OutlineError`
 impl std::error::Error for OutlineError {}
 
 #[cfg(test)]

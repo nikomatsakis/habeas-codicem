@@ -15,7 +15,6 @@ use crate::{
     reference_roles, valid_name,
 };
 
-// {impl}`requirements.integration.report_api`
 #[derive(Debug)]
 pub struct EvidenceReport {
     pub requirements: usize,
@@ -61,7 +60,6 @@ pub(crate) struct AnchorTarget {
 
 impl Anchor {
     /// Parses an option value: a path, optionally followed by `#selector`.
-    // {impl}`requirements.references.anchors`
     pub(crate) fn parse(kind: ReferenceKind, value: &str) -> Self {
         let (file, item) = value.split_once('#').unwrap_or((value, ""));
         Self {
@@ -72,7 +70,6 @@ impl Anchor {
     }
 
     /// The option value as written.
-    // {impl}`requirements.references.anchors`
     pub(crate) fn label(&self) -> String {
         if self.item.is_empty() {
             self.file.clone()
@@ -81,7 +78,6 @@ impl Anchor {
         }
     }
 
-    // {impl}`requirements.references.anchors`
     /// Resolves the anchored file and node.
     pub(crate) fn resolve(
         &self,
@@ -124,11 +120,9 @@ pub fn validate_repository(root: &Path) -> io::Result<EvidenceReport> {
     Ok(inspect_repository(root)?.report)
 }
 
-// :::{impl} requirements.authoring.batch
 // `discovery_errors` keeps discovery, read, scan, and parse failures apart from
 // evidence validation errors, so a batch reports them instead of treating a
 // partial scan as an empty batch.
-// :::
 pub(crate) struct RepositoryInspection {
     /// The canonical project root.
     pub(crate) root: PathBuf,
@@ -151,9 +145,6 @@ pub(crate) struct InspectionProgress {
     pub(crate) total: Option<usize>,
 }
 
-// {impl}`requirements.authoring.mandatory_inputs`
-// {impl}`requirements.ci.book_source`
-// {impl}`requirements.ci.definition_errors`
 pub(crate) fn load_definitions(root: &Path) -> io::Result<BTreeMap<String, Declaration>> {
     load_definition_snapshots(root, &OutlineCache::default())
 }
@@ -177,25 +168,10 @@ pub(crate) fn load_definition_snapshots(
     }
 }
 
-// {impl}`requirements.ci.errors`
-// {impl}`requirements.ci.diagnostics`
-// {impl}`requirements.examples.evidence`
-// {impl}`requirements.configuration.workspace_location`
-// {impl}`requirements.configuration.workspace_structure`
-// {impl}`requirements.configuration.loading`
 pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection> {
     inspect_repository_with_progress(root, |_| {})
 }
 
-// {impl}`requirements.ci.errors`
-// {impl}`requirements.examples.evidence`
-// {impl}`requirements.configuration.workspace_location`
-// {impl}`requirements.configuration.workspace_structure`
-// {impl}`requirements.configuration.loading`
-// {impl}`requirements.ci.book_source`
-// {impl}`requirements.definitions.declaration`
-// {impl}`requirements.references.builtin_definitions`
-// {impl}`requirements.ci.determination`
 pub(crate) fn inspect_repository_with_progress(
     root: &Path,
     mut progress: impl FnMut(InspectionProgress),
@@ -214,8 +190,6 @@ pub(crate) fn inspect_repository_with_progress(
     let outlines = OutlineCache::default();
     let definitions = collect_definitions(&root, &md_root, &outlines, &mut errors);
     let mut discovery_errors = errors.clone();
-    // {impl}`requirements.test-coverage.setup.validation`
-    // {impl}`requirements.test-coverage.setup.validation.static`
     if let Err(error) = crate::execution_coverage::validate_setup(&root) {
         errors.push(error.to_string());
     }
@@ -233,13 +207,11 @@ pub(crate) fn inspect_repository_with_progress(
         .partition(|file| crate::citations::is_review_path(&evidence_root, file));
     let review_files: Vec<PathBuf> = review_files.into_iter().cloned().collect();
     // Site reviews are validated against the sites of their requirements.
-    // {impl}`requirements.ci.orphans`
     let (site_files, ordinary_files): (Vec<_>, Vec<_>) = ordinary_files
         .into_iter()
         .partition(|file| crate::sites::is_review_path(&evidence_root, file));
     let site_files: Vec<PathBuf> = site_files.into_iter().cloned().collect();
 
-    // {impl}`requirements.ci.orphans`
     for (completed, file) in ordinary_files.iter().enumerate() {
         progress(InspectionProgress {
             stage: "evidence files",
@@ -275,10 +247,8 @@ pub(crate) fn inspect_repository_with_progress(
         total: Some(ordinary_files.len()),
     });
 
-    // {impl}`requirements.ci.coverage`
     // Missing evidence is reported as a validation error; inspection never
     // starts authoring.
-    // {impl}`requirements.authoring.deterministic_validation`
     for (name, definition) in &definitions {
         if definition.kind != DefinitionKind::Term && !present.contains(name) {
             errors.push(format!(
@@ -307,7 +277,6 @@ pub(crate) fn inspect_repository_with_progress(
     );
     discovery_errors.extend(errors[scanned..].iter().cloned());
     validate_committed_credentials(&root, &mut errors);
-    // {impl}`requirements.references.distributed`
     let sites = crate::sites::discover(
         &root,
         &definitions,
@@ -350,7 +319,6 @@ pub(crate) fn inspect_repository_with_progress(
     crate::rust_coverage::validate_rust_functions(
         &root,
         &files,
-        &definitions,
         &mut errors,
         &mut discovery_errors,
         &mut progress,
@@ -381,10 +349,8 @@ pub(crate) fn inspect_repository_with_progress(
     })
 }
 
-// {impl}`requirements.configuration.loading`
 // A malformed `book.toml` is one failed check: fall back to `md` so
 // definition collection and the checks after it still run.
-// {impl}`requirements.ci.errors`
 pub(crate) fn book_source_dir(root: &Path, errors: &mut Vec<String>) -> PathBuf {
     let path = root.join("book.toml");
     let source = match fs::read_to_string(&path) {
@@ -435,11 +401,6 @@ pub(crate) fn book_source_dir(root: &Path, errors: &mut Vec<String>) -> PathBuf 
     root.join(relative)
 }
 
-// {impl}`requirements.examples.definition`
-// {impl}`requirements.ci.requirements_inputs`
-// {impl}`requirements.ci.errors`
-// {impl}`requirements.ci.identifiers`
-// {impl}`requirements.definitions.declaration`
 fn collect_definitions(
     root: &Path,
     md_root: &Path,
@@ -502,8 +463,6 @@ fn collect_definitions(
                     block.kind.noun()
                 ));
             }
-            // {impl}`requirements.ci.span`
-            // {impl}`requirements.ci.requirement_text`
             let text = crate::without_options(&content, block.body_start..block.body_end, &blocks)
                 .trim()
                 .to_owned();
@@ -593,10 +552,8 @@ fn collect_definitions(
 }
 
 /// Whether an example's text has a valid `{cite}` or `{test}` reference to a
-/// requirement. Definition collection reports an example without one, and
-/// Rust item coverage counts a reference to an example only when it has one.
-// {impl}`requirements.examples.definition`
-pub(crate) fn example_references_requirement(
+/// requirement.
+fn example_references_requirement(
     example: &Declaration,
     definitions: &BTreeMap<String, Declaration>,
 ) -> bool {
@@ -613,7 +570,6 @@ pub(crate) fn example_references_requirement(
 /// Lists every file with `extension` under `dir` at any depth. A symlink to a
 /// file counts as a file; symlinked directories are not followed, so a cycle
 /// cannot repeat the walk.
-// {impl}`requirements.ci.errors`
 pub(crate) fn files_with_extension(
     root: &Path,
     dir: &Path,
@@ -670,12 +626,8 @@ pub(crate) fn files_with_extension(
 }
 
 // {impl}`requirements.ci.schema`
-// {impl}`requirements.examples.evidence`
-// {impl}`requirements.definitions.dependencies`
 // A malformed evidence file is one failed check reporting its first parse
 // problem; every well-formed record reports each failed field check.
-// {impl}`requirements.ci.errors`
-// {impl}`requirements.ci.outcomes`
 fn validate_evidence_file(
     domain: &crate::sdk::HabeasDomain,
     path: &Path,
@@ -742,7 +694,6 @@ fn validate_evidence_file(
     );
     // The digest is compared with the current reference set during reference
     // validation.
-    // {impl}`requirements.ci.reference_set`
     if let Some(references) = string_field(object, "references", &label, errors)
         && !is_sha256_hex(references)
     {
@@ -751,7 +702,6 @@ fn validate_evidence_file(
         ));
     }
 
-    // {impl}`requirements.ci.requirement_text`
     if let Some(text) = string_field(object, text_field, &label, errors) {
         if text.trim().is_empty() {
             errors.push(format!("{label}: {text_field} must not be empty"));
@@ -789,7 +739,6 @@ fn validate_evidence_file(
     {
         errors.push(format!("{label}: rationale must not be empty"));
     }
-    // {impl}`requirements.ci.determination`
     if determination == Some(Judgment::False) {
         errors.push(format!(
             "{label}: determination is false{}",
@@ -826,11 +775,7 @@ fn validate_evidence_file(
     }
 }
 
-// {impl}`requirements.ci.input_containment`
-// {impl}`requirements.ci.outline_inputs`
-// {impl}`requirements.ci.requirements_inputs`
 // {impl}`requirements.definitions.inputs`
-// {impl}`requirements.ci.errors`
 pub(crate) fn validate_input(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
@@ -903,9 +848,6 @@ pub(crate) fn validate_input(
     validate_outline_input(root, definitions, outlines, object, label, errors)
 }
 
-// {impl}`requirements.configuration.evidence_paths`
-// {impl}`requirements.ci.errors`
-// {impl}`requirements.authoring.generated_inputs`
 fn validate_outline_input(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
@@ -982,8 +924,6 @@ fn text_field(
     (!values.is_empty() && text.len() == values.len()).then_some(text)
 }
 
-// {impl}`requirements.authoring.redaction`
-// {impl}`requirements.ci.errors`
 #[allow(clippy::too_many_arguments)]
 fn validate_resolved_input(
     root: &Path,
@@ -1179,7 +1119,6 @@ impl SourceReference {
 
 /// Comment-only acknowledgment metadata. Callers select the subject's edges
 /// and exclude acknowledgments belonging to its site reviews.
-// {impl}`requirements.authoring.fixme_inputs`
 pub(crate) fn fixme_acknowledgments<'a>(
     root: &Path,
     outlines: &OutlineCache,
@@ -1221,7 +1160,6 @@ pub(crate) fn fixme_acknowledgments<'a>(
 
 /// One edge of a definition's reference set: its origin (an in-source
 /// reference or a declaration anchor), role, file, and outline selector.
-// {impl}`requirements.ci.reference_set`
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct ReferenceSetEntry {
     pub(crate) origin: &'static str,
@@ -1239,7 +1177,6 @@ pub(crate) struct ReferenceSetEntry {
 /// that node leaves the digest unchanged; an anchor contributes its file and
 /// selector as written. `{cite}` references do not contribute. `root` must be
 /// canonical, as reference discovery records canonical paths.
-// {impl}`requirements.references.outline_comments`
 pub(crate) fn reference_set_digest<'a>(
     root: &Path,
     outlines: &OutlineCache,
@@ -1254,60 +1191,26 @@ pub(crate) fn reference_set_digest<'a>(
     )
 }
 
-/// The same mode predicate is used for mandatory inputs and freshness.
-// {impl}`requirements.authoring.structural_review`
-// :::{fixme} requirements.authoring.structural_review
-// :github: nikomatsakis/habeas-codicem#51
-// The accepted routing compromise selects structural review only with supported
-// implementation roots and no test edges. Mixed requirements skip structural
-// review, and absent implementation edges do not trigger a structural absence
-// check. Existing routing tests pin this compromise; regression tests do not yet
-// establish independent structural checks for all four edge combinations.
-// :::
-// :::{fixme} requirements.authoring.behavioral_review
-// :github: nikomatsakis/habeas-codicem#51
-// Structural mode does not also run an independent behavioral check, including
-// establishing the absence of behavioral properties without test edges. Existing
-// tests cover exclusive selection, not both checks or removal of either edge kind.
-// :::
-pub(crate) fn structural_assessment(
-    definition: &Declaration,
-    entries: &[ReferenceSetEntry],
-) -> bool {
+/// Every ordinary requirement receives both the structural and behavioral checks.
+pub(crate) fn reviews_both_dimensions(definition: &Declaration) -> bool {
     definition.kind == DefinitionKind::Requirement
         && !crate::structural::has_query_directive(definition)
-        && !entries.iter().any(|entry| entry.role == "test")
-        && entries.iter().any(|entry| {
-            entry.role == "impl"
-                && !matches!(
-                    name_for_path(Path::new(&entry.file)),
-                    "plain-text" | "markdown"
-                )
-        })
 }
 
-/// Preserve the historical encoding for test review. Structural reviews add a
-/// marker to the hash only, never a synthetic edge to the graph.
-// {impl}`requirements.ci.reference_set`
-// :::{fixme} requirements.ci.reference_set
-// :github: nikomatsakis/habeas-codicem#51
-// The structural marker currently applies only to the exclusive structural mode.
-// Mixed requirements and requirements without implementation edges do not get
-// the marker required for their independent structural check. Regression tests
-// assert the current exclusive mode's digest, not full independent-check freshness.
-// :::
+/// Version the review contract independently of the edges present in the graph.
 pub(crate) fn digest_definition_entries(
     definition: &Declaration,
     entries: Vec<ReferenceSetEntry>,
 ) -> String {
-    let structural = structural_assessment(definition, &entries);
     let digest = digest_entries(entries);
-    if structural {
+    if reviews_both_dimensions(definition) {
         use sha2::{Digest, Sha256};
-        Sha256::digest(format!("habeas-structural-assessment-v1\0{digest}"))
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect()
+        Sha256::digest(format!(
+            "habeas-independent-requirement-criteria-v3\0{digest}"
+        ))
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
     } else {
         digest
     }
@@ -1315,8 +1218,6 @@ pub(crate) fn digest_definition_entries(
 
 /// The entries of a definition's reference set, unsorted, as
 /// [`reference_set_digest`] encodes them.
-// {impl}`requirements.references.outline_comments`
-// {impl}`requirements.ci.reference_set`
 pub(crate) fn reference_set_entries<'a>(
     root: &Path,
     outlines: &OutlineCache,
@@ -1382,7 +1283,6 @@ pub(crate) fn reference_set_entries<'a>(
 }
 
 /// The reference-set digest of a set of entries, in sorted order.
-// {impl}`requirements.ci.reference_set`
 pub(crate) fn digest_entries(mut entries: Vec<ReferenceSetEntry>) -> String {
     use sha2::{Digest, Sha256};
 
@@ -1415,7 +1315,6 @@ pub(crate) fn digest_entries(mut entries: Vec<ReferenceSetEntry>) -> String {
 
 /// The current reference-set digest of a requirement or named example, as
 /// recorded in its evidence's `references` field.
-// {impl}`requirements.ci.reference_set`
 pub fn reference_set_digest_for(root: &Path, name: &str) -> io::Result<String> {
     let root = fs::canonicalize(root)?;
     // Errors in other declarations are validation errors; they do not change
@@ -1497,16 +1396,6 @@ struct InputRange {
     node: Option<ResolvedNode>,
 }
 
-// {impl}`requirements.references.evidence_coverage`
-// {impl}`requirements.references.discovery`
-// {impl}`requirements.examples.evidence`
-// {impl}`requirements.ci.reference_set`
-// {impl}`requirements.ci.errors`
-// {impl}`requirements.definitions.references`
-// {impl}`requirements.references.anchors`
-// {impl}`requirements.references.util`
-// {impl}`requirements.ci.outcomes`
-// {impl}`requirements.ci.determination`
 fn validate_references(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
@@ -1521,7 +1410,6 @@ fn validate_references(
         let location = format!("{}:{}", display_path(root, &reference.file), reference.line);
         // An unclosed fence has no complete body, so only the checks of its
         // name, which comes from the opening line, still run.
-        // {impl}`requirements.references.roles`
         let unclosed = reference.commentary.is_some() && !reference.closed;
         if unclosed {
             errors.push(format!(
@@ -1537,7 +1425,6 @@ fn validate_references(
         if reference.name.is_empty() {
             continue;
         }
-        // {impl}`requirements.references.builtin_definitions`
         if crate::builtins::is_builtin_name(&reference.name) {
             match crate::builtins::builtin(&reference.name) {
                 // Its form problems are already reported.
@@ -1571,7 +1458,6 @@ fn validate_references(
             // A `{fixme}` inside one of its definition's sites acknowledges a
             // gap at that site only, so it is not part of the definition's
             // coverage or reference set.
-            // {impl}`requirements.references.evidence_coverage`
             if edge && !unclosed && !crate::sites::in_own_site(root, sites, reference) {
                 by_definition
                     .entry(reference.name.clone())
@@ -1603,7 +1489,6 @@ fn validate_references(
         let references = by_definition.remove(*name).unwrap_or_default();
         // The acknowledgment body can introduce terminology without requiring
         // an input selecting the containing implementation.
-        // {impl}`requirements.definitions.dependencies`
         if let Some(mut record) = fs::read_to_string(&evidence_file)
             .ok()
             .and_then(|content| serde_json::from_str::<Value>(&content).ok())
@@ -1681,7 +1566,6 @@ fn validate_references(
                 errors,
             );
         }
-        // {impl}`requirements.ci.reference_set`
         if let Some(recorded) = fs::read_to_string(&evidence_file)
             .ok()
             .and_then(|content| serde_json::from_str::<Value>(&content).ok())
@@ -1703,7 +1587,7 @@ fn validate_references(
                 )
         {
             errors.push(format!(
-                "{}: reference set changed: {{impl}}, {{test}}, or {{fixme}} references or anchors of {} {name} were added, removed, edited, or moved to another node",
+                "{}: reference set changed: digest for {} {name} differs from the recorded digest (reference edges or review contract changed)",
                 display_path(root, &evidence_file),
                 definition.kind.noun()
             ));
@@ -1896,7 +1780,6 @@ pub(crate) fn validate_fixme_entries(
     }
 }
 
-// {impl}`requirements.references.discovery`
 pub(crate) fn collect_references(root: &Path, errors: &mut Vec<String>) -> Vec<SourceReference> {
     let files = discovered_files(root, errors);
     collect_references_with_progress(&Default::default(), root, &files, errors, &mut |_| {})
@@ -1905,8 +1788,6 @@ pub(crate) fn collect_references(root: &Path, errors: &mut Vec<String>) -> Vec<S
 /// Reports each workspace `habeas.toml` in the Git index that contains
 /// explicit credentials, naming its credential settings but never their
 /// values. An unreadable index is a configuration-check error.
-// {impl}`requirements.authoring.credentials`
-// {impl}`requirements.ci.errors`
 fn validate_committed_credentials(root: &Path, errors: &mut Vec<String>) {
     let indexed = match crate::authoring::access::tracked_sources(root) {
         Ok(Some(files)) => files,
@@ -1941,7 +1822,6 @@ fn validate_committed_credentials(root: &Path, errors: &mut Vec<String>) {
     }
 }
 
-// {impl}`requirements.ci.errors`
 pub(crate) fn collect_references_with_progress(
     cache: &crate::inputs::SourceCache,
     root: &Path,
@@ -1989,7 +1869,6 @@ pub(crate) fn collect_references_with_progress(
 }
 
 /// The source regions in which inline and fenced references can occur.
-// {impl}`requirements.references.reference_contexts`
 pub(crate) enum ReferenceContexts {
     Text {
         markdown: bool,
@@ -2041,7 +1920,6 @@ impl ReferenceContexts {
     }
 }
 
-// {impl}`requirements.references.reference_contexts`
 pub(crate) fn file_references(
     cache: &crate::inputs::SourceCache,
     file: &Path,
@@ -2105,7 +1983,6 @@ pub(crate) fn file_references(
 
 /// The one-based opening and closing fence lines of each requirement or
 /// example declaration in Markdown text.
-// {impl}`requirements.references.roles`
 fn declaration_line_ranges(content: &str) -> Vec<(usize, usize)> {
     let line_of = |offset: usize| content[..offset].bytes().filter(|b| *b == b'\n').count() + 1;
     definition_blocks(content)
@@ -2122,7 +1999,6 @@ fn declaration_line_ranges(content: &str) -> Vec<(usize, usize)> {
         .collect()
 }
 
-// {impl}`requirements.references.evidence_coverage`
 /// Unreadable records and unresolvable inputs contribute no ranges: their
 /// own checks report them, and coverage checking continues.
 fn evidence_input_ranges(
@@ -2455,6 +2331,36 @@ pub(crate) mod tests {
         )
         .unwrap();
         temp
+    }
+
+    // {test}`requirements.integration.report_api`
+    #[test]
+    fn validation_counts_declarations_and_evidence_files_even_when_reviews_are_invalid() {
+        let temp = fixture();
+        let root = temp.path();
+        fs::write(
+            root.join("md/rules.md"),
+            ":::{req} one\nRequired.\n:::\n:::{example} case\nExample of {cite}`rules.one`.\n:::\n",
+        )
+        .unwrap();
+        fs::write(root.join("evidence/rules.one.json"), "{").unwrap();
+        fs::write(root.join("evidence/ghost.json"), "{}").unwrap();
+        let report = validate_repository(root).unwrap();
+        assert_eq!(
+            (report.requirements, report.examples, report.evidence_files),
+            (1, 1, 2)
+        );
+        for expected in [
+            "invalid JSON",
+            "no matching requirement",
+            "missing for example",
+        ] {
+            assert!(
+                report.errors.iter().any(|error| error.contains(expected)),
+                "{expected}: {:?}",
+                report.errors
+            );
+        }
     }
 
     // {test}`requirements.authoring.credentials`
@@ -3865,6 +3771,10 @@ api_key = 'PRIVATE_REMOTE'
         let errors = validate_repository(temp.path()).unwrap().errors.join("\n");
         assert!(errors.contains("example text changed"), "{errors}");
         assert!(errors.contains("- Outdated."), "{errors}");
+        assert!(
+            errors.contains("+ Given ready, it succeeds. {cite}`rules.ready` {test}`rules.ready`"),
+            "{errors}"
+        );
 
         let mut wrong_field: serde_json::Value = serde_json::from_str(&old).unwrap();
         let example_text = wrong_field

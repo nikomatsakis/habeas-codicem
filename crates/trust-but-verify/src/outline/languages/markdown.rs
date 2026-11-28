@@ -24,14 +24,11 @@ fn heading_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, std::ops::
 }
 
 /// HTML comment blocks are Markdown's comments.
-// {impl}`requirements.references.outline_comments`
 fn is_comment(node: Node<'_>, source: &str) -> bool {
     let body = text(node, source).trim();
     node.kind() == "html_block" && body.starts_with("<!--") && body.ends_with("-->")
 }
 
-// {impl}`requirements.sdk.sources.markdown.paragraphs`
-// {impl}`requirements.sdk.sources.markdown.fenced_blocks`
 const KINDS: &[KindRule] = &[
     KindRule::new("section", "section", NameRule::Custom(heading_name)),
     KindRule::new("paragraph", "paragraph", NameRule::Anonymous).when(|node| {
@@ -42,9 +39,7 @@ const KINDS: &[KindRule] = &[
     KindRule::new("fenced_code_block", "block", NameRule::Anonymous),
 ];
 
-// {impl}`requirements.references.outline_comments`
-// {impl}`requirements.references.structural_hash`
-// {impl}`requirements.sdk.sources.markdown.attachments`
+// {impl}`requirements.references.outlines`
 pub static PROFILE: Profile = Profile {
     name: "markdown",
     fingerprint_scheme: "markdown-structural-v1",

@@ -28,7 +28,6 @@ pub(crate) use selector::{HASH_DIGITS, Label, Segment, SelectorError, parse_sele
 
 /// One outline node. Line numbers are one-based and inclusive.
 #[derive(Clone, Debug)]
-// {impl}`requirements.references.outlines`
 #[doc(hidden)]
 pub struct OutlineNode {
     /// Short outline kind, such as `fn`; empty for the root.
@@ -66,7 +65,6 @@ pub struct OutlineNode {
 
 /// One comment and the outline node it belongs to.
 #[derive(Clone, Debug)]
-// {impl}`requirements.references.outline_comments`
 pub(crate) struct OutlineComment {
     pub byte_start: usize,
     pub byte_end: usize,
@@ -78,7 +76,6 @@ pub(crate) struct OutlineComment {
 
 /// A parsed outline.
 #[derive(Clone, Debug)]
-// {impl}`requirements.references.outlines`
 #[doc(hidden)]
 pub struct LegacyOutline {
     pub(crate) diagnostic: Option<OutlineError>,
@@ -100,7 +97,6 @@ pub enum ResolveError {
 }
 
 impl fmt::Display for ResolveError {
-    // {impl}`requirements.references.outline_selectors`
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Invalid(error) => error.fmt(formatter),
@@ -114,16 +110,12 @@ impl std::error::Error for ResolveError {}
 /// Parses a source with the profile its path selects. Hashes use the
 /// source's redacted text pieces; the outline itself is built from the
 /// original source.
-// {impl}`requirements.references.outlines`
-// {impl}`requirements.authoring.redaction`
 #[doc(hidden)]
 pub fn parse(path: &std::path::Path, source: &str) -> Result<LegacyOutline, OutlineError> {
     parse_redacted(profile_for_path(path), source, &Redaction::of_text(source))
 }
 
 /// Parses a source with a given profile, redacting by `secretshape` rules.
-// {impl}`requirements.references.outlines`
-// {impl}`requirements.authoring.redaction`
 pub(crate) fn parse_with(
     profile: &'static Profile,
     source: &str,
@@ -133,7 +125,6 @@ pub(crate) fn parse_with(
 
 /// Parses the original source with a given profile, hashing each text piece
 /// that overlaps a redacted region in its redacted form.
-// {impl}`requirements.references.structural_hash`
 fn parse_redacted(
     profile: &'static Profile,
     source: &str,
@@ -160,6 +151,7 @@ fn parse_grammar(
     Ok(Builder::new(profile, source, redaction, &tree).finish(&lines, diagnostic))
 }
 
+// {impl}`requirements.references.outlines`
 // {cite}`habeas:util`
 fn parse_tree(
     profile: &'static Profile,
@@ -255,8 +247,6 @@ impl LineIndex {
 }
 
 /// The plain-text profile: one anonymous `line` node per non-blank line.
-// {impl}`requirements.references.outline_selectors`
-// {impl}`requirements.sdk.sources.plain-text.attachments`
 fn plain_text(
     profile: &'static Profile,
     source: &str,
@@ -342,7 +332,6 @@ fn root_node(
     }
 }
 
-// {impl}`requirements.sdk.graph.search.declaration_spans`
 fn declaration_spans(
     language: &str,
     node: Node<'_>,
@@ -462,7 +451,6 @@ impl<'tree, 'source> Builder<'tree, 'source> {
     }
 
     // {cite}`habeas:util`
-    // {impl}`requirements.sdk.sources.typescript.attachments.decorators.span`
     fn walk(&mut self, node: Node<'tree>, parent: usize) {
         let mut cursor = node.walk();
         let children = node.children(&mut cursor).collect::<Vec<_>>();
@@ -530,7 +518,6 @@ impl<'tree, 'source> Builder<'tree, 'source> {
     }
 
     // {cite}`habeas:util`
-    // {impl}`requirements.sdk.sources.typescript.attachments.decorators.span`
     fn push(
         &mut self,
         kind: &'static str,
@@ -570,7 +557,6 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         encoder.finish()
     }
 
-    // {impl}`requirements.sdk.outlines.attachments.fingerprint`
     fn encode(&self, encoder: &mut Encoder, node: Node<'_>, index: usize, identity: bool) {
         if identity
             && self
@@ -624,7 +610,6 @@ impl<'tree, 'source> Builder<'tree, 'source> {
     /// Builds the root and outline nodes, linking parents and children, and
     /// assigns hashes, selectors, line ranges including attached siblings,
     /// and comment owners.
-    // {impl}`requirements.references.outline_selectors`
     fn finish(self, lines: &LineIndex, diagnostic: Option<OutlineError>) -> LegacyOutline {
         let mut nodes = Vec::with_capacity(self.drafts.len());
         nodes.push(root_node(
@@ -868,7 +853,6 @@ fn run_owner(nodes: &[OutlineNode], bytes: (usize, usize), binds_to_container: b
 impl LegacyOutline {
     /// Resolves a selector to a node index; the empty selector is the root.
     /// A `line` segment resolves to the first line with that content.
-    // {impl}`requirements.references.outline_selectors`
     pub fn resolve(&self, selector: &str) -> Result<usize, ResolveError> {
         let segments = parse_selector(selector).map_err(ResolveError::Invalid)?;
         let mut current = 0;
@@ -886,7 +870,6 @@ impl LegacyOutline {
 
     /// The innermost nodes whose line ranges cover a line: covering nodes
     /// none of whose children cover it. Several siblings can share a line.
-    // {impl}`requirements.references.outlines`
     pub fn innermost_at_line(&self, line: usize) -> Vec<usize> {
         let covers = |index: usize| {
             self.nodes[index].line_start <= line && line <= self.nodes[index].line_end
@@ -984,7 +967,6 @@ impl LegacyOutline {
     }
 
     /// A node's source lines, over its full line range, without line endings.
-    // {impl}`requirements.references.outlines`
     pub fn node_lines(&self, source: &str, index: usize) -> Vec<String> {
         let node = &self.nodes[index];
         source

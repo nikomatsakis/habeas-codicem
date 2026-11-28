@@ -1,8 +1,8 @@
 {
   "requirement": "An ask builder begins in `ContextPhase`. Only that state exposes `context`,\ncomposing the reusable prefix under\n{cite}`requirements.sdk.graph.agent-calls.agent_context`. The first\ncall to `contents_of_current_node`, `contents_of_node`, or `contents_of_successors` enters `NodePhase`, even\nwith an empty successor selection. This state allows further node insertions\nand awaiting, with no `context` method or transition back. The builder's types\nenforce the restriction.",
   "determination": true,
-  "rationale": "Obligations from `requirements.sdk.graph.agent-calls.judge.phases`, and the tests that cover them:\n\n1. **The builder starts in `ContextPhase`, and only that state exposes `context`.**\n   - `ask` returns `Ask<..., ContextPhase>`, which I confirmed in `procedure.rs`.\n   - `explicit_insertions_preserve_order_repetition_and_selection_snapshots` calls `.context(String::from(\"question\"))` on the fresh builder and asserts the resulting prefix `\"question\"`.\n   - `task_messages_share_a_prefix_and_can_queue_another_node` calls `.context(\"shared\")` and asserts the prefix `\"shared\"` and its fingerprint.\n2. **The first call to `contents_of_current_node`, `contents_of_node`, or `contents_of_successors` enters `NodePhase`.**\n   - `task_messages_share_a_prefix_and_can_queue_another_node` annotates the result of `contents_of_node` with the type `Ask<.., NodePhase>`. That is a compile-time check of the transition.\n   - The three `compile_fail` doctests on `NodePhase` in `procedure.rs` each call one of the three methods and then `.context(...)`. That shows each of them leaves `ContextPhase`.\n   - The \"even with an empty successor selection\" clause is a type-level property. The phase type does not depend on the runtime selection. The `contents_of_successors` doctest uses an arbitrary label, so it covers the empty-selection case too.\n3. **`NodePhase` allows further node insertions and awaiting.**\n   - `explicit_insertions_preserve_order_repetition_and_selection_snapshots` chains `contents_of_current_node`, `contents_of_successors(7)` and `contents_of_current_node` again, then awaits through `into_future`. It asserts the request inputs, their order and repetition, the read order, and the recorded dependencies.\n   - `task_messages_share_a_prefix_and_can_queue_another_node` awaits from `NodePhase` after `.message(...)`, and asserts the requests and dependencies.\n4. **`NodePhase` has no `context` method and no transition back, and the types enforce this.**\n   - The `compile_fail` doctests assert that `context` cannot be called after any of the three node-inserting methods.\n   - I checked that these doctests do not fail for an unrelated reason. `ask::<bool>` satisfies the bounds on `ask`. `node_id()` returns `&NodeId`, which the other tests show is `Copy`. `request` and `domain` are public modules.\n   - There is no other way back to `ContextPhase`, because the node-inserting methods all return `NodePhase`.\n\nI found no gap. The `{test}` markers are on `NodePhase` and on both runtime tests.",
-  "references": "17502c32ad27a9112a8d72c00f2991f16c8852bba5ff133e7ee061a0fc8200f3",
+  "rationale": "structural: The structural obligations in `requirements.sdk.graph.agent-calls.judge.phases` are the type-state clauses: the builder begins in `ContextPhase`, only that state exposes `context`, the first `contents_of_*` call enters `NodePhase`, and `NodePhase` has no `context` method or way back. The text says the types enforce this. A runtime flag that rejected late `context` calls would behave the same, but it would violate that clause. These obligations are not discretionary.\n\nThe supplied roots implement them:\n- `crates/trust-but-verify/src/procedure.rs#impl[ValidationContext<'d, D>]#3/fn[ask]` returns `Ask<'_, 'd, D, R, ContextPhase>`, so the builder begins in `ContextPhase`.\n- `crates/trust-but-verify/src/procedure.rs#impl[Ask<'a, 'd, D, R, ContextPhase>]` is the only impl that defines `context`, so only that state exposes it. `context` returns `Self`, so it stays in `ContextPhase`.\n- `impl[Ask<'a, 'd, D, R, P>]#1/fn[contents_of_current_node]`, `fn[contents_of_node]` and `fn[contents_of_successors]` each return `Ask<..., NodePhase>`.\n  - They are generic over `P`, so they are available in both phases. In `NodePhase` they allow further node insertions.\n  - Each one pushes its insertion and then calls `into_node_phase`. That helper rebuilds `Ask` with `PhantomData` for `NodePhase`.\n  - `contents_of_successors` pushes a successor insertion even when the selection is empty, so the transition does not depend on the selection.\n  - `into_node_phase` is reached from these marked items, so it needs no marker of its own.\n- `await_phase!(NodePhase)` (`macro@5781c4abb394`) implements `IntoFuture` for `Ask<..., NodePhase>`, so awaiting is available in `NodePhase`.\n- No impl of `context` exists for `NodePhase`, and nothing converts back to `ContextPhase`. `NodePhase` also carries a `compile_fail` doctest and a `{test}` marker that exercise the restriction.\n\nThe `Ask` struct is generic over the phase marker `P` through `PhantomData`, and `ContextPhase` and `NodePhase` are marker structs that carry their own references. `context`'s own behavior is delegated to `requirements.sdk.graph.agent-calls.agent_context`, which is cited here only as context. I found no structural obligation without a root.\n\nbehavioral: Obligations from `requirements.sdk.graph.agent-calls.judge.phases`, and the tests that cover them:\n\n1. **`context` is available in `ContextPhase`.** The marked tests call `.context(...)` on a fresh `ctx.ask()`. `explicit_insertions_preserve_order_repetition_and_selection_snapshots` calls `.context(String::from(\"question\"))`. `task_messages_share_a_prefix_and_can_queue_another_node` calls `.context(\"shared\")`. Both assert that the resulting prefix reaches the agent (`\"question\"` and `\"shared\"`). The `context` method is defined only in `impl Ask<..., ContextPhase>` in `crates/trust-but-verify/src/procedure.rs`.\n\n2. **The first `contents_of_current_node`, `contents_of_node` or `contents_of_successors` call enters `NodePhase`, including with an empty successor selection.**\n   - The `compile_fail` doctests on `crates/trust-but-verify/src/procedure.rs#struct[NodePhase]` are marked `{test}` for this requirement. They cover all three entry methods. Each one calls the method on a fresh `ask()` and then `.context(String::new())`, which must not compile.\n   - `task_messages_share_a_prefix_and_can_queue_another_node` annotates the result of `contents_of_current_node().contents_of_node(selected)` with the type `Ask<.., NodePhase>`. That checks the state type by assertion.\n   - The empty-selection case is a compile-time property. It is fixed by the signature `-> Ask<.., NodePhase>`, with no runtime branch on selection contents. The `contents_of_successors` doctest therefore covers it, because the type is the same whatever the selection holds.\n   - The doctests are well-formed apart from the intended error. `ask::<bool>()` and `node_id()` (returns `&NodeId<D>`) exist, `request` is a public module, and `contents_of_successors` requires `D::EdgeLabel: PartialEq`, which the doctest declares. A compile failure from an unrelated cause is therefore unlikely.\n\n3. **`NodePhase` allows further node insertions and awaiting.**\n   - `explicit_insertions_preserve_order_repetition_and_selection_snapshots` chains current, successors, then current again. It awaits and asserts the agent inputs, the read order and the dependencies.\n   - `task_messages_share_a_prefix_and_can_queue_another_node` chains current then `contents_of_node` and awaits. It asserts the inputs and dependencies.\n\n4. **`NodePhase` has no `context` method and no way back.** The three `compile_fail` doctests show `.context` is rejected after each entry method. The only methods that return an `Ask` from `NodePhase` return `NodePhase`. The tests chain them and the typed annotation confirms it.\n\nThe obligations are enforced by types, and the doctests plus the typed annotation check that enforcement. I found no uncovered obligation, and no marking gap among the supplied tests.",
+  "references": "6a553dcaa6e1d1f03bb3a01667889d6eec22afbfd1b395e37659c47fac1c3f04",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.agent-calls.judge.phases",
@@ -84,24 +84,14 @@
       ]
     },
     {
-      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
-      "item": "fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]",
-      "hash": "82438bac07f4989af64bb695b72a6bf8e5866fdc840c6e877de25626a6bfdd25"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
-      "item": "fn[task_messages_share_a_prefix_and_can_queue_another_node]",
-      "hash": "3b7c4d6d55d57ac81836499a8040fc5ed0db7805790a9f75f39f7b078cb37371"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "struct[NodePhase]",
-      "hash": "527ee6b89b350999503c7587571996ebcefc8e2e11f3fa726e4a07e4e3861e04"
-    },
-    {
       "file": "crates/trust-but-verify/src/procedure.rs",
       "item": "impl[ValidationContext<'d,%20D>]#3/fn[ask]",
       "hash": "b8b2eae7581183984c864d30ec9f6e3d2861dc9fae437a46d1870f95f68be4c8"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20ContextPhase>]",
+      "hash": "c7df54c0c0e15c7c523c3a555cb9d98fc46bb386905630f2da3e54a620f879ef"
     },
     {
       "file": "crates/trust-but-verify/src/procedure.rs",
@@ -120,16 +110,529 @@
     },
     {
       "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "macro@5781c4abb394",
+      "hash": "5781c4abb394b89553efd9c5558d9526bebec071676accc0fa6d63b012625b42"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "struct[NodePhase]",
+      "hash": "527ee6b89b350999503c7587571996ebcefc8e2e11f3fa726e4a07e4e3861e04"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20ContextPhase>]/fn[context]",
+      "hash": "40ee4435e784f834abea244c54a5bcb4d17de21f805197b5532e500d619b7876"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[into_node_phase]",
+      "hash": "ebb52a7de2d27341a7738e6d03b87e4e6af5ee75aa66e4889138e91de9f2347f"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
       "item": "macro[await_phase]",
       "hash": "8380f0027b0bf5c0f5908e181e1f69c8f1ea3a9dc2c77556be30d47cc152b84d"
     },
     {
       "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "struct[Ask]",
+      "hash": "b38a7967586a6b57f32ac9441bea1003e46964014583c1dbc2797f9896771465"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]",
+      "hash": "82438bac07f4989af64bb695b72a6bf8e5866fdc840c6e877de25626a6bfdd25"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "fn[task_messages_share_a_prefix_and_can_queue_another_node]",
+      "hash": "c2f2f4d13668e9ae1d913a2a967d4645c62826e58b7700f34cd98019816ab777"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "",
+      "hash": "76f52c8adc342e7e552c02373be30b730b975b06c67cfadc117969a07287bdb9"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1",
+      "hash": "b73d3ac6384cef9aea1d12626f08adef0fccf4bb797b731ed84041ccf0ea98e8"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2",
+      "hash": "f9c8f2246b4e74756fd8a56bdb20da6d229991e90fed9fdbf6f102b3234cbcd7"
+    },
+    {
+      "file": "crates/trust-but-verify/src/lib.rs",
+      "item": "mod[request]",
+      "hash": "382529a91125d3a651af5c12abf43720eea886dbade68168f53d02cd1040c706"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
       "item": "impl[ValidationContext<'d,%20D>]#1/fn[node_id]",
       "hash": "ac6511cfdc35b43f12c5c1f6be2d9628566b3e313d73d1974b9a2b3ce69bd813"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "struct[ContextPhase]",
+      "hash": "38eb48632ba183ca42f37eb48a05202c7223921264852f809778194b2fd58cc8"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[vet_answer]",
+      "hash": "edbb68fcf0aa659ac3f79d6222ff6665aae046e9e8965d414cfec3cd8bc64428"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[message]",
+      "hash": "d10563706c13b762836e6aa6ee765f77e6cdeffb71d93857cb45c8b3c8e2e883"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.agent-calls.judge.phases"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "6a553dcaa6e1d1f03bb3a01667889d6eec22afbfd1b395e37659c47fac1c3f04"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-calls.judge.phases"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "30964674fc303550891d30effa5640294a97b9294fda4ceccc752bd2ce404d78"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-calls.agent_context"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "970f3374a7e4dd2add862da561bd7e7b87ed1c45f808e7ec3c2eb4d347eefb96"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[ValidationContext<'d,%20D>]#3/fn[ask]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "b8b2eae7581183984c864d30ec9f6e3d2861dc9fae437a46d1870f95f68be4c8"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20ContextPhase>]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "d71db4bf9a3cd02b05a43b9c0ad9da6358f64cb25de6de624d90f33f79d679a2"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[contents_of_current_node]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "50662f3870bb500baeb16d5aed70ed501dd6a08a0abe3affa048f8c6e6bfb830"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[contents_of_node]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "2e72c73ad326055f2b1ce4d8a96751f6873639d40e4b59a537b73d85fa59ac93"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[contents_of_successors]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "5259c05f216ee5bd0897d540a7486136bd73a6de17eda5a90f89b7484188fa1d"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "macro@5781c4abb394"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "5781c4abb394b89553efd9c5558d9526bebec071676accc0fa6d63b012625b42"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "struct[NodePhase]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "527ee6b89b350999503c7587571996ebcefc8e2e11f3fa726e4a07e4e3861e04"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20ContextPhase>]/fn[context]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "40ee4435e784f834abea244c54a5bcb4d17de21f805197b5532e500d619b7876"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[into_node_phase]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "ebb52a7de2d27341a7738e6d03b87e4e6af5ee75aa66e4889138e91de9f2347f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "macro[await_phase]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "8380f0027b0bf5c0f5908e181e1f69c8f1ea3a9dc2c77556be30d47cc152b84d"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "struct[Ask]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "b38a7967586a6b57f32ac9441bea1003e46964014583c1dbc2797f9896771465"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The structural obligations in `requirements.sdk.graph.agent-calls.judge.phases` are the type-state clauses: the builder begins in `ContextPhase`, only that state exposes `context`, the first `contents_of_*` call enters `NodePhase`, and `NodePhase` has no `context` method or way back. The text says the types enforce this. A runtime flag that rejected late `context` calls would behave the same, but it would violate that clause. These obligations are not discretionary.\n\nThe supplied roots implement them:\n- `crates/trust-but-verify/src/procedure.rs#impl[ValidationContext<'d, D>]#3/fn[ask]` returns `Ask<'_, 'd, D, R, ContextPhase>`, so the builder begins in `ContextPhase`.\n- `crates/trust-but-verify/src/procedure.rs#impl[Ask<'a, 'd, D, R, ContextPhase>]` is the only impl that defines `context`, so only that state exposes it. `context` returns `Self`, so it stays in `ContextPhase`.\n- `impl[Ask<'a, 'd, D, R, P>]#1/fn[contents_of_current_node]`, `fn[contents_of_node]` and `fn[contents_of_successors]` each return `Ask<..., NodePhase>`.\n  - They are generic over `P`, so they are available in both phases. In `NodePhase` they allow further node insertions.\n  - Each one pushes its insertion and then calls `into_node_phase`. That helper rebuilds `Ask` with `PhantomData` for `NodePhase`.\n  - `contents_of_successors` pushes a successor insertion even when the selection is empty, so the transition does not depend on the selection.\n  - `into_node_phase` is reached from these marked items, so it needs no marker of its own.\n- `await_phase!(NodePhase)` (`macro@5781c4abb394`) implements `IntoFuture` for `Ask<..., NodePhase>`, so awaiting is available in `NodePhase`.\n- No impl of `context` exists for `NodePhase`, and nothing converts back to `ContextPhase`. `NodePhase` also carries a `compile_fail` doctest and a `{test}` marker that exercise the restriction.\n\nThe `Ask` struct is generic over the phase marker `P` through `PhantomData`, and `ContextPhase` and `NodePhase` are marker structs that carry their own references. `context`'s own behavior is delegated to `requirements.sdk.graph.agent-calls.agent_context`, which is cited here only as context. I found no structural obligation without a root."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.agent-calls.judge.phases"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "6a553dcaa6e1d1f03bb3a01667889d6eec22afbfd1b395e37659c47fac1c3f04"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-calls.judge.phases"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "30964674fc303550891d30effa5640294a97b9294fda4ceccc752bd2ce404d78"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-calls.agent_context"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "970f3374a7e4dd2add862da561bd7e7b87ed1c45f808e7ec3c2eb4d347eefb96"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "d6e99ab39b78a5458f7c497ed3f69a053fff9f8bb31ded9d41e7f9e70fa0ab90"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[task_messages_share_a_prefix_and_can_queue_another_node]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "c2f2f4d13668e9ae1d913a2a967d4645c62826e58b7700f34cd98019816ab777"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "struct[NodePhase]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "527ee6b89b350999503c7587571996ebcefc8e2e11f3fa726e4a07e4e3861e04"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": ""
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "4c5e0f39e477cf2d5d89ce94c12d9f95e7fe5c6b3d0f98d29d20b1245be6b597"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20ContextPhase>]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "d71db4bf9a3cd02b05a43b9c0ad9da6358f64cb25de6de624d90f33f79d679a2"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "180ab8720a9d4d6a628bd015b914a632495dc720a5771858bf5680d6a7116032"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "df2e8c5cb249144162a04519ee9898f96400ffb4fdaab260b6d52505a29eeccf"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20ContextPhase>]/fn[context]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "40ee4435e784f834abea244c54a5bcb4d17de21f805197b5532e500d619b7876"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/lib.rs"
+                },
+                "selector": "mod[request]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "382529a91125d3a651af5c12abf43720eea886dbade68168f53d02cd1040c706"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[ValidationContext<'d,%20D>]#1/fn[node_id]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "ac6511cfdc35b43f12c5c1f6be2d9628566b3e313d73d1974b9a2b3ce69bd813"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "Obligations from `requirements.sdk.graph.agent-calls.judge.phases`, and the tests that cover them:\n\n1. **`context` is available in `ContextPhase`.** The marked tests call `.context(...)` on a fresh `ctx.ask()`. `explicit_insertions_preserve_order_repetition_and_selection_snapshots` calls `.context(String::from(\"question\"))`. `task_messages_share_a_prefix_and_can_queue_another_node` calls `.context(\"shared\")`. Both assert that the resulting prefix reaches the agent (`\"question\"` and `\"shared\"`). The `context` method is defined only in `impl Ask<..., ContextPhase>` in `crates/trust-but-verify/src/procedure.rs`.\n\n2. **The first `contents_of_current_node`, `contents_of_node` or `contents_of_successors` call enters `NodePhase`, including with an empty successor selection.**\n   - The `compile_fail` doctests on `crates/trust-but-verify/src/procedure.rs#struct[NodePhase]` are marked `{test}` for this requirement. They cover all three entry methods. Each one calls the method on a fresh `ask()` and then `.context(String::new())`, which must not compile.\n   - `task_messages_share_a_prefix_and_can_queue_another_node` annotates the result of `contents_of_current_node().contents_of_node(selected)` with the type `Ask<.., NodePhase>`. That checks the state type by assertion.\n   - The empty-selection case is a compile-time property. It is fixed by the signature `-> Ask<.., NodePhase>`, with no runtime branch on selection contents. The `contents_of_successors` doctest therefore covers it, because the type is the same whatever the selection holds.\n   - The doctests are well-formed apart from the intended error. `ask::<bool>()` and `node_id()` (returns `&NodeId<D>`) exist, `request` is a public module, and `contents_of_successors` requires `D::EdgeLabel: PartialEq`, which the doctest declares. A compile failure from an unrelated cause is therefore unlikely.\n\n3. **`NodePhase` allows further node insertions and awaiting.**\n   - `explicit_insertions_preserve_order_repetition_and_selection_snapshots` chains current, successors, then current again. It awaits and asserts the agent inputs, the read order and the dependencies.\n   - `task_messages_share_a_prefix_and_can_queue_another_node` chains current then `contents_of_node` and awaits. It asserts the inputs and dependencies.\n\n4. **`NodePhase` has no `context` method and no way back.** The three `compile_fail` doctests show `.context` is rejected after each entry method. The only methods that return an `Ask` from `NodePhase` return `NodePhase`. The tests chain them and the typed annotation confirms it.\n\nThe obligations are enforced by types, and the doctests plus the typed annotation check that enforcement. I found no uncovered obligation, and no marking gap among the supplied tests."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -139,19 +642,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "17502c32ad27a9112a8d72c00f2991f16c8852bba5ff133e7ee061a0fc8200f3"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.agent-calls.judge.phases"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "5fc32c80f395dbaeff4b0733b6d98b195a86589a73ac8d7adc8c1d92926229c5"
+          "value": "6a553dcaa6e1d1f03bb3a01667889d6eec22afbfd1b395e37659c47fac1c3f04"
         }
       ]
     },
@@ -183,57 +674,6 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
-            },
-            "selector": "fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "d6e99ab39b78a5458f7c497ed3f69a053fff9f8bb31ded9d41e7f9e70fa0ab90"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
-            },
-            "selector": "fn[task_messages_share_a_prefix_and_can_queue_another_node]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "3b7c4d6d55d57ac81836499a8040fc5ed0db7805790a9f75f39f7b078cb37371"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "struct[NodePhase]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "527ee6b89b350999503c7587571996ebcefc8e2e11f3fa726e4a07e4e3861e04"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
               "location": "crates/trust-but-verify/src/procedure.rs"
             },
             "selector": "impl[ValidationContext<'d,%20D>]#3/fn[ask]"
@@ -242,6 +682,23 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "b8b2eae7581183984c864d30ec9f6e3d2861dc9fae437a46d1870f95f68be4c8"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20ContextPhase>]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "d71db4bf9a3cd02b05a43b9c0ad9da6358f64cb25de6de624d90f33f79d679a2"
         }
       ]
     },
@@ -304,6 +761,74 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/procedure.rs"
             },
+            "selector": "macro@5781c4abb394"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "5781c4abb394b89553efd9c5558d9526bebec071676accc0fa6d63b012625b42"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "struct[NodePhase]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "527ee6b89b350999503c7587571996ebcefc8e2e11f3fa726e4a07e4e3861e04"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20ContextPhase>]/fn[context]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "40ee4435e784f834abea244c54a5bcb4d17de21f805197b5532e500d619b7876"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[into_node_phase]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "ebb52a7de2d27341a7738e6d03b87e4e6af5ee75aa66e4889138e91de9f2347f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
             "selector": "macro[await_phase]"
           }
         },
@@ -321,12 +846,182 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/procedure.rs"
             },
+            "selector": "struct[Ask]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b38a7967586a6b57f32ac9441bea1003e46964014583c1dbc2797f9896771465"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+            },
+            "selector": "fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "d6e99ab39b78a5458f7c497ed3f69a053fff9f8bb31ded9d41e7f9e70fa0ab90"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+            },
+            "selector": "fn[task_messages_share_a_prefix_and_can_queue_another_node]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "c2f2f4d13668e9ae1d913a2a967d4645c62826e58b7700f34cd98019816ab777"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": ""
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "4c5e0f39e477cf2d5d89ce94c12d9f95e7fe5c6b3d0f98d29d20b1245be6b597"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "180ab8720a9d4d6a628bd015b914a632495dc720a5771858bf5680d6a7116032"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "df2e8c5cb249144162a04519ee9898f96400ffb4fdaab260b6d52505a29eeccf"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/lib.rs"
+            },
+            "selector": "mod[request]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "382529a91125d3a651af5c12abf43720eea886dbade68168f53d02cd1040c706"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
             "selector": "impl[ValidationContext<'d,%20D>]#1/fn[node_id]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "ac6511cfdc35b43f12c5c1f6be2d9628566b3e313d73d1974b9a2b3ce69bd813"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "struct[ContextPhase]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "38eb48632ba183ca42f37eb48a05202c7223921264852f809778194b2fd58cc8"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[vet_answer]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "edbb68fcf0aa659ac3f79d6222ff6665aae046e9e8965d414cfec3cd8bc64428"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[message]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "d10563706c13b762836e6aa6ee765f77e6cdeffb71d93857cb45c8b3c8e2e883"
         }
       ]
     }

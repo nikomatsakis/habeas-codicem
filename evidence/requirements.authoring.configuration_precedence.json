@@ -1,8 +1,8 @@
 {
   "requirement": "{impl}`requirements.configuration.feature_sections`\n`--config <name>` MUST select a configuration for that invocation. Otherwise,\nauthoring MUST use the user's selection for the canonical project root, then the\nworkspace default, then the user's default. Named workspace configurations MUST\noverride same-named user configurations as complete records. Backend, model,\nconnection settings, and options MUST come from the selected record as a unit;\nfields MUST NOT be merged between records. Workspace-only authoring MUST work\nwithout a user configuration file. Missing configuration or an unknown selection\nMUST identify the relevant configuration file and point to documented examples.\n\nAn explicit Bedrock AWS profile or region MUST override the corresponding SDK\ndefault; omitted values MUST use standard AWS SDK resolution. Ollama MUST use\nits configured endpoint or `http://localhost:11434`. If `api_key_env` is set, its\nnamed variable MUST supply the credential; a missing or empty value MUST produce\nan error before a model request. OpenAI MUST use its configured endpoint or\n`https://api.openai.com/v1`, and MUST resolve `OPENAI_API_KEY` when neither\n`api_key` nor `api_key_env` is supplied.",
   "determination": true,
-  "rationale": "I found no test-adequacy gap in the reviewed tests. I did not request implementation source.\n\n**Selection and precedence**\n- `--config` selects a configuration for the invocation. `tests/authoring_cli.rs#fn[an_explicit_configuration_selects_the_nondefault_workspace_profile]` runs the CLI with `--config alternate` while the workspace default names a different model. It asserts that the request uses `alternate-model` and the alternate key.\n- `tests/configuration.rs#fn[workspace_defaults_and_configs_combine_with_existing_user_selections]` checks that an explicit name wins over a user project selection. In that test the project selection is `user` and `--config workspace` still selects `workspace`.\n- The same test and `tests/configuration.rs#fn[explicit_project_and_default_selections_choose_whole_configs]` cover the rest of the order:\n  - The user's project selection beats the workspace default.\n  - The workspace default beats the user default.\n  - A workspace default that names a user config resolves to the user config.\n  - With no workspace default, the user default is used.\n  - The project root is canonicalized, because the project selection is found when the root is passed as `root.join(\".\")`.\n\n**Whole-record replacement**\n- In `workspace_defaults_and_configs_combine_with_existing_user_selections`, the workspace `shared` config overrides the user `shared` config. The test asserts that the resolved record has `config_path` pointing at the workspace file and that `concurrency` is `None`, so user concurrency 7 does not leak through.\n- The same test asserts that options are only `{temperature: 0.8}`, so user `top_p` does not leak through. It also asserts the backend is Ollama with `endpoint.is_none()`.\n- `tests/configuration.rs#fn[workspace_configurations_accept_validate_and_override_concurrency]` checks the same replacement for concurrency across all three backends.\n\n**Workspace-only use**\n- `resolve_authoring_with_workspace_from` is called with no user config and succeeds. The CLI test `tests/authoring_cli.rs#fn[authoring_uses_nearest_workspace_configuration_without_a_user_file]` removes the user file and runs authoring end to end. It asserts that the workspace model and key are used and that no user config file is created.\n\n**Errors for missing configuration and unknown selection**\n- `explicit_project_and_default_selections_choose_whole_configs` covers an unknown explicit name and a missing configuration. Both errors name the config file and contain the `editing-the-file` documentation pointer.\n- `tests/configuration.rs#fn[configurations_without_any_selection_report_how_to_choose_one]` covers configs that exist but are not selected, and checks the pointer.\n- `tests/configuration.rs#fn[unknown_selections_name_the_file_that_made_them]` covers a dangling user default, a dangling project selection and a dangling workspace default. Each error names the file that made the selection, and an unknown `--config` names both files. The user-only case omits the workspace file.\n\n**Bedrock**\n- `crates/trust-but-verify/src/agent/providers.rs#mod[tests]/fn[omitted_bedrock_profile_and_region_use_standard_sdk_resolution]` compares three cases against the SDK's own resolution:\n  - Omitted values resolve as the SDK would with no override.\n  - An explicit profile resolves as the SDK would with that profile.\n  - An explicit region overrides the profile's region.\n- The CLI test `tests/authoring_cli.rs#fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]` asserts the explicit profile's credential and the configured region in the signed request.\n- `tests/authoring_cli.rs#fn[all_adapters_preserve_prompt_tools_and_evidence_with_default_connections]` asserts that omitted values use the environment credential and region.\n\n**Ollama and OpenAI**\n- A configured Ollama endpoint is used in the CLI tests. The default `http://localhost:11434` is asserted through `ollama.endpoint()` in `tests/configuration.rs#fn[backend_configuration_round_trips_without_materializing_defaults]`.\n- The OpenAI default `https://api.openai.com/v1` is asserted in `tests/configuration.rs#fn[openai_configuration_preserves_model_and_resolves_credentials]`. A configured OpenAI endpoint is used in the CLI tests.\n- `api_key_env` supplies the credential. This is asserted through the `Authorization: Bearer` header in `tests/authoring_cli.rs#fn[openai_responses_replays_tool_calls_and_records_usage]` and `tests/authoring_cli.rs#fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]`, and through `api_key_from` in `tests/configuration.rs#fn[ollama_authentication_resolves_separately_and_rejects_missing_values]`.\n- A missing or empty `api_key_env` variable gives an error before any model request. `tests/authoring_cli.rs#fn[missing_or_empty_api_key_env_fails_before_any_model_request]` covers both Ollama and OpenAI with an unset and an empty variable. It asserts a failing exit, stderr naming the variable, no connection to the listener, and unchanged evidence. `ollama_authentication_resolves_separately_and_rejects_missing_values` and `openai_configuration_preserves_model_and_resolves_credentials` repeat the check at unit level.\n- OpenAI resolves `OPENAI_API_KEY` when neither `api_key` nor `api_key_env` is supplied. The unit test asserts that `api_key_from` asks for exactly that name. The CLI test `all_adapters_preserve_prompt_tools_and_evidence_with_default_connections` sets `OPENAI_API_KEY` and asserts the bearer header.\n\nThe `tests/live_bedrock.rs` helpers `selected_config`, `select_config` and `credentials_available` are marked as tests but are not part of the adequacy argument. Every obligation is covered by the tests above.",
-  "references": "b10560e85fcf8055eb906a39153bfdf9668851e1dbff91cd67307fde1d25c6b6",
+  "rationale": "structural: No clause of `requirements.authoring.configuration_precedence` prescribes how the code is built, so no implementation root is needed. The clauses and why each is behavioral:\n\n- **Selection order.** \"`--config <name>` MUST select a configuration... then the user's selection for the canonical project root, then the workspace default, then the user's default.\" An implementation could resolve this in a single function or in several layered ones and give the same selection. No library, type or signature is named.\n- **Workspace override and unit semantics.** \"Named workspace configurations MUST override same-named user configurations as complete records... fields MUST NOT be merged.\" This constrains the resulting values, not the data structure. Any representation that returns whole records gives the same result.\n- **Workspace-only operation and error content.** \"Workspace-only authoring MUST work without a user configuration file\" and \"MUST identify the relevant configuration file and point to documented examples.\" Both describe what the user observes.\n- **Provider defaults.** The clauses cover the Bedrock profile and region override with \"standard AWS SDK resolution\", the Ollama default endpoint, `api_key_env` errors raised before a model request, the OpenAI default endpoint and the `OPENAI_API_KEY` fallback. The AWS clause names a behavior, not a mandated crate or API. An implementation that reproduced the same resolution results by other means would still satisfy it. The other clauses name observable endpoints, credentials and error timing.\n\nThe requirement also carries an `{impl}` reference to `requirements.configuration.feature_sections`. That requirement asks each feature to define its section name, typed structure, keys, defaults, validation and precedence rules. The `{impl}` reference only links this requirement to that one, and the obligation concerns the documented feature specification. This requirement's own text adds no code-structure obligation, and the review roots are empty.\n\nbehavioral: I found no test-adequacy gap. Each obligation in `requirements.authoring.configuration_precedence` maps to a test with assertions that enforce it.\n\n- **`--config` selection:** `tests/configuration.rs#fn[explicit_project_and_default_selections_choose_whole_configs]` selects `explicit` while a project selection and a default both exist, and the explicit name wins. The CLI test `tests/authoring_cli.rs#fn[an_explicit_configuration_selects_the_nondefault_workspace_profile]` passes `--config alternate` and checks the request model and key. It also checks that the default workspace config, which points at a dead endpoint, is not used.\n- **Precedence order:** `tests/configuration.rs#fn[workspace_defaults_and_configs_combine_with_existing_user_selections]` covers four cases:\n  - The workspace default beats the user default.\n  - The user's project selection beats the workspace default.\n  - With the project selection cleared, a workspace default naming a user config resolves to that user config.\n  - With no workspace default, the user default is used.\n  \n  `explicit_project_and_default_selections_choose_whole_configs` covers a project selection that beats the user default. It also canonicalizes the root through `root.join(\".\")`.\n- **Complete-record override, no field merging:** In `workspace_defaults_and_configs_combine_with_existing_user_selections`, the workspace `shared` record replaces the user `shared` record. The assertions show no leftover concurrency (`None`), only the workspace options, the ollama backend, and no endpoint from the user record. `workspace_configurations_accept_validate_and_override_concurrency` checks that the user's `concurrency = 5` does not leak into a workspace record. It does this across all three backends, with and without a workspace concurrency.\n- **Workspace-only without a user file:** There is a unit case with `None` as the user config. The CLI test `authoring_uses_nearest_workspace_configuration_without_a_user_file` removes the user config file, runs the command, and asserts the workspace model and key reach the request. It also asserts that no user file is created.\n- **Missing or unknown selection errors:** The errors name the relevant file and point to `editing-the-file`.\n  - `explicit_project_and_default_selections_choose_whole_configs` covers an unknown `--config` name and a missing configuration. It checks the config path and the `editing-the-file` pointer.\n  - `configurations_without_any_selection_report_how_to_choose_one` covers configurations that exist but none is selected.\n  - `unknown_selections_name_the_file_that_made_them` covers a dangling user default, a dangling project selection, a dangling workspace default, an unknown explicit name, and the user-only case. It asserts which file the error names.\n- **Bedrock profile and region:** `providers.rs#fn[omitted_bedrock_profile_and_region_use_standard_sdk_resolution]` covers three cases. Omitted values equal plain SDK resolution. An explicit profile equals the SDK `profile_name` resolution. An explicit region overrides the profile and environment region. The CLI tests `bedrock_cli_uses_selected_profile_region_and_converse_tools` and `all_adapters_preserve_prompt_tools_and_evidence_with_default_connections` check the signed credential and region in the request headers. They cover an explicit profile and region, and the omitted case where the environment's region and credentials are used instead of the file defaults.\n- **Ollama endpoint:** The default `http://localhost:11434` is asserted in `backend_configuration_round_trips_without_materializing_defaults`. A configured endpoint is asserted in several tests, including the CLI tests that hit a mock server.\n- **`api_key_env`:** `ollama_authentication_resolves_separately_and_rejects_missing_values` checks a missing value, an empty value, and a present value. The CLI test `missing_or_empty_api_key_env_fails_before_any_model_request` runs ollama and openai with the variable unset and set to empty. It asserts a nonzero exit, that stderr names the variable, that the listener was never contacted, and that the evidence is unchanged. That covers the \"error before a model request\" clause.\n- **OpenAI:** `openai_configuration_preserves_model_and_resolves_credentials` asserts the default endpoint `https://api.openai.com/v1`, that the default key is read from `OPENAI_API_KEY`, and a custom endpoint and custom `api_key_env`. The CLI test `all_adapters_preserve_prompt_tools_and_evidence_with_default_connections` checks that `OPENAI_API_KEY` supplies the bearer token when neither `api_key` nor `api_key_env` is set.\n\nThe tests are marked with `{test}` references. I found no unmarked relevant tests and no ambiguity that changes the verdict.",
+  "references": "7103e7fd0f5d596893d332c23ee1723f59f066d495d2eba81ae4061922c1d8ef",
   "inputs": [
     {
       "requirements": "requirements.authoring.configuration_precedence",
@@ -32,6 +32,27 @@
       ]
     },
     {
+      "requirements": "requirements.configuration.feature_sections",
+      "matches": [
+        "requirements.configuration.feature_sections"
+      ],
+      "text": [
+        ":::{req} feature_sections",
+        "Each configurable feature MUST define the name and typed data structure of its",
+        "user section and any supported project section, citing these common configuration",
+        "requirements. The feature MUST specify its supported keys, value types, defaults,",
+        "validation rules, and the precedence or combination rules for user settings,",
+        "project settings, and invocation options. It MUST specify the behavior of an",
+        "absent section and which operations require that section.",
+        "",
+        "Feature-specific fields MUST stay within the feature's section. A feature MUST",
+        "NOT reinterpret another feature's settings or change the shared file locations",
+        "or schema version. A feature MAY define a provider-owned options map, but MUST",
+        "document that boundary and how those options are validated.",
+        ":::"
+      ]
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/providers.rs",
       "item": "mod[tests]/fn[explicit_bedrock_credentials_reach_the_sdk_without_the_default_chain]",
       "hash": "4ba18f5990c6522b0bc64e543e5829e9030f183a418ea9a6a7636754b476d800"
@@ -44,7 +65,7 @@
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]",
-      "hash": "30a4bbe0281bcaab3304902e1cdc689db00f712739bd6c79978e075bb3611c36"
+      "hash": "e0deb8dd7515d15aace0005835b652ad8e791120badd5e2d8d4743c4b7b294ef"
     },
     {
       "file": "tests/authoring_cli.rs",
@@ -59,12 +80,12 @@
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]",
-      "hash": "fc4fa4f250b30b409db9148c700f314a878b246281bb60f1a668dd10c79e04a4"
+      "hash": "f8520cf9ca546d090f86229eb654348be29397ea2fd3d3b462f205fd51145712"
     },
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[all_adapters_preserve_prompt_tools_and_evidence_with_default_connections]",
-      "hash": "8c318a116d09a06f3884f3ee254c21a125825aadab9413abb4592d1c469f37c2"
+      "hash": "211aae35d3c5943f83f23a05804ececd367dc3520a3a922c4dcc0d0ef1c8cd40"
     },
     {
       "file": "tests/authoring_cli.rs",
@@ -74,7 +95,7 @@
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[openai_responses_replays_tool_calls_and_records_usage]",
-      "hash": "769d2800a7800584a8c940d39385ee6f226dcc532bf2c586f721c3474efec704"
+      "hash": "eec0229912407844fab6244fd0268fc9a8554f246029eb2539c7548881e7c7d1"
     },
     {
       "file": "tests/configuration.rs",
@@ -135,9 +156,463 @@
       "file": "tests/live_bedrock.rs",
       "item": "fn[credentials_available]",
       "hash": "a7873ca17f2ee02692cde9eec15128cfbee5fb23f3164e8da28351316ac02eec"
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]/section[Configuration]/block@292ae094ec12",
+      "hash": "fd7712945c0499e9eb12a353d80a8b5f6e4e23c95e9fd5ac8def645142dcc4aa"
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]/section[Configuration]/section[Serialized%20configuration%20data%20model]/block@0b5df95c3799",
+      "hash": "813035e5f27b4a753a796b042ab6c884daaef3e7659e34168dcade0024d63f50"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.authoring.configuration_precedence"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "7103e7fd0f5d596893d332c23ee1723f59f066d495d2eba81ae4061922c1d8ef"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.authoring.configuration_precedence"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "515fa5b8169e15aad875b0184506976aa135ec234ea8000cb429b46d4eca4fb0"
+            }
+          ]
+        },
+        {
+          "OutgoingEdges": [
+            {
+              "Requirement": "requirements.authoring.configuration_precedence"
+            },
+            "Implements",
+            {
+              "scheme": "node-path-set-sha256-v1",
+              "value": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.configuration.feature_sections"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "7e69cd13d68cdef91d4070b00f619c3aa6b96110bbea2599b4f86cb71e33d355"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "No clause of `requirements.authoring.configuration_precedence` prescribes how the code is built, so no implementation root is needed. The clauses and why each is behavioral:\n\n- **Selection order.** \"`--config <name>` MUST select a configuration... then the user's selection for the canonical project root, then the workspace default, then the user's default.\" An implementation could resolve this in a single function or in several layered ones and give the same selection. No library, type or signature is named.\n- **Workspace override and unit semantics.** \"Named workspace configurations MUST override same-named user configurations as complete records... fields MUST NOT be merged.\" This constrains the resulting values, not the data structure. Any representation that returns whole records gives the same result.\n- **Workspace-only operation and error content.** \"Workspace-only authoring MUST work without a user configuration file\" and \"MUST identify the relevant configuration file and point to documented examples.\" Both describe what the user observes.\n- **Provider defaults.** The clauses cover the Bedrock profile and region override with \"standard AWS SDK resolution\", the Ollama default endpoint, `api_key_env` errors raised before a model request, the OpenAI default endpoint and the `OPENAI_API_KEY` fallback. The AWS clause names a behavior, not a mandated crate or API. An implementation that reproduced the same resolution results by other means would still satisfy it. The other clauses name observable endpoints, credentials and error timing.\n\nThe requirement also carries an `{impl}` reference to `requirements.configuration.feature_sections`. That requirement asks each feature to define its section name, typed structure, keys, defaults, validation and precedence rules. The `{impl}` reference only links this requirement to that one, and the obligation concerns the documented feature specification. This requirement's own text adds no code-structure obligation, and the review roots are empty."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.authoring.configuration_precedence"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "7103e7fd0f5d596893d332c23ee1723f59f066d495d2eba81ae4061922c1d8ef"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.authoring.configuration_precedence"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "515fa5b8169e15aad875b0184506976aa135ec234ea8000cb429b46d4eca4fb0"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/providers.rs"
+                },
+                "selector": "mod[tests]/fn[explicit_bedrock_credentials_reach_the_sdk_without_the_default_chain]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "c6e7e02ea3dba49a6071d7bd44f82e68fe1e7d4cb5e14a447b7cc68f39ed62c1"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/providers.rs"
+                },
+                "selector": "mod[tests]/fn[omitted_bedrock_profile_and_region_use_standard_sdk_resolution]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "a45c8e1f9a06bb26d56178714d812d6d46870b2ab516dd34c18438df6280800a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/authoring_cli.rs"
+                },
+                "selector": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "e0deb8dd7515d15aace0005835b652ad8e791120badd5e2d8d4743c4b7b294ef"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/authoring_cli.rs"
+                },
+                "selector": "fn[authoring_uses_nearest_workspace_configuration_without_a_user_file]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "599844a416a230f2787be5f7bcc0f15ac75515226f990834fd478404c5448e33"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/authoring_cli.rs"
+                },
+                "selector": "fn[an_explicit_configuration_selects_the_nondefault_workspace_profile]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "d13479885bb92749635b0c7ee3c8d4a0af27751ee3d4e339066ed218b15fef64"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/authoring_cli.rs"
+                },
+                "selector": "fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f8520cf9ca546d090f86229eb654348be29397ea2fd3d3b462f205fd51145712"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/authoring_cli.rs"
+                },
+                "selector": "fn[all_adapters_preserve_prompt_tools_and_evidence_with_default_connections]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "211aae35d3c5943f83f23a05804ececd367dc3520a3a922c4dcc0d0ef1c8cd40"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/authoring_cli.rs"
+                },
+                "selector": "fn[missing_or_empty_api_key_env_fails_before_any_model_request]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "3993e5fa9dc55fd7ee4b22a49d09c1c5346cd3df719d22da799bbd228c440298"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/authoring_cli.rs"
+                },
+                "selector": "fn[openai_responses_replays_tool_calls_and_records_usage]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f57589b2e5b4f8c6b27ed9a4b5eeef341b62db04398c059076185cee372271f3"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/configuration.rs"
+                },
+                "selector": "fn[backend_configuration_round_trips_without_materializing_defaults]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "7ca17bb2973b249554d2b3596889dd7011afaa21f69224953f6d065a40359724"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/configuration.rs"
+                },
+                "selector": "fn[authoring_concurrency_defaults_overrides_and_invalid_values]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "63eabea03cd37b19d8e7119a6b382cde0bfd165e4807445eeec5fcee30f6ae2e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/configuration.rs"
+                },
+                "selector": "fn[explicit_project_and_default_selections_choose_whole_configs]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "9b6f26d17ac393e367ff3451e746631a7acd51e4122fcb0a23647daeb9643285"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/configuration.rs"
+                },
+                "selector": "fn[configurations_without_any_selection_report_how_to_choose_one]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "2c76e33338d66e1745be1c2cc335dd05a9c30a145bec6bedfa14341ec6e49943"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/configuration.rs"
+                },
+                "selector": "fn[ollama_authentication_resolves_separately_and_rejects_missing_values]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "e1cd6e598872faf5273d6c20ebfd83815b715b2ae936f49e4bdeb6bac578862c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/configuration.rs"
+                },
+                "selector": "fn[workspace_defaults_and_configs_combine_with_existing_user_selections]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "20892c1c9a1110b4f7497fa11602cf685966ec8a59edd86ccdc43d1dc70af7f1"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/configuration.rs"
+                },
+                "selector": "fn[unknown_selections_name_the_file_that_made_them]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "6c888f7660d28b9c4321353b4aef55a3aef6e320cc0b21f3c404e8fe7bea5e94"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/configuration.rs"
+                },
+                "selector": "fn[workspace_configurations_accept_validate_and_override_concurrency]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "8f26077cf1963093fb58bb543ac945427f6513efcaa412ef009d1dcedd6bb34c"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/configuration.rs"
+                },
+                "selector": "fn[openai_configuration_preserves_model_and_resolves_credentials]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "4b8c2e93b7d4fa5507be8ba0f41b539908d15b85b59c964f54d1fa129a777c56"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/live_bedrock.rs"
+                },
+                "selector": "fn[selected_config]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "741f598266f20c82b51f5df06ebcfab4ce5fcc3f0f80a763c1c568a0542f52e6"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/live_bedrock.rs"
+                },
+                "selector": "fn[select_config]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "ebc03768315c3b195b11d48f9e44cef01fbb3be2e10dd12d86b5a82ae2608b4b"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "tests/live_bedrock.rs"
+                },
+                "selector": "fn[credentials_available]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "a7873ca17f2ee02692cde9eec15128cfbee5fb23f3164e8da28351316ac02eec"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "I found no test-adequacy gap. Each obligation in `requirements.authoring.configuration_precedence` maps to a test with assertions that enforce it.\n\n- **`--config` selection:** `tests/configuration.rs#fn[explicit_project_and_default_selections_choose_whole_configs]` selects `explicit` while a project selection and a default both exist, and the explicit name wins. The CLI test `tests/authoring_cli.rs#fn[an_explicit_configuration_selects_the_nondefault_workspace_profile]` passes `--config alternate` and checks the request model and key. It also checks that the default workspace config, which points at a dead endpoint, is not used.\n- **Precedence order:** `tests/configuration.rs#fn[workspace_defaults_and_configs_combine_with_existing_user_selections]` covers four cases:\n  - The workspace default beats the user default.\n  - The user's project selection beats the workspace default.\n  - With the project selection cleared, a workspace default naming a user config resolves to that user config.\n  - With no workspace default, the user default is used.\n  \n  `explicit_project_and_default_selections_choose_whole_configs` covers a project selection that beats the user default. It also canonicalizes the root through `root.join(\".\")`.\n- **Complete-record override, no field merging:** In `workspace_defaults_and_configs_combine_with_existing_user_selections`, the workspace `shared` record replaces the user `shared` record. The assertions show no leftover concurrency (`None`), only the workspace options, the ollama backend, and no endpoint from the user record. `workspace_configurations_accept_validate_and_override_concurrency` checks that the user's `concurrency = 5` does not leak into a workspace record. It does this across all three backends, with and without a workspace concurrency.\n- **Workspace-only without a user file:** There is a unit case with `None` as the user config. The CLI test `authoring_uses_nearest_workspace_configuration_without_a_user_file` removes the user config file, runs the command, and asserts the workspace model and key reach the request. It also asserts that no user file is created.\n- **Missing or unknown selection errors:** The errors name the relevant file and point to `editing-the-file`.\n  - `explicit_project_and_default_selections_choose_whole_configs` covers an unknown `--config` name and a missing configuration. It checks the config path and the `editing-the-file` pointer.\n  - `configurations_without_any_selection_report_how_to_choose_one` covers configurations that exist but none is selected.\n  - `unknown_selections_name_the_file_that_made_them` covers a dangling user default, a dangling project selection, a dangling workspace default, an unknown explicit name, and the user-only case. It asserts which file the error names.\n- **Bedrock profile and region:** `providers.rs#fn[omitted_bedrock_profile_and_region_use_standard_sdk_resolution]` covers three cases. Omitted values equal plain SDK resolution. An explicit profile equals the SDK `profile_name` resolution. An explicit region overrides the profile and environment region. The CLI tests `bedrock_cli_uses_selected_profile_region_and_converse_tools` and `all_adapters_preserve_prompt_tools_and_evidence_with_default_connections` check the signed credential and region in the request headers. They cover an explicit profile and region, and the omitted case where the environment's region and credentials are used instead of the file defaults.\n- **Ollama endpoint:** The default `http://localhost:11434` is asserted in `backend_configuration_round_trips_without_materializing_defaults`. A configured endpoint is asserted in several tests, including the CLI tests that hit a mock server.\n- **`api_key_env`:** `ollama_authentication_resolves_separately_and_rejects_missing_values` checks a missing value, an empty value, and a present value. The CLI test `missing_or_empty_api_key_env_fails_before_any_model_request` runs ollama and openai with the variable unset and set to empty. It asserts a nonzero exit, that stderr names the variable, that the listener was never contacted, and that the evidence is unchanged. That covers the \"error before a model request\" clause.\n- **OpenAI:** `openai_configuration_preserves_model_and_resolves_credentials` asserts the default endpoint `https://api.openai.com/v1`, that the default key is read from `OPENAI_API_KEY`, and a custom endpoint and custom `api_key_env`. The CLI test `all_adapters_preserve_prompt_tools_and_evidence_with_default_connections` checks that `OPENAI_API_KEY` supplies the bearer token when neither `api_key` nor `api_key_env` is set.\n\nThe tests are marked with `{test}` references. I found no unmarked relevant tests and no ambiguity that changes the verdict."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -147,19 +622,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "b10560e85fcf8055eb906a39153bfdf9668851e1dbff91cd67307fde1d25c6b6"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.authoring.configuration_precedence"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "3dbb06b8839e9e3067c580c6b6896eec9c16fb596c09d758fe381cfe3d645b2f"
+          "value": "7103e7fd0f5d596893d332c23ee1723f59f066d495d2eba81ae4061922c1d8ef"
         }
       ]
     },
@@ -171,6 +634,29 @@
         {
           "scheme": "habeas-input-v1",
           "value": "515fa5b8169e15aad875b0184506976aa135ec234ea8000cb429b46d4eca4fb0"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.authoring.configuration_precedence"
+        },
+        "Implements",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.configuration.feature_sections"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "7e69cd13d68cdef91d4070b00f619c3aa6b96110bbea2599b4f86cb71e33d355"
         }
       ]
     },
@@ -221,7 +707,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "30a4bbe0281bcaab3304902e1cdc689db00f712739bd6c79978e075bb3611c36"
+          "value": "e0deb8dd7515d15aace0005835b652ad8e791120badd5e2d8d4743c4b7b294ef"
         }
       ]
     },
@@ -272,7 +758,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "fc4fa4f250b30b409db9148c700f314a878b246281bb60f1a668dd10c79e04a4"
+          "value": "f8520cf9ca546d090f86229eb654348be29397ea2fd3d3b462f205fd51145712"
         }
       ]
     },
@@ -289,7 +775,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "8c318a116d09a06f3884f3ee254c21a125825aadab9413abb4592d1c469f37c2"
+          "value": "211aae35d3c5943f83f23a05804ececd367dc3520a3a922c4dcc0d0ef1c8cd40"
         }
       ]
     },
@@ -323,7 +809,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "7237b4f467af9ae685aa91ba9fd4a61f8cce1e5fb9758e9560fbdeffab5df841"
+          "value": "f57589b2e5b4f8c6b27ed9a4b5eeef341b62db04398c059076185cee372271f3"
         }
       ]
     },
@@ -528,6 +1014,52 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "a7873ca17f2ee02692cde9eec15128cfbee5fb23f3164e8da28351316ac02eec"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.configuration.feature_sections"
+        },
+        "Implements",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "0e13c2e59ce4d779364df03945b02dd15699c0599bbe2fab3faaa60c2023055b"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "md/requirements/authoring.md"
+            },
+            "selector": "section[Authoring%20evidence]/section[Configuration]/block@292ae094ec12"
+          }
+        },
+        {
+          "scheme": "markdown-structural-v1:own-v1",
+          "value": "292ae094ec12c748fcaa9187f4edf463a4857985c530987563667d4f95ef1b5e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "md/requirements/authoring.md"
+            },
+            "selector": "section[Authoring%20evidence]/section[Configuration]/section[Serialized%20configuration%20data%20model]/block@0b5df95c3799"
+          }
+        },
+        {
+          "scheme": "markdown-structural-v1:own-v1",
+          "value": "0b5df95c3799abb52ebe3c6450301a09a24b1bcabe0e5ef7ac35595a8d2b488d"
         }
       ]
     }

@@ -1,8 +1,8 @@
 {
   "requirement": "When it delivers a formatted page, the agent harness opens a [`finish_search`](#accounting-for-search-excerpts-in-an-agent-session) session for that page and associates each entry's tag with its node ID and the fingerprint from the snapshot used for the excerpt. Finishing the page records the selected dependencies using those saved observations. Direct Rust search calls return occurrences without opening a session or recording excerpt dependencies.",
   "determination": true,
-  "rationale": "I found no test-adequacy gap for `requirements.sdk.graph.search.agent_search_accounting`. I did not read the implementation source. The snippets I used came from a text search of the test file, and I read the three supplied tests in full.\n\nThe requirement has four obligations.\n\n1. **A session per delivered page.** The harness opens a `finish_search` session for each formatted page it delivers.\n   - `search_obligations_follow_delivery_and_keep_the_original_snapshot` checks `outstanding_searches()` after delivering `search_text` and `search_structure` pages. It also checks the page delivered by `get_next_page`: `outstanding_searches().len()` is 2, then 0 after each is finished. Separate pages get distinct `search_id`s.\n   - `search_groups_exact_occurrences_and_records_the_selected_declaration` finishes a `search_text` page with `used:[\"2\"]`.\n   - `structural_tags_select_only_the_original_enclosing_item` finishes a `search_structure` page.\n\n2. **Each tag maps to its node ID and the fingerprint from the snapshot used for the excerpt.**\n   - The first test rewrites the file (`changed after search`) after the search. Finishing page one with the first tag yields `Dependency::Node(expected_id, expected fingerprint)`, computed from the original content. The later page's hit is likewise checked against its node ID and fingerprint from the original outline, even though the file changed before delivery.\n   - The structural test rewrites the file to `fn two(){changed();}` before finishing. It still expects the original `fn[two]` fingerprint and node, so the saved observation is used rather than a re-read.\n   - The text test checks that tag `\"2\"` yields node `code.rs#const[B]` with `results.matches[1].item.fingerprint()`.\n   - The first test asserts `reads == 0` and the structural test asserts `reads == 1`, consistent with finishing not re-reading source.\n\n3. **Finishing records only the selected dependencies.**\n   - Finishing with `used:[]` returns empty dependencies in all three tests.\n   - Finishing with a selected tag returns exactly the one dependency.\n   - Finishing twice with the same selection gives the same result.\n   - An unknown tag, a foreign session, and malformed arguments are rejected.\n   - Delivering a page records no dependencies (`result.dependencies.is_empty()`).\n\n4. **Direct Rust search calls open no session and record no dependencies.**\n   - The structural test calls `tools.search_structure` directly while a `SessionTools` exists, then asserts `session.outstanding_searches().is_empty()`.\n   - The direct `search_text` call in the text test only returns occurrences (node, span, text). That test creates its session afterwards, so it has no session assertion of its own. I did not treat this as a gap, because the structural test exercises the same direct-call contract and the returned occurrences carry no dependency state.\n\nI found no counterexample that the reviewed tests would accept.",
-  "references": "88b9fe7f98a660ad503e8e7a1dd5a809231ba31891140b50eeff596b62cc0b6e",
+  "rationale": "structural: `requirements.sdk.graph.search.agent_search_accounting` has no implementation roots, and I found no structural obligation that needs one. I checked each clause for an alternative implementation that keeps the observable behavior but breaks the clause:\n\n- **\"opens a `finish_search` session for that page\"**: this describes what the harness does when it delivers a page. It names no library, type, signature or interface. Any internal design that opens a session per delivered page and closes it through the `finish_search` tool behaves the same. The agent-side code in `crates/trust-but-verify/src/agent/pages.rs` (`Pages::finish_search`) is one such design, but the text doesn't require it.\n- **\"associates each entry's tag with its node ID and the fingerprint from the snapshot used for the excerpt\"** and **\"records the selected dependencies using those saved observations\"**: these state what is recorded. The recorded node ID and fingerprint must be the ones the excerpt was produced from, not a fresh read at finish time. That is a data-correctness requirement, not a prescribed field, type or interface. How the pairs are stored is discretionary.\n- **\"Direct Rust search calls return occurrences without opening a session or recording excerpt dependencies\"**: this is observable behavior. Direct calls return occurrences and have no side effects on sessions or dependencies. The text doesn't prescribe a delegation or layering.\n\nEvery clause specifies behavior, so no {impl} marker is missing. Whether the behavior is correct is a matter for the behavioral and test criteria.\n\nbehavioral: The three marked tests cover each obligation in `requirements.sdk.graph.search.agent_search_accounting`.\n\n**Page delivery opens a session.**\n- `search_obligations_follow_delivery_and_keep_the_original_snapshot` shows that a delivered `search_text` page, or a `search_structure` page with an empty result, adds its `search_id` to `outstanding_searches()`. An empty result still gets a session.\n- `finish_search` removes it from that list. A capped page is closed the same way. A finish from a different session, or with an unknown id, errors.\n- `get_next_page` delivers a new page with its own `search_id`. The test asserts it differs from the first page's id and that the page has to be finished too.\n- `search_groups_exact_occurrences_and_records_the_selected_declaration` and `structural_tags_select_only_the_original_enclosing_item` also assert that dispatching a search adds no dependencies, so nothing is recorded until the page is finished.\n\n**Each tag keeps its node ID and the snapshot fingerprint.**\n- In `search_obligations_follow_delivery_and_keep_the_original_snapshot`, the source file is overwritten after the search and before `finish_search`. The recorded dependency is still `Dependency::Node(node id, fingerprint of the original outline item)`.\n- The same test checks a later page delivered after the change. Its hit node and fingerprint come from the original outline.\n- `structural_tags_select_only_the_original_enclosing_item` overwrites the file with `fn two(){changed();}` before finishing. It still expects the `fn[two]` fingerprint taken from the original file. It also asserts the node is `code.rs#fn[two]`, not `fn[one]`.\n- `search_groups_exact_occurrences_and_records_the_selected_declaration` asserts the dependency uses the selected hit's node and `results.matches[1].item.fingerprint()`.\n\n**Finishing records the selected dependencies.**\n- Finishing with `used:[]` records nothing. Finishing with a selected tag records exactly that node and fingerprint.\n- A repeated finish returns the same dependencies. An unknown tag errors, and malformed inputs are rejected.\n- The tests also assert that the stored observations are used rather than re-reading source: `domain.0.lock().unwrap().reads` is 0 in the first test and 1 in the structural test. The one read there is the explicit `read_node` call.\n\n**Direct Rust search calls.**\n- `structural_tags_select_only_the_original_enclosing_item` and `search_groups_exact_occurrences_and_records_the_selected_declaration` call `search_structure` and `search_text` directly on `ProjectSources`. They get plain hit lists, with node, span and text, and no session or dependency fields.\n- After the direct structural call, `session.outstanding_searches().is_empty()` is asserted. That check is a little indirect, but it is a relevant assertion.\n\nI found no uncovered behavioral obligation and no missing markers. I did not read the implementation source.",
+  "references": "eef117b1dd771210db1cda529722a56a6b443028d370b1fac1f6366b9b32f7d5",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.search.agent_search_accounting",
@@ -18,12 +18,12 @@
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]",
-      "hash": "d50fc16c3dbbf946e0b67d84304739d14998f92261ecab2f9a492b0c4fd9dcbe"
+      "hash": "1ea8d7ead0738b7f1e1ef1bb9b9ca39fd38dbaa1fb143a2c725511477b6c7179"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]",
-      "hash": "51da68bc4a12b4ba257787791938819f709b3fe5b32fd8652f22127f9dce1f60"
+      "hash": "bba9cf6f0b10888a512bf213b967a0aa2bd218f6033032c613dd48d34fbcc43a"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
@@ -31,7 +31,134 @@
       "hash": "31b2ed3b415ba9a7cdf8e933ae5247c8b1bcd9430badda6ea6b37f9d178a619e"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.search.agent_search_accounting"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "eef117b1dd771210db1cda529722a56a6b443028d370b1fac1f6366b9b32f7d5"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.search.agent_search_accounting"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "99f0971b8b00a5b4c09b913007184b51b7a529ef9d1fb67ed16e6819fa3bdc82"
+            }
+          ]
+        },
+        {
+          "OutgoingEdges": [
+            {
+              "Requirement": "requirements.sdk.graph.search.agent_search_accounting"
+            },
+            "Implements",
+            {
+              "scheme": "node-path-set-sha256-v1",
+              "value": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "`requirements.sdk.graph.search.agent_search_accounting` has no implementation roots, and I found no structural obligation that needs one. I checked each clause for an alternative implementation that keeps the observable behavior but breaks the clause:\n\n- **\"opens a `finish_search` session for that page\"**: this describes what the harness does when it delivers a page. It names no library, type, signature or interface. Any internal design that opens a session per delivered page and closes it through the `finish_search` tool behaves the same. The agent-side code in `crates/trust-but-verify/src/agent/pages.rs` (`Pages::finish_search`) is one such design, but the text doesn't require it.\n- **\"associates each entry's tag with its node ID and the fingerprint from the snapshot used for the excerpt\"** and **\"records the selected dependencies using those saved observations\"**: these state what is recorded. The recorded node ID and fingerprint must be the ones the excerpt was produced from, not a fresh read at finish time. That is a data-correctness requirement, not a prescribed field, type or interface. How the pairs are stored is discretionary.\n- **\"Direct Rust search calls return occurrences without opening a session or recording excerpt dependencies\"**: this is observable behavior. Direct calls return occurrences and have no side effects on sessions or dependencies. The text doesn't prescribe a delegation or layering.\n\nEvery clause specifies behavior, so no {impl} marker is missing. Whether the behavior is correct is a matter for the behavioral and test criteria."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.search.agent_search_accounting"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "eef117b1dd771210db1cda529722a56a6b443028d370b1fac1f6366b9b32f7d5"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.search.agent_search_accounting"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "99f0971b8b00a5b4c09b913007184b51b7a529ef9d1fb67ed16e6819fa3bdc82"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+                },
+                "selector": "mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "1ea8d7ead0738b7f1e1ef1bb9b9ca39fd38dbaa1fb143a2c725511477b6c7179"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+                },
+                "selector": "mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "bba9cf6f0b10888a512bf213b967a0aa2bd218f6033032c613dd48d34fbcc43a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+                },
+                "selector": "mod[tests]/fn[search_groups_exact_occurrences_and_records_the_selected_declaration]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "31b2ed3b415ba9a7cdf8e933ae5247c8b1bcd9430badda6ea6b37f9d178a619e"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The three marked tests cover each obligation in `requirements.sdk.graph.search.agent_search_accounting`.\n\n**Page delivery opens a session.**\n- `search_obligations_follow_delivery_and_keep_the_original_snapshot` shows that a delivered `search_text` page, or a `search_structure` page with an empty result, adds its `search_id` to `outstanding_searches()`. An empty result still gets a session.\n- `finish_search` removes it from that list. A capped page is closed the same way. A finish from a different session, or with an unknown id, errors.\n- `get_next_page` delivers a new page with its own `search_id`. The test asserts it differs from the first page's id and that the page has to be finished too.\n- `search_groups_exact_occurrences_and_records_the_selected_declaration` and `structural_tags_select_only_the_original_enclosing_item` also assert that dispatching a search adds no dependencies, so nothing is recorded until the page is finished.\n\n**Each tag keeps its node ID and the snapshot fingerprint.**\n- In `search_obligations_follow_delivery_and_keep_the_original_snapshot`, the source file is overwritten after the search and before `finish_search`. The recorded dependency is still `Dependency::Node(node id, fingerprint of the original outline item)`.\n- The same test checks a later page delivered after the change. Its hit node and fingerprint come from the original outline.\n- `structural_tags_select_only_the_original_enclosing_item` overwrites the file with `fn two(){changed();}` before finishing. It still expects the `fn[two]` fingerprint taken from the original file. It also asserts the node is `code.rs#fn[two]`, not `fn[one]`.\n- `search_groups_exact_occurrences_and_records_the_selected_declaration` asserts the dependency uses the selected hit's node and `results.matches[1].item.fingerprint()`.\n\n**Finishing records the selected dependencies.**\n- Finishing with `used:[]` records nothing. Finishing with a selected tag records exactly that node and fingerprint.\n- A repeated finish returns the same dependencies. An unknown tag errors, and malformed inputs are rejected.\n- The tests also assert that the stored observations are used rather than re-reading source: `domain.0.lock().unwrap().reads` is 0 in the first test and 1 in the structural test. The one read there is the explicit `read_node` call.\n\n**Direct Rust search calls.**\n- `structural_tags_select_only_the_original_enclosing_item` and `search_groups_exact_occurrences_and_records_the_selected_declaration` call `search_structure` and `search_text` directly on `ProjectSources`. They get plain hit lists, with node, span and text, and no session or dependency fields.\n- After the direct structural call, `session.outstanding_searches().is_empty()` is asserted. That check is a little indirect, but it is a relevant assertion.\n\nI found no uncovered behavioral obligation and no missing markers. I did not read the implementation source."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -41,19 +168,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "88b9fe7f98a660ad503e8e7a1dd5a809231ba31891140b50eeff596b62cc0b6e"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.search.agent_search_accounting"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "6abe7eb178aea2a2097f2fa18c102a4d44b9d9b6ed36789b2550f92e622879d6"
+          "value": "eef117b1dd771210db1cda529722a56a6b443028d370b1fac1f6366b9b32f7d5"
         }
       ]
     },
@@ -65,6 +180,18 @@
         {
           "scheme": "habeas-input-v1",
           "value": "99f0971b8b00a5b4c09b913007184b51b7a529ef9d1fb67ed16e6819fa3bdc82"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.sdk.graph.search.agent_search_accounting"
+        },
+        "Implements",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
         }
       ]
     },
@@ -81,7 +208,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "d50fc16c3dbbf946e0b67d84304739d14998f92261ecab2f9a492b0c4fd9dcbe"
+          "value": "1ea8d7ead0738b7f1e1ef1bb9b9ca39fd38dbaa1fb143a2c725511477b6c7179"
         }
       ]
     },
@@ -98,7 +225,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "51da68bc4a12b4ba257787791938819f709b3fe5b32fd8652f22127f9dce1f60"
+          "value": "bba9cf6f0b10888a512bf213b967a0aa2bd218f6033032c613dd48d34fbcc43a"
         }
       ]
     },

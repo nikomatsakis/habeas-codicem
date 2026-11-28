@@ -1,8 +1,8 @@
 {
   "requirement": "Both tools accept an optional project-relative `path` selecting one visible file or a directory subtree under {cite}`requirements.sdk.graph.search.source_scope`. Omitting `path` searches all visible files. Every match identifies the enclosing item by its node ID, project-relative `file`, and outline `selector` (empty for the file root).\n\nThe agent's `search_text` and `search_structure` tools call the corresponding public Rust search operation. For the same query they format the occurrences returned by that call, using its node IDs, match spans, and completeness flag. They build excerpts from the retained snapshot in which the Rust operation found the hits.",
   "determination": true,
-  "rationale": "I judged the reviewed tests adequate for `requirements.sdk.graph.search.agent_search`. I did not request implementation source. I read only the supplied test bodies.\n\n**Optional `path`**\n- `scoped_search_accounts_for_visible_descendant_text` omits `path` for both `search_text` and `search_structure`. It asserts that both `src/code.rs` and `other.rs` are returned.\n- The same test passes `path:\"src\"` (a directory) to `search_structure` and to `search_text`. It passes `path:\"src/code.rs\"` (a file) to `search_text`. Each case asserts exactly one match, with `file` equal to `src/code.rs`.\n- The visibility rules and whole-component path matching belong to `requirements.sdk.graph.search.source_scope`, which this requirement only cites, so they need no test here.\n\n**Each match identifies node ID, `file` and `selector`**\n- `search_groups_exact_occurrences_and_records_the_selected_declaration` asserts the full match objects: `node`, `file` and `selector` such as `const[A]`.\n- `separated_hit_windows_preserve_the_function_declaration` asserts a nested selector, `impl[Runner]/fn[run]`.\n- `root_hits_clip_context_to_utf8_boundaries` asserts an empty `selector` and the node `fragment.rs#` for a file-root hit.\n- `structural_tags_select_only_the_original_enclosing_item` compares each structural entry's `node` with the public `search_structure` result.\n- `scoped_search_accounts_for_visible_descendant_text` asserts the `file` and `selector` of structural matches.\n\n**Tools format the public Rust operation's results (node IDs, spans, completeness flag)**\n- `structural_tags_select_only_the_original_enclosing_item` calls `tools.search_structure` directly and checks the spans and nodes against the compiled rule. It then asserts that the tool's `complete` equals `hits.complete`, that each `excerpt` equals the corresponding `hit.text`, and that the match counts agree. With `limit:1` it asserts `complete:false` and a single match.\n- `search_groups_exact_occurrences_and_records_the_selected_declaration` compares the `search_text` tool's `node` values with `project.search_text(...)` results. It asserts `complete:true`. Several spans in one item are grouped into one excerpt.\n- `search_obligations_follow_delivery_and_keep_the_original_snapshot` asserts `complete:true` for the full search and `complete:false` for a `limit:1` search.\n- Excerpt windowing from spans is asserted in `separated_hit_windows_preserve_the_function_declaration` for window sizes 4 and 0. It is asserted in `root_hits_clip_context_to_utf8_boundaries` for window size 2, which clips at a UTF-8 boundary, and for the default window.\n\n**Excerpts come from the retained snapshot**\n- In `structural_tags_select_only_the_original_enclosing_item` the file is overwritten before the tool call. The tool's excerpts and `node` values still equal the earlier hits. The finish fingerprint matches the original `fn[two]`.\n- `search_obligations_follow_delivery_and_keep_the_original_snapshot` rewrites the file after the first page. It then checks that the next page's nodes and fingerprints come from the original outline, and that repeating `get_next_page` returns identical text.\n- `scoped_search_accounts_for_visible_descendant_text` rewrites the file before `finish_search`. It asserts the dependency fingerprints of the original items.\n- `separated_hit_windows_preserve_the_function_declaration` rewrites the file between iterations. It still asserts the original-snapshot excerpt and node.\n\nThe tests exercise every obligation with concrete assertions, and all of them carry a `{test}` reference to the subject. I found no gap.",
-  "references": "909967b82a91fb0551648fcd73185eac12ec027c0b8d374ff5f092419a162d23",
+  "rationale": "structural: The structural obligations in `requirements.sdk.graph.search.agent_search` are the delegation and snapshot clauses. The `path` argument, the match identification fields and the formatting are observable behavior only.\n\n1. Delegation: \"The agent's `search_text` and `search_structure` tools call the corresponding public Rust search operation.\" An alternative that reimplements the regex or structural search inside the agent could return the same output, so this clause constrains the build. In `crates/trust-but-verify/src/agent/project_sources.rs#impl[Session<'_, D>/ToolSession<D>]/fn[dispatch]`:\n   - The `SEARCH_TEXT` arm builds a `TextQuery` and awaits `self.tools.search_text(&query)`.\n   - The `SEARCH_STRUCTURE` arm builds a `StructuralQuery` and awaits `self.tools.search_structure(&query)`.\n   - `self.tools` is `ProjectSources<D>`, which is `crate::sources::SourceProject`. Its `search_text` and `search_structure` in `crates/trust-but-verify/src/sources/hits.rs` return `SearchResults<SearchHit<NodeId<D>>>`, so they carry node IDs, spans and the `complete` flag.\n   - I read `search_text`, which builds the regex and calls `find_hits`. I did not read `search_structure`.\n\n2. Formatting the returned occurrences: \"using its node IDs, match spans, and completeness flag.\" `dispatch` uses `hit.node` for the entry's `node`, `hit.span` for the excerpt spans, and `found.complete` in `SearchResults::new(entries, found.complete)`. The `file` and `selector` come from `hit.item.id()`.\n\n3. Retained snapshot: \"They build excerpts from the retained snapshot in which the Rust operation found the hits.\"\n   - Text excerpts come from `excerpt(&hit.item, ...)`.\n   - Structural excerpts come from `hit.item.source_span_redacted(hit.span)`.\n   - `fn[excerpt_dependencies]` records `hit.item.fingerprint()` and uses `hit.item.excerpt_items`, so it never re-reads the file.\n   - `hit.item` is the snapshot content retained by the search hit.\n\n4. Scope: the optional `path` maps to `SourceScope::under(path)`, and omitting it maps to `SourceScope::all()`. This is observable behavior, and the scope semantics are delegated to `requirements.sdk.graph.search.source_scope`, which is only cited here.\n\nThe supplied root `dispatch` is the site of the delegation and snapshot obligations. It carries the `agent_search` marker, and I found no other root needed.\n\nbehavioral: The reviewed tests adequately cover the obligations of `requirements.sdk.graph.search.agent_search`.\n\n**Optional `path` (file or directory subtree, omitted means all visible files)**\n- `mod[tests]/fn[scoped_search_accounts_for_visible_descendant_text]` in `crates/trust-but-verify/src/agent/project_sources.rs` omits `path` for both `search_text` and `search_structure`. It asserts that the files are exactly `other.rs` and `src/code.rs`.\n- The same test passes `path:\"src\"` (directory) to `search_structure` and to `search_text`. It passes `path:\"src/code.rs\"` (file) to `search_text`. Each case asserts exactly one match, in `src/code.rs`, so `other.rs` is excluded.\n- Structural search is tested with a directory path but not a file path, and text search with both. I treated this as a minor untested variation of the same input class, not a gap.\n- Whole-component matching and visibility come from `requirements.sdk.graph.search.source_scope`. That requirement is cited as context, so I did not reassess it.\n\n**Every match carries node ID, `file` and `selector` (empty for the file root)**\n- `fn[scoped_search_accounts_for_visible_descendant_text]` asserts `file` and `selector` such as `impl[Parser]/fn[parse]` and `impl[Parser]`.\n- `fn[search_groups_exact_occurrences_and_records_the_selected_declaration]` asserts the full match objects: `tag`, `node`, `file`, `selector` and `excerpt`.\n- `fn[root_hits_clip_context_to_utf8_boundaries]` asserts `selector:\"\"`, `file:\"fragment.rs\"` and the root node ID for a file-root hit.\n- `fn[separated_hit_windows_preserve_the_function_declaration]` asserts the node, file and nested selector.\n\n**Tools format the public Rust operation's results (node IDs, spans, completeness) for the same query**\n- `fn[structural_tags_select_only_the_original_enclosing_item]` calls `tools.search_structure` directly and checks its nodes, spans and text against `rule.matches`. It then dispatches the agent tool and asserts that `page[\"complete\"]` equals `hits.complete`, that each `excerpt` equals the hit text, and that the match node equals the Rust hit node. It also covers `limit:1` giving `complete:false`.\n- `fn[search_groups_exact_occurrences_and_records_the_selected_declaration]` calls `project.search_text` directly. It checks that the dispatched page has the same node IDs and `complete:true`, and that the three occurrences (including two in `const[B]`) are grouped into two matches.\n- `fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]` checks `complete` true for an uncapped search and false for a capped one.\n\n**Excerpts built from the retained snapshot**\n- Several tests change the file after the search. `fn[structural_tags_select_only_the_original_enclosing_item]` rewrites the file to `fn replaced() {}` before the agent search and still asserts excerpts equal the original hits. It also asserts that `finish_search` dependencies carry the original item's fingerprint after the file is changed.\n- `fn[scoped_search_accounts_for_visible_descendant_text]` and `fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]` modify the file after the search and still assert original selectors, fingerprints and next-page results.\n- `fn[separated_hit_windows_preserve_the_function_declaration]` asserts the exact excerpt text for several window sizes.\n\nI found no obligation without a test that exercises it and asserts its outcome.",
+  "references": "dfd97adb9ccfc220cea2db845ac5435562099332e6686e0cf4dfab23df708388",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.search.agent_search",
@@ -52,18 +52,159 @@
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]",
+      "hash": "1e9891fdbb67df918e9440e24bb4ccae95bc15d9677193dee3cc2c09feb845b5"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources/hits.rs",
+      "item": "impl[SourceProject<D>]/fn[search_text]",
+      "hash": "622d4c214d6aac8539a48609c15930fdef8806b21c3e849d982228694f4fe8f8"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "use@023d674cb663",
+      "hash": "023d674cb663b91fc1d30118fcac2f1c4716762e80c9e08f45a6d8d1b3d1a586"
+    },
+    {
+      "requirements": "requirements.sdk.graph.search.search_text.fn",
+      "matches": [
+        "requirements.sdk.graph.search.search_text.fn"
+      ],
+      "text": [
+        ":::{req} search_text.fn",
+        "```rust,ignore",
+        "impl Sources {",
+        "    // ...",
+        "",
+        "    /// Search available project files.",
+        "    pub async fn search_text(&self, query: &TextQuery) -> Result<TextMatches, SourceError>;",
+        "",
+        "    // ...",
+        "}",
+        "```",
+        ":::"
+      ]
+    },
+    {
+      "requirements": "requirements.sdk.graph.search.search_structure.fn",
+      "matches": [
+        "requirements.sdk.graph.search.search_structure.fn"
+      ],
+      "text": [
+        ":::{req} search_structure.fn",
+        "```rust,ignore",
+        "impl Sources {",
+        "    // ...",
+        "",
+        "    /// Search source structure.",
+        "    pub async fn search_structure(",
+        "        &self,",
+        "        query: &StructuralQuery,",
+        "    ) -> Result<StructuralMatches, SourceError>;",
+        "",
+        "    // ...",
+        "}",
+        "```",
+        ":::"
+      ]
+    },
+    {
+      "requirements": "requirements.sdk.graph.search.agent_search_accounting",
+      "matches": [
+        "requirements.sdk.graph.search.agent_search_accounting"
+      ],
+      "text": [
+        ":::{req} agent_search_accounting",
+        "When it delivers a formatted page, the agent harness opens a [`finish_search`](#accounting-for-search-excerpts-in-an-agent-session) session for that page and associates each entry's tag with its node ID and the fingerprint from the snapshot used for the excerpt. Finishing the page records the selected dependencies using those saved observations. Direct Rust search calls return occurrences without opening a session or recording excerpt dependencies.",
+        ":::"
+      ]
+    },
+    {
+      "requirements": "requirements.sdk.graph.search.TextMatches",
+      "matches": [
+        "requirements.sdk.graph.search.TextMatches"
+      ],
+      "text": [
+        ":::{req} TextMatches",
+        "",
+        "`Sources::search_text` returns the matching lines and excerpts in `matches`. The",
+        "[`SearchResults`](#habeas-req-requirements.sdk.graph.search.SearchResults) field",
+        "`complete` says whether the result includes every match in scope.",
+        "",
+        "```rust,ignore",
+        "pub type TextMatches = SearchResults<TextMatch>;",
+        "```",
+        ":::"
+      ]
+    },
+    {
+      "requirements": "requirements.sdk.graph.search.TextMatch",
+      "matches": [
+        "requirements.sdk.graph.search.TextMatch"
+      ],
+      "text": [
+        ":::{req} TextMatch",
+        "",
+        "`path` is project-relative. `line` is the one-based number of the matching line, even when the excerpt starts earlier. `excerpt` includes the requested neighboring lines that exist in the file.",
+        "",
+        "```rust,ignore",
+        "#[non_exhaustive]",
+        "pub struct TextMatch {",
+        "    pub path: PathBuf,",
+        "    pub line: usize,",
+        "    pub excerpt: String,",
+        "}",
+        "",
+        "impl TextMatch {",
+        "    pub fn new(path: PathBuf, line: usize, excerpt: String) -> Self;",
+        "}",
+        "```",
+        ":::"
+      ]
+    },
+    {
+      "requirements": "requirements.sdk.graph.search.SearchResults",
+      "matches": [
+        "requirements.sdk.graph.search.SearchResults"
+      ],
+      "text": [
+        ":::{req} SearchResults",
+        "",
+        "`matches` holds the results found. `complete` is true when the search exhausted the scope. Reaching the exact limit is compatible with a complete result if no further match exists.",
+        "",
+        "```rust,ignore",
+        "#[non_exhaustive]",
+        "pub struct SearchResults<T> {",
+        "    pub matches: Vec<T>,",
+        "    pub complete: bool,",
+        "}",
+        "",
+        "impl<T> SearchResults<T> {",
+        "    pub fn new(matches: Vec<T>, complete: bool) -> Self;",
+        "}",
+        "```",
+        ":::"
+      ]
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "fn[excerpt_dependencies]",
+      "hash": "cc135d38fe4014e6ed8484ff3fd560357f6d70dcb7750957b604cef8a284cdf5"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[scoped_search_accounts_for_visible_descendant_text]",
       "hash": "f060e56e75e5979a869995d852b38568135366dbb7580b4f9d60b8b87cc0926d"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]",
-      "hash": "d50fc16c3dbbf946e0b67d84304739d14998f92261ecab2f9a492b0c4fd9dcbe"
+      "hash": "1ea8d7ead0738b7f1e1ef1bb9b9ca39fd38dbaa1fb143a2c725511477b6c7179"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]",
-      "hash": "51da68bc4a12b4ba257787791938819f709b3fe5b32fd8652f22127f9dce1f60"
+      "hash": "bba9cf6f0b10888a512bf213b967a0aa2bd218f6033032c613dd48d34fbcc43a"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
@@ -81,7 +222,329 @@
       "hash": "1a9702e2ef2e866be27e54566db11c5f797bdac533f8e3439359ef3297dc7969"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.search.agent_search"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "dfd97adb9ccfc220cea2db845ac5435562099332e6686e0cf4dfab23df708388"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.search.agent_search"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "1634b2159570f804dffae9d72680706e2f9d3aeef86bfd8e3d74bc449c2a517e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.search.source_scope"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "3d98acd5320eb736cdb285b5774621c2a6eb3c51f9b9512d0f64b650a6ea4392"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+                },
+                "selector": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "1e9891fdbb67df918e9440e24bb4ccae95bc15d9677193dee3cc2c09feb845b5"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/sources/hits.rs"
+                },
+                "selector": "impl[SourceProject<D>]/fn[search_text]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "622d4c214d6aac8539a48609c15930fdef8806b21c3e849d982228694f4fe8f8"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+                },
+                "selector": "use@023d674cb663"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "023d674cb663b91fc1d30118fcac2f1c4716762e80c9e08f45a6d8d1b3d1a586"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.search.search_text.fn"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "0dd5976f82ee5b74fdd0fd8864e00567947c9d12f7b8484af65dac0b389e6efd"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.search.search_structure.fn"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "14580743ca36b8dd3a0119953f4091d9ff40f3fe97e935927501a64721d52be1"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.search.agent_search_accounting"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "99f0971b8b00a5b4c09b913007184b51b7a529ef9d1fb67ed16e6819fa3bdc82"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.search.TextMatches"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "04b9a76441d310249698f519815e350b2ef7026836f0c6225bd7846273891d19"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.search.TextMatch"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "b5c6c3892c97f86d17f44e850d54cd9cc5c6b93acbe12f6b68db2f2e3ac1468f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.search.SearchResults"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "04f88a9b55877be9e01ba6bb0884861d8cf80d4974de83bd8c8f03d3e4c6fe3a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+                },
+                "selector": "fn[excerpt_dependencies]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "cc135d38fe4014e6ed8484ff3fd560357f6d70dcb7750957b604cef8a284cdf5"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The structural obligations in `requirements.sdk.graph.search.agent_search` are the delegation and snapshot clauses. The `path` argument, the match identification fields and the formatting are observable behavior only.\n\n1. Delegation: \"The agent's `search_text` and `search_structure` tools call the corresponding public Rust search operation.\" An alternative that reimplements the regex or structural search inside the agent could return the same output, so this clause constrains the build. In `crates/trust-but-verify/src/agent/project_sources.rs#impl[Session<'_, D>/ToolSession<D>]/fn[dispatch]`:\n   - The `SEARCH_TEXT` arm builds a `TextQuery` and awaits `self.tools.search_text(&query)`.\n   - The `SEARCH_STRUCTURE` arm builds a `StructuralQuery` and awaits `self.tools.search_structure(&query)`.\n   - `self.tools` is `ProjectSources<D>`, which is `crate::sources::SourceProject`. Its `search_text` and `search_structure` in `crates/trust-but-verify/src/sources/hits.rs` return `SearchResults<SearchHit<NodeId<D>>>`, so they carry node IDs, spans and the `complete` flag.\n   - I read `search_text`, which builds the regex and calls `find_hits`. I did not read `search_structure`.\n\n2. Formatting the returned occurrences: \"using its node IDs, match spans, and completeness flag.\" `dispatch` uses `hit.node` for the entry's `node`, `hit.span` for the excerpt spans, and `found.complete` in `SearchResults::new(entries, found.complete)`. The `file` and `selector` come from `hit.item.id()`.\n\n3. Retained snapshot: \"They build excerpts from the retained snapshot in which the Rust operation found the hits.\"\n   - Text excerpts come from `excerpt(&hit.item, ...)`.\n   - Structural excerpts come from `hit.item.source_span_redacted(hit.span)`.\n   - `fn[excerpt_dependencies]` records `hit.item.fingerprint()` and uses `hit.item.excerpt_items`, so it never re-reads the file.\n   - `hit.item` is the snapshot content retained by the search hit.\n\n4. Scope: the optional `path` maps to `SourceScope::under(path)`, and omitting it maps to `SourceScope::all()`. This is observable behavior, and the scope semantics are delegated to `requirements.sdk.graph.search.source_scope`, which is only cited here.\n\nThe supplied root `dispatch` is the site of the delegation and snapshot obligations. It carries the `agent_search` marker, and I found no other root needed."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.search.agent_search"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "dfd97adb9ccfc220cea2db845ac5435562099332e6686e0cf4dfab23df708388"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.search.agent_search"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "1634b2159570f804dffae9d72680706e2f9d3aeef86bfd8e3d74bc449c2a517e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.search.source_scope"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "3d98acd5320eb736cdb285b5774621c2a6eb3c51f9b9512d0f64b650a6ea4392"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+                },
+                "selector": "mod[tests]/fn[scoped_search_accounts_for_visible_descendant_text]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f060e56e75e5979a869995d852b38568135366dbb7580b4f9d60b8b87cc0926d"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+                },
+                "selector": "mod[tests]/fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "1ea8d7ead0738b7f1e1ef1bb9b9ca39fd38dbaa1fb143a2c725511477b6c7179"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+                },
+                "selector": "mod[tests]/fn[structural_tags_select_only_the_original_enclosing_item]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "bba9cf6f0b10888a512bf213b967a0aa2bd218f6033032c613dd48d34fbcc43a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+                },
+                "selector": "mod[tests]/fn[search_groups_exact_occurrences_and_records_the_selected_declaration]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "31b2ed3b415ba9a7cdf8e933ae5247c8b1bcd9430badda6ea6b37f9d178a619e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+                },
+                "selector": "mod[tests]/fn[root_hits_clip_context_to_utf8_boundaries]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "a7d93a5020881837e00f5ccd0599571e628c7dc612a6b0c62c6db5c9d8073e9a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+                },
+                "selector": "mod[tests]/fn[separated_hit_windows_preserve_the_function_declaration]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "1a9702e2ef2e866be27e54566db11c5f797bdac533f8e3439359ef3297dc7969"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The reviewed tests adequately cover the obligations of `requirements.sdk.graph.search.agent_search`.\n\n**Optional `path` (file or directory subtree, omitted means all visible files)**\n- `mod[tests]/fn[scoped_search_accounts_for_visible_descendant_text]` in `crates/trust-but-verify/src/agent/project_sources.rs` omits `path` for both `search_text` and `search_structure`. It asserts that the files are exactly `other.rs` and `src/code.rs`.\n- The same test passes `path:\"src\"` (directory) to `search_structure` and to `search_text`. It passes `path:\"src/code.rs\"` (file) to `search_text`. Each case asserts exactly one match, in `src/code.rs`, so `other.rs` is excluded.\n- Structural search is tested with a directory path but not a file path, and text search with both. I treated this as a minor untested variation of the same input class, not a gap.\n- Whole-component matching and visibility come from `requirements.sdk.graph.search.source_scope`. That requirement is cited as context, so I did not reassess it.\n\n**Every match carries node ID, `file` and `selector` (empty for the file root)**\n- `fn[scoped_search_accounts_for_visible_descendant_text]` asserts `file` and `selector` such as `impl[Parser]/fn[parse]` and `impl[Parser]`.\n- `fn[search_groups_exact_occurrences_and_records_the_selected_declaration]` asserts the full match objects: `tag`, `node`, `file`, `selector` and `excerpt`.\n- `fn[root_hits_clip_context_to_utf8_boundaries]` asserts `selector:\"\"`, `file:\"fragment.rs\"` and the root node ID for a file-root hit.\n- `fn[separated_hit_windows_preserve_the_function_declaration]` asserts the node, file and nested selector.\n\n**Tools format the public Rust operation's results (node IDs, spans, completeness) for the same query**\n- `fn[structural_tags_select_only_the_original_enclosing_item]` calls `tools.search_structure` directly and checks its nodes, spans and text against `rule.matches`. It then dispatches the agent tool and asserts that `page[\"complete\"]` equals `hits.complete`, that each `excerpt` equals the hit text, and that the match node equals the Rust hit node. It also covers `limit:1` giving `complete:false`.\n- `fn[search_groups_exact_occurrences_and_records_the_selected_declaration]` calls `project.search_text` directly. It checks that the dispatched page has the same node IDs and `complete:true`, and that the three occurrences (including two in `const[B]`) are grouped into two matches.\n- `fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]` checks `complete` true for an uncapped search and false for a capped one.\n\n**Excerpts built from the retained snapshot**\n- Several tests change the file after the search. `fn[structural_tags_select_only_the_original_enclosing_item]` rewrites the file to `fn replaced() {}` before the agent search and still asserts excerpts equal the original hits. It also asserts that `finish_search` dependencies carry the original item's fingerprint after the file is changed.\n- `fn[scoped_search_accounts_for_visible_descendant_text]` and `fn[search_obligations_follow_delivery_and_keep_the_original_snapshot]` modify the file after the search and still assert original selectors, fingerprints and next-page results.\n- `fn[separated_hit_windows_preserve_the_function_declaration]` asserts the exact excerpt text for several window sizes.\n\nI found no obligation without a test that exercises it and asserts its outcome."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -91,19 +554,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "909967b82a91fb0551648fcd73185eac12ec027c0b8d374ff5f092419a162d23"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.search.agent_search"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "ec8291afb540ef5cf1d8ec2f0e560ab3c405e7f34f2ba252714b93146d069d95"
+          "value": "dfd97adb9ccfc220cea2db845ac5435562099332e6686e0cf4dfab23df708388"
         }
       ]
     },
@@ -137,6 +588,140 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/project_sources.rs"
             },
+            "selector": "impl[Session<'_,%20D>/ToolSession<D>]/fn[dispatch]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "1e9891fdbb67df918e9440e24bb4ccae95bc15d9677193dee3cc2c09feb845b5"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources/hits.rs"
+            },
+            "selector": "impl[SourceProject<D>]/fn[search_text]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "622d4c214d6aac8539a48609c15930fdef8806b21c3e849d982228694f4fe8f8"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "use@023d674cb663"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "023d674cb663b91fc1d30118fcac2f1c4716762e80c9e08f45a6d8d1b3d1a586"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.sdk.graph.search.search_text.fn"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "0dd5976f82ee5b74fdd0fd8864e00567947c9d12f7b8484af65dac0b389e6efd"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.sdk.graph.search.search_structure.fn"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "14580743ca36b8dd3a0119953f4091d9ff40f3fe97e935927501a64721d52be1"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.sdk.graph.search.agent_search_accounting"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "99f0971b8b00a5b4c09b913007184b51b7a529ef9d1fb67ed16e6819fa3bdc82"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.sdk.graph.search.TextMatches"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "04b9a76441d310249698f519815e350b2ef7026836f0c6225bd7846273891d19"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.sdk.graph.search.TextMatch"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "b5c6c3892c97f86d17f44e850d54cd9cc5c6b93acbe12f6b68db2f2e3ac1468f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.sdk.graph.search.SearchResults"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "04f88a9b55877be9e01ba6bb0884861d8cf80d4974de83bd8c8f03d3e4c6fe3a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "fn[excerpt_dependencies]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "cc135d38fe4014e6ed8484ff3fd560357f6d70dcb7750957b604cef8a284cdf5"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
             "selector": "mod[tests]/fn[scoped_search_accounts_for_visible_descendant_text]"
           }
         },
@@ -159,7 +744,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "d50fc16c3dbbf946e0b67d84304739d14998f92261ecab2f9a492b0c4fd9dcbe"
+          "value": "1ea8d7ead0738b7f1e1ef1bb9b9ca39fd38dbaa1fb143a2c725511477b6c7179"
         }
       ]
     },
@@ -176,7 +761,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "51da68bc4a12b4ba257787791938819f709b3fe5b32fd8652f22127f9dce1f60"
+          "value": "bba9cf6f0b10888a512bf213b967a0aa2bd218f6033032c613dd48d34fbcc43a"
         }
       ]
     },

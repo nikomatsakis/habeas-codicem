@@ -1,8 +1,8 @@
 {
   "requirement": "Distinguishes a domain operation failure, a missing agent, a provider connection or request failure, an agent protocol failure, and an error encoding or decoding the output.\n\n```rust,ignore\npub enum ValidationError<E> {\n    Graph(E),\n    NoAgentConfigured,\n    Agent(String),\n    Provider(std::io::Error),\n    Output(serde_json::Error),\n}\n```\n\nTrait implementations\n\n```rust,ignore\nimpl<E: Debug> Debug for ValidationError<E>;\nimpl<E: Display> Display for ValidationError<E>;\nimpl<E: Error + 'static> Error for ValidationError<E>;\n```",
   "determination": true,
-  "rationale": "The requirement text obligates a `ValidationError<E>` enum with five distinguishable variants (`Graph(E)`, `NoAgentConfigured`, `Agent(String)`, `Provider(std::io::Error)`, `Output(serde_json::Error)`). It also obligates `Debug`, `Display` and `Error` implementations with the stated bounds. It does not specify message text or `source` behaviour beyond those impls. I judged the tests against those obligations only and did not read the implementation.\n\nVariant coverage, each asserted by pattern match:\n- `Graph(E)`: `crates/trust-but-verify/tests/contracts.rs#fn[refresh_propagates_load_decode_check_execution_and_save_errors]` runs the load, read, edges, execute and store stages. Each asserts `ValidationError::Graph(actual)` with the domain's own error value. `fn[agent_errors_expose_the_agreed_string_payload]` also checks that the `Graph` variant's `source()` returns the inner `io::Error`. That test exercises `impl Error` with `E: Error + 'static`.\n- `NoAgentConfigured`: `crates/trust-but-verify/src/graph/validation_tests.rs#fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]` asserts the variant. It also asserts that no record is stored and no read happens.\n- `Agent(String)`: `fn[invalid_typed_submission_is_an_agent_error]` and `crates/trust-but-verify/src/agent/tests.rs#fn[assistant_text_and_provider_failure_cannot_become_typed_results]` match `Agent(_)` and `Agent(error)`. The second test also checks the message content. `fn[agent_errors_expose_the_agreed_string_payload]` checks that the payload is a `String` equal to `\"provider detail\"`, that `Display` is `\"agent: provider detail\"`, and that `source()` is `None`.\n- `Provider(io::Error)`: `assistant_text_and_provider_failure_cannot_become_typed_results` matches `Provider(error)` with the message \"permanent provider failure\". `crates/trust-but-verify/src/agent/configured.rs#mod[tests]/fn[configured_agents_initialize_only_when_asked_and_report_setup_errors]` matches `Provider(_)` and asserts that the `Display` output contains the credential variable name.\n- `Output(serde_json::Error)`: the decode stages in `refresh_propagates_load_decode_check_execution_and_save_errors` assert `Output(_)`. `crates/trust-but-verify/tests/contracts.rs#fn[refresh_serialization_failure_preserves_the_saved_record]` and `fn[serialization_failure_leaves_the_existing_record_unchanged]` assert `Output(_)` for an encode failure. The second also checks the `Display` text \"cannot encode answer\".\n\nTrait implementations: `Display` is exercised on `Agent`, `Provider` and `Output`. `Error` and `source` are exercised on `Graph` and `Agent`. `Debug` is required by `{other:?}` in the refresh test and by `unwrap`/`err().unwrap()` use on results. The code compiles only if all three impls exist with the stated bounds. The requirement fixes no `Display` or `source` content for the other variants, so those unspecified details need no tests.\n\nThe five variants are each produced from distinct failure sources and matched separately. This covers the requirement to distinguish them.\n\nI found no unacknowledged gap and no marking gap. No acknowledgments exist and none are needed.",
-  "references": "48bed995c1f03f710524a5445fe98cfa696792ed02ff389a810818fa5239670c",
+  "rationale": "structural: The requirement prescribes a public type and trait impls. Alternative declarations would change the stated API, so these are structural obligations. The roots cover all of them.\n\n- **Enum:** `crates/trust-but-verify/src/graph.rs#enum[ValidationError]` declares `pub enum ValidationError<E>` with the five variants the text gives: `Graph(E)`, `NoAgentConfigured`, `Agent(String)`, `Provider(std::io::Error)` and `Output(serde_json::Error)`. A different payload type or variant set would break the stated type.\n- **Debug:** `#[derive(Debug)]` on the same enum gives `impl<E: Debug> Debug`. The derive adds the `E: Debug` bound itself.\n- **Display:** `impl[ValidationError<E>/std::fmt::Display]` is `impl<E: std::fmt::Display> std::fmt::Display for ValidationError<E>`, matching the prescribed bound.\n- **Error:** `impl[ValidationError<E>/std::error::Error]` is `impl<E: std::error::Error + 'static> std::error::Error for ValidationError<E>`, matching the prescribed bound. It also supplies `fn[source]`.\n\nThe Display message wording and `source` behavior are not specified in the text. They are discretionary.\n\nbehavioral: The requirement declares a five-variant enum and the Debug, Display and Error implementations. Its only behavioral obligation is that each failure cause maps to its own variant. The reviewed tests cover each cause and assert the variant.\n\n- **`Graph(E)` (domain operation failure):** `tests/contracts.rs#fn[refresh_propagates_load_decode_check_execution_and_save_errors]` checks the load, read, edges, execute and store stages. Each must return `ValidationError::Graph(actual)` with the expected stage payload. The same test checks that the saved record is unchanged. `agent_errors_expose_the_agreed_string_payload` also checks that `Graph.source()` returns the inner error.\n- **`NoAgentConfigured`:** `graph/validation_tests.rs#fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]` asserts this variant when no agent is configured. It also asserts that no record is stored and no reads happen.\n- **`Agent(String)` (agent protocol failure):**\n  - `agent/tests.rs#fn[assistant_text_and_provider_failure_cannot_become_typed_results]` gets `Agent` when the model returns only text and ignores the reminder.\n  - `graph/validation_tests.rs#fn[ending_without_a_corrected_submission_is_an_agent_error]` gets `Agent` when the agent ends without a corrected submission.\n  - `agent_errors_expose_the_agreed_string_payload` checks that the payload is a `String`. It also checks that `Display` is \"agent: …\" and that `source()` is `None`.\n- **`Provider(io::Error)` (provider connection or request failure):** `assistant_text_and_provider_failure_cannot_become_typed_results` asserts `Provider` with the failure message for a failing provider. `agent/configured.rs#fn[configured_agents_initialize_only_when_asked_and_report_setup_errors]` asserts `Provider` for a missing credential and checks that the message names the credential variable.\n- **`Output(serde_json::Error)` (encoding or decoding failure):**\n  - Decoding: the decode, stale-decode and unversioned-decode stages in `refresh_propagates_load_decode_check_execution_and_save_errors` must return `Output`.\n  - Encoding: `refresh_serialization_failure_preserves_the_saved_record` and `serialization_failure_leaves_the_existing_record_unchanged` assert `Output` for an unencodable answer. The second also checks the message and that the stored record is unchanged.\n- **Trait implementations:** The tests call `Display` (`to_string`) and `Error::source` on the type. They format it with `Debug` in a panic message, so the required impls exist and are used. The requirement specifies no `Display` text or `source` behavior beyond the signatures. Per-variant `Display` and `source` details are therefore unspecified, and I do not count them as gaps.\n\nI found no obligation without a test, and the tests carry `{test}` markers for the subject.",
+  "references": "ca01d77b13bc1d8a6915396a2c9a10f687492e80a293d0cf02326dd3830cb0ec",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.running-criteria.ValidationError",
@@ -35,6 +35,21 @@
       ]
     },
     {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "enum[ValidationError]",
+      "hash": "e074c120f16daa528a387a170e88522d31cb5771b2632d014fbbbab339d2ece8"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "impl[ValidationError<E>/std::fmt::Display]",
+      "hash": "10edbca704a6446d5d9ac668931005322c3c759831af8e2f1592dc90d508a44d"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "impl[ValidationError<E>/std::error::Error]",
+      "hash": "b3f8ffcd8fa4858c55d7d5c2656aac5c4a0bc994c82a33d028064cf73d9b0702"
+    },
+    {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[configured_agents_initialize_only_when_asked_and_report_setup_errors]",
       "hash": "ccbff871c211d01d5e62ddd6ede9cc44dde94a6fa9f41aa090b3fef8ac7d8b9b"
@@ -51,8 +66,8 @@
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
-      "item": "fn[invalid_typed_submission_is_an_agent_error]",
-      "hash": "dfe09ec614ae6db4a104ecbd6c1cccee9aa6a1cb4ba5c81da100da70ce713312"
+      "item": "fn[ending_without_a_corrected_submission_is_an_agent_error]",
+      "hash": "0b735621d913a03adff3b2c767f0cf9188784564b84abafed560caf1278d6754"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
@@ -80,7 +95,275 @@
       "hash": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
     }
   ],
-  "format_version": 1,
+  "criteria": {
+    "structural": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.running-criteria.ValidationError"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "ca01d77b13bc1d8a6915396a2c9a10f687492e80a293d0cf02326dd3830cb0ec"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.running-criteria.ValidationError"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "716b37fdd739076fa80d2a7daca8cb40b83d0e6053f6258871368bd8bf9ac520"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph.rs"
+                },
+                "selector": "enum[ValidationError]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "e074c120f16daa528a387a170e88522d31cb5771b2632d014fbbbab339d2ece8"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph.rs"
+                },
+                "selector": "impl[ValidationError<E>/std::fmt::Display]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "5daf4b50b828667f61c2bc78b2d7f994a36997eccc092738ba0c505e811433a7"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph.rs"
+                },
+                "selector": "impl[ValidationError<E>/std::error::Error]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "ca3bd565e63ecebc5813740de2c653d2e13ca5820b4ec70af0bdeeba98d589ce"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The requirement prescribes a public type and trait impls. Alternative declarations would change the stated API, so these are structural obligations. The roots cover all of them.\n\n- **Enum:** `crates/trust-but-verify/src/graph.rs#enum[ValidationError]` declares `pub enum ValidationError<E>` with the five variants the text gives: `Graph(E)`, `NoAgentConfigured`, `Agent(String)`, `Provider(std::io::Error)` and `Output(serde_json::Error)`. A different payload type or variant set would break the stated type.\n- **Debug:** `#[derive(Debug)]` on the same enum gives `impl<E: Debug> Debug`. The derive adds the `E: Debug` bound itself.\n- **Display:** `impl[ValidationError<E>/std::fmt::Display]` is `impl<E: std::fmt::Display> std::fmt::Display for ValidationError<E>`, matching the prescribed bound.\n- **Error:** `impl[ValidationError<E>/std::error::Error]` is `impl<E: std::error::Error + 'static> std::error::Error for ValidationError<E>`, matching the prescribed bound. It also supplies `fn[source]`.\n\nThe Display message wording and `source` behavior are not specified in the text. They are discretionary."
+      }
+    },
+    "behavioral": {
+      "revision": "habeas-review-v1",
+      "dependencies": [
+        {
+          "Node": [
+            {
+              "ReferenceSet": "requirements.sdk.graph.running-criteria.ValidationError"
+            },
+            {
+              "scheme": "habeas-reference-set-v1",
+              "value": "ca01d77b13bc1d8a6915396a2c9a10f687492e80a293d0cf02326dd3830cb0ec"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Requirement": "requirements.sdk.graph.running-criteria.ValidationError"
+            },
+            {
+              "scheme": "habeas-input-v1",
+              "value": "716b37fdd739076fa80d2a7daca8cb40b83d0e6053f6258871368bd8bf9ac520"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/configured.rs"
+                },
+                "selector": "mod[tests]/fn[configured_agents_initialize_only_when_asked_and_report_setup_errors]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "ccbff871c211d01d5e62ddd6ede9cc44dde94a6fa9f41aa090b3fef8ac7d8b9b"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/agent/tests.rs"
+                },
+                "selector": "fn[assistant_text_and_provider_failure_cannot_become_typed_results]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f5c6a0c3475877f33dd18c619484607796273cee05a1e5da8181f702843d78de"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "81cef7e9131056e0404e9859aa8dbca51cafdbce27b95006e6c60a1fcef02077"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[ending_without_a_corrected_submission_is_an_agent_error]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "0b735621d913a03adff3b2c767f0cf9188784564b84abafed560caf1278d6754"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[agent_errors_expose_the_agreed_string_payload]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "cef6ed5af5b05f77fa7c4ac77f842f976c50babb4ef97c5dd97590d9287342c9"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[refresh_propagates_load_decode_check_execution_and_save_errors]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "8a56e1e1c3052f0337a2fe970b68f0959e7b8730899aa7d4306d05d96ae8af9e"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[refresh_serialization_failure_preserves_the_saved_record]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "48ee6252aa0da8c7a8b5e500d287e9e714cf5c4d3e7babaa2cf5f745aab71f6f"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/contracts.rs"
+                },
+                "selector": "fn[serialization_failure_leaves_the_existing_record_unchanged]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f11bb79da53761b4ff4d2d3c9a10f6cb75650ee97ca3983784290a2bf24b60b2"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/public_api.rs"
+                },
+                "selector": "fn[public_exports_match_the_appendix]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "7a019a6e7509f79f88f9b158a50877f9ba6ac4b7df7244881ae8457b64b71d0b"
+            }
+          ]
+        }
+      ],
+      "output": {
+        "status": "success",
+        "rationale": "The requirement declares a five-variant enum and the Debug, Display and Error implementations. Its only behavioral obligation is that each failure cause maps to its own variant. The reviewed tests cover each cause and assert the variant.\n\n- **`Graph(E)` (domain operation failure):** `tests/contracts.rs#fn[refresh_propagates_load_decode_check_execution_and_save_errors]` checks the load, read, edges, execute and store stages. Each must return `ValidationError::Graph(actual)` with the expected stage payload. The same test checks that the saved record is unchanged. `agent_errors_expose_the_agreed_string_payload` also checks that `Graph.source()` returns the inner error.\n- **`NoAgentConfigured`:** `graph/validation_tests.rs#fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]` asserts this variant when no agent is configured. It also asserts that no record is stored and no reads happen.\n- **`Agent(String)` (agent protocol failure):**\n  - `agent/tests.rs#fn[assistant_text_and_provider_failure_cannot_become_typed_results]` gets `Agent` when the model returns only text and ignores the reminder.\n  - `graph/validation_tests.rs#fn[ending_without_a_corrected_submission_is_an_agent_error]` gets `Agent` when the agent ends without a corrected submission.\n  - `agent_errors_expose_the_agreed_string_payload` checks that the payload is a `String`. It also checks that `Display` is \"agent: …\" and that `source()` is `None`.\n- **`Provider(io::Error)` (provider connection or request failure):** `assistant_text_and_provider_failure_cannot_become_typed_results` asserts `Provider` with the failure message for a failing provider. `agent/configured.rs#fn[configured_agents_initialize_only_when_asked_and_report_setup_errors]` asserts `Provider` for a missing credential and checks that the message names the credential variable.\n- **`Output(serde_json::Error)` (encoding or decoding failure):**\n  - Decoding: the decode, stale-decode and unversioned-decode stages in `refresh_propagates_load_decode_check_execution_and_save_errors` must return `Output`.\n  - Encoding: `refresh_serialization_failure_preserves_the_saved_record` and `serialization_failure_leaves_the_existing_record_unchanged` assert `Output` for an unencodable answer. The second also checks the message and that the stored record is unchanged.\n- **Trait implementations:** The tests call `Display` (`to_string`) and `Error::source` on the type. They format it with `Debug` in a panic message, so the required impls exist and are used. The requirement specifies no `Display` text or `source` behavior beyond the signatures. Per-variant `Display` and `source` details are therefore unspecified, and I do not count them as gaps.\n\nI found no obligation without a test, and the tests carry `{test}` markers for the subject."
+      }
+    }
+  },
+  "format_version": 2,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
@@ -90,19 +373,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "48bed995c1f03f710524a5445fe98cfa696792ed02ff389a810818fa5239670c"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.sdk.graph.running-criteria.ValidationError"
-        },
-        "Mandatory",
-        {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "a9f60cfa1f58776310fc88ef7085b865f514db766870a9a802d360f3c6331453"
+          "value": "ca01d77b13bc1d8a6915396a2c9a10f687492e80a293d0cf02326dd3830cb0ec"
         }
       ]
     },
@@ -114,6 +385,57 @@
         {
           "scheme": "habeas-input-v1",
           "value": "716b37fdd739076fa80d2a7daca8cb40b83d0e6053f6258871368bd8bf9ac520"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "enum[ValidationError]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "e074c120f16daa528a387a170e88522d31cb5771b2632d014fbbbab339d2ece8"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "impl[ValidationError<E>/std::fmt::Display]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "5daf4b50b828667f61c2bc78b2d7f994a36997eccc092738ba0c505e811433a7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "impl[ValidationError<E>/std::error::Error]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "ca3bd565e63ecebc5813740de2c653d2e13ca5820b4ec70af0bdeeba98d589ce"
         }
       ]
     },
@@ -176,12 +498,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
             },
-            "selector": "fn[invalid_typed_submission_is_an_agent_error]"
+            "selector": "fn[ending_without_a_corrected_submission_is_an_agent_error]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "dfe09ec614ae6db4a104ecbd6c1cccee9aa6a1cb4ba5c81da100da70ce713312"
+          "value": "0b735621d913a03adff3b2c767f0cf9188784564b84abafed560caf1278d6754"
         }
       ]
     },
