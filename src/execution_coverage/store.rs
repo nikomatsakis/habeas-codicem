@@ -1041,8 +1041,23 @@ mod tests {
         completed.outcome = "failed".into();
         store.update_attempt(&run.id, &completed, true).unwrap();
         let orphan = temp.path().join(uuid::Uuid::new_v4().to_string());
-        fs::create_dir_all(orphan.join("attempts")).unwrap();
-        fs::write(orphan.join("old.profraw"), "superseded").unwrap();
+        let orphan_attempt = orphan.join("attempts").join(&completed.id);
+        fs::create_dir_all(&orphan_attempt).unwrap();
+        fs::write(orphan_attempt.join("1.profraw"), "orphan profile").unwrap();
+        fs::write(
+            orphan_attempt.join("attempt.json"),
+            serde_json::to_vec(&completed).unwrap(),
+        )
+        .unwrap();
+        fs::copy(
+            temp.path().join(&run.id).join("maps.json"),
+            orphan.join("maps.json"),
+        )
+        .unwrap();
+        let snapshot = store.snapshot(true).unwrap();
+        assert_eq!(snapshot.tests.len(), 1);
+        assert_eq!(snapshot.tests[0].run, run.id);
+        assert_eq!(snapshot.tests[0].metadata.id, completed.id);
         fs::write(temp.path().join("selection-cache.json"), "obsolete").unwrap();
         store.cleanup(None).unwrap();
         assert!(!orphan.exists());

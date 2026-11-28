@@ -92,7 +92,7 @@ pub(super) fn pages(root: &Path, files: &BTreeSet<String>, index: &Path) -> Vec<
 fn diagnostic(content: &mut String, error: &str) {
     content.push_str(&format!(
         "**Coverage notes unavailable:** {}\n\n",
-        escaped(error),
+        escaped(&crate::redaction::redact_text(error)),
     ));
 }
 
@@ -468,6 +468,30 @@ mod tests {
         assert!(content.contains("No coverage explanations are present"));
         assert!(!content.contains("exception proposal"));
         assert!(!content.contains("Module only."));
+    }
+
+    // {test}`requirements.authoring.redaction`
+    #[test]
+    fn coverage_notes_redact_credentials_in_each_displayed_field() {
+        let token = crate::redaction::tests::github_token();
+        let temp = fixture(&format!(
+            "/// Doc {token}\n// :::{{cite}} habeas:coverage\n// Reason {token}\n// :::\nfn other() {{}}\n"
+        ));
+        let reviews = write_reviews(temp.path(), true);
+        let mut review: serde_json::Value =
+            serde_json::from_slice(&fs::read(&reviews[0]).unwrap()).unwrap();
+        review["rationale"] = json!(format!("Review {token}"));
+        review["determination"] = json!({"FIXME": [format!("Track {token}")]});
+        fs::write(&reviews[0], serde_json::to_vec(&review).unwrap()).unwrap();
+        let mut page = render(temp.path());
+        diagnostic(&mut page, &format!("Diagnostic {token}"));
+        assert!(!page.contains(&token));
+        for field in ["Doc", "Reason", "Review", "Track", "Diagnostic"] {
+            assert!(
+                page.contains(&format!("{field} [REDACTED:GitHub Token]")),
+                "{field}: {page}"
+            );
+        }
     }
 
     // {test}`requirements.test-coverage.index.file_map.notes.reviews`

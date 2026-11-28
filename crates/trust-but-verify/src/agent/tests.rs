@@ -242,6 +242,66 @@ fn returned_node_page(request: &CompletionRequest) -> uuid::Uuid {
     panic!("expected a prepared node page in the conversation")
 }
 
+// {test}`requirements.sdk.graph.agent-calls.named_input`
+#[tokio::test]
+async fn named_input_delivers_the_selected_nodes_format_and_fingerprint() {
+    let mut graph = Memory::new("current".into());
+    graph
+        .node_contents
+        .lock()
+        .unwrap()
+        .insert(2, "selected".into());
+    graph.formatter = |_, content| Ok(format!("formatted {}", content.0));
+    let agent = ToolAgent::new(Script::new(vec![Some(vec![(
+        "submit_result",
+        json!({"result":true}),
+    )])]));
+    let selected = graph.cache().intern_node(Node(2));
+    let ctx = ValidationContext::with_agent(&graph, graph.cache().intern_node(Node(1)), &agent);
+    ctx.ask::<bool>().contents_of_node(selected).await.unwrap();
+    let requests = agent.provider.requests.lock().unwrap();
+    let text = serde_json::to_string(&requests[0].chat_history).unwrap();
+    assert!(text.contains("formatted selected"));
+    assert!(!text.contains("formatted current"));
+    assert!(
+        matches!(ctx.dependencies().as_slice(), [Dependency::Node(node, fingerprint)] if *node == selected && fingerprint.value == "selected")
+    );
+    assert_eq!(*graph.reads.lock().unwrap(), [2]);
+}
+
+// {test}`requirements.sdk.graph.validation-context.pages.mcp.description`
+// {test}`requirements.sdk.graph.validation-context.outgoing_edges.mcp.description`
+// {test}`requirements.sdk.graph.agent-harness.submission.mcp.description`
+#[tokio::test]
+async fn published_tool_descriptions_match_the_contract() {
+    let agent = ToolAgent::new(Script::new(vec![Some(vec![(
+        "submit_result",
+        json!({"result":true}),
+    )])]));
+    let graph = Memory::new("source".into());
+    let cx = ValidationContext::with_agent(&graph, graph.cache().intern_node(Node(1)), &agent);
+    cx.ask::<bool>().context("question").await.unwrap();
+    let requests = agent.provider.requests.lock().unwrap();
+    let definitions = &requests[0].tools;
+    for (name, expected) in [
+        (
+            "get_next_page",
+            "Pass the UUID from next to read the next page in the same format. When next is absent, this is the last page.",
+        ),
+        (
+            "outgoing_edges",
+            "Inspect a known node's outgoing targets for the requested label, making those targets available to read_node.",
+        ),
+        (
+            "submit_result",
+            "Finish by submitting your structured result in result. Exactly one accepted submission ends this call.",
+        ),
+    ] {
+        let tool = definitions.iter().find(|tool| tool.name == name).unwrap();
+        assert_eq!(tool.description, expected, "{name}");
+    }
+}
+
 // {test}`requirements.sdk.graph.validation-context.pages.mcp.description`
 // {test}`requirements.sdk.graph.agent-calls.judge.submission`
 // {test}`requirements.sdk.graph.agent-harness.submission`
@@ -1336,6 +1396,7 @@ async fn one_submission_accepts_only_its_value_and_skips_other_calls_and_prose()
     assert!(graph.reads.lock().unwrap().is_empty());
     assert!(ctx.dependencies().is_empty());
     assert_eq!(agent.provider.requests.lock().unwrap().len(), 1);
+    assert!(!graph.cache().usage().tools.contains_key("read_node"));
 }
 
 // {test}`requirements.sdk.graph.agent-harness.submission.acceptance`

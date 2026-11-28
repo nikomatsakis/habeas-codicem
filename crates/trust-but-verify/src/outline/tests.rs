@@ -1025,6 +1025,7 @@ fn no_profile_invents_fallback_kinds() {
 
 // {test}`requirements.references.outline_comments`
 #[test]
+// {test}`requirements.sdk.outlines.attachments.comments`
 fn comment_runs_follow_the_same_rules_in_every_language() {
     // Each case: path, source, and (needle, expected owner selector) pairs.
     // Every language has a run before a node, a trailing comment, a comment

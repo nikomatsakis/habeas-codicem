@@ -401,6 +401,10 @@ async fn built_in_languages_and_structural_search_use_the_project_scope() {
         assert!(scoped.complete);
         assert!(scoped.matches.is_empty(), "{prefix}");
     }
+    fs::write(root.path().join("another.rs"), "fn other() { call(); }\n").unwrap();
+    fs::write(root.path().join("script.py"), "def script():\n    call()\n").unwrap();
+    let all_rust = sources.search_structure(&query).await.unwrap();
+    assert_eq!(all_rust.matches.len(), 2);
     let visible = sources
         .search_structure(
             &StructuralQuery::new(query.language.clone(), query.rule.clone())
@@ -408,11 +412,9 @@ async fn built_in_languages_and_structural_search_use_the_project_scope() {
         )
         .await
         .unwrap();
+    assert!(visible.complete);
+    assert_eq!(visible.matches.len(), 1);
     assert_eq!(visible.matches[0].node.path, Path::new("visible.rs"));
-    fs::write(root.path().join("another.rs"), "fn other() { call(); }\n").unwrap();
-    fs::write(root.path().join("script.py"), "def script():\n    call()\n").unwrap();
-    let all_rust = sources.search_structure(&query).await.unwrap();
-    assert_eq!(all_rust.matches.len(), 2);
     assert!(all_rust.complete);
     let bounded = StructuralQuery::new(query.language.clone(), query.rule.clone()).limit(1);
     let subset = sources.search_structure(&bounded).await.unwrap();

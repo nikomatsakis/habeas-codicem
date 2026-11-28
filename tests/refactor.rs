@@ -1352,6 +1352,33 @@ fn a_moved_chapter_with_a_new_glob_match_leaves_the_record_stale() {
     );
 }
 
+// {test}`requirements.refactor.definition_inputs`
+#[test]
+fn editing_the_second_glob_match_prevents_migration() {
+    let temp = project();
+    let root = temp.path();
+    author(root);
+    let original = fs::read(root.join("evidence/rules.check.json")).unwrap();
+    let chapter = fs::read_to_string(root.join("md/rules.md")).unwrap();
+    fs::rename(root.join("md/rules.md"), root.join("md/core.md")).unwrap();
+    fs::write(
+        root.join("md/core.md"),
+        chapter.replace("Configuration MUST load.", "Configuration MUST load twice."),
+    )
+    .unwrap();
+    let output = refactor(root, &["--map", "rules=core"]);
+    assert!(output.status.success(), "{output:?}");
+    let report = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        report.contains("no longer selects what it recorded"),
+        "{report}"
+    );
+    assert_eq!(
+        fs::read(root.join("evidence/rules.check.json")).unwrap(),
+        original
+    );
+}
+
 // {test}`requirements.refactor.equivalence`
 // {test}`requirements.refactor.record_fields`
 #[test]

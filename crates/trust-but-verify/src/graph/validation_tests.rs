@@ -223,6 +223,7 @@ impl Memory {
 // {test}`requirements.sdk.graph.validation-context.shared_context`
 #[tokio::test]
 // {test}`requirements.sdk.graph.running-criteria.verify`
+// {test}`requirements.sdk.graph.running-criteria.validate_node`
 async fn a_second_verification_starts_with_an_empty_trace() {
     let graph = Memory {
         read_in_callback: true,
@@ -255,6 +256,7 @@ async fn a_second_verification_starts_with_an_empty_trace() {
         .unwrap()
         .contents
         .insert(2, "other".into());
+    assert_eq!(first.source_node_id(), &node);
     let second = validator
         .verify(Review {
             node: other,
@@ -262,6 +264,7 @@ async fn a_second_verification_starts_with_an_empty_trace() {
         })
         .await
         .unwrap();
+    assert_eq!(second.source_node_id(), &other);
     assert_eq!(
         second.dependencies(),
         &[Dependency::Node(other, fp("other"))]
@@ -1184,6 +1187,12 @@ async fn task_messages_share_a_prefix_and_can_queue_another_node() {
         .unwrap()
         .contents
         .insert(2, "selected source".into());
+    graph
+        .state
+        .lock()
+        .unwrap()
+        .contents
+        .insert(1, "current".into());
     let agent = MockAgent::default();
     let current = graph.cache().intern_node(1);
     let selected = graph.cache().intern_node(2);
@@ -1193,6 +1202,7 @@ async fn task_messages_share_a_prefix_and_can_queue_another_node() {
             .ask::<Answer>()
             .context("shared")
             .message("superseded")
+            .contents_of_current_node()
             .contents_of_node(selected);
         with_node.message(task).await.unwrap();
     }
@@ -1201,11 +1211,17 @@ async fn task_messages_share_a_prefix_and_can_queue_another_node() {
     for (prefix, fingerprint, inputs, _) in requests.iter() {
         assert_eq!(prefix, "shared");
         assert_eq!(*fingerprint, context_fingerprint("shared"));
-        assert_eq!(inputs, &[(2, "selected source".into())]);
+        assert_eq!(
+            inputs,
+            &[(1, "current".into()), (2, "selected source".into())]
+        );
     }
     assert_eq!(
         ctx.dependencies(),
-        [Dependency::Node(selected, fp("selected source"))]
+        [
+            Dependency::Node(current, fp("current")),
+            Dependency::Node(selected, fp("selected source"))
+        ]
     );
 }
 
@@ -1777,6 +1793,7 @@ fn agent_errors_expose_the_agreed_string_payload() {
 // {test}`requirements.sdk.graph.node_content`
 // {test}`requirements.sdk.graph.agent-calls.Ask`
 #[tokio::test]
+// {test}`requirements.sdk.graph.agent-calls.named_input`
 async fn queued_reads_selection_and_rendering_fail_before_agent_invocation() {
     let graph = Memory::default();
     let agent = MockAgent::default();
@@ -1803,6 +1820,12 @@ async fn queued_reads_selection_and_rendering_fail_before_agent_invocation() {
         ctx.ask::<Answer>().contents_of_current_node().await,
         Err(ValidationError::Graph("read"))
     ));
+    let selected = graph.cache().intern_node(2);
+    assert!(matches!(
+        ctx.ask::<Answer>().contents_of_node(selected).await,
+        Err(ValidationError::Graph("read"))
+    ));
+    assert!(ctx.dependencies().is_empty());
     graph.state.lock().unwrap().fail_read = false;
     graph.state.lock().unwrap().fail_edges = Some(1);
     assert!(matches!(
@@ -1820,6 +1843,17 @@ async fn queued_reads_selection_and_rendering_fail_before_agent_invocation() {
     let ctx = ValidationContext::with_agent(&graph, graph.cache().intern_node(1), &agent);
     assert!(matches!(
         ctx.ask::<Answer>().contents_of_current_node().await,
+        Err(ValidationError::Graph("render"))
+    ));
+    assert!(ctx.dependencies().is_empty());
+    graph
+        .state
+        .lock()
+        .unwrap()
+        .contents
+        .insert(2, "selected".into());
+    assert!(matches!(
+        ctx.ask::<Answer>().contents_of_node(selected).await,
         Err(ValidationError::Graph("render"))
     ));
     assert!(ctx.dependencies().is_empty());

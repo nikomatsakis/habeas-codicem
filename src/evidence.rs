@@ -3740,6 +3740,10 @@ api_key = 'PRIVATE_REMOTE'
         let errors = validate_repository(temp.path()).unwrap().errors.join("\n");
         assert!(errors.contains("example text changed"), "{errors}");
         assert!(errors.contains("- Outdated."), "{errors}");
+        assert!(
+            errors.contains("+ Given ready, it succeeds. {cite}`rules.ready` {test}`rules.ready`"),
+            "{errors}"
+        );
 
         let mut wrong_field: serde_json::Value = serde_json::from_str(&old).unwrap();
         let example_text = wrong_field

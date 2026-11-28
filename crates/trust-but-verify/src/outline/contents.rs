@@ -125,6 +125,12 @@ impl Outline {
             diagnostic: None,
         }
     }
+
+    // {impl}`requirements.sdk.outlines.Outline`
+    pub fn with_diagnostic(mut self, diagnostic: OutlineError) -> Self {
+        self.diagnostic = Some(diagnostic);
+        self
+    }
 }
 
 // {impl}`requirements.sdk.graph.search.declaration_spans`

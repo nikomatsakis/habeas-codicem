@@ -38,6 +38,7 @@ pub struct Snapshot<T> {
 
 // {impl}`requirements.sdk.public_api`
 impl<T> Snapshot<T> {
+    // {impl}`requirements.sdk.graph.snapshot`
     pub fn new(content: T, fingerprint: Fingerprint) -> Self {
         Self {
             content,
@@ -182,6 +183,7 @@ pub struct Record<N, L = ()> {
 
 // {impl}`requirements.sdk.public_api`
 impl<N, L> Record<N, L> {
+    // {impl}`requirements.sdk.graph.evidence.record`
     pub fn new(
         version: Option<CriterionVersion>,
         dependencies: Vec<Dependency<N, L>>,
@@ -532,6 +534,7 @@ impl<'d, D: Domain> Validator<'d, D> {
     }
 
     /// Execute the criterion and return its completed answer and observed inputs.
+    // {impl}`requirements.sdk.graph.running-criteria.verify`
     pub fn verify<V: Criterion<D>>(
         &mut self,
         criterion: V,
@@ -564,6 +567,7 @@ impl<'d, D: Domain> Validator<'d, D> {
 
     // {impl}`requirements.sdk.graph.running-criteria.store_evidence`
     /// Encode the answer and atomically replace its source/criterion record.
+    // {impl}`requirements.sdk.graph.evidence.store_evidence`
     pub fn store_evidence<O: Serialize>(
         &self,
         inputs: &Fingerprinted<D, O>,

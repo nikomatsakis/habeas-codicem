@@ -822,6 +822,88 @@ mod tests {
         assert_eq!(seen, 200);
     }
 
+    // {test}`requirements.sdk.graph.search.search_structure.inputs`
+    #[tokio::test]
+    async fn structural_excerpt_tracks_each_visible_node_in_the_delivered_snapshot() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("code.rs");
+        std::fs::write(&file, "impl S { fn a() {} fn b() {} }").unwrap();
+        let domain = project("");
+        let tools = ProjectSources::new(domain.clone(), Sources::new(root.path()));
+        let original = crate::outline::OutlineContent::from_path(domain.cache(), &file).unwrap();
+        let mut session = SessionTools::new(tools.session());
+        let result = session
+            .dispatch(
+                "search_structure",
+                &json!({"language":"rust", "rule":{"rule":{"kind":"impl_item"}}}),
+            )
+            .await
+            .unwrap();
+        let page: Value = serde_json::from_str(&result.text).unwrap();
+        assert_eq!(
+            page["matches"][0]["excerpt"],
+            "impl S { fn a() {} fn b() {} }"
+        );
+        std::fs::write(file, "impl S { fn replacement() {} }").unwrap();
+        let finish = |used: Value| json!({"search_id":page["search_id"],"used":used});
+        let expected = ["impl[S]", "impl[S]/fn[a]", "impl[S]/fn[b]"].map(|selector| {
+            Dependency::Node(
+                domain.cache().intern_node(format!("code.rs#{selector}")),
+                original.select(selector).unwrap().fingerprint(),
+            )
+        });
+        for _ in 0..2 {
+            let accepted = session
+                .dispatch("finish_search", &finish(json!([page["matches"][0]["tag"]])))
+                .await
+                .unwrap();
+            assert_eq!(accepted.dependencies.len(), expected.len());
+            assert!(
+                expected
+                    .iter()
+                    .all(|dep| accepted.dependencies.contains(dep))
+            );
+            assert!(
+                session
+                    .dispatch("finish_search", &finish(json!(["unknown"])))
+                    .await
+                    .is_err()
+            );
+        }
+    }
+
+    // {test}`requirements.sdk.graph.validation-context.list_sources.mcp.description`
+    // {test}`requirements.sdk.graph.search.search_text.mcp.description`
+    // {test}`requirements.sdk.graph.search.search_structure.mcp.description`
+    // {test}`requirements.sdk.graph.search.finish_search.mcp.description`
+    #[tokio::test]
+    async fn published_tool_descriptions_match_the_contract() {
+        let root = tempfile::tempdir().unwrap();
+        let tools = ProjectSources {
+            sources: Sources::new(root.path()).into(),
+            domain: project("").into(),
+        };
+        let definitions = tools.session().definitions().unwrap();
+        for (name, expected) in [
+            ("list_sources", "List available project file nodes."),
+            (
+                "search_text",
+                "Find regular-expression matches in available files, optionally within a file or directory. Read selected nodes separately.",
+            ),
+            (
+                "search_structure",
+                "Find structural matches in available files, optionally within a file or directory. Read selected nodes separately.",
+            ),
+            (
+                "finish_search",
+                "Close a delivered search and record dependencies for snippets you used to justify your conclusion without an additional source read. search_id is the result's UUID and used is an array of its short entry tags, e.g. {\"search_id\":\"11111111-1111-4111-8111-111111111111\",\"used\":[\"1\"]}. Entries whose source you also read may be omitted; including them is harmless. Use used:[] when no entries qualify, including an empty search. Every delivered search must be finished before submission. The result is {search_id, finished:true}; no additional source is delivered.",
+            ),
+        ] {
+            let tool = definitions.iter().find(|tool| tool.name == name).unwrap();
+            assert_eq!(tool.description, expected, "{name}");
+        }
+    }
+
     // {test}`requirements.sdk.graph.search.search_text.mcp.description`
     // {test}`requirements.sdk.graph.validation-context.pages.behavior`
     // {test}`requirements.sdk.graph.search.search_text.mcp`
@@ -1868,6 +1950,7 @@ mod tests {
             .dispatch("outline_source", &listing["files"][index])
             .await
             .unwrap();
+        assert!(recovered.dependencies.is_empty());
         let outline: Value = serde_json::from_str(&recovered.text).unwrap();
         assert!(outline["items"][0]["node"].is_u64());
         assert_eq!(domain.0.lock().unwrap().reads, 0);
@@ -1877,6 +1960,19 @@ mod tests {
             .read_node(&cx, &json!({"path":"invalid.rs","location":"fn[intact]"}))
             .unwrap();
         let text = serde_json::from_str::<Value>(&read.text).unwrap();
+        let expected = domain.cache().intern_node("invalid.rs#fn[intact]".into());
+        let snapshot = crate::outline::OutlineContent::from_path(
+            domain.cache(),
+            &root.path().join("invalid.rs"),
+        )
+        .unwrap();
+        assert_eq!(
+            read.dependencies,
+            [Dependency::Node(
+                expected,
+                snapshot.select("fn[intact]").unwrap().fingerprint()
+            )]
+        );
         assert_eq!(text["file"], "invalid.rs");
         assert_eq!(text["selector"], "fn[intact]");
         assert!(text["text"].as_str().unwrap().contains("keep()"));

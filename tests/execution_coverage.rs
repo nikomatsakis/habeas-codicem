@@ -269,6 +269,7 @@ fn coverage_progress_on_a_pty_preserves_reports_and_plain_output_policy() {
         let records = attempts(&saved.last().unwrap().0);
         assert_eq!(records.len(), 1);
         assert_eq!(records[0]["outcome"], "success");
+        assert_profiles_present(&saved.last().unwrap().0, &records[0]);
         assert_eq!(records[0]["processes"].as_array().unwrap().len(), 1);
         assert!(
             !records[0]["processes"][0]["lines"]
@@ -319,6 +320,11 @@ fn coverage_progress_on_a_pty_preserves_reports_and_plain_output_policy() {
         let saved = runs(root);
         let records = attempts(&saved.last().unwrap().0);
         assert_eq!(records.len(), 1);
+        if processes > 0 {
+            assert_profiles_present(&saved.last().unwrap().0, &records[0]);
+        } else {
+            assert!(!records[0]["diagnostics"].as_array().unwrap().is_empty());
+        }
         assert_eq!(records[0]["outcome"], outcome);
         assert_eq!(records[0]["processes"].as_array().unwrap().len(), processes);
         for process in records[0]["processes"].as_array().unwrap() {
@@ -551,6 +557,7 @@ fn retained_files(root: &Path) -> std::collections::BTreeMap<std::path::PathBuf,
 // {test}`requirements.test-coverage.check`
 #[cfg(unix)]
 #[test]
+// {test}`requirements.index.render_only`
 fn book_rendering_preserves_retained_coverage_and_never_launches_tests() {
     use mdbook_preprocessor::book::{Book, Chapter};
     use std::io::Write;
@@ -618,7 +625,17 @@ fn book_rendering_preserves_retained_coverage_and_never_launches_tests() {
         before,
         "standalone coverage-check modified captured data"
     );
+    let (requests, stop, server) = model_tripwire(root);
+    let rules = ":::{req} sample\nThis requirement has no stored review.\n:::\n";
+    fs::write(root.join("md/rules.md"), rules).unwrap();
     let mut book = Book::new();
+    book.push_item(Chapter::new("Rules", rules.into(), "rules.md", vec![]));
+    book.push_item(Chapter::new(
+        "Requirements",
+        ":::{requirements-index}\n:::\n".into(),
+        "requirements-index.md",
+        vec![],
+    ));
     book.push_item(Chapter::new(
         "Coverage",
         ":::{coverage-index}\n:::\n".into(),
@@ -652,6 +669,15 @@ fn book_rendering_preserves_retained_coverage_and_never_launches_tests() {
     let output = child.wait_with_output().unwrap();
     assert_success(&output);
     let rendered: Book = serde_json::from_slice(&output.stdout).unwrap();
+    stop.send(()).unwrap();
+    server.join().unwrap();
+    assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(
+        rendered
+            .chapters()
+            .any(|chapter| chapter.content.contains("rules.sample")
+                && chapter.content.contains("Missing"))
+    );
     assert!(
         rendered
             .chapters()
@@ -1292,6 +1318,28 @@ fn package_binary_partition_and_ignored_selection_replace_only_their_actual_test
         7,
         "partition reruns preserve the unselected ignored-test result"
     );
+    let config = root.join(".config/nextest.toml");
+    let mut doc = fs::read_to_string(&config)
+        .unwrap()
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap();
+    doc["profile"]["default"]["default-filter"] =
+        toml_edit::value("test(second) | test(ignored_only)");
+    fs::write(config, doc.to_string()).unwrap();
+    assert_success(&coverage(root, &["--workspace", "--run-ignored", "all"]));
+    let current_tests = || {
+        runs(root)
+            .iter()
+            .flat_map(|(run, _)| attempts(run))
+            .map(|attempt| attempt["test"].as_str().unwrap().to_owned())
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    assert_eq!(
+        current_tests(),
+        ["second".into(), "ignored_only".into()].into()
+    );
+    assert_success(&coverage(root, &[]));
+    assert_eq!(current_tests(), ["second".into()].into());
 }
 
 // {test}`requirements.test-coverage.storage.selection`

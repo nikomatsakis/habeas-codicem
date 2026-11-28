@@ -182,6 +182,7 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
     }
 
     /// Prepare a retained node observation without claiming its delivery.
+    // {impl}`requirements.sdk.graph.snapshot`
     pub(crate) fn prepare_read(
         &self,
         node: &NodeId<D>,
@@ -286,6 +287,7 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
     }
 
     // {cite}`habeas:util`
+    // {impl}`requirements.sdk.graph.validation-context.ValidationContext.dependencies`
     pub fn dependencies(&self) -> Vec<Dependency<NodeId<D>, D::EdgeLabel>> {
         self.observations
             .lock()
@@ -293,6 +295,8 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
             .clone()
     }
 
+    // {impl}`requirements.sdk.graph.validation-context.ValidationContext.finish`
+    // {impl}`requirements.sdk.filesystem-storage.interface`
     pub fn finish(
         &self,
         version: CriterionVersion,
@@ -312,6 +316,7 @@ where
 {
     // {impl}`requirements.sdk.graph.validation-context.ValidationContext.read_source`
     // {impl}`requirements.sdk.graph.validation-context.read_source.behavior`
+    // {impl}`requirements.sdk.sources.provider_observations`
     pub fn read_source(
         &self,
         item: &crate::outline::OutlineData,
@@ -326,6 +331,7 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
     // {impl}`requirements.sdk.graph.agent-calls.judge.phases`
     // {impl}`requirements.sdk.graph.agent-calls.judge`
     /// Start a request whose submitted answer is decoded into R.
+    // {impl}`requirements.sdk.graph.validation-context.ValidationContext.ask`
     pub fn ask<R>(&self) -> Ask<'_, 'd, D, R, ContextPhase>
     where
         R: DeserializeOwned + JsonSchema + Send,
@@ -473,6 +479,7 @@ where
     // {impl}`requirements.sdk.graph.agent-harness.submission.mcp`
     // {impl}`requirements.sdk.graph.agent-harness.with_agent`
     // {impl}`requirements.sdk.graph.agent-calls.judge.submission.decoding`
+    // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
     async fn execute(self) -> Result<R, ValidationError<D::Error>> {
         let agent = self
             .ctx

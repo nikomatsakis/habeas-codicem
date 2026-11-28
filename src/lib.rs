@@ -852,6 +852,7 @@ fn replace_inline_references(
     result
 }
 
+// {impl}`requirements.references.book_badges`
 pub(crate) fn shield_badge(label: &str, message: &str, color: &str) -> String {
     let url = format!(
         "https://img.shields.io/badge/{}-{}-{color}?style=flat-square&labelColor=555",

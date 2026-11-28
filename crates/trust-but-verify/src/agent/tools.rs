@@ -51,6 +51,7 @@ impl<'a, D: Domain> SessionTools<'a, D> {
         self.pages.outstanding()
     }
 
+    // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
     pub(super) fn read_node(
         &mut self,
         inspection: &ValidationContext<'_, D>,
@@ -103,6 +104,7 @@ impl<'a, D: Domain> SessionTools<'a, D> {
         })
     }
 
+    // {impl}`requirements.sdk.graph.validation-context.pages.mcp`
     pub(super) async fn dispatch(
         &mut self,
         name: &str,
@@ -280,6 +282,7 @@ where
     // {impl}`requirements.sdk.graph.validation-context.outgoing_edges.mcp.description`
     // {impl}`requirements.sdk.graph.validation-context.pages.mcp.description`
     // {impl}`requirements.sdk.graph.agent-harness.submission.mcp.description`
+    // {impl}`requirements.sdk.graph.validation-context.pages.mcp`
     fn tools(&self, submission: Option<ToolDefinition>) -> io::Result<Vec<ToolDefinition>> {
         let mut tools: Vec<ToolDefinition> = [
             json!({"name":"read_node","description":"Read a graph node by ID, source address, or node data. Returns text and, when more remains, a next UUID. A delivered page records its enclosing node.",

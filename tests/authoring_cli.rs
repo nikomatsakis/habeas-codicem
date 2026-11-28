@@ -6003,6 +6003,7 @@ fn the_review_prompt_gives_a_report_template() {
         &section(review_prompt(), "## Report"),
         &[
             "### Revised text",
+            "every requirement in the group",
             "as complete directives ready to paste, including new split requirements",
             "### Edits outside the group",
             "revised text of other requirements your changes make stale",

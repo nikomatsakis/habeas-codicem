@@ -135,6 +135,7 @@ struct Issue {
     issue: String,
 }
 struct Github(crate::github::GithubIssues);
+// {impl}`requirements.authoring.github_reads`
 impl Tool<HabeasDomain, Issue, Value> for Github {
     fn name(&self) -> &str {
         "github"

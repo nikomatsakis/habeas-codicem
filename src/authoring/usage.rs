@@ -8,6 +8,7 @@ use serde::Serialize;
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+// {impl}`requirements.authoring.usage_storage`
 // {impl}`requirements.authoring.usage_requests`
 #[derive(Serialize)]
 pub(super) struct UsageRecord {

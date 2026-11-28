@@ -2184,7 +2184,7 @@ mod tests {
         fs::write(
             project.path().join("src/lib.rs"),
             format!(
-                "// {cite}\n// :::{{cite}} habeas:util\n// Formats output for the caller.\n// :::\nfn helper() {{}}\n"
+                "// {cite}\n// :::{{cite}} habeas:util\n// Formats output for the caller.\n// :::\n// :::{{fixme}} requirements.ready\n// Remaining readiness gap.\n// :::\nfn helper() {{}}\n"
             ),
         )
         .unwrap();
@@ -2197,6 +2197,7 @@ mod tests {
         );
         let mut sources = subject.sources(project.path()).unwrap();
         assert!(!sources.has_applicable_fixme);
+        assert!(sources.model_acknowledgments().is_empty());
         let mandatory = sources.mandatory_inputs().to_vec();
         assert_eq!(mandatory[0]["file"], "src/lib.rs");
         assert_eq!(mandatory[0]["item"], "fn[helper]");
@@ -2331,6 +2332,7 @@ mod tests {
         assert!(!prompt.contains("{{"), "{prompt}");
     }
 
+    // {test}`requirements.authoring.testing_bar`
     // {test}`requirements.authoring.prompt_parts`
     // {test}`requirements.authoring.distributed_task`
     // {test}`requirements.authoring.habeas_background`
@@ -3089,6 +3091,11 @@ no_match:
             format!("{implementation}\n// {test_role}\n#[test]\nfn checks_api() {{ api(); }}\n"),
         )
         .unwrap();
+        fs::write(
+            root.path().join("md/requirements.md"),
+            declaration.replace(":impl: src/lib.rs#fn[api]\n", ""),
+        )
+        .unwrap();
         let tested = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
         assert!(tested.review_roots.is_some());
         assert!(
@@ -3129,34 +3136,49 @@ no_match:
                 .review_roots
                 .is_some()
         );
+        let check_single_review = || {
+            let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+            assert!(sources.review_roots.is_none());
+            assert!(
+                !sources
+                    .mandatory_inputs()
+                    .iter()
+                    .any(|input| input["file"] == "src/lib.rs")
+            );
+            let definitions = crate::evidence::load_definitions(root.path()).unwrap();
+            let domain =
+                crate::sdk::HabeasDomain::new(root.path(), &definitions, &sources.outlines);
+            let entries = domain
+                .reference_entries(&crate::sdk::RequirementId("requirements.ready".into()))
+                .unwrap();
+            assert_eq!(
+                sources.reference_set,
+                crate::evidence::digest_entries(entries)
+            );
+        };
         fs::write(
             root.path().join("md/requirements.md"),
             ":::{req} base\nContext.\n:::\n:::{example} ready\nA case. {cite}`requirements.base`\n:::\n",
         )
         .unwrap();
         fs::write(root.path().join("src/lib.rs"), &implementation).unwrap();
-        assert!(
-            AssessmentSources::prepare(root.path(), "requirements.ready")
-                .unwrap()
-                .review_roots
-                .is_none()
-        );
+        check_single_review();
         let distributed = format!("{declaration}\n").replace("The public api", "::::{sites} functions\n```yaml\nlanguage: rust\nrule: {kind: function_item}\nmatch: ['fn api() {}']\nno_match: ['struct Other;']\n```\n::::\nThe public api");
         fs::write(root.path().join("md/requirements.md"), distributed).unwrap();
-        assert!(
-            AssessmentSources::prepare(root.path(), "requirements.ready")
-                .unwrap()
-                .review_roots
-                .is_none()
-        );
+        check_single_review();
         fs::write(root.path().join("md/requirements.md"), format!(":::{{req}} ready\nStructure.\n:::\n:::{{req}} refined\n{impl_role}\nRefinement.\n:::\n")).unwrap();
         fs::write(root.path().join("src/lib.rs"), "fn unreferenced() {}\n").unwrap();
+        let refined = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        assert!(refined.review_roots.is_some());
+        let inputs = refined.mandatory_inputs();
         assert!(
-            AssessmentSources::prepare(root.path(), "requirements.ready")
-                .unwrap()
-                .review_roots
-                .is_some()
+            inputs
+                .iter()
+                .any(|input| input["requirements"] == "requirements.refined"
+                    && input["text"]
+                        == json!([":::{req} refined", impl_role, "Refinement.", ":::"]))
         );
+        assert!(inputs.iter().all(|input| input.get("file").is_none()));
     }
 
     // {test}`requirements.ci.review_criteria`
@@ -3331,6 +3353,7 @@ no_match:
         }
     }
 
+    // {test}`requirements.ci.outcomes`
     // {test}`requirements.authoring.submission`
     #[tokio::test]
     async fn combined_judgment_retains_both_criteria_and_prioritizes_failures() {
