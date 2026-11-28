@@ -636,6 +636,12 @@ For an `{impl}` or `{test}` reference in a source outside the book, the words of
 
 Built-in definitions are named `habeas:<name>` and are available in every project without a declaration. Each has fixed text and permits only certain roles. Built-ins have no evidence files and do not appear in the requirements index or `habeas status`. Project definitions cannot use names beginning with `habeas:`. In the book, a reference to a built-in renders as a badge without a link; hovering over it shows the built-in's text.
 
+The built-in `habeas:validate` has this text
+
+> The project’s Cargo integration test must call `habeas::validate()` to check its requirements and evidence.
+
+`habeas setup` places `` // {test}`habeas:validate` `` on the generated integration test. Rerun setup to annotate an unchanged test from an earlier version. If you customized the test, add the annotation to the function that calls `habeas::validate()`. {cite}`requirements.cli.setup.validation_test`
+
 The built-in `habeas:util` has this text:
 
 > Cite this on an item that serves other code, including code outside the

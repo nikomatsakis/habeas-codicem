@@ -1,7 +1,7 @@
 {
   "requirement": "`habeas setup` MUST configure native nextest settings in\n`.config/nextest.toml` at the Cargo workspace root so the coverage workflow of\n{cite}`requirements.test-coverage.run` routes each executed test attempt through\nthe per-process collector of {cite}`requirements.test-coverage.processes`.\nThose settings MUST use nextest's own configuration format.\nRepeating setup MUST avoid duplicate configuration, preserve unrelated nextest\nsettings, and report conflicting settings for review rather than overwrite them.",
   "determination": true,
-  "rationale": "structural: **Structural obligations in the text**\n- \"configure native nextest settings in `.config/nextest.toml` at the Cargo workspace root\" fixes the target file and where it lives. An implementation that wrote the file at the invoked directory instead would break this clause.\n- \"Those settings MUST use nextest's own configuration format\" requires nextest's native mechanism. That mechanism is the `wrapper-scripts` experimental feature, a `[scripts.wrapper.*]` table and a `[[profile.default.scripts]]` rule with `run-wrapper`. A side-channel such as an environment variable or a custom runner would violate it.\n- The clause \"routes each executed test attempt through the per-process collector\" is met by a wrapper script that runs `habeas coverage-process` and is selected by a rule with `filter = all()`.\n- The idempotence, preservation and conflict-reporting clauses are mostly behavioral. One part is structural: the code must edit the existing document in place and validate the result, rather than regenerate the file.\n\n**Mapping to source**\n- `.config/nextest.toml#pair[experimental]` enables `wrapper-scripts`.\n- `.config/nextest.toml#table[scripts.wrapper.habeas-coverage]` defines the wrapper.\n- `.config/nextest.toml#table[profile.default.scripts]` routes tests through the wrapper.\n- `src/execution_coverage/configuration.rs#fn[configure]` does the work for `habeas setup`:\n  - It resolves `workspace_root(root)?.join(\".config/nextest.toml\")`.\n  - It edits the parsed `toml_edit::DocumentMut` in place, so unrelated settings survive.\n  - It adds `wrapper-scripts` only if it is missing.\n  - It creates the wrapper table only if it is missing, with `command = [\"habeas\", \"coverage-process\"]` and `target-runner = \"within-wrapper\"`.\n  - It adds the `run-wrapper` rule with `filter = \"all()\"` only if no `run-wrapper` rule exists, so repeating setup adds no duplicate.\n  - It rejects wrongly typed tables and arrays via `table` and `invalid`.\n  - It calls `check` on the result to report conflicts instead of overwriting them.\n\nThe helpers `workspace_root`, `table`, `invalid`, `check`, `command_is_collector` and the `WRAPPER` constant are reached from `configure`, so they need no markers of their own. `validate_setup` is a separate consumer of `check`, and it does not carry an obligation of this requirement.\n\nI found no structural obligation without an implementation root. I did not assess test adequacy.\n\nbehavioral: I found no unacknowledged gap. Each obligation in `requirements.test-coverage.setup.configuration` has a test that runs it and asserts the outcome. I read `configure` and `check` in `src/execution_coverage/configuration.rs` only to see what `configure` produces and what `check` validates. I derived the expected results from the requirement text.\n\n**Obligations and the tests that cover them**\n\n1. **Native settings go in `.config/nextest.toml` at the Cargo workspace root.**\n   - `workspace_member_uses_the_native_config_at_the_workspace_root` runs setup from a member crate. It asserts the path is `<root>/.config/nextest.toml` and that no `.config` or `target` appears in the member.\n   - The same test covers an excluded member, which gets its own root.\n   - `explicit_workspace_pointer_places_configuration_at_a_sibling_workspace` covers a `workspace = '../workspace'` pointer.\n   - `coverage_setup_is_idempotent_and_hook_needs_no_coverage_chapter` runs the real `habeas setup` CLI and checks that the file exists.\n\n2. **The settings route each executed test attempt through the per-process collector.**\n   - The generated config is checked with `check`. That check requires `experimental` to include wrapper-scripts. It requires `scripts.wrapper.habeas-coverage` with command `habeas coverage-process` and target-runner `within-wrapper`. It requires an unconditional `all()` run-wrapper rule.\n   - `native_settings_inheritance_and_precedence` asserts the generated config passes for the `ci` profile.\n   - It also checks inherited profiles, where a child override passes and an earlier conflicting wrapper rule fails.\n   - It rejects a filtered, platform-restricted or other-wrapper rule, and a wrong command or runner mode.\n   - The preserved-config case asserts the `run-wrapper = WRAPPER` rule is present.\n\n3. **The settings use nextest's own configuration format.** The tests parse the output as nextest TOML (`toml::Table`) and assert nextest keys such as `experimental`, `scripts.wrapper` and `profile.default.scripts`. There is no separate observable obligation beyond that.\n\n4. **Repeating setup avoids duplicate configuration.**\n   - `native_settings_inheritance_and_precedence` asserts that `configure` returns the same source on a second run, both for a fresh file and for a merged file.\n   - It asserts exactly 2 `experimental` entries and exactly 2 script rules after merging.\n   - The CLI test runs `habeas setup` twice and asserts the config is byte-identical.\n\n5. **Setup preserves unrelated nextest settings.** The merge case starts with `experimental = ['setup-scripts']`, `retries = 2` and a `setup = 'prepare'` script rule. It asserts all three survive alongside the added wrapper-scripts entry and wrapper rule.\n\n6. **Setup reports conflicting settings for review and does not overwrite them.**\n   - `setup_conflicts_name_the_setting_and_preserve_existing_native_configuration` covers six conflict classes: wrong command, wrong runner mode, malformed `experimental`, malformed `scripts`, malformed `profile.default.scripts`, and a conflicting existing run-wrapper rule. For each it asserts the error names the setting and `.config/nextest.toml`, and that the file content is unchanged.\n   - `setup_reports_a_conflicting_nextest_wrapper_without_writing_project_files` runs the real CLI. It asserts failure, a stderr that names the file and setting, an unchanged conflicting config, and that other project files are untouched.\n   - `coverage_setup_is_idempotent_and_hook_needs_no_coverage_chapter` also checks that a conflicting config is left untouched by the hook.\n\nThe `{test}` references on the marked tests are present. No behavioral obligation is left without a test.",
+  "rationale": "structural: The structural obligations here are all covered by the supplied roots.\n\n**Obligations found**\n- Location: \"`habeas setup` MUST configure native nextest settings in `.config/nextest.toml` at the Cargo workspace root\". A version that wrote a different file, or wrote to the invocation directory instead of the workspace root, would break this clause.\n- Format: \"Those settings MUST use nextest's own configuration format.\" A custom sidecar file or environment variables would violate it.\n- Routing: the settings must \"route each executed test attempt through the per-process collector\". In nextest this means a wrapper script plus a rule that selects it.\n- Repeat runs: \"avoid duplicate configuration, preserve unrelated nextest settings, and report conflicting settings for review rather than overwrite them.\" An implementation that regenerated the file wholesale would violate this.\n\n**Supplied roots**\n- `.config/nextest.toml#pair[experimental]` enables `wrapper-scripts`.\n- `.config/nextest.toml#table[scripts.wrapper.habeas-coverage]` declares the wrapper.\n- `.config/nextest.toml#table[profile.default.scripts]` holds the rule that selects the wrapper.\n- Together these show the native nextest TOML form.\n- `src/execution_coverage/configuration.rs#fn[configure]` implements the setup logic:\n  - It resolves the path as `workspace_root(root).join(\".config/nextest.toml\")`.\n  - It edits the existing document with `toml_edit`'s `DocumentMut`, so unrelated settings are kept.\n  - It pushes `wrapper-scripts` only if absent.\n  - It creates the wrapper table only if absent.\n  - It adds the `run-wrapper` rule only if no `run-wrapper` rule exists.\n  - It returns errors for wrongly typed existing settings instead of overwriting them.\n  - It runs `check` on the result, which rejects a wrapper whose `command` or `target-runner` differs, and a first `run-wrapper` rule that is not an unconditional `all()` selection of the wrapper.\n\n**Reachable helpers (no separate markers needed)**\n- `configure` calls `workspace_root`, `table`, `invalid` and `check`.\n- `check` calls `command_is_collector`.\n- These are covered by following `configure`.\n- `validate_setup` is a separate caller of `check`. The text names no separate structural obligation for it.\n\nThe conflict-reporting and no-overwrite obligations are therefore met by `configure` and the helpers it reaches. Test adequacy is out of scope.\n\nbehavioral: The marked tests cover each behavioral obligation of `requirements.test-coverage.setup.configuration`.\n\n**Placement at the workspace root in `.config/nextest.toml`**\n- `src/execution_coverage/configuration.rs#mod[tests]/fn[workspace_member_uses_the_native_config_at_the_workspace_root]` checks that a member crate gets the workspace root path. It also checks that no `.config` or `target` directory appears in the member.\n- The same test checks the excluded-member case, where the member is its own workspace root.\n- `explicit_workspace_pointer_places_configuration_at_a_sibling_workspace` checks a member whose `workspace = '../workspace'` pointer leads to a sibling workspace root.\n\n**Native nextest settings that route each attempt through the collector**\n- `native_settings_inheritance_and_precedence` runs `check` on the generated configuration. That check requires `experimental` to include `wrapper-scripts`, and it requires `scripts.wrapper.habeas-coverage` to run `coverage-process` with `target-runner = within-wrapper`. It also requires an unconditional first `run-wrapper` rule with filter `all()` and no platform.\n- The same test covers inheritance: a profile that inherits `ci`, a conflicting parent rule, a child override, and ordering of rules. It has negative cases for wrong command, wrong runner, a filtered rule, a platform-limited rule, and self-inheritance.\n- The generated file is parsed as TOML with nextest's own tables, which covers the format obligation.\n- `tests/setup.rs#fn[coverage_setup_is_idempotent_and_hook_needs_no_coverage_chapter]` checks the file written by the real `setup` command contains `coverage-process`.\n\n**Repeating setup avoids duplicates**\n- `native_settings_inheritance_and_precedence` asserts `configure` returns identical output when run again on its own output. It does this for a fresh file and for a merged file.\n- `coverage_setup_is_idempotent_and_hook_needs_no_coverage_chapter` runs `habeas setup` twice and asserts the config file is byte-identical.\n\n**Unrelated nextest settings are preserved**\n- `native_settings_inheritance_and_precedence` starts from an existing file with `experimental = ['setup-scripts']`, `retries = 2` and a `setup` script rule. It asserts `retries` is still 2 and both `experimental` entries exist. It also asserts there are exactly two script rules, the original setup rule and the wrapper rule.\n\n**Conflicts are reported and not overwritten**\n- `setup_conflicts_name_the_setting_and_preserve_existing_native_configuration` covers a wrong wrapper command, a wrong runner, malformed `experimental`, `scripts` and `profile.default.scripts` values, and a competing `run-wrapper` rule. For each it asserts the error names the setting and `.config/nextest.toml`, and that the file content is unchanged.\n- `tests/setup.rs#fn[setup_reports_a_conflicting_nextest_wrapper_without_writing_project_files]` runs the real binary. It asserts the command fails, stderr names the file and `scripts.wrapper.habeas-coverage`, and the conflicting file and other project files are unchanged.\n- `coverage_setup_is_idempotent_and_hook_needs_no_coverage_chapter` also checks that a conflicting config is left untouched.\n\nI found no obligation without a test, and no assertion that contradicts the requirement. Whether a real nextest run routes attempts through the collector is the job of `requirements.test-coverage.run` and `requirements.test-coverage.processes`. Those requirements are cited as context here and need no re-assessment.",
   "references": "a9d86e9c6dfc8f80209c27e2fd3fee922193117f5e079faca63c1b5b500c6c53",
   "inputs": [
     {
@@ -74,11 +74,6 @@
       "hash": "3d65f9964831105d784c1c527d6683061406c8a8a41aa0db1a50ba89753f6b27"
     },
     {
-      "file": "src/execution_coverage/configuration.rs",
-      "item": "",
-      "hash": "574ef17e4eca52e100d6c1224c17fe111e6ee1e380dd7387ce41ae5a0d7ad867"
-    },
-    {
       "file": ".config/nextest.toml",
       "item": "",
       "hash": "6d7d288a8a9cd484a61f24eb9569253cd73f544cfe1b4cfbbb98707c6920978c"
@@ -87,6 +82,11 @@
       "file": "src/execution_coverage/configuration.rs",
       "item": "fn[check]",
       "hash": "dd32d812fbbe0fb1598aa70e612cf278c32799f3dd40e04c4cbb270975319e94"
+    },
+    {
+      "file": "src/execution_coverage/configuration.rs",
+      "item": "fn[validate_setup]",
+      "hash": "bbaa9affef470a2e272027a8793d2ae15d82e33099ce8dd859e97b00cd26d5e8"
     },
     {
       "file": "src/execution_coverage/configuration.rs",
@@ -102,16 +102,6 @@
       "file": "src/execution_coverage/configuration.rs",
       "item": "fn[table]",
       "hash": "98a038ff8e6315fe13bd6d5ad77cbe09f28c7e25e8ce207a03c4600fd3b59d66"
-    },
-    {
-      "file": "src/execution_coverage/configuration.rs",
-      "item": "fn[validate_setup]",
-      "hash": "bbaa9affef470a2e272027a8793d2ae15d82e33099ce8dd859e97b00cd26d5e8"
-    },
-    {
-      "file": "src/execution_coverage/configuration.rs",
-      "item": "const[WRAPPER]",
-      "hash": "11b11b43f613041b78e697298901f957d5f5d82bdef776f8704d6858e7e95da7"
     },
     {
       "file": "src/execution_coverage/configuration.rs",
@@ -147,11 +137,6 @@
       "file": "tests/setup.rs",
       "item": "fn[setup_reports_a_conflicting_nextest_wrapper_without_writing_project_files]",
       "hash": "40c37c7c2f316103b64a429efa6164b7900794e3eb755b2be94459f6c051d421"
-    },
-    {
-      "file": "src/setup.rs",
-      "item": "fn[run]",
-      "hash": "d1dcd32386be3247e946e11aab8ee37131a1490abbb4a992eae9f517199faae3"
     }
   ],
   "criteria": {
@@ -276,23 +261,6 @@
               "Source": {
                 "resource": {
                   "scheme": "repo",
-                  "location": "src/execution_coverage/configuration.rs"
-                },
-                "selector": ""
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "195eafe199e7841201ffe12b8b6e83b1f2862993575799c3b2822f0498fe9613"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
                   "location": ".config/nextest.toml"
                 },
                 "selector": ""
@@ -318,6 +286,23 @@
             {
               "scheme": "rust-structural-v1:own-v1",
               "value": "dd32d812fbbe0fb1598aa70e612cf278c32799f3dd40e04c4cbb270975319e94"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "src/execution_coverage/configuration.rs"
+                },
+                "selector": "fn[validate_setup]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "bbaa9affef470a2e272027a8793d2ae15d82e33099ce8dd859e97b00cd26d5e8"
             }
           ]
         },
@@ -371,45 +356,11 @@
               "value": "98a038ff8e6315fe13bd6d5ad77cbe09f28c7e25e8ce207a03c4600fd3b59d66"
             }
           ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "src/execution_coverage/configuration.rs"
-                },
-                "selector": "fn[validate_setup]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "bbaa9affef470a2e272027a8793d2ae15d82e33099ce8dd859e97b00cd26d5e8"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "src/execution_coverage/configuration.rs"
-                },
-                "selector": "const[WRAPPER]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "11b11b43f613041b78e697298901f957d5f5d82bdef776f8704d6858e7e95da7"
-            }
-          ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "**Structural obligations in the text**\n- \"configure native nextest settings in `.config/nextest.toml` at the Cargo workspace root\" fixes the target file and where it lives. An implementation that wrote the file at the invoked directory instead would break this clause.\n- \"Those settings MUST use nextest's own configuration format\" requires nextest's native mechanism. That mechanism is the `wrapper-scripts` experimental feature, a `[scripts.wrapper.*]` table and a `[[profile.default.scripts]]` rule with `run-wrapper`. A side-channel such as an environment variable or a custom runner would violate it.\n- The clause \"routes each executed test attempt through the per-process collector\" is met by a wrapper script that runs `habeas coverage-process` and is selected by a rule with `filter = all()`.\n- The idempotence, preservation and conflict-reporting clauses are mostly behavioral. One part is structural: the code must edit the existing document in place and validate the result, rather than regenerate the file.\n\n**Mapping to source**\n- `.config/nextest.toml#pair[experimental]` enables `wrapper-scripts`.\n- `.config/nextest.toml#table[scripts.wrapper.habeas-coverage]` defines the wrapper.\n- `.config/nextest.toml#table[profile.default.scripts]` routes tests through the wrapper.\n- `src/execution_coverage/configuration.rs#fn[configure]` does the work for `habeas setup`:\n  - It resolves `workspace_root(root)?.join(\".config/nextest.toml\")`.\n  - It edits the parsed `toml_edit::DocumentMut` in place, so unrelated settings survive.\n  - It adds `wrapper-scripts` only if it is missing.\n  - It creates the wrapper table only if it is missing, with `command = [\"habeas\", \"coverage-process\"]` and `target-runner = \"within-wrapper\"`.\n  - It adds the `run-wrapper` rule with `filter = \"all()\"` only if no `run-wrapper` rule exists, so repeating setup adds no duplicate.\n  - It rejects wrongly typed tables and arrays via `table` and `invalid`.\n  - It calls `check` on the result to report conflicts instead of overwriting them.\n\nThe helpers `workspace_root`, `table`, `invalid`, `check`, `command_is_collector` and the `WRAPPER` constant are reached from `configure`, so they need no markers of their own. `validate_setup` is a separate consumer of `check`, and it does not carry an obligation of this requirement.\n\nI found no structural obligation without an implementation root. I did not assess test adequacy."
+        "rationale": "The structural obligations here are all covered by the supplied roots.\n\n**Obligations found**\n- Location: \"`habeas setup` MUST configure native nextest settings in `.config/nextest.toml` at the Cargo workspace root\". A version that wrote a different file, or wrote to the invocation directory instead of the workspace root, would break this clause.\n- Format: \"Those settings MUST use nextest's own configuration format.\" A custom sidecar file or environment variables would violate it.\n- Routing: the settings must \"route each executed test attempt through the per-process collector\". In nextest this means a wrapper script plus a rule that selects it.\n- Repeat runs: \"avoid duplicate configuration, preserve unrelated nextest settings, and report conflicting settings for review rather than overwrite them.\" An implementation that regenerated the file wholesale would violate this.\n\n**Supplied roots**\n- `.config/nextest.toml#pair[experimental]` enables `wrapper-scripts`.\n- `.config/nextest.toml#table[scripts.wrapper.habeas-coverage]` declares the wrapper.\n- `.config/nextest.toml#table[profile.default.scripts]` holds the rule that selects the wrapper.\n- Together these show the native nextest TOML form.\n- `src/execution_coverage/configuration.rs#fn[configure]` implements the setup logic:\n  - It resolves the path as `workspace_root(root).join(\".config/nextest.toml\")`.\n  - It edits the existing document with `toml_edit`'s `DocumentMut`, so unrelated settings are kept.\n  - It pushes `wrapper-scripts` only if absent.\n  - It creates the wrapper table only if absent.\n  - It adds the `run-wrapper` rule only if no `run-wrapper` rule exists.\n  - It returns errors for wrongly typed existing settings instead of overwriting them.\n  - It runs `check` on the result, which rejects a wrapper whose `command` or `target-runner` differs, and a first `run-wrapper` rule that is not an unconditional `all()` selection of the wrapper.\n\n**Reachable helpers (no separate markers needed)**\n- `configure` calls `workspace_root`, `table`, `invalid` and `check`.\n- `check` calls `command_is_collector`.\n- These are covered by following `configure`.\n- `validate_setup` is a separate caller of `check`. The text names no separate structural obligation for it.\n\nThe conflict-reporting and no-overwrite obligations are therefore met by `configure` and the helpers it reaches. Test adequacy is out of scope."
       }
     },
     "behavioral": {
@@ -586,23 +537,6 @@
                   "scheme": "repo",
                   "location": "src/execution_coverage/configuration.rs"
                 },
-                "selector": ""
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "195eafe199e7841201ffe12b8b6e83b1f2862993575799c3b2822f0498fe9613"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "src/execution_coverage/configuration.rs"
-                },
                 "selector": "fn[configure]"
               }
             },
@@ -628,28 +562,11 @@
               "value": "dd32d812fbbe0fb1598aa70e612cf278c32799f3dd40e04c4cbb270975319e94"
             }
           ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "src/execution_coverage/configuration.rs"
-                },
-                "selector": "const[WRAPPER]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "11b11b43f613041b78e697298901f957d5f5d82bdef776f8704d6858e7e95da7"
-            }
-          ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "I found no unacknowledged gap. Each obligation in `requirements.test-coverage.setup.configuration` has a test that runs it and asserts the outcome. I read `configure` and `check` in `src/execution_coverage/configuration.rs` only to see what `configure` produces and what `check` validates. I derived the expected results from the requirement text.\n\n**Obligations and the tests that cover them**\n\n1. **Native settings go in `.config/nextest.toml` at the Cargo workspace root.**\n   - `workspace_member_uses_the_native_config_at_the_workspace_root` runs setup from a member crate. It asserts the path is `<root>/.config/nextest.toml` and that no `.config` or `target` appears in the member.\n   - The same test covers an excluded member, which gets its own root.\n   - `explicit_workspace_pointer_places_configuration_at_a_sibling_workspace` covers a `workspace = '../workspace'` pointer.\n   - `coverage_setup_is_idempotent_and_hook_needs_no_coverage_chapter` runs the real `habeas setup` CLI and checks that the file exists.\n\n2. **The settings route each executed test attempt through the per-process collector.**\n   - The generated config is checked with `check`. That check requires `experimental` to include wrapper-scripts. It requires `scripts.wrapper.habeas-coverage` with command `habeas coverage-process` and target-runner `within-wrapper`. It requires an unconditional `all()` run-wrapper rule.\n   - `native_settings_inheritance_and_precedence` asserts the generated config passes for the `ci` profile.\n   - It also checks inherited profiles, where a child override passes and an earlier conflicting wrapper rule fails.\n   - It rejects a filtered, platform-restricted or other-wrapper rule, and a wrong command or runner mode.\n   - The preserved-config case asserts the `run-wrapper = WRAPPER` rule is present.\n\n3. **The settings use nextest's own configuration format.** The tests parse the output as nextest TOML (`toml::Table`) and assert nextest keys such as `experimental`, `scripts.wrapper` and `profile.default.scripts`. There is no separate observable obligation beyond that.\n\n4. **Repeating setup avoids duplicate configuration.**\n   - `native_settings_inheritance_and_precedence` asserts that `configure` returns the same source on a second run, both for a fresh file and for a merged file.\n   - It asserts exactly 2 `experimental` entries and exactly 2 script rules after merging.\n   - The CLI test runs `habeas setup` twice and asserts the config is byte-identical.\n\n5. **Setup preserves unrelated nextest settings.** The merge case starts with `experimental = ['setup-scripts']`, `retries = 2` and a `setup = 'prepare'` script rule. It asserts all three survive alongside the added wrapper-scripts entry and wrapper rule.\n\n6. **Setup reports conflicting settings for review and does not overwrite them.**\n   - `setup_conflicts_name_the_setting_and_preserve_existing_native_configuration` covers six conflict classes: wrong command, wrong runner mode, malformed `experimental`, malformed `scripts`, malformed `profile.default.scripts`, and a conflicting existing run-wrapper rule. For each it asserts the error names the setting and `.config/nextest.toml`, and that the file content is unchanged.\n   - `setup_reports_a_conflicting_nextest_wrapper_without_writing_project_files` runs the real CLI. It asserts failure, a stderr that names the file and setting, an unchanged conflicting config, and that other project files are untouched.\n   - `coverage_setup_is_idempotent_and_hook_needs_no_coverage_chapter` also checks that a conflicting config is left untouched by the hook.\n\nThe `{test}` references on the marked tests are present. No behavioral obligation is left without a test."
+        "rationale": "The marked tests cover each behavioral obligation of `requirements.test-coverage.setup.configuration`.\n\n**Placement at the workspace root in `.config/nextest.toml`**\n- `src/execution_coverage/configuration.rs#mod[tests]/fn[workspace_member_uses_the_native_config_at_the_workspace_root]` checks that a member crate gets the workspace root path. It also checks that no `.config` or `target` directory appears in the member.\n- The same test checks the excluded-member case, where the member is its own workspace root.\n- `explicit_workspace_pointer_places_configuration_at_a_sibling_workspace` checks a member whose `workspace = '../workspace'` pointer leads to a sibling workspace root.\n\n**Native nextest settings that route each attempt through the collector**\n- `native_settings_inheritance_and_precedence` runs `check` on the generated configuration. That check requires `experimental` to include `wrapper-scripts`, and it requires `scripts.wrapper.habeas-coverage` to run `coverage-process` with `target-runner = within-wrapper`. It also requires an unconditional first `run-wrapper` rule with filter `all()` and no platform.\n- The same test covers inheritance: a profile that inherits `ci`, a conflicting parent rule, a child override, and ordering of rules. It has negative cases for wrong command, wrong runner, a filtered rule, a platform-limited rule, and self-inheritance.\n- The generated file is parsed as TOML with nextest's own tables, which covers the format obligation.\n- `tests/setup.rs#fn[coverage_setup_is_idempotent_and_hook_needs_no_coverage_chapter]` checks the file written by the real `setup` command contains `coverage-process`.\n\n**Repeating setup avoids duplicates**\n- `native_settings_inheritance_and_precedence` asserts `configure` returns identical output when run again on its own output. It does this for a fresh file and for a merged file.\n- `coverage_setup_is_idempotent_and_hook_needs_no_coverage_chapter` runs `habeas setup` twice and asserts the config file is byte-identical.\n\n**Unrelated nextest settings are preserved**\n- `native_settings_inheritance_and_precedence` starts from an existing file with `experimental = ['setup-scripts']`, `retries = 2` and a `setup` script rule. It asserts `retries` is still 2 and both `experimental` entries exist. It also asserts there are exactly two script rules, the original setup rule and the wrapper rule.\n\n**Conflicts are reported and not overwritten**\n- `setup_conflicts_name_the_setting_and_preserve_existing_native_configuration` covers a wrong wrapper command, a wrong runner, malformed `experimental`, `scripts` and `profile.default.scripts` values, and a competing `run-wrapper` rule. For each it asserts the error names the setting and `.config/nextest.toml`, and that the file content is unchanged.\n- `tests/setup.rs#fn[setup_reports_a_conflicting_nextest_wrapper_without_writing_project_files]` runs the real binary. It asserts the command fails, stderr names the file and `scripts.wrapper.habeas-coverage`, and the conflicting file and other project files are unchanged.\n- `coverage_setup_is_idempotent_and_hook_needs_no_coverage_chapter` also checks that a conflicting config is left untouched.\n\nI found no obligation without a test, and no assertion that contradicts the requirement. Whether a real nextest run routes attempts through the collector is the job of `requirements.test-coverage.run` and `requirements.test-coverage.processes`. Those requirements are cited as context here and need no re-assessment."
       }
     }
   },
@@ -774,23 +691,6 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "src/execution_coverage/configuration.rs"
-            },
-            "selector": ""
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "195eafe199e7841201ffe12b8b6e83b1f2862993575799c3b2822f0498fe9613"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
               "location": ".config/nextest.toml"
             },
             "selector": ""
@@ -816,6 +716,23 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "dd32d812fbbe0fb1598aa70e612cf278c32799f3dd40e04c4cbb270975319e94"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/configuration.rs"
+            },
+            "selector": "fn[validate_setup]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "bbaa9affef470a2e272027a8793d2ae15d82e33099ce8dd859e97b00cd26d5e8"
         }
       ]
     },
@@ -867,40 +784,6 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "98a038ff8e6315fe13bd6d5ad77cbe09f28c7e25e8ce207a03c4600fd3b59d66"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/execution_coverage/configuration.rs"
-            },
-            "selector": "fn[validate_setup]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "bbaa9affef470a2e272027a8793d2ae15d82e33099ce8dd859e97b00cd26d5e8"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/execution_coverage/configuration.rs"
-            },
-            "selector": "const[WRAPPER]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "11b11b43f613041b78e697298901f957d5f5d82bdef776f8704d6858e7e95da7"
         }
       ]
     },
@@ -1020,23 +903,6 @@
         {
           "scheme": "rust-structural-v1:own-v1",
           "value": "40c37c7c2f316103b64a429efa6164b7900794e3eb755b2be94459f6c051d421"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/setup.rs"
-            },
-            "selector": "fn[run]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "d1dcd32386be3247e946e11aab8ee37131a1490abbb4a992eae9f517199faae3"
         }
       ]
     }

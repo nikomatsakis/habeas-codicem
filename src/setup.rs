@@ -5,8 +5,11 @@ use std::process::Command;
 
 use toml_edit::{Array, DocumentMut, Item, Table, value};
 
+const LEGACY_TEST_SOURCE: &str = "#[test]\nfn habeas() {\n    habeas::validate();\n}\n";
+// {impl}`requirements.cli.setup.validation_test`
 // {impl}`requirements.integration.validate.optimized`
-const TEST_SOURCE: &str = "#[test]\nfn habeas() {\n    habeas::validate();\n}\n";
+const TEST_SOURCE: &str =
+    "// {test}`habeas:validate`\n#[test]\nfn habeas() {\n    habeas::validate();\n}\n";
 const BADGE_CSS: &str = include_str!("../md/habeas.css");
 
 // {cite}`habeas:util`
@@ -63,22 +66,18 @@ pub(crate) fn project_root() -> Result<PathBuf, Box<dyn Error>> {
         .ok_or_else(|| "cannot find a project with Cargo.toml and book.toml".into())
 }
 
-pub(crate) fn write_new_or_same(path: &Path, content: &str) -> Result<(), Box<dyn Error>> {
-    if path.exists() {
-        if fs::read_to_string(path)? != content {
-            return Err(format!(
-                "{} already exists with different content; review it before running setup again",
-                path.display()
-            )
-            .into());
-        }
-    } else {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(path, content)?;
+fn needs_setup_write(
+    path: &Path,
+    desired: &str,
+    previous: Option<&str>,
+) -> Result<bool, Box<dyn Error>> {
+    match fs::read_to_string(path) {
+        Ok(content) if content == desired => Ok(false),
+        Ok(content) if Some(content.as_str()) == previous => Ok(true),
+        Ok(_) => Err(format!("{} already exists with different content", path.display()).into()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(err) => Err(err.into()),
     }
-    Ok(())
 }
 
 pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {
@@ -102,10 +101,12 @@ pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {
 
     let css_path = source_dir.join("habeas.css");
     let test_path = root.join("tests/habeas.rs");
-    for (path, desired) in [(&css_path, BADGE_CSS), (&test_path, TEST_SOURCE)] {
-        if path.exists() && fs::read_to_string(path)? != desired {
-            return Err(format!("{} already exists with different content", path.display()).into());
-        }
+    let files = [
+        (&css_path, BADGE_CSS, None),
+        (&test_path, TEST_SOURCE, Some(LEGACY_TEST_SOURCE)),
+    ];
+    for (path, desired, previous) in files {
+        needs_setup_write(path, desired, previous)?;
     }
 
     book["preprocessor"]["habeas"]["command"] = value("habeas mdbook");
@@ -167,8 +168,12 @@ pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {
         }
     }
 
-    write_new_or_same(&css_path, BADGE_CSS)?;
-    write_new_or_same(&test_path, TEST_SOURCE)?;
+    for (path, desired, previous) in files {
+        if needs_setup_write(path, desired, previous)? {
+            fs::create_dir_all(path.parent().unwrap())?;
+            fs::write(path, desired)?;
+        }
+    }
     fs::write(&book_path, book.to_string())?;
     fs::create_dir_all(nextest_path.parent().unwrap())?;
     fs::write(nextest_path, nextest_source)?;

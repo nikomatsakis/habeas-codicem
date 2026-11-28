@@ -335,6 +335,7 @@ fn local_path_setup_rejects_a_missing_crate_directory() {
     assert!(habeas_dependencies(project).is_empty());
 }
 
+// {test}`requirements.cli.setup.validation_test`
 // {test}`requirements.integration.validate.optimized`
 // {test}`requirements.cli.setup`
 // {test}`requirements.cli.setup_css`
@@ -362,8 +363,9 @@ fn setup_is_repeatable() {
     assert_eq!(book.matches("md/habeas.css").count(), 1);
     assert_eq!(
         fs::read_to_string(project.join("tests/habeas.rs")).unwrap(),
-        "#[test]\nfn habeas() {\n    habeas::validate();\n}\n"
+        "// {test}`habeas:validate`\n#[test]\nfn habeas() {\n    habeas::validate();\n}\n"
     );
+    run(project, &["validate"]);
     assert!(project.join("md/habeas.css").is_file());
     assert!(!project.join(".agents/skills").exists());
     let book: toml_edit::DocumentMut = book.parse().unwrap();
@@ -724,15 +726,42 @@ fn session_start_gives_no_context_outside_habeas_projects() {
     assert_eq!(session_start(project, project), no_context);
 }
 
+// {test}`requirements.cli.setup.validation_test`
+#[test]
+fn setup_upgrades_the_previous_generated_validation_test() {
+    let temp = fixture();
+    let root = temp.path();
+    let path = root.join("tests/habeas.rs");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        &path,
+        "#[test]\nfn habeas() {\n    habeas::validate();\n}\n",
+    )
+    .unwrap();
+    run(root, &["setup", "--path", env!("CARGO_MANIFEST_DIR")]);
+    assert_eq!(
+        fs::read_to_string(path).unwrap(),
+        "// {test}`habeas:validate`\n#[test]\nfn habeas() {\n    habeas::validate();\n}\n"
+    );
+    run(root, &["validate"]);
+}
+
+// {test}`requirements.cli.setup.validation_test`
 // {test}`requirements.cli.setup`
 #[test]
 fn setup_does_not_overwrite_a_differing_test_or_stylesheet() {
-    for existing in ["tests/habeas.rs", "md/habeas.css"] {
+    for (existing, content) in [
+        (
+            "tests/habeas.rs",
+            "#[test]\nfn habeas() {\n    // Keep this project-specific note.\n    habeas::validate();\n}\n",
+        ),
+        ("md/habeas.css", "user content\n"),
+    ] {
         let temp = fixture();
         let project = temp.path();
         let path = project.join(existing);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, "user content\n").unwrap();
+        fs::write(&path, content).unwrap();
         let book = fs::read_to_string(project.join("book.toml")).unwrap();
         let cargo = fs::read_to_string(project.join("Cargo.toml")).unwrap();
 
@@ -748,7 +777,7 @@ fn setup_does_not_overwrite_a_differing_test_or_stylesheet() {
             stderr.contains("already exists with different content") && stderr.contains(existing),
             "{existing}: {stderr}"
         );
-        assert_eq!(fs::read_to_string(&path).unwrap(), "user content\n");
+        assert_eq!(fs::read_to_string(&path).unwrap(), content);
         assert_eq!(fs::read_to_string(project.join("book.toml")).unwrap(), book);
         assert_eq!(
             fs::read_to_string(project.join("Cargo.toml")).unwrap(),

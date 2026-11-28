@@ -14,6 +14,10 @@ pub(crate) struct Builtin {
 /// Every built-in definition.
 pub(crate) const BUILTINS: &[Builtin] = &[
     Builtin {
+        name: "habeas:validate",
+        roles: &[ReferenceKind::Test],
+    },
+    Builtin {
         name: "habeas:util",
         roles: &[ReferenceKind::Cite],
     },
@@ -38,11 +42,18 @@ pub(crate) fn builtin(name: &str) -> Option<&'static Builtin> {
 impl Builtin {
     /// The built-in's fixed text, as quoted in its requirement.
     pub(crate) fn text(&self) -> &'static str {
+        static VALIDATE: OnceLock<String> = OnceLock::new();
         static UTIL: OnceLock<String> = OnceLock::new();
         static COVERAGE: OnceLock<String> = OnceLock::new();
         // Keep the approved requirement text as the sole source.
         let chapter = include_str!("../md/requirements/references.md");
         match self.name {
+            "habeas:validate" => VALIDATE.get_or_init(|| {
+                quoted_text(
+                    include_str!("../md/requirements/cli.md"),
+                    ":::{req} setup.validation_test",
+                )
+            }),
             "habeas:util" => UTIL.get_or_init(|| quoted_text(chapter, ":::{req} util")),
             "habeas:coverage" => COVERAGE.get_or_init(|| {
                 quoted_text(
@@ -126,6 +137,22 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    // {test}`requirements.references.builtin_definitions`
+    // {test}`requirements.cli.setup.validation_test`
+    #[test]
+    fn validation_test_builtin_matches_the_reference_and_permits_only_tests() {
+        let builtin = builtin("habeas:validate").unwrap();
+        assert_eq!(
+            builtin.text(),
+            quoted_text(
+                include_str!("../md/reference.md"),
+                "The built-in `habeas:validate` has this text"
+            )
+        );
+        assert_eq!(builtin.roles, &[ReferenceKind::Test]);
+        assert!(builtin.check(ReferenceKind::Test).is_ok());
     }
 
     // {test}`requirements.references.util`
