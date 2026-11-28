@@ -1,7 +1,7 @@
 {
   "requirement": "For each citation assessment, Habeas MUST vet\n`answer.rationale` with {cite}`requirements.sdk.graph.agent-calls.vet_answer`.\nIf the rationale contains no source line citation as defined by\n{cite}`requirements.authoring.line_numbers.detection`, the line-number callback\nMUST return `Ok(VetResult::Accept)`. The first time a rationale cites a line\nnumber, the callback MUST return `Ok(VetResult::CorrectAndTryAgain(message))`.\nThe message MUST quote the offending text and ask for the file and outline\nselector under {cite}`requirements.authoring.judgment_rules`. If a later\nsubmission still cites a line number, the callback MUST end the review by returning a domain error under\n{cite}`requirements.sdk.graph.agent-calls.vet_answer`.",
   "determination": true,
-  "rationale": "structural: The only structural obligation in `requirements.authoring.line_numbers.citation` is the clause \"Habeas MUST vet `answer.rationale` with {cite}`requirements.sdk.graph.agent-calls.vet_answer`\". It requires the check to be delegated to the `Ask::vet_answer` callback interface. An alternative that checked the rationale after the `Ask` completed would give the same accept, correct and fail outcomes. It would not run inside the conversation, so it could not end the review through the callback's error path. That makes the clause structural.\n\nThe supplied root `src/authoring/sdk.rs#impl[Review<'_>]/fn[ask]` meets it. It registers a `.vet_answer(|answer| ...)` callback on the `cx.ask::<R>()` request. The callback serializes the answer and reads `value[\"rationale\"]`. It passes the rationale to `line_numbers::cited` for citation reviews, where `citation_review` is true for `AssessmentKind::Citation`.\n\nThe remaining clauses state only observable behavior, so they create no further structural obligations.\n- A rationale with no line citation gives `VetResult::Accept`.\n- The first citation gives `CorrectAndTryAgain`, with a message that quotes the citation and adds `location_guidance()`.\n- A later citation gives an `io::Error` domain error, which ends the review.\n\nThe code in `fn[ask]` produces each of these outcomes. The `corrected` flag carries state across submissions, as `vet_answer` allows.\n\nThe detection rules belong to `requirements.authoring.line_numbers.detection`, and the prompt text to `requirements.authoring.judgment_rules`. Both are cited for context and are not obligations here. No gap found.\n\nbehavioral: Obligations and their tests:\n\n1. **No line citation, so Accept.** `mod[tests]/fn[citation_reviews_are_confirmed_with_fresh_targeted_conversations]` in `src/authoring/mod.rs` supplies a revised rationale and a second-conversation rationale with no line citation. Both are accepted, and the recorded `rationale` equals the revised text. `disagreeing_citation_assessments_record_both_explanations` also uses rationales with no line citation. Each is accepted without any correction prompt, since the prompt count is two.\n\n2. **First line citation, so CorrectAndTryAgain with a message.** In the first test, the first rationale cites a file-and-number location. The test reads the last message of the second request. It asserts that message contains the quoted offending text inside the sentence about a cited line number. It also asserts the message contains `file and outline selector`. It then asserts the review continues: a revised answer is accepted and recorded.\n\n3. **A later submission that still cites a line number ends the review with a domain error.** `a_citation_review_fails_when_the_revised_rationale_still_uses_line_numbers` submits two successive rationales that both cite line numbers. It asserts `result.is_err()`, that exactly two prompts were sent (no third correction request), and that no evidence file was written. A callback that kept asking for corrections or returned Accept would fail these assertions. The assertion does not check the specific error type, but the error type is not observable beyond ending the review with an error. The `vet_answer` error propagation is a cited requirement and is not reassessed here.\n\n4. **Vetting applies to each citation assessment.** The Confirm policy runs two citation conversations. The first test shows the second conversation is independent and is also accepted.\n\nThe detection forms are governed by `requirements.authoring.line_numbers.detection`, which is cited and has its own tests. I found no unreferenced obligation and no marking gap.",
+  "rationale": "structural: The only structural obligation in `requirements.authoring.line_numbers.citation` is the clause \"Habeas MUST vet `answer.rationale` with `requirements.sdk.graph.agent-calls.vet_answer`\". The text also says the check is a \"line-number callback\" that returns `Ok(VetResult::Accept)`, `Ok(VetResult::CorrectAndTryAgain(message))` or a domain error. An alternative that checked the rationale after the `Ask` returned would give similar observable text. It would not end the conversation through the harness's callback mechanism, so it would violate the clause.\n\n`src/authoring/sdk.rs#impl[Review<'_>]/fn[ask]` meets this obligation. It builds the request with `cx.ask::<R>()...vet_answer(|answer| { ... })`, so the check is an `FnMut` callback that keeps state in the `corrected` flag across submissions. For a citation review (`citation_review`), the callback reads `value[\"rationale\"]` and calls `line_numbers::cited`. It then behaves as follows:\n- If no line citation is found, it returns `Ok(VetResult::Accept)`.\n- On the first citation, it sets `corrected` and returns `Ok(VetResult::CorrectAndTryAgain(...))`. The message includes the offending text (`{citation:?}`) and `location_guidance()`, which asks for the file and outline selector.\n- If the revised rationale still cites a line, it returns `Err(io::Error::other(...))`. That is the domain error that `vet_answer` turns into `ValidationError::Graph`, ending the review.\n\nThe remaining clauses specify observable behavior only:\n- What counts as a citation is defined by `requirements.authoring.line_numbers.detection`.\n- The message wording is governed by `requirements.authoring.judgment_rules`.\n- How the harness handles an `Err` is governed by `requirements.sdk.graph.agent-calls.vet_answer`.\n\nThe root carries the `{impl}` marker for this requirement, and I found no unmet structural obligation.\n\nbehavioral: The subject's behavioral obligations are covered by the three marked tests in `src/authoring/mod.rs`.\n\n- **Accept when no line citation (`Ok(VetResult::Accept)`).** `mod[tests]/fn[citation_reviews_are_confirmed_with_fresh_targeted_conversations]` accepts the corrected rationale and the second assessment's rationale, and asserts the recorded rationale. `mod[tests]/fn[disagreeing_citation_assessments_record_both_explanations]` accepts rationales with no line numbers without any correction. It asserts that exactly two prompts were sent.\n- **First line citation gives `CorrectAndTryAgain(message)`.** In `citation_reviews_are_confirmed_with_fresh_targeted_conversations`, the first submission cites a path with a colon and a digit. The test inspects the last message of the second request. It asserts that the message quotes the offending text and asks for the file and outline selector.\n- **Later line citation ends the review with a domain error.** `mod[tests]/fn[a_citation_review_fails_when_the_revised_rationale_still_uses_line_numbers]` submits two rationales that both cite line numbers. It asserts that the result is an error, that only two prompts were sent (so the conversation ended right away), and that no evidence record was written. The test only checks `is_err()` and does not check the error's type. The conversion to `ValidationError::Graph` is governed by the cited `requirements.sdk.graph.agent-calls.vet_answer`.\n- **Per-assessment vetting and per-conversation state.** `citation_reviews_are_confirmed_with_fresh_targeted_conversations` runs two confirmation assessments. The first needs a correction, and the second, in a fresh conversation, is accepted with no correction. This shows the callback state is not shared between assessments.\n\nThe detection forms belong to the cited `requirements.authoring.line_numbers.detection`, and the selector wording belongs to the cited `requirements.authoring.judgment_rules`. Neither needs a test here. I found no gap.",
   "references": "0440a53aab88fbc078b2c4887ea4aecc7151b343f4410fba883ca196f1d57833",
   "inputs": [
     {
@@ -132,7 +132,7 @@
     {
       "file": "src/authoring/sdk.rs",
       "item": "impl[Review<'_>]/fn[ask]",
-      "hash": "06c67a48747d7c26551eba5ef0505f3387d7990660ff0b44cd39aeeae03f94d8"
+      "hash": "32507915bbdf34cceed6158eed7a7c886345541c1bd82e7c4ffba9f4019ab471"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -148,6 +148,16 @@
       "file": "src/authoring/mod.rs",
       "item": "mod[tests]/fn[disagreeing_citation_assessments_record_both_explanations]",
       "hash": "20172549688a0a9cb41629fa58bf3caff5286f863c126515de32ae8d287ace82"
+    },
+    {
+      "file": "src/authoring/line_numbers.rs",
+      "item": "fn[cited]",
+      "hash": "f0547266aef5a225344d681af8dd0a8c53d7449ff3b2cc366f33b68386f01622"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[location_guidance]",
+      "hash": "b902656b8d648a41d9007473ab770e9e2cb016a284c85a4eca6ce02eceaf5043"
     }
   ],
   "criteria": {
@@ -222,14 +232,14 @@
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "06c67a48747d7c26551eba5ef0505f3387d7990660ff0b44cd39aeeae03f94d8"
+              "value": "32507915bbdf34cceed6158eed7a7c886345541c1bd82e7c4ffba9f4019ab471"
             }
           ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "The only structural obligation in `requirements.authoring.line_numbers.citation` is the clause \"Habeas MUST vet `answer.rationale` with {cite}`requirements.sdk.graph.agent-calls.vet_answer`\". It requires the check to be delegated to the `Ask::vet_answer` callback interface. An alternative that checked the rationale after the `Ask` completed would give the same accept, correct and fail outcomes. It would not run inside the conversation, so it could not end the review through the callback's error path. That makes the clause structural.\n\nThe supplied root `src/authoring/sdk.rs#impl[Review<'_>]/fn[ask]` meets it. It registers a `.vet_answer(|answer| ...)` callback on the `cx.ask::<R>()` request. The callback serializes the answer and reads `value[\"rationale\"]`. It passes the rationale to `line_numbers::cited` for citation reviews, where `citation_review` is true for `AssessmentKind::Citation`.\n\nThe remaining clauses state only observable behavior, so they create no further structural obligations.\n- A rationale with no line citation gives `VetResult::Accept`.\n- The first citation gives `CorrectAndTryAgain`, with a message that quotes the citation and adds `location_guidance()`.\n- A later citation gives an `io::Error` domain error, which ends the review.\n\nThe code in `fn[ask]` produces each of these outcomes. The `corrected` flag carries state across submissions, as `vet_answer` allows.\n\nThe detection rules belong to `requirements.authoring.line_numbers.detection`, and the prompt text to `requirements.authoring.judgment_rules`. Both are cited for context and are not obligations here. No gap found."
+        "rationale": "The only structural obligation in `requirements.authoring.line_numbers.citation` is the clause \"Habeas MUST vet `answer.rationale` with `requirements.sdk.graph.agent-calls.vet_answer`\". The text also says the check is a \"line-number callback\" that returns `Ok(VetResult::Accept)`, `Ok(VetResult::CorrectAndTryAgain(message))` or a domain error. An alternative that checked the rationale after the `Ask` returned would give similar observable text. It would not end the conversation through the harness's callback mechanism, so it would violate the clause.\n\n`src/authoring/sdk.rs#impl[Review<'_>]/fn[ask]` meets this obligation. It builds the request with `cx.ask::<R>()...vet_answer(|answer| { ... })`, so the check is an `FnMut` callback that keeps state in the `corrected` flag across submissions. For a citation review (`citation_review`), the callback reads `value[\"rationale\"]` and calls `line_numbers::cited`. It then behaves as follows:\n- If no line citation is found, it returns `Ok(VetResult::Accept)`.\n- On the first citation, it sets `corrected` and returns `Ok(VetResult::CorrectAndTryAgain(...))`. The message includes the offending text (`{citation:?}`) and `location_guidance()`, which asks for the file and outline selector.\n- If the revised rationale still cites a line, it returns `Err(io::Error::other(...))`. That is the domain error that `vet_answer` turns into `ValidationError::Graph`, ending the review.\n\nThe remaining clauses specify observable behavior only:\n- What counts as a citation is defined by `requirements.authoring.line_numbers.detection`.\n- The message wording is governed by `requirements.authoring.judgment_rules`.\n- How the harness handles an `Err` is governed by `requirements.sdk.graph.agent-calls.vet_answer`.\n\nThe root carries the `{impl}` marker for this requirement, and I found no unmet structural obligation."
       }
     },
     "behavioral": {
@@ -340,23 +350,11 @@
               "value": "20172549688a0a9cb41629fa58bf3caff5286f863c126515de32ae8d287ace82"
             }
           ]
-        },
-        {
-          "OutgoingEdges": [
-            {
-              "Requirement": "requirements.authoring.line_numbers.citation"
-            },
-            "Implements",
-            {
-              "scheme": "node-path-set-sha256-v1",
-              "value": "24f2845cc4b9673a6cae8e8d56d300f1ca528ace0be8812342e298750b92d1e6"
-            }
-          ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "Obligations and their tests:\n\n1. **No line citation, so Accept.** `mod[tests]/fn[citation_reviews_are_confirmed_with_fresh_targeted_conversations]` in `src/authoring/mod.rs` supplies a revised rationale and a second-conversation rationale with no line citation. Both are accepted, and the recorded `rationale` equals the revised text. `disagreeing_citation_assessments_record_both_explanations` also uses rationales with no line citation. Each is accepted without any correction prompt, since the prompt count is two.\n\n2. **First line citation, so CorrectAndTryAgain with a message.** In the first test, the first rationale cites a file-and-number location. The test reads the last message of the second request. It asserts that message contains the quoted offending text inside the sentence about a cited line number. It also asserts the message contains `file and outline selector`. It then asserts the review continues: a revised answer is accepted and recorded.\n\n3. **A later submission that still cites a line number ends the review with a domain error.** `a_citation_review_fails_when_the_revised_rationale_still_uses_line_numbers` submits two successive rationales that both cite line numbers. It asserts `result.is_err()`, that exactly two prompts were sent (no third correction request), and that no evidence file was written. A callback that kept asking for corrections or returned Accept would fail these assertions. The assertion does not check the specific error type, but the error type is not observable beyond ending the review with an error. The `vet_answer` error propagation is a cited requirement and is not reassessed here.\n\n4. **Vetting applies to each citation assessment.** The Confirm policy runs two citation conversations. The first test shows the second conversation is independent and is also accepted.\n\nThe detection forms are governed by `requirements.authoring.line_numbers.detection`, which is cited and has its own tests. I found no unreferenced obligation and no marking gap."
+        "rationale": "The subject's behavioral obligations are covered by the three marked tests in `src/authoring/mod.rs`.\n\n- **Accept when no line citation (`Ok(VetResult::Accept)`).** `mod[tests]/fn[citation_reviews_are_confirmed_with_fresh_targeted_conversations]` accepts the corrected rationale and the second assessment's rationale, and asserts the recorded rationale. `mod[tests]/fn[disagreeing_citation_assessments_record_both_explanations]` accepts rationales with no line numbers without any correction. It asserts that exactly two prompts were sent.\n- **First line citation gives `CorrectAndTryAgain(message)`.** In `citation_reviews_are_confirmed_with_fresh_targeted_conversations`, the first submission cites a path with a colon and a digit. The test inspects the last message of the second request. It asserts that the message quotes the offending text and asks for the file and outline selector.\n- **Later line citation ends the review with a domain error.** `mod[tests]/fn[a_citation_review_fails_when_the_revised_rationale_still_uses_line_numbers]` submits two rationales that both cite line numbers. It asserts that the result is an error, that only two prompts were sent (so the conversation ended right away), and that no evidence record was written. The test only checks `is_err()` and does not check the error's type. The conversion to `ValidationError::Graph` is governed by the cited `requirements.sdk.graph.agent-calls.vet_answer`.\n- **Per-assessment vetting and per-conversation state.** `citation_reviews_are_confirmed_with_fresh_targeted_conversations` runs two confirmation assessments. The first needs a correction, and the second, in a fresh conversation, is accepted with no correction. This shows the callback state is not shared between assessments.\n\nThe detection forms belong to the cited `requirements.authoring.line_numbers.detection`, and the selector wording belongs to the cited `requirements.authoring.judgment_rules`. Neither needs a test here. I found no gap."
       }
     }
   },
@@ -431,7 +429,7 @@
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "06c67a48747d7c26551eba5ef0505f3387d7990660ff0b44cd39aeeae03f94d8"
+          "value": "32507915bbdf34cceed6158eed7a7c886345541c1bd82e7c4ffba9f4019ab471"
         }
       ]
     },
@@ -487,14 +485,36 @@
       ]
     },
     {
-      "OutgoingEdges": [
+      "Node": [
         {
-          "Requirement": "requirements.authoring.line_numbers.citation"
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/line_numbers.rs"
+            },
+            "selector": "fn[cited]"
+          }
         },
-        "Implements",
         {
-          "scheme": "node-path-set-sha256-v1",
-          "value": "24f2845cc4b9673a6cae8e8d56d300f1ca528ace0be8812342e298750b92d1e6"
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "f0547266aef5a225344d681af8dd0a8c53d7449ff3b2cc366f33b68386f01622"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/mod.rs"
+            },
+            "selector": "fn[location_guidance]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "b902656b8d648a41d9007473ab770e9e2cb016a284c85a4eca6ce02eceaf5043"
         }
       ]
     }

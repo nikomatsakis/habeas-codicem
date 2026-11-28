@@ -1,8 +1,8 @@
 {
   "requirement": "Builds a typed agent request. `context` is available in the context phase. Adding graph contents enters the node phase. Awaiting a request returns the decoded answer or a validation error.\n\n```rust,ignore\npub struct Ask<'a, 'd, D: Domain, R, P> { /* private fields */ }\n\nimpl<'a, 'd, D: Domain, R> Ask<'a, 'd, D, R, ContextPhase> {\n    pub fn context(self, value: impl Context) -> Self;\n}\n\nimpl<'a, 'd, D: Domain, R, P> Ask<'a, 'd, D, R, P> {\n    pub fn vet_answer(\n        self,\n        vet: impl FnMut(&R) -> Result<VetResult, D::Error> + Send + 'a,\n    ) -> Self;\n    pub fn message(self, text: impl Into<String>) -> Self;\n    pub fn contents_of_node(self, node: NodeId<D>) -> Ask<'a, 'd, D, R, NodePhase>;\n    pub fn contents_of_current_node(self) -> Ask<'a, 'd, D, R, NodePhase>;\n    pub fn contents_of_successors(\n        self,\n        label: D::EdgeLabel,\n    ) -> Ask<'a, 'd, D, R, NodePhase>\n    where\n        D::EdgeLabel: PartialEq;\n}\n```\n\nTrait implementations\n\n```rust,ignore\nimpl<'a, 'd, D: Domain, R> IntoFuture for Ask<'a, 'd, D, R, ContextPhase> where R: DeserializeOwned + JsonSchema + Send + 'a, D::Error: Display, D::EdgeLabel: DeserializeOwned + JsonSchema + PartialEq, 'd: 'a {\n    type Output = Result<R, ValidationError<<D as Domain>::Error>>;\n    type IntoFuture = Pin<Box<dyn Future<Output = <Ask<'a, 'd, D, R, ContextPhase> as IntoFuture>::Output> + Send + 'a>>;\n}\nimpl<'a, 'd, D: Domain, R> IntoFuture for Ask<'a, 'd, D, R, NodePhase> where R: DeserializeOwned + JsonSchema + Send + 'a, D::Error: Display, D::EdgeLabel: DeserializeOwned + JsonSchema + PartialEq, 'd: 'a {\n    type Output = Result<R, ValidationError<<D as Domain>::Error>>;\n    type IntoFuture = Pin<Box<dyn Future<Output = <Ask<'a, 'd, D, R, NodePhase> as IntoFuture>::Output> + Send + 'a>>;\n}\n```",
   "determination": true,
-  "rationale": "structural: Structural obligations in `requirements.sdk.graph.agent-calls.Ask`, with the supplied roots that cover each:\n\n- **Type shape.** The text requires `pub struct Ask<'a, 'd, D: Domain, R, P>` with private fields. `crates/trust-but-verify/src/procedure.rs#struct[Ask]` has exactly these parameters. Its fields are private. It carries the phase `P` as a `PhantomData` marker. A version without the phase parameter would break the prescribed type.\n- **Phase-gated `context`.** `context(self, value: impl Context) -> Self` must exist only for `ContextPhase`. This is in `impl[Ask<'a, 'd, D, R, ContextPhase>]/fn[context]`. Defining it on the generic impl would run the same but violate the signature and the phase rule.\n- **Generic-phase methods.** These are `vet_answer`, `message`, `contents_of_node`, `contents_of_current_node` and `contents_of_successors`. The last has the `D::EdgeLabel: PartialEq` bound. They are in `impl[Ask<'a, 'd, D, R, P>]#1`. The vet closure is typed `impl FnMut(&R) -> Result<VetResult, D::Error> + Send + 'a`. The `contents_*` methods return `Ask<..., NodePhase>` via `into_node_phase`, which is a helper they reach. It needs no marker of its own.\n- **`IntoFuture` for both phases.** The text requires `Output = Result<R, ValidationError<D::Error>>` and a boxed `Send + 'a` future. It also requires the bounds `R: DeserializeOwned + JsonSchema + Send + 'a`, `D::Error: Display`, `D::EdgeLabel: DeserializeOwned + JsonSchema + PartialEq` and `'d: 'a`. The `macro[await_phase]` macro declares all of these. `BoxFuture<'a, _>` is `Pin<Box<dyn Future + Send + 'a>>`, which matches the text. It is instantiated for `ContextPhase` and `NodePhase`. It delegates to `execute`, which the reviewer reaches from the marked macro.\n\nThe behavioral parts are decoded answer or validation error, which `execute` provides. I treat the behavior of `execute` as covered by tests and refining requirements, not as a structural obligation here.\n\nEvery structural obligation is covered by a supplied root, and nothing else needs a new implementation marker.\n\nbehavioral: Obligations from `requirements.sdk.graph.agent-calls.Ask` and the tests that cover them:\n\n- **`context` in the context phase.** `explicit_insertions_preserve_order_repetition_and_selection_snapshots` sets `.context(String::from(\"question\"))` and asserts that the agent request prefix is \"question\". `task_messages_share_a_prefix_and_can_queue_another_node` asserts the shared prefix and its context fingerprint.\n- **`contents_of_current_node`, `contents_of_successors` and `contents_of_node` enter the node phase.** The first test chains current node, successors(7) and current node again. It asserts the inputs arrive in order with repetition (1, 3, 2, 3, 1), the read order, the dependencies, and the schema in the request. The second test uses `contents_of_node` and annotates the result type as `NodePhase`.\n- **`message`.** The second test shows a later `message` replacing an earlier one (\"superseded\" is replaced by \"assess\" or \"verify\"). It also shows `message` working after `contents_of_node`.\n- **Awaiting returns the decoded answer.** The first test awaits and asserts `answer.n == 7`. It also asserts the future is `Send` and that the request schema contains `n` as an integer. `runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls` covers an ask made inside a callback.\n- **Awaiting returns a validation error.**\n  - `invalid_typed_submission_is_an_agent_error` asserts `ValidationError::Agent` for an invalid typed submission.\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` asserts `Graph(\"read\")`, `Graph(\"edges\")` and `Graph(\"render\")` errors, with no agent call on failure.\n  - The same test asserts that empty and non-matching successor sets still produce a request, that dropping an unawaited `Ask` makes no agent call, and that dependencies are empty after a render failure.\n- **`vet_answer`.** It has its own requirements: `requirements.sdk.graph.agent-calls.vet_answer`, `requirements.sdk.graph.agent-calls.vet_answer.ok` and `requirements.sdk.graph.agent-calls.vet_answer.corrections`. They are tested by `vetting_collects_corrections_and_rechecks_every_callback` and `vetting_preserves_domain_errors_and_skips_later_callbacks`. The agent tests also include an invalid submission that never reaches the vet callback. Its behavior is delegated to those requirements.\n- **Type-level and structural items.** The phase typestate, the `IntoFuture` signatures and the public export shape are structural. The `public_api` test and the typed annotations in the tests cover them.\n\nI found no behavioral obligation of `Ask` that the reviewed tests would let a violation pass.",
-  "references": "c0f62b82dd49567595baa449e8fe74fbd346281d4c372deeecab039d394ad1c6",
+  "rationale": "structural: The text prescribes structure in four places. Each is covered by implementation evidence in `crates/trust-but-verify/src/procedure.rs`.\n\n1. **Type and phase typestate.** The text requires `pub struct Ask<'a, 'd, D: Domain, R, P>` with private fields, and `context` only on the `ContextPhase` impl. A single `P`-generic `context` method would still compile for existing callers, but it would break the \"context is available in the context phase\" restriction. `struct[Ask]` has the right generics and private fields. It also carries a `PhantomData<fn() -> (R, P)>` phase marker. `impl[Ask<'a, 'd, D, R, ContextPhase>]/fn[context]` is defined only for `ContextPhase`.\n\n2. **Builder signatures.** The text prescribes `vet_answer`, `message`, `contents_of_node`, `contents_of_current_node` and `contents_of_successors` on the generic `P` impl, with the `NodePhase` return types and the `D::EdgeLabel: PartialEq` bound. These all sit in `impl[Ask<'a, 'd, D, R, P>]#1`, which carries the `{impl}` marker for this requirement. The signatures match the text. `contents_of_successors` has the `PartialEq` where-clause, and `vet_answer` takes `impl FnMut(&R) -> Result<VetResult, D::Error> + Send + 'a`. The root list does not name this impl, but the marker on it covers its methods, and `into_node_phase` is reached from them.\n\n3. **`IntoFuture` impls.** The text requires one `IntoFuture` impl per phase, with the stated bounds. `Output` must be `Result<R, ValidationError<D::Error>>`. `IntoFuture` must be a boxed `Send + 'a` future. `macro[await_phase]`, marked `{impl}`, generates both impls with exactly those bounds and associated types. It uses `BoxFuture<'a, Output>`, which is the same boxed pinned `Send` future as the text's type. `into_future` delegates to `execute`. `impl[Ask<'a, 'd, D, R, P>]#2/fn[execute]` is a root. It resolves the agent and prepares the node inputs. It runs the agent through the `Agent` trait, decodes and vets the answer, and returns the decoded answer or a `ValidationError`.\n\n4. **`VetResult`.** `enum[VetResult]` supplies the `Accept` and `CorrectAndTryAgain(String)` variants that the `vet_answer` signature uses. It is a root for this requirement, and I found no structural problem with it.\n\nThe rest of the text (\"builds a typed agent request\", \"awaiting returns the decoded answer or a validation error\") describes observable behavior, which `execute` carries out. I found no unmarked root and no missing structural evidence.\n\nbehavioral: The reviewed tests cover each observable obligation in `requirements.sdk.graph.agent-calls.Ask`.\n\n- **`context`:** `explicit_insertions_preserve_order_repetition_and_selection_snapshots` calls `.context(String::from(\"question\"))` and asserts the agent request prefix is \"question\". `task_messages_share_a_prefix_and_can_queue_another_node` asserts the prefix \"shared\" and its fingerprint.\n- **`contents_of_current_node`, `contents_of_successors`, `contents_of_node`:** The first test above queues current node, successors with label 7, then current node again. It asserts the request inputs, their order and repetition, the graph reads, and the recorded dependencies. `task_messages_share_a_prefix_and_can_queue_another_node` covers `contents_of_node` with an explicit `NodePhase` type annotation, which checks that adding contents enters the node phase. `queued_reads_selection_and_rendering_fail_before_agent_invocation` covers empty and non-matching successor selections.\n- **`message`:** `task_messages_share_a_prefix_and_can_queue_another_node` asserts the messages \"assess\" and \"verify\" arrive and that the earlier \"superseded\" message is replaced.\n- **Await returns the decoded answer:** `answer.n == 7` and the schema assertion on `n` in `explicit_insertions_preserve_order_repetition_and_selection_snapshots`. The `Send` future is asserted there too.\n- **Await returns a validation error:** `ending_without_a_corrected_submission_is_an_agent_error` asserts `ValidationError::Agent`. `queued_reads_selection_and_rendering_fail_before_agent_invocation` asserts `ValidationError::Graph` for read, edges and render failures and that no agent request is made. `runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls` asserts `ValidationError::NoAgentConfigured` through `Validator::verify`. `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` asserts the same error directly on `ask().await`; it has no `Ask` test marker, but the marked tests already cover the error path.\n- **`vet_answer`:** This has its own requirements, `requirements.sdk.graph.agent-calls.vet_answer` and its refinements. They are tested in `src/agent/tests.rs` by `vetting_collects_corrections_and_rechecks_every_callback` and `vetting_preserves_domain_errors_and_skips_later_callbacks`. No separate `Ask` test is needed.\n- **Trait signatures and public export:** `public_exports_match_the_appendix` checks the export inventory and that the shipping consumer compiles against it. This is a structural check, not an independent behavioural obligation.",
+  "references": "c3350ebdc438cad137a8687a0c42a630db61ba5b465635114fe15d3744ea7c2e",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.agent-calls.Ask",
@@ -55,13 +55,23 @@
     },
     {
       "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "enum[VetResult]",
+      "hash": "f407cb8dd99cc584de255704984fd0028501a8e18f482fa32077893be04d0096"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
       "item": "struct[Ask]",
       "hash": "b38a7967586a6b57f32ac9441bea1003e46964014583c1dbc2797f9896771465"
     },
     {
       "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20ContextPhase>]",
-      "hash": "c7df54c0c0e15c7c523c3a555cb9d98fc46bb386905630f2da3e54a620f879ef"
+      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20ContextPhase>]/fn[context]",
+      "hash": "40ee4435e784f834abea244c54a5bcb4d17de21f805197b5532e500d619b7876"
+    },
+    {
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]",
+      "hash": "13819c4675914551da6e0dde0cc498d09495c2f2124f3f03e353ca0cdfef866a"
     },
     {
       "file": "crates/trust-but-verify/src/procedure.rs",
@@ -75,43 +85,13 @@
     },
     {
       "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "use@b49cd2172cef",
-      "hash": "b49cd2172cef8d8edfab8713edda8c3cbd89ccb1b084621f6eae860ca2e7f648"
+      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20ContextPhase>]",
+      "hash": "c7df54c0c0e15c7c523c3a555cb9d98fc46bb386905630f2da3e54a620f879ef"
     },
     {
       "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20ContextPhase>]/fn[context]",
-      "hash": "40ee4435e784f834abea244c54a5bcb4d17de21f805197b5532e500d619b7876"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[message]",
-      "hash": "d10563706c13b762836e6aa6ee765f77e6cdeffb71d93857cb45c8b3c8e2e883"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[vet_answer]",
-      "hash": "edbb68fcf0aa659ac3f79d6222ff6665aae046e9e8965d414cfec3cd8bc64428"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[contents_of_current_node]",
-      "hash": "50662f3870bb500baeb16d5aed70ed501dd6a08a0abe3affa048f8c6e6bfb830"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[contents_of_node]",
-      "hash": "2e72c73ad326055f2b1ce4d8a96751f6873639d40e4b59a537b73d85fa59ac93"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[contents_of_successors]",
-      "hash": "5259c05f216ee5bd0897d540a7486136bd73a6de17eda5a90f89b7484188fa1d"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "impl[ValidationContext<'d,%20D>]#3/fn[ask]",
-      "hash": "b8b2eae7581183984c864d30ec9f6e3d2861dc9fae437a46d1870f95f68be4c8"
+      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2",
+      "hash": "f9c8f2246b4e74756fd8a56bdb20da6d229991e90fed9fdbf6f102b3234cbcd7"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
@@ -130,13 +110,13 @@
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
-      "item": "fn[invalid_typed_submission_is_an_agent_error]",
-      "hash": "dfe09ec614ae6db4a104ecbd6c1cccee9aa6a1cb4ba5c81da100da70ce713312"
+      "item": "fn[concurrent_single_node_validations_keep_separate_traces]",
+      "hash": "5013e59de848fef5d0de348958c93db5e4030fbf79d55559833aeaca30e2e544"
     },
     {
       "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
-      "item": "fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]",
-      "hash": "16e5d66c127375503160b7357b3aab780341b16eb17adf36510391e372907734"
+      "item": "fn[agent_errors_expose_the_agreed_string_payload]",
+      "hash": "d788d79becc748845a1b77564884c70b0f26de23c117265b29227e804c07ee9a"
     },
     {
       "file": "crates/trust-but-verify/tests/public_api.rs",
@@ -144,9 +124,19 @@
       "hash": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
     },
     {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "fn[typed_submission_references_resolve_and_invalid_results_are_agent_errors]",
-      "hash": "344a5e130451f6de2e1bdbb6259870eca27cf41875ed2259472d30db7f95e2bf"
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "fn[ending_without_a_corrected_submission_is_an_agent_error]",
+      "hash": "0b735621d913a03adff3b2c767f0cf9188784564b84abafed560caf1278d6754"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]",
+      "hash": "16e5d66c127375503160b7357b3aab780341b16eb17adf36510391e372907734"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph/validation_tests.rs",
+      "item": "fn[dropped_builders_and_missing_agents_do_not_resolve_queued_inputs]",
+      "hash": "9cbe92178baf6b64f5b753b824d8484aaeaf4cef82c6372f433f35776444e34c"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -156,22 +146,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[vetting_preserves_domain_errors_and_skips_later_callbacks]",
-      "hash": "1cc1cd808a680c101b6adac1fdae4aafdbc30efc837b75d6736e27bf31ff735a"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "struct[ContextPhase]",
-      "hash": "38eb48632ba183ca42f37eb48a05202c7223921264852f809778194b2fd58cc8"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "macro@0541b668e173",
-      "hash": "0541b668e17328ea03bcea26c84b8ba0d033a8e4e79a8b4983dffadf0126cffa"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "macro@5781c4abb394",
-      "hash": "5781c4abb394b89553efd9c5558d9526bebec071676accc0fa6d63b012625b42"
+      "hash": "eed232332253f47c8c0b3d1c76436ef5db72ec8347c49068aa9ea3706feeadc7"
     }
   ],
   "criteria": {
@@ -185,7 +160,7 @@
             },
             {
               "scheme": "habeas-reference-set-v1",
-              "value": "c0f62b82dd49567595baa449e8fe74fbd346281d4c372deeecab039d394ad1c6"
+              "value": "c3350ebdc438cad137a8687a0c42a630db61ba5b465635114fe15d3744ea7c2e"
             }
           ]
         },
@@ -197,6 +172,23 @@
             {
               "scheme": "habeas-input-v1",
               "value": "d005b11e4d6316f22427bd3ab967457682385bdf236e265a6de8bfb75c89a20a"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "enum[VetResult]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "f407cb8dd99cc584de255704984fd0028501a8e18f482fa32077893be04d0096"
             }
           ]
         },
@@ -225,12 +217,29 @@
                   "scheme": "repo",
                   "location": "crates/trust-but-verify/src/procedure.rs"
                 },
-                "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20ContextPhase>]"
+                "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20ContextPhase>]/fn[context]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "d71db4bf9a3cd02b05a43b9c0ad9da6358f64cb25de6de624d90f33f79d679a2"
+              "value": "40ee4435e784f834abea244c54a5bcb4d17de21f805197b5532e500d619b7876"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/procedure.rs"
+                },
+                "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "13819c4675914551da6e0dde0cc498d09495c2f2124f3f03e353ca0cdfef866a"
             }
           ]
         },
@@ -276,12 +285,12 @@
                   "scheme": "repo",
                   "location": "crates/trust-but-verify/src/procedure.rs"
                 },
-                "selector": "use@b49cd2172cef"
+                "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20ContextPhase>]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "b49cd2172cef8d8edfab8713edda8c3cbd89ccb1b084621f6eae860ca2e7f648"
+              "value": "d71db4bf9a3cd02b05a43b9c0ad9da6358f64cb25de6de624d90f33f79d679a2"
             }
           ]
         },
@@ -293,121 +302,19 @@
                   "scheme": "repo",
                   "location": "crates/trust-but-verify/src/procedure.rs"
                 },
-                "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20ContextPhase>]/fn[context]"
+                "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "40ee4435e784f834abea244c54a5bcb4d17de21f805197b5532e500d619b7876"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/procedure.rs"
-                },
-                "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[message]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "d10563706c13b762836e6aa6ee765f77e6cdeffb71d93857cb45c8b3c8e2e883"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/procedure.rs"
-                },
-                "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[vet_answer]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "edbb68fcf0aa659ac3f79d6222ff6665aae046e9e8965d414cfec3cd8bc64428"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/procedure.rs"
-                },
-                "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[contents_of_current_node]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "50662f3870bb500baeb16d5aed70ed501dd6a08a0abe3affa048f8c6e6bfb830"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/procedure.rs"
-                },
-                "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[contents_of_node]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "2e72c73ad326055f2b1ce4d8a96751f6873639d40e4b59a537b73d85fa59ac93"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/procedure.rs"
-                },
-                "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[contents_of_successors]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "5259c05f216ee5bd0897d540a7486136bd73a6de17eda5a90f89b7484188fa1d"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/procedure.rs"
-                },
-                "selector": "impl[ValidationContext<'d,%20D>]#3/fn[ask]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "b8b2eae7581183984c864d30ec9f6e3d2861dc9fae437a46d1870f95f68be4c8"
+              "value": "df2e8c5cb249144162a04519ee9898f96400ffb4fdaab260b6d52505a29eeccf"
             }
           ]
         }
       ],
       "output": {
         "status": "success",
-        "rationale": "Structural obligations in `requirements.sdk.graph.agent-calls.Ask`, with the supplied roots that cover each:\n\n- **Type shape.** The text requires `pub struct Ask<'a, 'd, D: Domain, R, P>` with private fields. `crates/trust-but-verify/src/procedure.rs#struct[Ask]` has exactly these parameters. Its fields are private. It carries the phase `P` as a `PhantomData` marker. A version without the phase parameter would break the prescribed type.\n- **Phase-gated `context`.** `context(self, value: impl Context) -> Self` must exist only for `ContextPhase`. This is in `impl[Ask<'a, 'd, D, R, ContextPhase>]/fn[context]`. Defining it on the generic impl would run the same but violate the signature and the phase rule.\n- **Generic-phase methods.** These are `vet_answer`, `message`, `contents_of_node`, `contents_of_current_node` and `contents_of_successors`. The last has the `D::EdgeLabel: PartialEq` bound. They are in `impl[Ask<'a, 'd, D, R, P>]#1`. The vet closure is typed `impl FnMut(&R) -> Result<VetResult, D::Error> + Send + 'a`. The `contents_*` methods return `Ask<..., NodePhase>` via `into_node_phase`, which is a helper they reach. It needs no marker of its own.\n- **`IntoFuture` for both phases.** The text requires `Output = Result<R, ValidationError<D::Error>>` and a boxed `Send + 'a` future. It also requires the bounds `R: DeserializeOwned + JsonSchema + Send + 'a`, `D::Error: Display`, `D::EdgeLabel: DeserializeOwned + JsonSchema + PartialEq` and `'d: 'a`. The `macro[await_phase]` macro declares all of these. `BoxFuture<'a, _>` is `Pin<Box<dyn Future + Send + 'a>>`, which matches the text. It is instantiated for `ContextPhase` and `NodePhase`. It delegates to `execute`, which the reviewer reaches from the marked macro.\n\nThe behavioral parts are decoded answer or validation error, which `execute` provides. I treat the behavior of `execute` as covered by tests and refining requirements, not as a structural obligation here.\n\nEvery structural obligation is covered by a supplied root, and nothing else needs a new implementation marker."
+        "rationale": "The text prescribes structure in four places. Each is covered by implementation evidence in `crates/trust-but-verify/src/procedure.rs`.\n\n1. **Type and phase typestate.** The text requires `pub struct Ask<'a, 'd, D: Domain, R, P>` with private fields, and `context` only on the `ContextPhase` impl. A single `P`-generic `context` method would still compile for existing callers, but it would break the \"context is available in the context phase\" restriction. `struct[Ask]` has the right generics and private fields. It also carries a `PhantomData<fn() -> (R, P)>` phase marker. `impl[Ask<'a, 'd, D, R, ContextPhase>]/fn[context]` is defined only for `ContextPhase`.\n\n2. **Builder signatures.** The text prescribes `vet_answer`, `message`, `contents_of_node`, `contents_of_current_node` and `contents_of_successors` on the generic `P` impl, with the `NodePhase` return types and the `D::EdgeLabel: PartialEq` bound. These all sit in `impl[Ask<'a, 'd, D, R, P>]#1`, which carries the `{impl}` marker for this requirement. The signatures match the text. `contents_of_successors` has the `PartialEq` where-clause, and `vet_answer` takes `impl FnMut(&R) -> Result<VetResult, D::Error> + Send + 'a`. The root list does not name this impl, but the marker on it covers its methods, and `into_node_phase` is reached from them.\n\n3. **`IntoFuture` impls.** The text requires one `IntoFuture` impl per phase, with the stated bounds. `Output` must be `Result<R, ValidationError<D::Error>>`. `IntoFuture` must be a boxed `Send + 'a` future. `macro[await_phase]`, marked `{impl}`, generates both impls with exactly those bounds and associated types. It uses `BoxFuture<'a, Output>`, which is the same boxed pinned `Send` future as the text's type. `into_future` delegates to `execute`. `impl[Ask<'a, 'd, D, R, P>]#2/fn[execute]` is a root. It resolves the agent and prepares the node inputs. It runs the agent through the `Agent` trait, decodes and vets the answer, and returns the decoded answer or a `ValidationError`.\n\n4. **`VetResult`.** `enum[VetResult]` supplies the `Accept` and `CorrectAndTryAgain(String)` variants that the `vet_answer` signature uses. It is a root for this requirement, and I found no structural problem with it.\n\nThe rest of the text (\"builds a typed agent request\", \"awaiting returns the decoded answer or a validation error\") describes observable behavior, which `execute` carries out. I found no unmarked root and no missing structural evidence."
       }
     },
     "behavioral": {
@@ -420,7 +327,7 @@
             },
             {
               "scheme": "habeas-reference-set-v1",
-              "value": "c0f62b82dd49567595baa449e8fe74fbd346281d4c372deeecab039d394ad1c6"
+              "value": "c3350ebdc438cad137a8687a0c42a630db61ba5b465635114fe15d3744ea7c2e"
             }
           ]
         },
@@ -494,12 +401,75 @@
                   "scheme": "repo",
                   "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
                 },
-                "selector": "fn[invalid_typed_submission_is_an_agent_error]"
+                "selector": "fn[concurrent_single_node_validations_keep_separate_traces]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "dfe09ec614ae6db4a104ecbd6c1cccee9aa6a1cb4ba5c81da100da70ce713312"
+              "value": "5013e59de848fef5d0de348958c93db5e4030fbf79d55559833aeaca30e2e544"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[agent_errors_expose_the_agreed_string_payload]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "cef6ed5af5b05f77fa7c4ac77f842f976c50babb4ef97c5dd97590d9287342c9"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/tests/public_api.rs"
+                },
+                "selector": "fn[public_exports_match_the_appendix]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+            }
+          ]
+        },
+        {
+          "OutgoingEdges": [
+            {
+              "Requirement": "requirements.sdk.graph.agent-calls.Ask"
+            },
+            "Tests",
+            {
+              "scheme": "node-path-set-sha256-v1",
+              "value": "2d938554f2a35d04045b2d5aa586de55466806a7cd7b784dd55c2425d23024ef"
+            }
+          ]
+        },
+        {
+          "Node": [
+            {
+              "Source": {
+                "resource": {
+                  "scheme": "repo",
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+                },
+                "selector": "fn[ending_without_a_corrected_submission_is_an_agent_error]"
+              }
+            },
+            {
+              "scheme": "rust-structural-v1:own-v1",
+              "value": "0b735621d913a03adff3b2c767f0cf9188784564b84abafed560caf1278d6754"
             }
           ]
         },
@@ -526,31 +496,14 @@
               "Source": {
                 "resource": {
                   "scheme": "repo",
-                  "location": "crates/trust-but-verify/tests/public_api.rs"
+                  "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
                 },
-                "selector": "fn[public_exports_match_the_appendix]"
+                "selector": "fn[dropped_builders_and_missing_agents_do_not_resolve_queued_inputs]"
               }
             },
             {
               "scheme": "rust-structural-v1:own-v1",
-              "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
-            }
-          ]
-        },
-        {
-          "Node": [
-            {
-              "Source": {
-                "resource": {
-                  "scheme": "repo",
-                  "location": "crates/trust-but-verify/src/agent/tests.rs"
-                },
-                "selector": "fn[typed_submission_references_resolve_and_invalid_results_are_agent_errors]"
-              }
-            },
-            {
-              "scheme": "rust-structural-v1:own-v1",
-              "value": "344a5e130451f6de2e1bdbb6259870eca27cf41875ed2259472d30db7f95e2bf"
+              "value": "9cbe92178baf6b64f5b753b824d8484aaeaf4cef82c6372f433f35776444e34c"
             }
           ]
         },
@@ -591,7 +544,7 @@
       ],
       "output": {
         "status": "success",
-        "rationale": "Obligations from `requirements.sdk.graph.agent-calls.Ask` and the tests that cover them:\n\n- **`context` in the context phase.** `explicit_insertions_preserve_order_repetition_and_selection_snapshots` sets `.context(String::from(\"question\"))` and asserts that the agent request prefix is \"question\". `task_messages_share_a_prefix_and_can_queue_another_node` asserts the shared prefix and its context fingerprint.\n- **`contents_of_current_node`, `contents_of_successors` and `contents_of_node` enter the node phase.** The first test chains current node, successors(7) and current node again. It asserts the inputs arrive in order with repetition (1, 3, 2, 3, 1), the read order, the dependencies, and the schema in the request. The second test uses `contents_of_node` and annotates the result type as `NodePhase`.\n- **`message`.** The second test shows a later `message` replacing an earlier one (\"superseded\" is replaced by \"assess\" or \"verify\"). It also shows `message` working after `contents_of_node`.\n- **Awaiting returns the decoded answer.** The first test awaits and asserts `answer.n == 7`. It also asserts the future is `Send` and that the request schema contains `n` as an integer. `runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls` covers an ask made inside a callback.\n- **Awaiting returns a validation error.**\n  - `invalid_typed_submission_is_an_agent_error` asserts `ValidationError::Agent` for an invalid typed submission.\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` asserts `Graph(\"read\")`, `Graph(\"edges\")` and `Graph(\"render\")` errors, with no agent call on failure.\n  - The same test asserts that empty and non-matching successor sets still produce a request, that dropping an unawaited `Ask` makes no agent call, and that dependencies are empty after a render failure.\n- **`vet_answer`.** It has its own requirements: `requirements.sdk.graph.agent-calls.vet_answer`, `requirements.sdk.graph.agent-calls.vet_answer.ok` and `requirements.sdk.graph.agent-calls.vet_answer.corrections`. They are tested by `vetting_collects_corrections_and_rechecks_every_callback` and `vetting_preserves_domain_errors_and_skips_later_callbacks`. The agent tests also include an invalid submission that never reaches the vet callback. Its behavior is delegated to those requirements.\n- **Type-level and structural items.** The phase typestate, the `IntoFuture` signatures and the public export shape are structural. The `public_api` test and the typed annotations in the tests cover them.\n\nI found no behavioral obligation of `Ask` that the reviewed tests would let a violation pass."
+        "rationale": "The reviewed tests cover each observable obligation in `requirements.sdk.graph.agent-calls.Ask`.\n\n- **`context`:** `explicit_insertions_preserve_order_repetition_and_selection_snapshots` calls `.context(String::from(\"question\"))` and asserts the agent request prefix is \"question\". `task_messages_share_a_prefix_and_can_queue_another_node` asserts the prefix \"shared\" and its fingerprint.\n- **`contents_of_current_node`, `contents_of_successors`, `contents_of_node`:** The first test above queues current node, successors with label 7, then current node again. It asserts the request inputs, their order and repetition, the graph reads, and the recorded dependencies. `task_messages_share_a_prefix_and_can_queue_another_node` covers `contents_of_node` with an explicit `NodePhase` type annotation, which checks that adding contents enters the node phase. `queued_reads_selection_and_rendering_fail_before_agent_invocation` covers empty and non-matching successor selections.\n- **`message`:** `task_messages_share_a_prefix_and_can_queue_another_node` asserts the messages \"assess\" and \"verify\" arrive and that the earlier \"superseded\" message is replaced.\n- **Await returns the decoded answer:** `answer.n == 7` and the schema assertion on `n` in `explicit_insertions_preserve_order_repetition_and_selection_snapshots`. The `Send` future is asserted there too.\n- **Await returns a validation error:** `ending_without_a_corrected_submission_is_an_agent_error` asserts `ValidationError::Agent`. `queued_reads_selection_and_rendering_fail_before_agent_invocation` asserts `ValidationError::Graph` for read, edges and render failures and that no agent request is made. `runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls` asserts `ValidationError::NoAgentConfigured` through `Validator::verify`. `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` asserts the same error directly on `ask().await`; it has no `Ask` test marker, but the marked tests already cover the error path.\n- **`vet_answer`:** This has its own requirements, `requirements.sdk.graph.agent-calls.vet_answer` and its refinements. They are tested in `src/agent/tests.rs` by `vetting_collects_corrections_and_rechecks_every_callback` and `vetting_preserves_domain_errors_and_skips_later_callbacks`. No separate `Ask` test is needed.\n- **Trait signatures and public export:** `public_exports_match_the_appendix` checks the export inventory and that the shipping consumer compiles against it. This is a structural check, not an independent behavioural obligation."
       }
     }
   },
@@ -605,7 +558,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "c0f62b82dd49567595baa449e8fe74fbd346281d4c372deeecab039d394ad1c6"
+          "value": "c3350ebdc438cad137a8687a0c42a630db61ba5b465635114fe15d3744ea7c2e"
         }
       ]
     },
@@ -617,6 +570,23 @@
         {
           "scheme": "habeas-input-v1",
           "value": "d005b11e4d6316f22427bd3ab967457682385bdf236e265a6de8bfb75c89a20a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "enum[VetResult]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "f407cb8dd99cc584de255704984fd0028501a8e18f482fa32077893be04d0096"
         }
       ]
     },
@@ -645,12 +615,29 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/procedure.rs"
             },
-            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20ContextPhase>]"
+            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20ContextPhase>]/fn[context]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "d71db4bf9a3cd02b05a43b9c0ad9da6358f64cb25de6de624d90f33f79d679a2"
+          "value": "40ee4435e784f834abea244c54a5bcb4d17de21f805197b5532e500d619b7876"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/procedure.rs"
+            },
+            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "13819c4675914551da6e0dde0cc498d09495c2f2124f3f03e353ca0cdfef866a"
         }
       ]
     },
@@ -696,12 +683,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/procedure.rs"
             },
-            "selector": "use@b49cd2172cef"
+            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20ContextPhase>]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "b49cd2172cef8d8edfab8713edda8c3cbd89ccb1b084621f6eae860ca2e7f648"
+          "value": "d71db4bf9a3cd02b05a43b9c0ad9da6358f64cb25de6de624d90f33f79d679a2"
         }
       ]
     },
@@ -713,114 +700,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/procedure.rs"
             },
-            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20ContextPhase>]/fn[context]"
+            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "40ee4435e784f834abea244c54a5bcb4d17de21f805197b5532e500d619b7876"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[message]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "d10563706c13b762836e6aa6ee765f77e6cdeffb71d93857cb45c8b3c8e2e883"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[vet_answer]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "edbb68fcf0aa659ac3f79d6222ff6665aae046e9e8965d414cfec3cd8bc64428"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[contents_of_current_node]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "50662f3870bb500baeb16d5aed70ed501dd6a08a0abe3affa048f8c6e6bfb830"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[contents_of_node]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "2e72c73ad326055f2b1ce4d8a96751f6873639d40e4b59a537b73d85fa59ac93"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[contents_of_successors]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "5259c05f216ee5bd0897d540a7486136bd73a6de17eda5a90f89b7484188fa1d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "impl[ValidationContext<'d,%20D>]#3/fn[ask]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "b8b2eae7581183984c864d30ec9f6e3d2861dc9fae437a46d1870f95f68be4c8"
+          "value": "df2e8c5cb249144162a04519ee9898f96400ffb4fdaab260b6d52505a29eeccf"
         }
       ]
     },
@@ -883,12 +768,75 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
             },
-            "selector": "fn[invalid_typed_submission_is_an_agent_error]"
+            "selector": "fn[concurrent_single_node_validations_keep_separate_traces]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "dfe09ec614ae6db4a104ecbd6c1cccee9aa6a1cb4ba5c81da100da70ce713312"
+          "value": "5013e59de848fef5d0de348958c93db5e4030fbf79d55559833aeaca30e2e544"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+            },
+            "selector": "fn[agent_errors_expose_the_agreed_string_payload]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "cef6ed5af5b05f77fa7c4ac77f842f976c50babb4ef97c5dd97590d9287342c9"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/public_api.rs"
+            },
+            "selector": "fn[public_exports_match_the_appendix]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.sdk.graph.agent-calls.Ask"
+        },
+        "Tests",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "2d938554f2a35d04045b2d5aa586de55466806a7cd7b784dd55c2425d23024ef"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
+            },
+            "selector": "fn[ending_without_a_corrected_submission_is_an_agent_error]"
+          }
+        },
+        {
+          "scheme": "rust-structural-v1:own-v1",
+          "value": "0b735621d913a03adff3b2c767f0cf9188784564b84abafed560caf1278d6754"
         }
       ]
     },
@@ -915,31 +863,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/public_api.rs"
+              "location": "crates/trust-but-verify/src/graph/validation_tests.rs"
             },
-            "selector": "fn[public_exports_match_the_appendix]"
+            "selector": "fn[dropped_builders_and_missing_agents_do_not_resolve_queued_inputs]"
           }
         },
         {
           "scheme": "rust-structural-v1:own-v1",
-          "value": "7576dea08ee618ebb4ab58c7f1b057c556811667c761079237866edf2fa38145"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "fn[typed_submission_references_resolve_and_invalid_results_are_agent_errors]"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "344a5e130451f6de2e1bdbb6259870eca27cf41875ed2259472d30db7f95e2bf"
+          "value": "9cbe92178baf6b64f5b753b824d8484aaeaf4cef82c6372f433f35776444e34c"
         }
       ]
     },
@@ -978,53 +909,14 @@
       ]
     },
     {
-      "Node": [
+      "OutgoingEdges": [
         {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "struct[ContextPhase]"
-          }
+          "Requirement": "requirements.sdk.graph.agent-calls.Ask"
         },
+        "Implements",
         {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "38eb48632ba183ca42f37eb48a05202c7223921264852f809778194b2fd58cc8"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "macro@0541b668e173"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "0541b668e17328ea03bcea26c84b8ba0d033a8e4e79a8b4983dffadf0126cffa"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "macro@5781c4abb394"
-          }
-        },
-        {
-          "scheme": "rust-structural-v1:own-v1",
-          "value": "5781c4abb394b89553efd9c5558d9526bebec071676accc0fa6d63b012625b42"
+          "scheme": "node-path-set-sha256-v1",
+          "value": "fbc9d34ca05a19efbc5974d6210f009da49e078db6924f8890d105ef582f925b"
         }
       ]
     }
