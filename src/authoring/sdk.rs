@@ -216,6 +216,7 @@ impl Criterion<HabeasDomain> for Review<'_> {
     fn version(&self) -> CriterionVersion {
         crate::sdk::review_version()
     }
+    // {impl}`requirements.authoring.citation_prompt`
     async fn execute(
         self,
         cx: &mut ValidationContext<'_, HabeasDomain>,
@@ -417,6 +418,7 @@ impl Drop for AssessmentUsage<'_, '_> {
     }
 }
 
+// {impl}`requirements.authoring.citation_prompt`
 // {impl}`requirements.authoring.source_tools`
 // {impl}`requirements.authoring.finish_search.inputs`
 // {impl}`requirements.authoring.usage_requests`

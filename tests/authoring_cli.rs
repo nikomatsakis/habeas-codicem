@@ -6390,6 +6390,7 @@ fn bundled_skills_direct_behavior_review_against_requirements() {
 // {test}`requirements.cli.behavior_review_guidance`
 // {test}`requirements.cli.internal_detail_guidance`
 // {test}`requirements.references.procedure`
+// {test}`requirements.references.structural_markers`
 #[test]
 fn bundled_skills_mark_roots_without_requiring_helper_bookkeeping() {
     const ROOT: &str = "A *root* is an item that carries out part of a requirement and that no other `{impl}` item for it reaches";

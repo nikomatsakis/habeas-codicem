@@ -329,14 +329,23 @@ fn unmarked_tests_fail_validation_with_their_locations() {
         "#[test]\nfn first() {}\n#[tokio::test]\nasync fn second() {}\n",
     )
     .unwrap();
-    let output = validate_in(&root, &state);
-    assert!(!output.status.success(), "{output:?}");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    for finding in [
-        "tests/items.rs:2: test function first",
-        "tests/items.rs:4: test function second",
-    ] {
-        assert!(stderr.contains(finding), "{stderr}");
+    fs::write(root.join("tests/another.rs"), "#[test]\nfn third() {}\n").unwrap();
+    for _ in 0..2 {
+        let output = validate_in(&root, &state);
+        assert!(!output.status.success(), "{output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let findings: Vec<_> = stderr
+            .lines()
+            .filter(|line| line.starts_with("- "))
+            .collect();
+        assert_eq!(
+            findings,
+            [
+                "- tests/another.rs:2: test function third has no {test} annotation",
+                "- tests/items.rs:2: test function first has no {test} annotation",
+                "- tests/items.rs:4: test function second has no {test} annotation",
+            ]
+        );
     }
 }
 

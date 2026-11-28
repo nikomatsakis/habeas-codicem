@@ -3498,7 +3498,16 @@ no_match:
             );
             assert_eq!(prompt.contains("pub fn api()"), structural);
             assert_eq!(prompt.contains("Testing criteria:"), !structural);
-            assert!(!prompt.contains("The required signature is absent."));
+            for prior_verdict in [
+                "The API exposes the required signature.",
+                "No behavioral obligation.",
+                "The required signature is absent.",
+            ] {
+                assert!(
+                    !prompt.contains(prior_verdict),
+                    "request {index} contains a prior verdict: {prior_verdict}"
+                );
+            }
             assert!(prompt.contains("The remaining structural gap."));
         }
     }

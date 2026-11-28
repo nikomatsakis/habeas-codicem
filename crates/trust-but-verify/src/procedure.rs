@@ -472,6 +472,7 @@ where
 {
     // {impl}`requirements.sdk.graph.agent-harness.submission.mcp`
     // {impl}`requirements.sdk.graph.agent-harness.with_agent`
+    // {impl}`requirements.sdk.graph.agent-calls.judge.submission.decoding`
     async fn execute(self) -> Result<R, ValidationError<D::Error>> {
         let agent = self
             .ctx

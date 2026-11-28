@@ -943,6 +943,7 @@ async fn typed_submission_references_resolve() {
 
 // {test}`requirements.sdk.graph.agent-calls.judge.submission.decoding`
 // {test}`requirements.sdk.graph.agent-harness.submission.invalid`
+// {test}`requirements.sdk.graph.agent-harness.submission_count`
 #[tokio::test]
 async fn malformed_submissions_receive_feedback_and_can_be_corrected() {
     let graph = Memory::new("source".into());

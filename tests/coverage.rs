@@ -147,7 +147,7 @@ fn test_annotations_follow_the_attribute_path_and_the_comment_owner() {
 
 // {test}`requirements.cli.status.test_annotations`
 #[test]
-fn status_reports_an_unmarked_test_and_exits_successfully() {
+fn status_reports_each_unmarked_test_and_exits_successfully() {
     let project = project();
     let file = project.path().join("src/lib.rs");
     let test = "#[tokio::test]\nasync fn ready() {}\n";
@@ -158,6 +158,11 @@ fn status_reports_an_unmarked_test_and_exits_successfully() {
             .output()
             .unwrap()
     };
+    fs::write(
+        project.path().join("src/other.rs"),
+        "#[test]\nfn another() {}\n// {test}`rules.ready`\n#[test]\nfn marked() {}\n",
+    )
+    .unwrap();
     fs::write(&file, test).unwrap();
     let output = status();
     assert!(output.status.success(), "{output:?}");
@@ -166,6 +171,12 @@ fn status_reports_an_unmarked_test_and_exits_successfully() {
             .contains("src/lib.rs:2: test function ready has no {test}"),
         "{output:?}"
     );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("src/other.rs:2: test function another has no {test}"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("test function marked"), "{stdout}");
     fs::write(file, format!("// {{test}}`rules.ready`\n{test}")).unwrap();
     let output = status();
     assert!(output.status.success(), "{output:?}");
